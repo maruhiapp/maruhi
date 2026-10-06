@@ -60,8 +60,10 @@ export function makeProxyCommands(onExitCode: (code: number) => void) {
   // `maruhi proxy run` (PF4 — pf4-design.md). The same prologue as run
   // (config → environment → verified pull → presence fail-fast → type
   // advisory); what differs is what the child receives (proxy-run.ts)
-  const proxyRun = Command.make("run", proxyRunConfig, (values) =>
-    Effect.gen(function* () {
+  const proxyRun = Command.make(
+    "run",
+    proxyRunConfig,
+    Effect.fn("proxy-command.proxyRun")(function* (values) {
       const { command: parsed, config: configFlag, verbose, listen, advertise, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
@@ -90,8 +92,10 @@ export function makeProxyCommands(onExitCode: (code: number) => void) {
   // terminal records the config's content as accepted on this machine —
   // the explicit act the brokering rules need before they apply (the
   // direnv model). Reads the file, contacts no server
-  const proxyAccept = Command.make("accept", proxyAcceptConfig, (values) =>
-    Effect.gen(function* () {
+  const proxyAccept = Command.make(
+    "accept",
+    proxyAcceptConfig,
+    Effect.fn("proxy-command.proxyAccept")(function* (values) {
       const configPath = values.config ?? DEFAULT_PROXY_CONFIG_PATH;
       const loaded = yield* loadProxyConfig(configPath);
       // The project the rules are for: the flag, the config's `project`, or

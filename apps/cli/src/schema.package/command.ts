@@ -127,22 +127,20 @@ export const schemaLintConfig = {
  * commands. Running as-is in an agent environment is this feature's main
  * use (not being on the deny-list is pinned by a test).
  */
-function runSchemaShow(values: {
+const runSchemaShow = Effect.fn("schema-command.runSchemaShow")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const context = yield* openMetadataEnvironment(values);
-    yield* schemaShowOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const context = yield* openMetadataEnvironment(values);
+  yield* schemaShowOp({
+    client: context.client,
+    verified: context.verified,
+    environmentId: context.environmentId,
+    resync: context.resync,
+    floor: context.floorHandle,
   });
-}
+});
 
 /** Interpreting `--type` (unspecified = keep, `none` = an explicit clear. **The given value itself never appears in the error**). */
 function parseSchemaTypeFlag(
@@ -188,15 +186,15 @@ function parseMaxAgeFlag(
  * contradictory specification (--required and --optional etc.) is a usage
  * error.
  */
-function parseSchemaFieldUpdates(values: {
-  readonly type?: string | undefined;
-  readonly required: boolean;
-  readonly optional: boolean;
-  readonly description?: string | undefined;
-  readonly "clear-description": boolean;
-  readonly "max-age"?: string | undefined;
-}): Effect.Effect<SchemaFieldUpdates, CliError> {
-  return Effect.gen(function* () {
+const parseSchemaFieldUpdates = Effect.fn("schema-command.parseSchemaFieldUpdates")(
+  function* (values: {
+    readonly type?: string | undefined;
+    readonly required: boolean;
+    readonly optional: boolean;
+    readonly description?: string | undefined;
+    readonly "clear-description": boolean;
+    readonly "max-age"?: string | undefined;
+  }): Effect.fn.Return<SchemaFieldUpdates, CliError> {
     const varType = yield* parseSchemaTypeFlag(values.type);
     const maxAgeDays = yield* parseMaxAgeFlag(values["max-age"]);
     if (values.required && values.optional) {
@@ -220,8 +218,8 @@ function parseSchemaFieldUpdates(values: {
         ? { kind: "set", value: values.description }
         : { kind: "keep" };
     return { varType, required, description, maxAgeDays };
-  });
-}
+  },
+);
 
 /** `schema set`'s success report (the type is displayed as a declaration — the word "verified" is never used, §14.3). */
 function schemaSetReport(name: string, summary: SchemaSetSummary): string {
@@ -235,8 +233,10 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
 }
 /** @public */
 export function makeSchemaCommands() {
-  const schemaSet = Command.make("set", schemaSetConfig, (values) =>
-    Effect.gen(function* () {
+  const schemaSet = Command.make(
+    "set",
+    schemaSetConfig,
+    Effect.fn("schema-command.schemaSet")(function* (values) {
       const io = yield* CliIo;
       // Interpreting the column specifications precedes the network
       // (partial update §1-2 — unspecified = keep, only an explicit flag
@@ -273,8 +273,10 @@ export function makeSchemaCommands() {
     ),
   );
 
-  const schemaImport = Command.make("import", schemaImportConfig, (values) =>
-    Effect.gen(function* () {
+  const schemaImport = Command.make(
+    "import",
+    schemaImportConfig,
+    Effect.fn("schema-command.schemaImport")(function* (values) {
       // The ceremony gate (the ceremony-family deny archetype of ADR-0016
       // decision 7) is judged **before any communication or file read**:
       // the per-variable interactive approval is the ceremony's core, and
@@ -322,8 +324,10 @@ export function makeSchemaCommands() {
   // under a MARUHI_TOKEN session = runnable from a user's CI). The
   // agent-gate does not apply (the permissive side — ADR-0016 decision
   // 7's scope is "value-displaying" commands only. Pinned by a test)
-  const schemaExport = Command.make("export", schemaExportConfig, (values) =>
-    Effect.gen(function* () {
+  const schemaExport = Command.make(
+    "export",
+    schemaExportConfig,
+    Effect.fn("schema-command.schemaExport")(function* (values) {
       const context = yield* openMetadataEnvironment(values);
       yield* schemaExportOp({
         client: context.client,
@@ -342,36 +346,37 @@ export function makeSchemaCommands() {
   const schemaVerifySnapshot = Command.make(
     "verify-snapshot",
     schemaVerifySnapshotConfig,
-    (values) =>
-      Effect.gen(function* () {
-        const { file, ...flags } = values;
-        // The file is read before any network (a wrong path drops before a
-        // round trip). Only the path is reported — never the content or
-        // the OS error detail (same discipline as schema import)
-        const fileContent = yield* Effect.tryPromise({
-          try: () => readFile(file, "utf8"),
-          catch: () =>
-            cliError(`Could not read ${displayText(file)} (check the path and permissions)`),
-        });
-        const context = yield* openMetadataEnvironment(flags);
-        yield* schemaVerifySnapshotOp({
-          client: context.client,
-          verified: context.verified,
-          environmentId: context.environmentId,
-          resync: context.resync,
-          floor: context.floorHandle,
-          filePath: file,
-          fileContent,
-        });
-      }),
+    Effect.fn("schema-command.schemaVerifySnapshot")(function* (values) {
+      const { file, ...flags } = values;
+      // The file is read before any network (a wrong path drops before a
+      // round trip). Only the path is reported — never the content or
+      // the OS error detail (same discipline as schema import)
+      const fileContent = yield* Effect.tryPromise({
+        try: () => readFile(file, "utf8"),
+        catch: () =>
+          cliError(`Could not read ${displayText(file)} (check the path and permissions)`),
+      });
+      const context = yield* openMetadataEnvironment(flags);
+      yield* schemaVerifySnapshotOp({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        resync: context.resync,
+        floor: context.floorHandle,
+        filePath: file,
+        fileContent,
+      });
+    }),
   ).pipe(
     Command.withDescription(
       "Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)",
     ),
   );
 
-  const schemaLint = Command.make("lint", schemaLintConfig, (values) =>
-    Effect.gen(function* () {
+  const schemaLint = Command.make(
+    "lint",
+    schemaLintConfig,
+    Effect.fn("schema-command.schemaLint")(function* (values) {
       // The scan precedes the network (a wrong path / an unreadable tree drops before a round trip)
       const scan = yield* scanPaths(values.paths);
       const context = yield* openMetadataEnvironment(values);

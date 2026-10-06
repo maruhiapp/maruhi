@@ -85,7 +85,7 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
   });
 
 /** The import's input (schema.package/command.ts assembles it from EnvironmentContext). */
-export interface SchemaImportInput {
+interface SchemaImportInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -144,109 +144,108 @@ function isYes(answer: string): boolean {
 }
 
 /** Edit: the name (blank = keep as-is. Format / duplicates warn and keep as-is). */
-function editName(
+const editName = Effect.fn("schema-import.editName")(function* (
   io: CliIoShape,
   draft: CandidateDraft,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const answer = (yield* io.promptLine({
-      prompt: `  Name (blank = keep ${displayText(draft.name)}): `,
-    })).trim();
-    if (answer === "") {
-      return;
-    }
-    const name = answer.normalize("NFC");
-    // The format / length check accepts the same set as the parser
-    // (env-file.ts) — never build a shape where only the edit route
-    // passes through to the server's slow 400 failure point (stops the
-    // whole import)
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > MAX_NAME_LENGTH) {
-      return yield* io.logError(
-        `  Not a valid environment variable name (letters, digits and _ only, not starting with a digit, at most ${MAX_NAME_LENGTH} characters) — keeping the current name`,
-      );
-    }
-    if (isNameTaken(name)) {
-      return yield* io.logError(
-        "  That name already exists in the environment or in this import — keeping the current name",
-      );
-    }
-    draft.name = name;
-  });
-}
+): Effect.fn.Return<void, CliError> {
+  const answer = (yield* io.promptLine({
+    prompt: `  Name (blank = keep ${displayText(draft.name)}): `,
+  })).trim();
+  if (answer === "") {
+    return;
+  }
+  const name = answer.normalize("NFC");
+  // The format / length check accepts the same set as the parser
+  // (env-file.ts) — never build a shape where only the edit route
+  // passes through to the server's slow 400 failure point (stops the
+  // whole import)
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > MAX_NAME_LENGTH) {
+    return yield* io.logError(
+      `  Not a valid environment variable name (letters, digits and _ only, not starting with a digit, at most ${MAX_NAME_LENGTH} characters) — keeping the current name`,
+    );
+  }
+  if (isNameTaken(name)) {
+    return yield* io.logError(
+      "  That name already exists in the environment or in this import — keeping the current name",
+    );
+  }
+  draft.name = name;
+});
 
 /** Edit: the type (blank = keep as-is, none = unspecified. Outside the closed set warns and keeps as-is). */
-function editType(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const answer = (yield* io.promptLine({
-      prompt: `  Type (${SCHEMA_TYPES.join(" | ")}; blank = keep ${draft.varType === "" ? "unspecified" : draft.varType}, "none" = unspecified): `,
-    }))
-      .trim()
-      .toLowerCase();
-    if (answer === "") {
-      return;
-    }
-    if (answer === "none") {
-      draft.varType = "";
-      return;
-    }
-    if ((SCHEMA_TYPES as readonly string[]).includes(answer)) {
-      draft.varType = answer as MetaVarType;
-      return;
-    }
-    yield* io.logError(
-      `  Unknown type (${SCHEMA_TYPES.join(" | ")} or "none") — keeping the current type`,
-    );
-  });
-}
+const editType = Effect.fn("schema-import.editType")(function* (
+  io: CliIoShape,
+  draft: CandidateDraft,
+): Effect.fn.Return<void, CliError> {
+  const answer = (yield* io.promptLine({
+    prompt: `  Type (${SCHEMA_TYPES.join(" | ")}; blank = keep ${draft.varType === "" ? "unspecified" : draft.varType}, "none" = unspecified): `,
+  }))
+    .trim()
+    .toLowerCase();
+  if (answer === "") {
+    return;
+  }
+  if (answer === "none") {
+    draft.varType = "";
+    return;
+  }
+  if ((SCHEMA_TYPES as readonly string[]).includes(answer)) {
+    draft.varType = answer as MetaVarType;
+    return;
+  }
+  yield* io.logError(
+    `  Unknown type (${SCHEMA_TYPES.join(" | ")} or "none") — keeping the current type`,
+  );
+});
 
 /** Edit: required (y/n. blank = keep as-is; anything else warns and keeps as-is). */
-function editRequired(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const answer = (yield* io.promptLine({
-      prompt: `  Required? (y/n; blank = keep ${draft.required}): `,
-    }))
-      .trim()
-      .toLowerCase();
-    if (answer === "y" || answer === "yes") {
-      draft.required = true;
-    } else if (answer === "n" || answer === "no") {
-      draft.required = false;
-    } else if (answer !== "") {
-      yield* io.logError("  Answer y or n — keeping the current value");
-    }
-  });
-}
+const editRequired = Effect.fn("schema-import.editRequired")(function* (
+  io: CliIoShape,
+  draft: CandidateDraft,
+): Effect.fn.Return<void, CliError> {
+  const answer = (yield* io.promptLine({
+    prompt: `  Required? (y/n; blank = keep ${draft.required}): `,
+  }))
+    .trim()
+    .toLowerCase();
+  if (answer === "y" || answer === "yes") {
+    draft.required = true;
+  } else if (answer === "n" || answer === "no") {
+    draft.required = false;
+  } else if (answer !== "") {
+    yield* io.logError("  Answer y or n — keeping the current value");
+  }
+});
 
 /** Edit: description (blank = keep as-is, "-" = clear). */
-function editDescription(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const answer = yield* io.promptLine({
-      prompt:
-        '  Description (blank = keep; "-" = clear; plaintext metadata visible to the server — never put secret values here): ',
-    });
-    const trimmed = answer.trim();
-    if (trimmed === "-") {
-      draft.description = "";
-    } else if (trimmed !== "") {
-      draft.description = trimmed;
-    }
+const editDescription = Effect.fn("schema-import.editDescription")(function* (
+  io: CliIoShape,
+  draft: CandidateDraft,
+): Effect.fn.Return<void, CliError> {
+  const answer = yield* io.promptLine({
+    prompt:
+      '  Description (blank = keep; "-" = clear; plaintext metadata visible to the server — never put secret values here): ',
   });
-}
+  const trimmed = answer.trim();
+  if (trimmed === "-") {
+    draft.description = "";
+  } else if (trimmed !== "") {
+    draft.description = trimmed;
+  }
+});
 
 /** The edit sub-prompts (blank = keep as-is. Invalid input warns and keeps as-is). */
-function editDraft(
+const editDraft = Effect.fn("schema-import.editDraft")(function* (
   io: CliIoShape,
   draft: CandidateDraft,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    yield* editName(io, draft, isNameTaken);
-    yield* editType(io, draft);
-    yield* editRequired(io, draft);
-    yield* editDescription(io, draft);
-  });
-}
+): Effect.fn.Return<void, CliError> {
+  yield* editName(io, draft, isNameTaken);
+  yield* editType(io, draft);
+  yield* editRequired(io, draft);
+  yield* editDescription(io, draft);
+});
 
 /** The approval loop's outcome. */
 type ApprovalOutcome =
@@ -277,83 +276,81 @@ function interpretApprovalAnswer(raw: string): "approve" | "edit" | "skip" | "st
  * — ruling CW's interactive form. Since no non-interactive path exists,
  * no --allow-high-entropy equivalent is needed).
  */
-function confirmHighEntropy(io: CliIoShape): Effect.Effect<boolean, CliError> {
-  return Effect.gen(function* () {
-    const confirmed = yield* io.promptLine({
-      prompt: "  Keep the high-entropy text anyway? Type 'yes' to proceed: ",
-    });
-    if (confirmed.trim() === "yes") {
-      return true;
-    }
-    yield* io.logError("  Not confirmed — edit the candidate or skip it");
-    return false;
+const confirmHighEntropy = Effect.fn("schema-import.confirmHighEntropy")(function* (
+  io: CliIoShape,
+): Effect.fn.Return<boolean, CliError> {
+  const confirmed = yield* io.promptLine({
+    prompt: "  Keep the high-entropy text anyway? Type 'yes' to proceed: ",
   });
-}
+  if (confirmed.trim() === "yes") {
+    return true;
+  }
+  yield* io.logError("  Not confirmed — edit the candidate or skip it");
+  return false;
+});
 
 /**
  * The candidate presentation + the entropy warning (ruling CW) + one
  * round of answer interpretation. Approving as-is on a finding requires
  * the dedicated explicit confirmation ("yes").
  */
-function approvalStep(
+const approvalStep = Effect.fn("schema-import.approvalStep")(function* (
   io: CliIoShape,
   entry: EnvFileEntry,
   draft: CandidateDraft,
   valueNote: string,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<ApprovalStep, CliError, CliIo> {
-  return Effect.gen(function* () {
-    yield* io.logError(describeCandidate(draft, entry.line, valueNote));
-    const finding =
-      findHighEntropySubstring(draft.description) ?? findHighEntropySubstring(draft.name);
-    if (finding !== null) {
-      // The warning never carries the found value itself (it may be a
-      // secret — entropy.ts's discipline). Per-candidate warning (emitted
-      // every time — on a retry of the same candidate and on another
-      // candidate of the same shape — never a ledger-suppressed item).
-      // Attached indented directly below the candidate
-      yield* logWarning(
-        `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
-        { scope: "prompt" },
-      );
-    }
-    const answer = interpretApprovalAnswer(
-      yield* io.promptLine({
-        prompt: `Declare ${displayText(draft.name)}? [y = declare / e = edit / s = skip / q = stop]: `,
-      }),
+): Effect.fn.Return<ApprovalStep, CliError, CliIo> {
+  yield* io.logError(describeCandidate(draft, entry.line, valueNote));
+  const finding =
+    findHighEntropySubstring(draft.description) ?? findHighEntropySubstring(draft.name);
+  if (finding !== null) {
+    // The warning never carries the found value itself (it may be a
+    // secret — entropy.ts's discipline). Per-candidate warning (emitted
+    // every time — on a retry of the same candidate and on another
+    // candidate of the same shape — never a ledger-suppressed item).
+    // Attached indented directly below the candidate
+    yield* logWarning(
+      `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
+      { scope: "prompt" },
     );
-    if (answer === "skip") {
-      return { kind: "skipped" } as const;
-    }
-    if (answer === "stop") {
-      return { kind: "stopped" } as const;
-    }
-    if (answer === "edit") {
-      yield* editDraft(io, draft, isNameTaken);
-      return { kind: "retry" } as const;
-    }
-    if (answer === "invalid") {
-      yield* io.logError("  Answer y, e, s or q");
-      return { kind: "retry" } as const;
-    }
-    if (finding !== null && !(yield* confirmHighEntropy(io))) {
-      return { kind: "retry" } as const;
-    }
-    return {
-      kind: "approved",
-      approved: {
-        name: draft.name,
-        schema: {
-          varType: draft.varType,
-          required: draft.required,
-          description: draft.description,
-          maxAgeDays: null,
-        },
-        pushValue: false,
+  }
+  const answer = interpretApprovalAnswer(
+    yield* io.promptLine({
+      prompt: `Declare ${displayText(draft.name)}? [y = declare / e = edit / s = skip / q = stop]: `,
+    }),
+  );
+  if (answer === "skip") {
+    return { kind: "skipped" } as const;
+  }
+  if (answer === "stop") {
+    return { kind: "stopped" } as const;
+  }
+  if (answer === "edit") {
+    yield* editDraft(io, draft, isNameTaken);
+    return { kind: "retry" } as const;
+  }
+  if (answer === "invalid") {
+    yield* io.logError("  Answer y, e, s or q");
+    return { kind: "retry" } as const;
+  }
+  if (finding !== null && !(yield* confirmHighEntropy(io))) {
+    return { kind: "retry" } as const;
+  }
+  return {
+    kind: "approved",
+    approved: {
+      name: draft.name,
+      schema: {
+        varType: draft.varType,
+        required: draft.required,
+        description: draft.description,
+        maxAgeDays: null,
       },
-    } as const;
-  });
-}
+      pushValue: false,
+    },
+  } as const;
+});
 
 /**
  * One variable's interactive approval (editable — design doc §1-3 (2)).
@@ -361,66 +358,64 @@ function approvalStep(
  * continue to ask the per-variable explicit choice "push the value = go
  * as far as activation?" (default = do not send).
  */
-function approveCandidate(
+const approveCandidate = Effect.fn("schema-import.approveCandidate")(function* (
   io: CliIoShape,
   entry: EnvFileEntry,
   isNameTaken: (name: string) => boolean,
-): Effect.Effect<ApprovalOutcome, CliError, CliIo> {
-  return Effect.gen(function* () {
-    // A value that cannot be said to parse faithfully (unclosed quotes,
-    // escapes inside a quoted value — env-file.ts) is neither observed
-    // nor offered a push (fail-closed — never build a path that encrypts
-    // a misread value and silently stores it)
-    const observed = entry.valueFaithful
-      ? observeValue(entry.value)
-      : ({ varType: "", looksReal: false } as const);
-    const valueNote = entry.valueFaithful
-      ? observed.looksReal
-        ? "looks like a real value (not shown)"
-        : "empty or a placeholder"
-      : "could not be parsed faithfully by the line-based parser (unclosed quote or escapes) — pushing it will not be offered";
-    const draft: CandidateDraft = {
-      name: entry.name,
-      varType: observed.varType,
-      required: true,
-      description: entry.descriptionCandidate,
-    };
-    if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
-      // Emitted before the candidate's presentation (approvalStep's
-      // describeCandidate), so not given the prompt scope that hangs
-      // under an item (the indent would attach to the previous item).
-      // Since it carries the line number it is unique per candidate and
-      // needs no repeating on retry (the discard happened once)
-      yield* logNote(
-        `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
-      );
-      draft.description = "";
+): Effect.fn.Return<ApprovalOutcome, CliError, CliIo> {
+  // A value that cannot be said to parse faithfully (unclosed quotes,
+  // escapes inside a quoted value — env-file.ts) is neither observed
+  // nor offered a push (fail-closed — never build a path that encrypts
+  // a misread value and silently stores it)
+  const observed = entry.valueFaithful
+    ? observeValue(entry.value)
+    : ({ varType: "", looksReal: false } as const);
+  const valueNote = entry.valueFaithful
+    ? observed.looksReal
+      ? "looks like a real value (not shown)"
+      : "empty or a placeholder"
+    : "could not be parsed faithfully by the line-based parser (unclosed quote or escapes) — pushing it will not be offered";
+  const draft: CandidateDraft = {
+    name: entry.name,
+    varType: observed.varType,
+    required: true,
+    description: entry.descriptionCandidate,
+  };
+  if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
+    // Emitted before the candidate's presentation (approvalStep's
+    // describeCandidate), so not given the prompt scope that hangs
+    // under an item (the indent would attach to the previous item).
+    // Since it carries the line number it is unique per candidate and
+    // needs no repeating on retry (the discard happened once)
+    yield* logNote(
+      `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
+    );
+    draft.description = "";
+  }
+  for (;;) {
+    const step = yield* approvalStep(io, entry, draft, valueNote, isNameTaken);
+    if (step.kind === "retry") {
+      continue;
     }
-    for (;;) {
-      const step = yield* approvalStep(io, entry, draft, valueNote, isNameTaken);
-      if (step.kind === "retry") {
-        continue;
-      }
-      if (step.kind !== "approved" || !observed.looksReal) {
-        return step;
-      }
-      // Sending a value is always the user's per-variable explicit choice
-      // (default = do not send). The send happens as the pushVariable =
-      // activation composite after the declaration registers, and the
-      // value stays E2EE (plaintext never crosses the server API)
-      const pushAnswer = yield* io.promptLine({
-        prompt: `  Also push the value from the file (end-to-end encrypted; activates ${displayText(draft.name)})? [y/N]: `,
-      });
-      return {
-        kind: "approved",
-        approved: { ...step.approved, pushValue: isYes(pushAnswer) },
-      } as const;
+    if (step.kind !== "approved" || !observed.looksReal) {
+      return step;
     }
-  });
-}
+    // Sending a value is always the user's per-variable explicit choice
+    // (default = do not send). The send happens as the pushVariable =
+    // activation composite after the declaration registers, and the
+    // value stays E2EE (plaintext never crosses the server API)
+    const pushAnswer = yield* io.promptLine({
+      prompt: `  Also push the value from the file (end-to-end encrypted; activates ${displayText(draft.name)})? [y/N]: `,
+    });
+    return {
+      kind: "approved",
+      approved: { ...step.approved, pushValue: isYes(pushAnswer) },
+    } as const;
+  }
+});
 
 /** The import's result (display lives inside this function — stdout carries only the result's summary). */
-export interface SchemaImportSummary {
+interface SchemaImportSummary {
   readonly declared: number;
   readonly activated: number;
   readonly skipped: number;
@@ -472,43 +467,41 @@ function declareApproved(
  * composite). Here the value is transcribed for the first time:
  * Redacted<string> → Redacted<Uint8Array>.
  */
-function pushApprovedValue(
+const pushApprovedValue = Effect.fn("schema-import.pushApprovedValue")(function* (
   input: SchemaImportInput,
   entry: EnvFileEntry,
   approved: ApprovedCandidate,
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // Reason for unwrapping: the encoding's input. The product is again
-    // Redacted and the plaintext never leaves this expression (encryption
-    // is push.ts's existing boundary)
-    const value = Redacted.make(new TextEncoder().encode(Redacted.value(entry.value)), {
-      label: "variable-value",
-    });
-    const pushed = yield* pushVariable({
-      client: input.client,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      name: approved.name,
-      value,
-      verified: input.verified,
-      resync: input.resync,
-      writerUserId: input.authorUserId,
-      signingKey: input.signingKey,
-      floor: input.floor,
-    }).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `Import stopped while pushing the value of ${displayText(approved.name)}: ${error.message}. The variable stays declared — set its value later with \`maruhi push ${displayText(approved.name)}\``,
-        ),
-      ),
-    );
-    yield* logWarnings(pushed.warnings);
-    yield* io.log(
-      `Pushed the value of ${displayText(approved.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
-    );
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  // Reason for unwrapping: the encoding's input. The product is again
+  // Redacted and the plaintext never leaves this expression (encryption
+  // is push.ts's existing boundary)
+  const value = Redacted.make(new TextEncoder().encode(Redacted.value(entry.value)), {
+    label: "variable-value",
   });
-}
+  const pushed = yield* pushVariable({
+    client: input.client,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    name: approved.name,
+    value,
+    verified: input.verified,
+    resync: input.resync,
+    writerUserId: input.authorUserId,
+    signingKey: input.signingKey,
+    floor: input.floor,
+  }).pipe(
+    Effect.mapError((error) =>
+      cliError(
+        `Import stopped while pushing the value of ${displayText(approved.name)}: ${error.message}. The variable stays declared — set its value later with \`maruhi push ${displayText(approved.name)}\``,
+      ),
+    ),
+  );
+  yield* logWarnings(pushed.warnings);
+  yield* io.log(
+    `Pushed the value of ${displayText(approved.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
+  );
+});
 
 /**
  * The offer to delete the source file on completion (design doc §1-3
@@ -516,26 +509,24 @@ function pushApprovedValue(
  * delete). The caller has already confirmed "every candidate was
  * declared this run" — the prompt's wording asserts that fact.
  */
-function offerSourceDeletion(
+const offerSourceDeletion = Effect.fn("schema-import.offerSourceDeletion")(function* (
   input: SchemaImportInput,
   declared: number,
-): Effect.Effect<{ readonly deleted: boolean }, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const answer = yield* io.promptLine({
-      prompt: `All ${countNoun(declared, "variable")} in ${displayText(input.filePath)} are now declared as a signed schema — its last job is done. Delete the file? [y/N]: `,
-    });
-    if (!isYes(answer)) {
-      return { deleted: false };
-    }
-    yield* Effect.tryPromise({
-      try: () => unlink(input.filePath),
-      catch: () => cliError(`Could not delete ${displayText(input.filePath)} — delete it manually`),
-    });
-    yield* io.log(`Deleted ${displayText(input.filePath)}`);
-    return { deleted: true };
+): Effect.fn.Return<{ readonly deleted: boolean }, CliError, CliIo> {
+  const io = yield* CliIo;
+  const answer = yield* io.promptLine({
+    prompt: `All ${countNoun(declared, "variable")} in ${displayText(input.filePath)} are now declared as a signed schema — its last job is done. Delete the file? [y/N]: `,
   });
-}
+  if (!isYes(answer)) {
+    return { deleted: false };
+  }
+  yield* Effect.tryPromise({
+    try: () => unlink(input.filePath),
+    catch: () => cliError(`Could not delete ${displayText(input.filePath)} — delete it manually`),
+  });
+  yield* io.log(`Deleted ${displayText(input.filePath)}`);
+  return { deleted: true };
+});
 
 /**
  * Imports schema candidates from a parsed .env / .env.example file
@@ -546,105 +537,101 @@ function offerSourceDeletion(
  * offer to delete the source file.
  */
 /** The serial approve → register loop (per-variable composite × manifest CAS — O(N). Finding F'). */
-function runApprovalLoop(
+const runApprovalLoop = Effect.fn("schema-import.runApprovalLoop")(function* (
   input: SchemaImportInput,
   entries: readonly EnvFileEntry[],
   existingNames: ReadonlySet<string>,
-): Effect.Effect<
+): Effect.fn.Return<
   { declared: number; activated: number; skipped: number; stopped: boolean },
   CliError,
   CliIo
 > {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const importedNames = new Set<string>();
-    // A rename via edit (e) may collide with no name — not even an
-    // **unprocessed candidate** in the file (a local collision that would
-    // stop the whole import on a later candidate's requireCreation
-    // "already exists" is prevented by a warning at edit time)
-    const fileNames = new Set(entries.map((candidate) => candidate.name));
-    const counts = { declared: 0, activated: 0, skipped: 0, stopped: false };
-    for (const entry of entries) {
-      const isNameTaken = (name: string) =>
-        existingNames.has(name) ||
-        importedNames.has(name) ||
-        (fileNames.has(name) && name !== entry.name);
-      if (existingNames.has(entry.name)) {
-        // A candidate named like an existing active / declared is skipped
-        // by default and shown — reissuing is `schema set`'s domain (the
-        // design doc §1-3's boundary)
-        yield* io.logError(
-          `Skipped ${displayText(entry.name)} (line ${entry.line}): a variable with this name already exists — reissue its schema with \`maruhi schema set\``,
-        );
-        counts.skipped += 1;
-        continue;
-      }
-      const outcome = yield* approveCandidate(io, entry, isNameTaken);
-      if (outcome.kind === "stopped") {
-        counts.stopped = true;
-        break;
-      }
-      if (outcome.kind === "skipped") {
-        counts.skipped += 1;
-        continue;
-      }
-      yield* declareApproved(input, outcome.approved);
-      counts.declared += 1;
-      importedNames.add(outcome.approved.name);
-      yield* io.log(`Declared ${displayText(outcome.approved.name)}`);
-      if (outcome.approved.pushValue) {
-        yield* pushApprovedValue(input, entry, outcome.approved);
-        counts.activated += 1;
-      }
-    }
-    return counts;
-  });
-}
-
-export function schemaImportOp(
-  input: SchemaImportInput,
-): Effect.Effect<SchemaImportSummary, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const parsed = parseEnvFile(input.content);
-    for (const skipped of parsed.skipped) {
-      yield* io.logError(`Skipped line ${skipped.line}: ${skipReasonText(skipped)}`);
-    }
-    if (parsed.entries.length === 0) {
-      yield* io.log("No importable variables found in the file");
-      return { declared: 0, activated: 0, skipped: 0, deletionOffered: false, deleted: false };
-    }
-    // The matching material for existing names (verified statements only
-    // — §12-2. Both active and declared are mixed into variables §12-7)
-    // and the one-time guidance for the disabled advisory
-    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    yield* logWarnings(metadata.warnings);
-    if (metadata.advisorySchemaPolicy === "disabled") {
-      yield* logNote(
-        "the server reports this project's schema policy as disabled, so it will likely reject new declarations (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+  const io = yield* CliIo;
+  const importedNames = new Set<string>();
+  // A rename via edit (e) may collide with no name — not even an
+  // **unprocessed candidate** in the file (a local collision that would
+  // stop the whole import on a later candidate's requireCreation
+  // "already exists" is prevented by a warning at edit time)
+  const fileNames = new Set(entries.map((candidate) => candidate.name));
+  const counts = { declared: 0, activated: 0, skipped: 0, stopped: false };
+  for (const entry of entries) {
+    const isNameTaken = (name: string) =>
+      existingNames.has(name) ||
+      importedNames.has(name) ||
+      (fileNames.has(name) && name !== entry.name);
+    if (existingNames.has(entry.name)) {
+      // A candidate named like an existing active / declared is skipped
+      // by default and shown — reissuing is `schema set`'s domain (the
+      // design doc §1-3's boundary)
+      yield* io.logError(
+        `Skipped ${displayText(entry.name)} (line ${entry.line}): a variable with this name already exists — reissue its schema with \`maruhi schema set\``,
       );
+      counts.skipped += 1;
+      continue;
     }
-    const existingNames = new Set(metadata.variables.map((statement) => statement.name));
-    const { declared, activated, skipped, stopped } = yield* runApprovalLoop(
-      input,
-      parsed.entries,
-      existingNames,
-    );
-    yield* io.log(
-      `Import finished: ${countNoun(declared, "variable")} declared (${activated} with a value pushed), ${countNoun(skipped, "candidate")} skipped${stopped ? " — stopped before the end" : ""}`,
-    );
-    // The completion-time deletion offer (design doc §1-3 (4)) is limited
-    // to a run where "every candidate in the file was declared this
-    // time": if an interruption via q, a skipped candidate (s / existing
-    // name), or an uninterpretable line remains, the file's "last job" is
-    // not done (never emit an offer that asserts "declared" on an
-    // all-skipped run)
-    const everyCandidateDeclared =
-      !stopped && declared > 0 && skipped === 0 && parsed.skipped.length === 0;
-    if (!everyCandidateDeclared) {
-      return { declared, activated, skipped, deletionOffered: false, deleted: false };
+    const outcome = yield* approveCandidate(io, entry, isNameTaken);
+    if (outcome.kind === "stopped") {
+      counts.stopped = true;
+      break;
     }
-    const deletion = yield* offerSourceDeletion(input, declared);
-    return { declared, activated, skipped, deletionOffered: true, deleted: deletion.deleted };
-  });
-}
+    if (outcome.kind === "skipped") {
+      counts.skipped += 1;
+      continue;
+    }
+    yield* declareApproved(input, outcome.approved);
+    counts.declared += 1;
+    importedNames.add(outcome.approved.name);
+    yield* io.log(`Declared ${displayText(outcome.approved.name)}`);
+    if (outcome.approved.pushValue) {
+      yield* pushApprovedValue(input, entry, outcome.approved);
+      counts.activated += 1;
+    }
+  }
+  return counts;
+});
+
+export const schemaImportOp = Effect.fn("schema-import.schemaImportOp")(function* (
+  input: SchemaImportInput,
+): Effect.fn.Return<SchemaImportSummary, CliError, CliIo> {
+  const io = yield* CliIo;
+  const parsed = parseEnvFile(input.content);
+  for (const skipped of parsed.skipped) {
+    yield* io.logError(`Skipped line ${skipped.line}: ${skipReasonText(skipped)}`);
+  }
+  if (parsed.entries.length === 0) {
+    yield* io.log("No importable variables found in the file");
+    return { declared: 0, activated: 0, skipped: 0, deletionOffered: false, deleted: false };
+  }
+  // The matching material for existing names (verified statements only
+  // — §12-2. Both active and declared are mixed into variables §12-7)
+  // and the one-time guidance for the disabled advisory
+  const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+  yield* logWarnings(metadata.warnings);
+  if (metadata.advisorySchemaPolicy === "disabled") {
+    yield* logNote(
+      "the server reports this project's schema policy as disabled, so it will likely reject new declarations (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+    );
+  }
+  const existingNames = new Set(metadata.variables.map((statement) => statement.name));
+  const { declared, activated, skipped, stopped } = yield* runApprovalLoop(
+    input,
+    parsed.entries,
+    existingNames,
+  );
+  yield* io.log(
+    `Import finished: ${countNoun(declared, "variable")} declared (${activated} with a value pushed), ${countNoun(skipped, "candidate")} skipped${stopped ? " — stopped before the end" : ""}`,
+  );
+  // The completion-time deletion offer (design doc §1-3 (4)) is limited
+  // to a run where "every candidate in the file was declared this
+  // time": if an interruption via q, a skipped candidate (s / existing
+  // name), or an uninterpretable line remains, the file's "last job" is
+  // not done (never emit an offer that asserts "declared" on an
+  // all-skipped run)
+  const everyCandidateDeclared =
+    !stopped && declared > 0 && skipped === 0 && parsed.skipped.length === 0;
+  if (!everyCandidateDeclared) {
+    return { declared, activated, skipped, deletionOffered: false, deleted: false };
+  }
+  const deletion = yield* offerSourceDeletion(input, declared);
+  return { declared, activated, skipped, deletionOffered: true, deleted: deletion.deleted };
+});

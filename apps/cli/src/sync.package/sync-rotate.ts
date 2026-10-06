@@ -132,7 +132,7 @@ function advanceReceipt(
   };
 }
 
-export interface AdvanceReceiptsInput {
+interface AdvanceReceiptsInput {
   readonly client: MaruhiClient;
   /** The verified view from before the rotation (the reference for checking the re-synced chain is its extension). */
   readonly verified: VerifiedProject;
@@ -165,72 +165,66 @@ type TargetOutcome =
   | { readonly kind: "advanced"; readonly version: number; readonly result: AdvancedReceipt };
 
 /** Reads one target's receipt and writes only what can be advanced. A failure comes back as a typed error. */
-function advanceTarget(
+const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   input: AdvanceReceiptsInput,
   target: SyncTarget,
   verified: VerifiedProject,
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly outcome: TargetOutcome; readonly verified: VerifiedProject },
   CliError,
   CliIo
 > {
-  return Effect.gen(function* () {
-    const receiptsEnvironment = input.config.receiptsEnvironment as EnvironmentId;
-    const loaded = yield* loadReceipt({
-      client: input.client,
-      verified,
-      environmentId: receiptsEnvironment,
-      recipient: input.recipient,
-      resync: input.resync,
-      floor: input.receiptsFloor,
-      target: target.name,
-      preset: target.preset.id,
-    });
-    yield* logWarnings(loaded.warnings);
-    if (loaded.receipt === null) {
-      // Before the first sync = nothing to advance (skipped quietly — plan says everything is new)
-      return { outcome: { kind: "no-receipt" }, verified: loaded.verified };
-    }
-    const syncedAtMs = yield* Clock.currentTimeMillis;
-    const result = advanceReceipt(
-      loaded.receipt,
-      input.written,
-      new Date(syncedAtMs).toISOString(),
-    );
-    if (result.advanced.length === 0) {
-      // Nothing is written when the content does not change (does not consume a version)
-      return {
-        outcome: { kind: "nothing-to-advance", behind: result.behind },
-        verified: loaded.verified,
-      };
-    }
-    const stored = yield* storeReceipt({
-      client: input.client,
-      verified: loaded.verified,
-      environmentId: receiptsEnvironment,
-      recipient: input.recipient,
-      resync: input.resync,
-      floor: input.receiptsFloor,
-      writerUserId: input.writerUserId,
-      signingKey: input.signingKey,
-      receipt: result.receipt,
-    });
-    yield* logWarnings(stored.warnings);
-    const warning = receiptVersionWarning({
-      target: target.name,
-      environmentId: receiptsEnvironment,
-      variableVersion: stored.version,
-    });
-    if (warning !== null) {
-      yield* logWarning(warning);
-    }
-    // The receipt's push hands the advanced view (the pull may have advanced it) to the next step
+  const receiptsEnvironment = input.config.receiptsEnvironment as EnvironmentId;
+  const loaded = yield* loadReceipt({
+    client: input.client,
+    verified,
+    environmentId: receiptsEnvironment,
+    recipient: input.recipient,
+    resync: input.resync,
+    floor: input.receiptsFloor,
+    target: target.name,
+    preset: target.preset.id,
+  });
+  yield* logWarnings(loaded.warnings);
+  if (loaded.receipt === null) {
+    // Before the first sync = nothing to advance (skipped quietly — plan says everything is new)
+    return { outcome: { kind: "no-receipt" }, verified: loaded.verified };
+  }
+  const syncedAtMs = yield* Clock.currentTimeMillis;
+  const result = advanceReceipt(loaded.receipt, input.written, new Date(syncedAtMs).toISOString());
+  if (result.advanced.length === 0) {
+    // Nothing is written when the content does not change (does not consume a version)
     return {
-      outcome: { kind: "advanced", version: stored.version, result },
+      outcome: { kind: "nothing-to-advance", behind: result.behind },
       verified: loaded.verified,
     };
+  }
+  const stored = yield* storeReceipt({
+    client: input.client,
+    verified: loaded.verified,
+    environmentId: receiptsEnvironment,
+    recipient: input.recipient,
+    resync: input.resync,
+    floor: input.receiptsFloor,
+    writerUserId: input.writerUserId,
+    signingKey: input.signingKey,
+    receipt: result.receipt,
   });
-}
+  yield* logWarnings(stored.warnings);
+  const warning = receiptVersionWarning({
+    target: target.name,
+    environmentId: receiptsEnvironment,
+    variableVersion: stored.version,
+  });
+  if (warning !== null) {
+    yield* logWarning(warning);
+  }
+  // The receipt's push hands the advanced view (the pull may have advanced it) to the next step
+  return {
+    outcome: { kind: "advanced", version: stored.version, result },
+    verified: loaded.verified,
+  };
+});
 
 function behindNote(behind: readonly string[]): string {
   return behind.length === 0
@@ -238,32 +232,30 @@ function behindNote(behind: readonly string[]): string {
     : `; ${countNoun(behind.length, "variable")} left as delivered (${behind.map(displayText).join(", ")}: the receipt was already behind before the rotation, so the next \`maruhi sync plan\` shows them as pending)`;
 }
 
-function reportTarget(
+const reportTarget = Effect.fn("sync-rotate.reportTarget")(function* (
   target: SyncTarget,
   outcome: TargetOutcome,
   receiptsEnvironment: string,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    switch (outcome.kind) {
-      case "no-receipt":
-        // No receipt = never synced once. Says nothing
-        return;
-      case "nothing-to-advance":
-        if (outcome.behind.length > 0) {
-          yield* io.log(
-            `Receipt for target ${target.name} not advanced: ${countNoun(outcome.behind.length, "variable")} left as delivered (${outcome.behind.map(displayText).join(", ")}: the receipt was already behind before the rotation, so the next \`maruhi sync plan\` shows them as pending)`,
-          );
-        }
-        return;
-      case "advanced":
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  switch (outcome.kind) {
+    case "no-receipt":
+      // No receipt = never synced once. Says nothing
+      return;
+    case "nothing-to-advance":
+      if (outcome.behind.length > 0) {
         yield* io.log(
-          `Advanced the receipt for target ${target.name} to the re-encrypted versions of ${countNoun(outcome.result.advanced.length, "variable")} (saved as version ${outcome.version} of ${displayText(receiptVariableName(target.name))} in environment ${displayText(receiptsEnvironment)})${behindNote(outcome.result.behind)}`,
+          `Receipt for target ${target.name} not advanced: ${countNoun(outcome.behind.length, "variable")} left as delivered (${outcome.behind.map(displayText).join(", ")}: the receipt was already behind before the rotation, so the next \`maruhi sync plan\` shows them as pending)`,
         );
-        return;
-    }
-  });
-}
+      }
+      return;
+    case "advanced":
+      yield* io.log(
+        `Advanced the receipt for target ${target.name} to the re-encrypted versions of ${countNoun(outcome.result.advanced.length, "variable")} (saved as version ${outcome.version} of ${displayText(receiptVariableName(target.name))} in environment ${displayText(receiptsEnvironment)})${behindNote(outcome.result.behind)}`,
+      );
+      return;
+  }
+});
 
 /**
  * Advances the receipts of every target synced from the rotated environment
@@ -272,10 +264,8 @@ function reportTarget(
  * and the remaining targets are still processed. Only evidence (a floor or
  * chain verification rejection) fails the command.
  */
-export function advanceReceiptsAfterRotation(
-  input: AdvanceReceiptsInput,
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
+export const advanceReceiptsAfterRotation = Effect.fn("sync-rotate.advanceReceiptsAfterRotation")(
+  function* (input: AdvanceReceiptsInput): Effect.fn.Return<void, CliError, CliIo> {
     const io = yield* CliIo;
     if (input.written.length === 0) {
       // Nothing was re-encrypted (check-only or could not push) = nothing to advance
@@ -312,5 +302,5 @@ export function advanceReceiptsAfterRotation(
       verified = attempt.value.verified;
       yield* reportTarget(target, attempt.value.outcome, input.config.receiptsEnvironment);
     }
-  });
-}
+  },
+);

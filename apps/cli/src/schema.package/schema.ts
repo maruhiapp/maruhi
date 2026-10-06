@@ -135,35 +135,33 @@ function schemaLine(row: SchemaRow): string {
  * Descriptions are always neutralized with `escapeText`; non-TTY output is
  * prefixed with the untrusted-data framing header (ruling CW).
  */
-export function schemaShowOp(input: {
+export const schemaShowOp = Effect.fn("schema.schemaShowOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    yield* logWarnings(metadata.warnings);
-    // The judgment material comes via the Stdio service (never read process.stdout directly — CLAUDE.md)
-    const stdio = yield* Stdio.Stdio;
-    if (!(yield* stdio.stdoutIsTerminal)) {
-      yield* io.log(SCHEMA_UNTRUSTED_HEADER);
-    }
-    yield* io.log(SCHEMA_TABLE_HEADER);
-    for (const row of schemaRows(metadata.variables)) {
-      yield* io.log(schemaLine(row));
-    }
-  });
-}
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
+  const io = yield* CliIo;
+  const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+  yield* logWarnings(metadata.warnings);
+  // The judgment material comes via the Stdio service (never read process.stdout directly — CLAUDE.md)
+  const stdio = yield* Stdio.Stdio;
+  if (!(yield* stdio.stdoutIsTerminal)) {
+    yield* io.log(SCHEMA_UNTRUSTED_HEADER);
+  }
+  yield* io.log(SCHEMA_TABLE_HEADER);
+  for (const row of schemaRows(metadata.variables)) {
+    yield* io.log(schemaLine(row));
+  }
+});
 
 /* -------------------------------------------------------------------------- */
 /* Entropy warning (ruling CW — fail-closed)                                  */
 /* -------------------------------------------------------------------------- */
 
 /** schema set's write input (the check covers only the values the user typed this time). */
-export interface EntropyCheckedField {
+interface EntropyCheckedField {
   readonly field: "name" | "description";
   readonly text: string;
 }
@@ -177,11 +175,11 @@ export interface EntropyCheckedField {
  * value itself (never double-pipe a possibly-secret input to the
  * terminal / logs).
  */
-export function ensureEntropyAcknowledged(input: {
-  readonly fields: readonly EntropyCheckedField[];
-  readonly allowHighEntropy: boolean;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
+export const ensureEntropyAcknowledged = Effect.fn("schema.ensureEntropyAcknowledged")(
+  function* (input: {
+    readonly fields: readonly EntropyCheckedField[];
+    readonly allowHighEntropy: boolean;
+  }): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
     const findings = input.fields.flatMap((field) => {
       const finding = findHighEntropySubstring(field.text);
       return finding === null ? [] : [{ field: field.field, finding }];
@@ -217,8 +215,8 @@ export function ensureEntropyAcknowledged(input: {
         cliError("Aborted: the schema input was not confirmed (nothing was signed or sent)"),
       );
     }
-  });
-}
+  },
+);
 
 /* -------------------------------------------------------------------------- */
 /* Setting (maruhi schema set)                                                */
@@ -238,7 +236,7 @@ export interface SchemaFieldUpdates {
   readonly maxAgeDays: FieldUpdate<number | null>;
 }
 
-export interface SchemaSetInput {
+interface SchemaSetInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -319,7 +317,7 @@ export interface SchemaSetState {
  * resolution rule split across two implementations, only one side would
  * lose the same-name-duplicate refusal — equivocation detection).
  */
-export function resolveSchemaTarget(
+export const resolveSchemaTarget = Effect.fn("schema.resolveSchemaTarget")(function* (
   input: {
     readonly client: MaruhiClient;
     readonly environmentId: EnvironmentId;
@@ -328,27 +326,25 @@ export function resolveSchemaTarget(
   },
   verified: VerifiedProject,
   name: string,
-): Effect.Effect<SchemaSetState, CliError> {
-  return Effect.gen(function* () {
-    const metadata = yield* pullVerifiedEnvironmentMetadata({ ...input, verified });
-    const matches = metadata.variables.filter((variable) => variable.name === name);
-    if (matches.length > 1) {
-      return yield* Effect.fail(
-        cliError(
-          `Multiple live statements with the same name passed verification (server equivocation): ${displayText(name)}. Refusing to resolve the schema target`,
-        ),
-      );
-    }
-    return {
-      verified: metadata.verified,
-      target: matches[0] ?? null,
-      tombstones: metadata.tombstones,
-      manifestBase: manifestIssueBaseOf(metadata),
-      advisorySchemaPolicy: metadata.advisorySchemaPolicy,
-      warnings: metadata.warnings,
-    };
-  });
-}
+): Effect.fn.Return<SchemaSetState, CliError> {
+  const metadata = yield* pullVerifiedEnvironmentMetadata({ ...input, verified });
+  const matches = metadata.variables.filter((variable) => variable.name === name);
+  if (matches.length > 1) {
+    return yield* Effect.fail(
+      cliError(
+        `Multiple live statements with the same name passed verification (server equivocation): ${displayText(name)}. Refusing to resolve the schema target`,
+      ),
+    );
+  }
+  return {
+    verified: metadata.verified,
+    target: matches[0] ?? null,
+    tombstones: metadata.tombstones,
+    manifestBase: manifestIssueBaseOf(metadata),
+    advisorySchemaPolicy: metadata.advisorySchemaPolicy,
+    warnings: metadata.warnings,
+  };
+});
 
 interface AcceptedSchemaSet {
   readonly created: boolean;
@@ -434,138 +430,94 @@ type SchemaSetAttemptError =
   | Effect.Error<ReturnType<SchemaSetInput["client"]["variables"]["rename"]>>;
 
 /** One attempt (signing, sending). Classifying a conflict is retryOnConflict's classify's job. */
-function attemptSchemaSet(
+const attemptSchemaSet = Effect.fn("schema.attemptSchemaSet")(function* (
   input: SchemaSetInput,
   name: string,
   state: SchemaSetState,
-): Effect.Effect<AcceptedSchemaSet, SchemaSetAttemptError> {
-  return Effect.gen(function* () {
-    const target = state.target;
-    const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
-    const epoch = environment.currentEpoch;
-    const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
-    // Partial update (§1-2): against the previous statement's schema
-    // columns, replace only the specified ones. A fresh creation is
-    // based on the creation defaults (required = true, varType "",
-    // description "") (nothing to inherit — round-3 ruling)
-    const base = target?.schema ?? CREATION_DEFAULTS;
-    const merged = applyUpdates(base, input.updates);
-    if (input.requireCreation === true && target !== null) {
-      // Declaration-only mode (import): never silently switch to
-      // reissuing an existing variable — only a concurrent creation
-      // (race) after the first resolution reaches here
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(name)} already exists (created concurrently). Import declares new variables only — reissue an existing variable's schema with \`maruhi schema set\``,
-        ),
-      );
-    }
-    const rejection = preSignRejection(state, input.updates, merged, name);
-    if (rejection !== null) {
-      return yield* Effect.fail(rejection);
-    }
-    // Manifest reissue (§4.3 — swap / add the target's entry to point at
-    // the new statement) and 3-F's intent append. Shared by creation and
-    // reissue (implemented in meta-confirm.ts — shared with push's
-    // create / activation)
-    const issueManifestAndIntent = (issued: {
-      readonly variableId: string;
-      readonly status: "active" | "declared";
-      readonly metaVersion: number;
-      readonly metaSigHashHex: string;
-    }) =>
-      issueManifestWithIntent({
-        verified: state.verified,
-        environmentId: input.environmentId,
-        epoch,
-        previous: state.manifestBase.previous,
-        entries: [
-          ...state.manifestBase.entries.filter((entry) => entry.variableId !== issued.variableId),
-          {
-            variableId: issued.variableId,
-            status: issued.status,
-            metaVersion: issued.metaVersion,
-            metaSigHashHex: issued.metaSigHashHex,
-          },
-        ],
-        envMeta: state.manifestBase.envMeta,
-        issuerUserId: input.authorUserId,
-        signingKey: input.signingKey,
-        floor: input.floor,
-        variableId: issued.variableId,
-      });
-    if (target === null) {
-      // Declaration creation (declared, metaVersion 1 — the valueless composite §12-5)
-      const signed = yield* signDeclareStatement({
-        verified: state.verified,
-        environmentId: input.environmentId,
-        variableId: generateVariableId(),
-        name,
-        schema: merged,
-        // A new declaration is the current layout (v3 — PF6 R9)
-        layoutVersion: 3,
-        authorUserId: input.authorUserId,
-        signingKey: input.signingKey,
-      });
-      const { manifest, intentId } = yield* issueManifestAndIntent({
-        variableId: signed.statement.variableId,
-        status: "declared",
-        metaVersion: 1,
-        metaSigHashHex: signed.metaSigHashHex,
-      });
-      yield* input.client.variables
-        .create({
-          params,
-          payload: { statement: signed.statement, manifest: manifest.manifest },
-        })
-        .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
-      return {
-        created: true,
-        variableId: signed.statement.variableId,
-        metaVersion: 1,
-        metaSigHashHex: signed.metaSigHashHex,
-        schema: merged,
-        selfManifest: {
-          manifestVersion: manifest.manifestVersion,
-          epoch: manifest.epoch,
-          manifestSigHashHex: manifest.manifestSigHashHex,
-        },
-        intentId,
-        state,
-      };
-    }
-    // Schema reissue (a status-unchanged v2 continuation — the rename form doubles as acceptance §12-5)
-    const signed = yield* signContinuationStatementV2({
+): Effect.fn.Return<AcceptedSchemaSet, SchemaSetAttemptError> {
+  const target = state.target;
+  const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
+  const epoch = environment.currentEpoch;
+  const params = { projectId: state.verified.projectId, environmentId: input.environmentId };
+  // Partial update (§1-2): against the previous statement's schema
+  // columns, replace only the specified ones. A fresh creation is
+  // based on the creation defaults (required = true, varType "",
+  // description "") (nothing to inherit — round-3 ruling)
+  const base = target?.schema ?? CREATION_DEFAULTS;
+  const merged = applyUpdates(base, input.updates);
+  if (input.requireCreation === true && target !== null) {
+    // Declaration-only mode (import): never silently switch to
+    // reissuing an existing variable — only a concurrent creation
+    // (race) after the first resolution reaches here
+    return yield* Effect.fail(
+      cliError(
+        `Variable ${displayText(name)} already exists (created concurrently). Import declares new variables only — reissue an existing variable's schema with \`maruhi schema set\``,
+      ),
+    );
+  }
+  const rejection = preSignRejection(state, input.updates, merged, name);
+  if (rejection !== null) {
+    return yield* Effect.fail(rejection);
+  }
+  // Manifest reissue (§4.3 — swap / add the target's entry to point at
+  // the new statement) and 3-F's intent append. Shared by creation and
+  // reissue (implemented in meta-confirm.ts — shared with push's
+  // create / activation)
+  const issueManifestAndIntent = (issued: {
+    readonly variableId: string;
+    readonly status: "active" | "declared";
+    readonly metaVersion: number;
+    readonly metaSigHashHex: string;
+  }) =>
+    issueManifestWithIntent({
       verified: state.verified,
       environmentId: input.environmentId,
-      variableId: target.variableId,
-      // name / status are unchanged (schema reissue — §12-5. Renaming goes through the rename path)
-      name: target.name,
+      epoch,
+      previous: state.manifestBase.previous,
+      entries: [
+        ...state.manifestBase.entries.filter((entry) => entry.variableId !== issued.variableId),
+        {
+          variableId: issued.variableId,
+          status: issued.status,
+          metaVersion: issued.metaVersion,
+          metaSigHashHex: issued.metaSigHashHex,
+        },
+      ],
+      envMeta: state.manifestBase.envMeta,
+      issuerUserId: input.authorUserId,
+      signingKey: input.signingKey,
+      floor: input.floor,
+      variableId: issued.variableId,
+    });
+  if (target === null) {
+    // Declaration creation (declared, metaVersion 1 — the valueless composite §12-5)
+    const signed = yield* signDeclareStatement({
+      verified: state.verified,
+      environmentId: input.environmentId,
+      variableId: generateVariableId(),
+      name,
       schema: merged,
-      // A reissue moves the variable to the current layout (v2 → v3 is the
-      // legitimate direction of §4.2's monotonicity; a v3 stays v3)
+      // A new declaration is the current layout (v3 — PF6 R9)
       layoutVersion: 3,
-      status: target.status === "active" ? "active" : "declared",
-      prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
       authorUserId: input.authorUserId,
       signingKey: input.signingKey,
     });
     const { manifest, intentId } = yield* issueManifestAndIntent({
-      variableId: target.variableId,
-      status: signed.statement.status,
-      metaVersion: signed.statement.metaVersion,
+      variableId: signed.statement.variableId,
+      status: "declared",
+      metaVersion: 1,
       metaSigHashHex: signed.metaSigHashHex,
     });
     yield* input.client.variables
-      .rename({
-        params: { ...params, variableId: target.variableId },
+      .create({
+        params,
         payload: { statement: signed.statement, manifest: manifest.manifest },
       })
       .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
     return {
-      created: false,
-      variableId: target.variableId,
-      metaVersion: signed.statement.metaVersion,
+      created: true,
+      variableId: signed.statement.variableId,
+      metaVersion: 1,
       metaSigHashHex: signed.metaSigHashHex,
       schema: merged,
       selfManifest: {
@@ -576,8 +528,50 @@ function attemptSchemaSet(
       intentId,
       state,
     };
+  }
+  // Schema reissue (a status-unchanged v2 continuation — the rename form doubles as acceptance §12-5)
+  const signed = yield* signContinuationStatementV2({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    variableId: target.variableId,
+    // name / status are unchanged (schema reissue — §12-5. Renaming goes through the rename path)
+    name: target.name,
+    schema: merged,
+    // A reissue moves the variable to the current layout (v2 → v3 is the
+    // legitimate direction of §4.2's monotonicity; a v3 stays v3)
+    layoutVersion: 3,
+    status: target.status === "active" ? "active" : "declared",
+    prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
+    authorUserId: input.authorUserId,
+    signingKey: input.signingKey,
   });
-}
+  const { manifest, intentId } = yield* issueManifestAndIntent({
+    variableId: target.variableId,
+    status: signed.statement.status,
+    metaVersion: signed.statement.metaVersion,
+    metaSigHashHex: signed.metaSigHashHex,
+  });
+  yield* input.client.variables
+    .rename({
+      params: { ...params, variableId: target.variableId },
+      payload: { statement: signed.statement, manifest: manifest.manifest },
+    })
+    .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
+  return {
+    created: false,
+    variableId: target.variableId,
+    metaVersion: signed.statement.metaVersion,
+    metaSigHashHex: signed.metaSigHashHex,
+    schema: merged,
+    selfManifest: {
+      manifestVersion: manifest.manifestVersion,
+      epoch: manifest.epoch,
+      manifestSigHashHex: manifest.manifestSigHashHex,
+    },
+    intentId,
+    state,
+  };
+});
 
 type SchemaSetConflict = { readonly kind: "re-resolve" };
 
@@ -604,66 +598,62 @@ const MAX_ATTEMPTS = 5;
  * statement + manifest composite, confirmed against the verified
  * distribution (1-E′ — §12-10 (3)) before success is reported.
  */
-export function schemaSetOp(
+export const schemaSetOp = Effect.fn("schema.schemaSetOp")(function* (
   input: SchemaSetInput,
-): Effect.Effect<SchemaSetSummary, CliError, CliIo> {
-  return Effect.gen(function* () {
-    // Normalization is the client's job before signing (§4.2 / §12-1)
-    const name = input.name.normalize("NFC");
-    const initial = yield* resolveSchemaTarget(input, input.verified, name);
-    // Pre-guidance from the schemaPolicy advisory (SHOULD — §1-2. Never
-    // an input to a verification rule: guidance only, the send still
-    // happens — acceptance's source of truth is the server)
-    if (
-      input.quietDisabledAdvisory !== true &&
-      initial.advisorySchemaPolicy === "disabled" &&
-      (initial.target === null || initial.target.layoutVersion === 1)
-    ) {
-      yield* logNote(
-        "the server reports this project's schema policy as disabled, so it will likely reject new layout-v2 statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
-      );
-    }
-    const accepted = yield* retryOnConflict(initial, {
-      maxAttempts: MAX_ATTEMPTS,
-      attempt: (state) => attemptSchemaSet(input, name, state),
-      classify: classifySchemaSetConflict,
-      recover: (state) => resolveSchemaTarget(input, state.verified, name),
-      exhaustedMessage: `The schema-set conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
-    });
-    // Effect confirmation (1-E' — §12-10 (3)): success is defined as confirmation on a verifiable distribution
-    const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
-    const statementConfirms = (statement: {
-      readonly metaVersion: number;
-      readonly metaSigHashHex: string;
-    }) =>
-      statement.metaVersion > issued.metaVersion ||
-      (statement.metaVersion === issued.metaVersion &&
-        statement.metaSigHashHex === issued.metaSigHashHex);
-    yield* confirmMetaMutation({
-      client: input.client,
-      verified: accepted.state.verified,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-      selfManifest: accepted.selfManifest,
-      intentId: accepted.intentId,
-      describe: accepted.created ? "variable declaration" : "schema update",
-      effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
-        metadata.variables.some(
-          (statement) =>
-            statement.variableId === accepted.variableId && statementConfirms(statement),
-        ) ||
-        metadata.tombstones.some(
-          (tombstone) =>
-            tombstone.variableId === accepted.variableId && statementConfirms(tombstone),
-        ),
-    });
-    return {
-      created: accepted.created,
-      variableId: accepted.variableId,
-      metaVersion: accepted.metaVersion,
-      schema: accepted.schema,
-      warnings: accepted.state.warnings,
-    };
+): Effect.fn.Return<SchemaSetSummary, CliError, CliIo> {
+  // Normalization is the client's job before signing (§4.2 / §12-1)
+  const name = input.name.normalize("NFC");
+  const initial = yield* resolveSchemaTarget(input, input.verified, name);
+  // Pre-guidance from the schemaPolicy advisory (SHOULD — §1-2. Never
+  // an input to a verification rule: guidance only, the send still
+  // happens — acceptance's source of truth is the server)
+  if (
+    input.quietDisabledAdvisory !== true &&
+    initial.advisorySchemaPolicy === "disabled" &&
+    (initial.target === null || initial.target.layoutVersion === 1)
+  ) {
+    yield* logNote(
+      "the server reports this project's schema policy as disabled, so it will likely reject new layout-v2 statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+    );
+  }
+  const accepted = yield* retryOnConflict(initial, {
+    maxAttempts: MAX_ATTEMPTS,
+    attempt: (state) => attemptSchemaSet(input, name, state),
+    classify: classifySchemaSetConflict,
+    recover: (state) => resolveSchemaTarget(input, state.verified, name),
+    exhaustedMessage: `The schema-set conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
   });
-}
+  // Effect confirmation (1-E' — §12-10 (3)): success is defined as confirmation on a verifiable distribution
+  const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
+  const statementConfirms = (statement: {
+    readonly metaVersion: number;
+    readonly metaSigHashHex: string;
+  }) =>
+    statement.metaVersion > issued.metaVersion ||
+    (statement.metaVersion === issued.metaVersion &&
+      statement.metaSigHashHex === issued.metaSigHashHex);
+  yield* confirmMetaMutation({
+    client: input.client,
+    verified: accepted.state.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
+    selfManifest: accepted.selfManifest,
+    intentId: accepted.intentId,
+    describe: accepted.created ? "variable declaration" : "schema update",
+    effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
+      metadata.variables.some(
+        (statement) => statement.variableId === accepted.variableId && statementConfirms(statement),
+      ) ||
+      metadata.tombstones.some(
+        (tombstone) => tombstone.variableId === accepted.variableId && statementConfirms(tombstone),
+      ),
+  });
+  return {
+    created: accepted.created,
+    variableId: accepted.variableId,
+    metaVersion: accepted.metaVersion,
+    schema: accepted.schema,
+    warnings: accepted.state.warnings,
+  };
+});

@@ -68,7 +68,7 @@ import {
 } from "./sync-receipt.ts";
 
 /** One line of a plan. `blocked` = apply would refuse it (reason names only the variable). */
-export type PlanEntry =
+type PlanEntry =
   | { readonly action: "add"; readonly name: string; readonly version: number }
   | {
       readonly action: "update";
@@ -86,7 +86,7 @@ export type PlanEntry =
     };
 
 /** A computed plan for one target. */
-export interface SyncPlan {
+interface SyncPlan {
   readonly entries: readonly PlanEntry[];
   /** Selected variables that have only a required declaration and no value (apply carries nothing). */
   readonly declaredRequired: readonly DeclaredVariable[];
@@ -239,52 +239,50 @@ function compareByName(a: { readonly name: string }, b: { readonly name: string 
  * store it today: the delete carries no value, and the vendor reports a name
  * it cannot address.
  */
-export function computePlan(input: {
+export const computePlan = Effect.fn("sync-plan.computePlan")(function* (input: {
   readonly target: SyncTarget;
   readonly source: readonly SourceVariable[];
   readonly declared: readonly DeclaredVariable[];
   readonly receipt: SyncReceipt | null;
-}): Effect.Effect<SyncPlan, CliError> {
-  return Effect.gen(function* () {
-    const source = byName(input.source);
-    const declared = byName(input.declared);
-    const selected = yield* selectNames(input.target, source, declared);
-    const selectedSet = new Set(selected);
-    const previous = input.receipt?.variables ?? {};
-    // Declared-only (no value) has nothing to carry: when required it is
-    // material for enforceDeclaredPresence to stop; when optional it is
-    // not put on the plan
-    const current = selected.flatMap((name) => {
-      const variable = source.get(name);
-      if (variable === undefined) {
-        return [];
-      }
-      const previousVersion = Object.hasOwn(previous, name) ? previous[name] : undefined;
-      return [classifyVariable(input.target.driver, variable, previousVersion)];
-    });
-    // Names in the receipt that are no longer carried (left the selection / disappeared from maruhi) = deletes
-    const deleted = Object.keys(previous)
-      .filter((name) => !selectedSet.has(name) || !source.has(name))
-      .map((name): PlanEntry => ({
-        action: "delete",
-        name,
-        previousVersion: previous[name] as number,
-      }));
-    const declaredRequired = selected.flatMap((name) => {
-      const statement = declared.get(name);
-      return statement !== undefined && statement.required ? [statement] : [];
-    });
-    const requiredNotSelected = [...source.values()]
-      .filter((variable) => variable.required && !selectedSet.has(variable.name))
-      .map((variable) => variable.name)
-      .toSorted();
-    return {
-      entries: [...current, ...deleted].toSorted(compareByName),
-      declaredRequired,
-      requiredNotSelected,
-    };
+}): Effect.fn.Return<SyncPlan, CliError> {
+  const source = byName(input.source);
+  const declared = byName(input.declared);
+  const selected = yield* selectNames(input.target, source, declared);
+  const selectedSet = new Set(selected);
+  const previous = input.receipt?.variables ?? {};
+  // Declared-only (no value) has nothing to carry: when required it is
+  // material for enforceDeclaredPresence to stop; when optional it is
+  // not put on the plan
+  const current = selected.flatMap((name) => {
+    const variable = source.get(name);
+    if (variable === undefined) {
+      return [];
+    }
+    const previousVersion = Object.hasOwn(previous, name) ? previous[name] : undefined;
+    return [classifyVariable(input.target.driver, variable, previousVersion)];
   });
-}
+  // Names in the receipt that are no longer carried (left the selection / disappeared from maruhi) = deletes
+  const deleted = Object.keys(previous)
+    .filter((name) => !selectedSet.has(name) || !source.has(name))
+    .map((name): PlanEntry => ({
+      action: "delete",
+      name,
+      previousVersion: previous[name] as number,
+    }));
+  const declaredRequired = selected.flatMap((name) => {
+    const statement = declared.get(name);
+    return statement !== undefined && statement.required ? [statement] : [];
+  });
+  const requiredNotSelected = [...source.values()]
+    .filter((variable) => variable.required && !selectedSet.has(variable.name))
+    .map((variable) => variable.name)
+    .toSorted();
+  return {
+    entries: [...current, ...deleted].toSorted(compareByName),
+    declaredRequired,
+    requiredNotSelected,
+  };
+});
 
 function countOf(plan: SyncPlan, action: PlanEntry["action"]): number {
   return plan.entries.filter((entry) => entry.action === action).length;
@@ -331,35 +329,33 @@ interface PlanDisplay {
 const FULL_PLAN: PlanDisplay = { showUnchanged: true };
 
 /** Prints the plan to stdout (the command's output — names and versions only). */
-function reportPlan(
+const reportPlan = Effect.fn("sync-plan.reportPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
   receipt: SyncReceipt | null | "none-in-ci",
   display: PlanDisplay,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* io.log(
-      `Sync plan for target ${displayText(target.name)} (environment ${displayText(target.environment)} -> ${describeDestination(target)}): ${countOf(plan, "add")} to add, ${countOf(plan, "update")} to update, ${countOf(plan, "delete")} to delete, ${countOf(plan, "unchanged")} unchanged, ${countOf(plan, "blocked")} blocked`,
-    );
-    yield* io.log(
-      receipt === "none-in-ci"
-        ? "Last delivery: not tracked in CI (no receipt — every selected variable is written again, and nothing is deleted)"
-        : receipt === null
-          ? "Last delivery: none (no receipt yet — every selected variable is new to this target)"
-          : `Last delivery: ${displayText(receipt.syncedAt)} (receipt ${displayText(receiptVariableName(target.name))})`,
-    );
-    for (const entry of plan.entries) {
-      if (entry.action === "unchanged" && !display.showUnchanged) {
-        continue;
-      }
-      yield* io.log(planLine(entry));
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  yield* io.log(
+    `Sync plan for target ${displayText(target.name)} (environment ${displayText(target.environment)} -> ${describeDestination(target)}): ${countOf(plan, "add")} to add, ${countOf(plan, "update")} to update, ${countOf(plan, "delete")} to delete, ${countOf(plan, "unchanged")} unchanged, ${countOf(plan, "blocked")} blocked`,
+  );
+  yield* io.log(
+    receipt === "none-in-ci"
+      ? "Last delivery: not tracked in CI (no receipt — every selected variable is written again, and nothing is deleted)"
+      : receipt === null
+        ? "Last delivery: none (no receipt yet — every selected variable is new to this target)"
+        : `Last delivery: ${displayText(receipt.syncedAt)} (receipt ${displayText(receiptVariableName(target.name))})`,
+  );
+  for (const entry of plan.entries) {
+    if (entry.action === "unchanged" && !display.showUnchanged) {
+      continue;
     }
-  });
-}
+    yield* io.log(planLine(entry));
+  }
+});
 
 /** Everything a plan or apply needs from the project context. */
-export interface SyncContextInput {
+interface SyncContextInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
@@ -371,22 +367,22 @@ export interface SyncContextInput {
 }
 
 /** The prologue shared by plan / apply: read the receipt (warnings flow here). */
-function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const loaded = yield* loadReceipt({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.receiptsEnvironment,
-      recipient: input.recipient,
-      resync: input.resync,
-      floor: input.receiptsFloor,
-      target: input.target.name,
-      preset: input.target.preset.id,
-    });
-    yield* logWarnings(loaded.warnings);
-    return loaded;
+const loadTargetReceipt = Effect.fn("sync-plan.loadTargetReceipt")(function* (
+  input: SyncContextInput,
+): Effect.fn.Return<LoadedReceipt, CliError, CliIo> {
+  const loaded = yield* loadReceipt({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.receiptsEnvironment,
+    recipient: input.recipient,
+    resync: input.resync,
+    floor: input.receiptsFloor,
+    target: input.target.name,
+    preset: input.target.preset.id,
   });
-}
+  yield* logWarnings(loaded.warnings);
+  return loaded;
+});
 
 /**
  * The epilogue shared by plan / apply: emits the plan, flows the
@@ -395,87 +391,85 @@ function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt
  * CI (no receipt) passes through the same stage with
  * `receipt: "none-in-ci"`.
  */
-export function reviewPlan(
+export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
   receipt:
     | { readonly kind: "loaded"; readonly loaded: LoadedReceipt; readonly environmentId: string }
     | { readonly kind: "none-in-ci" },
   display: PlanDisplay = FULL_PLAN,
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    yield* reportPlan(
-      target,
-      plan,
-      receipt.kind === "none-in-ci" ? "none-in-ci" : receipt.loaded.receipt,
-      display,
+): Effect.fn.Return<void, CliError, CliIo> {
+  yield* reportPlan(
+    target,
+    plan,
+    receipt.kind === "none-in-ci" ? "none-in-ci" : receipt.loaded.receipt,
+    display,
+  );
+  if (plan.requiredNotSelected.length > 0) {
+    yield* logWarning(
+      `required variables are not part of this target: ${plan.requiredNotSelected.map(displayText).join(", ")}. The target's runtime will not receive them (add them to the target's variables in the sync config if it needs them)`,
     );
-    if (plan.requiredNotSelected.length > 0) {
-      yield* logWarning(
-        `required variables are not part of this target: ${plan.requiredNotSelected.map(displayText).join(", ")}. The target's runtime will not receive them (add them to the target's variables in the sync config if it needs them)`,
-      );
+  }
+  // A selection containing a variable with only a required declaration and no value = nothing is carried (the same rule as run)
+  yield* enforceDeclaredPresence(plan.declaredRequired, "Nothing was sent");
+  if (receipt.kind === "loaded") {
+    const warning = receiptVersionWarning({
+      target: target.name,
+      environmentId: receipt.environmentId,
+      variableVersion: receipt.loaded.variableVersion,
+    });
+    if (warning !== null) {
+      yield* logWarning(warning);
     }
-    // A selection containing a variable with only a required declaration and no value = nothing is carried (the same rule as run)
-    yield* enforceDeclaredPresence(plan.declaredRequired, "Nothing was sent");
-    if (receipt.kind === "loaded") {
-      const warning = receiptVersionWarning({
-        target: target.name,
-        environmentId: receipt.environmentId,
-        variableVersion: receipt.loaded.variableVersion,
-      });
-      if (warning !== null) {
-        yield* logWarning(warning);
-      }
-    }
-    const blocked = plan.entries.filter((entry) => entry.action === "blocked");
-    if (blocked.length > 0) {
-      return yield* Effect.fail(
-        cliError(
-          `${countNoun(blocked.length, "variable")} cannot be synced with this driver (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, rename them, or push values ${driverLabel(target.driver)} can carry (each line above says which). Nothing was sent`,
-        ),
-      );
-    }
-  });
-}
+  }
+  const blocked = plan.entries.filter((entry) => entry.action === "blocked");
+  if (blocked.length > 0) {
+    return yield* Effect.fail(
+      cliError(
+        `${countNoun(blocked.length, "variable")} cannot be synced with this driver (marked ! above): ${blocked.map((entry) => displayText(entry.name)).join(", ")}. Leave them out of the target, rename them, or push values ${driverLabel(target.driver)} can carry (each line above says which). Nothing was sent`,
+      ),
+    );
+  }
+});
 
 /**
  * `maruhi sync plan <target>`: receipt + verified names and versions of the
  * source environment. The source values are not decrypted, and the vendor
  * API is not contacted.
  */
-export function syncPlanOp(input: SyncContextInput): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const loaded = yield* loadTargetReceipt(input);
-    const pulled = yield* pullVerifiedEnvironment({
-      client: input.client,
-      verified: loaded.verified,
-      environmentId: input.target.environment as EnvironmentId,
-      resync: input.resync,
-      floor: input.sourceFloor,
-    });
-    yield* logWarnings(pulled.warnings);
-    const source = sourceFromVerified(pulled.variables);
-    const plan = yield* computePlan({
-      target: input.target,
-      source,
-      declared: toDeclaredVariables(pulled.declared),
-      receipt: loaded.receipt,
-    });
-    yield* reviewPlan(input.target, plan, {
-      kind: "loaded",
-      loaded,
-      environmentId: input.receiptsEnvironment,
-    });
-    if (input.target.production) {
-      yield* logNote(
-        `target ${displayText(input.target.name)} is a production target: \`maruhi sync apply ${displayText(input.target.name)}\` needs --yes`,
-      );
-    }
+export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
+  input: SyncContextInput,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const loaded = yield* loadTargetReceipt(input);
+  const pulled = yield* pullVerifiedEnvironment({
+    client: input.client,
+    verified: loaded.verified,
+    environmentId: input.target.environment as EnvironmentId,
+    resync: input.resync,
+    floor: input.sourceFloor,
   });
-}
+  yield* logWarnings(pulled.warnings);
+  const source = sourceFromVerified(pulled.variables);
+  const plan = yield* computePlan({
+    target: input.target,
+    source,
+    declared: toDeclaredVariables(pulled.declared),
+    receipt: loaded.receipt,
+  });
+  yield* reviewPlan(input.target, plan, {
+    kind: "loaded",
+    loaded,
+    environmentId: input.receiptsEnvironment,
+  });
+  if (input.target.production) {
+    yield* logNote(
+      `target ${displayText(input.target.name)} is a production target: \`maruhi sync apply ${displayText(input.target.name)}\` needs --yes`,
+    );
+  }
+});
 
 /** apply's input (plan's, plus the signing key and `--yes`). */
-export interface SyncApplyInput extends SyncContextInput {
+interface SyncApplyInput extends SyncContextInput {
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
   /** The explicit consent for apply to a production target (supplement 14 M4). */
@@ -489,7 +483,7 @@ export interface SyncApplyInput extends SyncContextInput {
 }
 
 /** What apply sends (built from the plan's add / update / delete). */
-export interface ApplyWork {
+interface ApplyWork {
   readonly writes: readonly SyncWrite[];
   readonly deletes: readonly string[];
   /** The version of each variable written (the coordinate recorded in the receipt). */
@@ -501,53 +495,49 @@ export interface ApplyWork {
  * constraints first (UTF-8, emptiness, size, trailing newline). One
  * refused value means nothing is sent.
  */
-export function prepareWork(
+export const prepareWork = Effect.fn("sync-plan.prepareWork")(function* (
   target: SyncTarget,
   plan: SyncPlan,
   values: ReadonlyMap<string, SyncWrite>,
-): Effect.Effect<ApplyWork, CliError> {
-  return Effect.gen(function* () {
-    const writes: SyncWrite[] = [];
-    const versions = new Map<string, number>();
-    for (const entry of plan.entries) {
-      if (entry.action !== "add" && entry.action !== "update") {
-        continue;
-      }
-      const write = values.get(entry.name);
-      if (write === undefined) {
-        return yield* Effect.fail(
-          cliError("The plan names a variable that was not pulled (internal inconsistency)"),
-        );
-      }
-      // Reason for unwrapping: the input of the constraint check before sending (the product is only a boolean and a variable name)
-      const plaintext = Redacted.value(write.value);
-      if (decodeValueText(plaintext) === null) {
-        return yield* Effect.fail(
-          cliError(
-            `The value of variable ${displayText(write.name)} is not valid UTF-8 (${driverLabel(target.driver)} takes text). Nothing was sent`,
-          ),
-        );
-      }
-      const problem = checkValueConstraints(
-        { constraints: target.driver.spec.constraints, label: driverLabel(target.driver) },
-        write.name,
-        plaintext,
-      );
-      if (problem !== null) {
-        return yield* Effect.fail(cliError(`${problem.message}. Nothing was sent`));
-      }
-      writes.push(write);
-      versions.set(entry.name, entry.version);
+): Effect.fn.Return<ApplyWork, CliError> {
+  const writes: SyncWrite[] = [];
+  const versions = new Map<string, number>();
+  for (const entry of plan.entries) {
+    if (entry.action !== "add" && entry.action !== "update") {
+      continue;
     }
-    const deletes = plan.entries.flatMap((entry) =>
-      entry.action === "delete" ? [entry.name] : [],
+    const write = values.get(entry.name);
+    if (write === undefined) {
+      return yield* Effect.fail(
+        cliError("The plan names a variable that was not pulled (internal inconsistency)"),
+      );
+    }
+    // Reason for unwrapping: the input of the constraint check before sending (the product is only a boolean and a variable name)
+    const plaintext = Redacted.value(write.value);
+    if (decodeValueText(plaintext) === null) {
+      return yield* Effect.fail(
+        cliError(
+          `The value of variable ${displayText(write.name)} is not valid UTF-8 (${driverLabel(target.driver)} takes text). Nothing was sent`,
+        ),
+      );
+    }
+    const problem = checkValueConstraints(
+      { constraints: target.driver.spec.constraints, label: driverLabel(target.driver) },
+      write.name,
+      plaintext,
     );
-    return { writes, deletes, versions };
-  });
-}
+    if (problem !== null) {
+      return yield* Effect.fail(cliError(`${problem.message}. Nothing was sent`));
+    }
+    writes.push(write);
+    versions.set(entry.name, entry.version);
+  }
+  const deletes = plan.entries.flatMap((entry) => (entry.action === "delete" ? [entry.name] : []));
+  return { writes, deletes, versions };
+});
 
 /** The driver's run result (the material for advancing only the succeeded names to the receipt). */
-export interface DriverResult {
+interface DriverResult {
   readonly written: readonly string[];
   readonly deleted: readonly string[];
   /** The failed invocation (null when none). */
@@ -575,124 +565,120 @@ export interface DriverResult {
  * that invocation's failure too — like the http driver's runBatch, so a
  * typed error never drops the names delivered by the invocations before it.
  */
-function runInvocations(
+const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
   driver: Extract<TargetDriver, { kind: "exec" }>,
   options: SyncTarget["options"],
   work: ApplyWork,
-): Effect.Effect<DriverResult, never, ProcessRunner> {
-  return Effect.gen(function* () {
-    const runner = yield* ProcessRunner;
-    const invocations = buildInvocations({
-      preset: driver.spec,
-      command: driver.command,
-      cwd: driver.cwd,
-      options,
-      writes: work.writes,
-      deletes: work.deletes,
-    });
-    const written: string[] = [];
-    const deleted: string[] = [];
-    const deleteSet = new Set(work.deletes);
-    for (const invocation of invocations) {
-      // A start failure (a typed error — live.ts's execStartFailure) is
-      // also folded into this invocation's failure: aborting the whole
-      // generator here would leave the names delivered by the earlier
-      // invocations unfurled into written / deleted and absent from the
-      // receipt (the same shape as http's runBatch)
-      const outcome = yield* runner
-        .exec(invocation)
-        .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
-      if ("startFailure" in outcome) {
-        return {
-          written,
-          deleted,
-          failure: {
-            names: invocation.names,
-            kind: invocation.kind,
-            what: `${displayText(driver.command)} could not be started`,
-            // The start failure's wording is maruhi's own (carries no
-            // value). A process that never ran has no output, so it
-            // travels on detail rather than the vendor-output slot
-            detail: displayText(outcome.startFailure),
-            output: [],
-          },
-        };
-      }
-      if (outcome.exitCode !== 0) {
-        return {
-          written,
-          deleted,
-          failure: {
-            names: invocation.names,
-            kind: invocation.kind,
-            what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
-            detail: null,
-            // The vendor's output is untrusted: scrub the values, neutralize control characters, keep only the tail
-            output: scrubVendorOutput(outcome.output, work.writes),
-          },
-        };
-      }
-      // A JSON batch mixes writes and deletes (null) — split by name
-      for (const name of invocation.names) {
-        (deleteSet.has(name) ? deleted : written).push(name);
-      }
-    }
-    return { written, deleted, failure: null };
+): Effect.fn.Return<DriverResult, never, ProcessRunner> {
+  const runner = yield* ProcessRunner;
+  const invocations = buildInvocations({
+    preset: driver.spec,
+    command: driver.command,
+    cwd: driver.cwd,
+    options,
+    writes: work.writes,
+    deletes: work.deletes,
   });
-}
+  const written: string[] = [];
+  const deleted: string[] = [];
+  const deleteSet = new Set(work.deletes);
+  for (const invocation of invocations) {
+    // A start failure (a typed error — live.ts's execStartFailure) is
+    // also folded into this invocation's failure: aborting the whole
+    // generator here would leave the names delivered by the earlier
+    // invocations unfurled into written / deleted and absent from the
+    // receipt (the same shape as http's runBatch)
+    const outcome = yield* runner
+      .exec(invocation)
+      .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
+    if ("startFailure" in outcome) {
+      return {
+        written,
+        deleted,
+        failure: {
+          names: invocation.names,
+          kind: invocation.kind,
+          what: `${displayText(driver.command)} could not be started`,
+          // The start failure's wording is maruhi's own (carries no
+          // value). A process that never ran has no output, so it
+          // travels on detail rather than the vendor-output slot
+          detail: displayText(outcome.startFailure),
+          output: [],
+        },
+      };
+    }
+    if (outcome.exitCode !== 0) {
+      return {
+        written,
+        deleted,
+        failure: {
+          names: invocation.names,
+          kind: invocation.kind,
+          what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
+          detail: null,
+          // The vendor's output is untrusted: scrub the values, neutralize control characters, keep only the tail
+          output: scrubVendorOutput(outcome.output, work.writes),
+        },
+      };
+    }
+    // A JSON batch mixes writes and deletes (null) — split by name
+    for (const name of invocation.names) {
+      (deleteSet.has(name) ? deleted : written).push(name);
+    }
+  }
+  return { written, deleted, failure: null };
+});
 
 /** Sending to the vendor API (in batch order. Stops at the first failure and returns what was delivered). */
-function runBatches(
+const runBatches = Effect.fn("sync-plan.runBatches")(function* (
   driver: Extract<TargetDriver, { kind: "http" }>,
   options: SyncTarget["options"],
   work: ApplyWork,
   token: IntegrationToken,
   retry: HttpRetryPolicy,
-): Effect.Effect<DriverResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const batches = buildBatches({
-      preset: driver.spec,
-      writes: work.writes,
-      deletes: work.deletes,
-    });
-    const target = {
-      preset: driver.spec,
-      options: resolveOptions(driver.spec, options),
-      token,
-      retry,
-    };
-    const written: string[] = [];
-    const deleted: string[] = [];
-    const deleteSet = new Set(work.deletes);
-    for (const batch of batches) {
-      const result = yield* runBatch(target, batch);
-      for (const name of result.delivered) {
-        (deleteSet.has(name) ? deleted : written).push(name);
-      }
-      if (result.failure !== null) {
-        return {
-          written,
-          deleted,
-          failure: {
-            names: result.failure.names,
-            kind: batch.kind,
-            // What happened (refused / an unconfirmed response / a
-            // failed send / a failed listing / never sent) is
-            // distinguished by runBatch as the failure's author — never
-            // attach "refused" to a retry-exhausted attempt
-            what: result.failure.what,
-            detail: null,
-            output: result.failure.lines,
-          },
-        };
-      }
-    }
-    return { written, deleted, failure: null };
+): Effect.fn.Return<DriverResult, CliError, HttpClient.HttpClient> {
+  const batches = buildBatches({
+    preset: driver.spec,
+    writes: work.writes,
+    deletes: work.deletes,
   });
-}
+  const target = {
+    preset: driver.spec,
+    options: resolveOptions(driver.spec, options),
+    token,
+    retry,
+  };
+  const written: string[] = [];
+  const deleted: string[] = [];
+  const deleteSet = new Set(work.deletes);
+  for (const batch of batches) {
+    const result = yield* runBatch(target, batch);
+    for (const name of result.delivered) {
+      (deleteSet.has(name) ? deleted : written).push(name);
+    }
+    if (result.failure !== null) {
+      return {
+        written,
+        deleted,
+        failure: {
+          names: result.failure.names,
+          kind: batch.kind,
+          // What happened (refused / an unconfirmed response / a
+          // failed send / a failed listing / never sent) is
+          // distinguished by runBatch as the failure's author — never
+          // attach "refused" to a retry-exhausted attempt
+          what: result.failure.what,
+          detail: null,
+          output: result.failure.lines,
+        },
+      };
+    }
+  }
+  return { written, deleted, failure: null };
+});
 
 /** What running the driver needs (exec = processes, http = the token + communication). */
-export interface RunDriverInput {
+interface RunDriverInput {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
   /** The http driver's integration token (null for exec). */
@@ -705,37 +691,29 @@ export interface RunDriverInput {
  * (values on stdin) or the vendor API (values in the request body). Prints
  * one line naming where the plaintext goes before sending anything.
  */
-export function runDriver(
+export const runDriver = Effect.fn("sync-plan.runDriver")(function* (
   input: RunDriverInput,
-): Effect.Effect<DriverResult, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { driver } = input.target;
-    if (driver.kind === "exec") {
-      // Leave in the output which executable receives it and where (the
-      // config's command / cwd changes the plaintext's destination, so
-      // make it visible on the terminal and in CI logs, not only in the
-      // diff)
-      yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
-      return yield* runInvocations(driver, input.target.options, input.work);
-    }
-    if (input.token === null) {
-      return yield* Effect.fail(
-        cliError("The http driver needs the integration token (internal inconsistency)"),
-      );
-    }
-    yield* io.log(
-      `Sending to ${driver.spec.host} with the token from variable ${displayText(driver.token.name)} in environment ${displayText(driver.token.environment)}`,
+): Effect.fn.Return<DriverResult, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const { driver } = input.target;
+  if (driver.kind === "exec") {
+    // Leave in the output which executable receives it and where (the
+    // config's command / cwd changes the plaintext's destination, so
+    // make it visible on the terminal and in CI logs, not only in the
+    // diff)
+    yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
+    return yield* runInvocations(driver, input.target.options, input.work);
+  }
+  if (input.token === null) {
+    return yield* Effect.fail(
+      cliError("The http driver needs the integration token (internal inconsistency)"),
     );
-    return yield* runBatches(
-      driver,
-      input.target.options,
-      input.work,
-      input.token,
-      input.httpRetry,
-    );
-  });
-}
+  }
+  yield* io.log(
+    `Sending to ${driver.spec.host} with the token from variable ${displayText(driver.token.name)} in environment ${displayText(driver.token.environment)}`,
+  );
+  return yield* runBatches(driver, input.target.options, input.work, input.token, input.httpRetry);
+});
 
 /** Extracts the integration token from the decrypted variables (with a check). */
 export function integrationTokenOf(
@@ -758,35 +736,33 @@ export function integrationTokenOf(
 }
 
 /** Fetching the integration token (locally: verifies the token environment and decrypts just that one variable). */
-function fetchIntegrationToken(
+const fetchIntegrationToken = Effect.fn("sync-plan.fetchIntegrationToken")(function* (
   input: SyncApplyInput,
   driver: Extract<TargetDriver, { kind: "http" }>,
   verified: VerifiedProject,
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly token: IntegrationToken; readonly verified: VerifiedProject },
   CliError,
   CliIo
 > {
-  return Effect.gen(function* () {
-    if (input.tokenFloor === null) {
-      return yield* Effect.fail(
-        cliError("No floor handle for the token environment (internal inconsistency)"),
-      );
-    }
-    const pulled = yield* pullVariables({
-      client: input.client,
-      verified,
-      environmentId: driver.token.environment as EnvironmentId,
-      recipient: input.recipient,
-      resync: input.resync,
-      floor: input.tokenFloor,
-      select: (name) => name === driver.token.name,
-    });
-    yield* logWarnings(pulled.warnings);
-    const token = yield* integrationTokenOf(driver.token, pulled.variables);
-    return { token, verified: pulled.verified };
+  if (input.tokenFloor === null) {
+    return yield* Effect.fail(
+      cliError("No floor handle for the token environment (internal inconsistency)"),
+    );
+  }
+  const pulled = yield* pullVariables({
+    client: input.client,
+    verified,
+    environmentId: driver.token.environment as EnvironmentId,
+    recipient: input.recipient,
+    resync: input.resync,
+    floor: input.tokenFloor,
+    select: (name) => name === driver.token.name,
   });
-}
+  yield* logWarnings(pulled.warnings);
+  const token = yield* integrationTokenOf(driver.token, pulled.variables);
+  return { token, verified: pulled.verified };
+});
 
 /** The receipt's next content (layers only the succeeded writes / deletes over the previous). */
 function nextReceipt(input: {
@@ -901,7 +877,7 @@ function driverFailureMessage(
 }
 
 /** Reporting the driver's failure (a typed error with the scrubbed output attached). */
-export function failDriver(input: {
+export const failDriver = Effect.fn("sync-plan.failDriver")(function* (input: {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
   readonly result: DriverResult;
@@ -909,52 +885,48 @@ export function failDriver(input: {
   readonly receiptsEnvironment: string | null;
   /** The means to see what is left (locally = plan, CI = re-run). */
   readonly next: string;
-}): Effect.Effect<never, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { target, result } = input;
-    if (result.failure === null) {
-      return yield* Effect.fail(
-        cliError("failDriver called without a failure (internal inconsistency)"),
-      );
-    }
-    // output is the vendor's speech, so it is shown with an executable-name / hostname prefix
-    const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
-    for (const line of result.failure.output) {
-      yield* io.logError(`  ${displayText(prefix)}: ${line}`);
-    }
-    return yield* Effect.fail(cliError(driverFailureMessage(input, result, result.failure)));
-  });
-}
+}): Effect.fn.Return<never, CliError, CliIo> {
+  const io = yield* CliIo;
+  const { target, result } = input;
+  if (result.failure === null) {
+    return yield* Effect.fail(
+      cliError("failDriver called without a failure (internal inconsistency)"),
+    );
+  }
+  // output is the vendor's speech, so it is shown with an executable-name / hostname prefix
+  const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
+  for (const line of result.failure.output) {
+    yield* io.logError(`  ${displayText(prefix)}: ${line}`);
+  }
+  return yield* Effect.fail(cliError(driverFailureMessage(input, result, result.failure)));
+});
 
 /** Reporting the run's result (a failure is a typed error with the scrubbed output attached). */
-function reportApply(
+const reportApply = Effect.fn("sync-plan.reportApply")(function* (
   input: SyncApplyInput,
   work: ApplyWork,
   result: DriverResult,
   receiptVersion: number | null,
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const targetName = displayText(input.target.name);
-    if (result.failure !== null) {
-      return yield* failDriver({
-        target: input.target,
-        work,
-        result,
-        receiptsEnvironment: input.receiptsEnvironment,
-        next: `run \`maruhi sync plan ${targetName}\` to see what is left`,
-      });
-    }
-    const saved =
-      receiptVersion === null
-        ? ""
-        : `. Receipt saved as version ${receiptVersion} of ${displayText(receiptVariableName(input.target.name))} in environment ${displayText(input.receiptsEnvironment)}`;
-    yield* io.log(
-      `Applied to target ${targetName}: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted${saved}`,
-    );
-  });
-}
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const targetName = displayText(input.target.name);
+  if (result.failure !== null) {
+    return yield* failDriver({
+      target: input.target,
+      work,
+      result,
+      receiptsEnvironment: input.receiptsEnvironment,
+      next: `run \`maruhi sync plan ${targetName}\` to see what is left`,
+    });
+  }
+  const saved =
+    receiptVersion === null
+      ? ""
+      : `. Receipt saved as version ${receiptVersion} of ${displayText(receiptVariableName(input.target.name))} in environment ${displayText(input.receiptsEnvironment)}`;
+  yield* io.log(
+    `Applied to target ${targetName}: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted${saved}`,
+  );
+});
 
 /** apply to a production target needs `--yes` (supplement 14 M4). */
 export function requireProductionConsent(
@@ -976,91 +948,89 @@ export function requireProductionConsent(
  * `maruhi sync apply <target>`: plan, then write the changed variables to
  * the target through its driver, then record what landed in the receipt.
  */
-export function syncApplyOp(
+export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   input: SyncApplyInput,
-): Effect.Effect<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const loaded = yield* loadTargetReceipt(input);
-    // The plan is built from metadata only (never decrypts — the same
-    // path as sync plan). To never build a plaintext in memory of a
-    // variable outside the selection or outside the required-warning
-    // target, the values are taken in a second pull select-narrowed to
-    // "only the add / update entries actually being sent"
-    const meta = yield* pullVerifiedEnvironment({
-      client: input.client,
-      verified: loaded.verified,
-      environmentId: input.target.environment as EnvironmentId,
-      resync: input.resync,
-      floor: input.sourceFloor,
-    });
-    const plan = yield* computePlan({
-      target: input.target,
-      source: sourceFromVerified(meta.variables),
-      declared: toDeclaredVariables(meta.declared),
-      receipt: loaded.receipt,
-    });
-    yield* reviewPlan(
-      input.target,
-      plan,
-      { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
-      input.display ?? FULL_PLAN,
-    );
-    // apply decrypts (the same path as run — pull.ts). The plaintext
-    // stays in Redacted all the way to the driver's body / stdin
-    // assembly
-    const writeNames = new Set(
-      plan.entries
-        .filter((entry) => entry.action === "add" || entry.action === "update")
-        .map((entry) => entry.name),
-    );
-    const pulled = yield* pullVariables({
-      client: input.client,
-      verified: meta.verified,
-      environmentId: input.target.environment as EnvironmentId,
-      recipient: input.recipient,
-      resync: input.resync,
-      floor: input.sourceFloor,
-      select: (name) => writeNames.has(name),
-    });
-    yield* logWarnings(pulled.warnings);
-    const work = yield* prepareWork(input.target, plan, writesOf(pulled.variables));
-    if (work.writes.length === 0 && work.deletes.length === 0) {
-      yield* io.log(
-        "Nothing to apply: the target already has every selected variable at its current version",
-      );
-      return;
-    }
-    yield* requireProductionConsent(input.target, input.yes, "maruhi sync apply");
-    // The integration token is fetched just before sending (a path that ends without sending never decrypts it)
-    let verified = pulled.verified;
-    let token: IntegrationToken | null = null;
-    if (input.target.driver.kind === "http") {
-      const fetched = yield* fetchIntegrationToken(input, input.target.driver, verified);
-      token = fetched.token;
-      verified = fetched.verified;
-    }
-    const result = yield* runDriver({
-      target: input.target,
-      work,
-      token,
-      httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
-    });
-    // The receipt advances only by "what was actually delivered". Even
-    // on a failed run the delivered part is recorded, so the next plan
-    // shows only the remainder
-    const syncedAtMs = yield* Clock.currentTimeMillis;
-    const receipt = nextReceipt({
-      target: input.target,
-      previous: loaded.receipt,
-      result,
-      versions: work.versions,
-      syncedAt: new Date(syncedAtMs).toISOString(),
-    });
-    // The receipt's push starts from the view that may have advanced via
-    // the pulls of the sync source (and the token environment) (the view
-    // at loadReceipt can be stale)
-    const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
-    yield* reportApply(input, work, result, receiptVersion);
+): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const loaded = yield* loadTargetReceipt(input);
+  // The plan is built from metadata only (never decrypts — the same
+  // path as sync plan). To never build a plaintext in memory of a
+  // variable outside the selection or outside the required-warning
+  // target, the values are taken in a second pull select-narrowed to
+  // "only the add / update entries actually being sent"
+  const meta = yield* pullVerifiedEnvironment({
+    client: input.client,
+    verified: loaded.verified,
+    environmentId: input.target.environment as EnvironmentId,
+    resync: input.resync,
+    floor: input.sourceFloor,
   });
-}
+  const plan = yield* computePlan({
+    target: input.target,
+    source: sourceFromVerified(meta.variables),
+    declared: toDeclaredVariables(meta.declared),
+    receipt: loaded.receipt,
+  });
+  yield* reviewPlan(
+    input.target,
+    plan,
+    { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
+    input.display ?? FULL_PLAN,
+  );
+  // apply decrypts (the same path as run — pull.ts). The plaintext
+  // stays in Redacted all the way to the driver's body / stdin
+  // assembly
+  const writeNames = new Set(
+    plan.entries
+      .filter((entry) => entry.action === "add" || entry.action === "update")
+      .map((entry) => entry.name),
+  );
+  const pulled = yield* pullVariables({
+    client: input.client,
+    verified: meta.verified,
+    environmentId: input.target.environment as EnvironmentId,
+    recipient: input.recipient,
+    resync: input.resync,
+    floor: input.sourceFloor,
+    select: (name) => writeNames.has(name),
+  });
+  yield* logWarnings(pulled.warnings);
+  const work = yield* prepareWork(input.target, plan, writesOf(pulled.variables));
+  if (work.writes.length === 0 && work.deletes.length === 0) {
+    yield* io.log(
+      "Nothing to apply: the target already has every selected variable at its current version",
+    );
+    return;
+  }
+  yield* requireProductionConsent(input.target, input.yes, "maruhi sync apply");
+  // The integration token is fetched just before sending (a path that ends without sending never decrypts it)
+  let verified = pulled.verified;
+  let token: IntegrationToken | null = null;
+  if (input.target.driver.kind === "http") {
+    const fetched = yield* fetchIntegrationToken(input, input.target.driver, verified);
+    token = fetched.token;
+    verified = fetched.verified;
+  }
+  const result = yield* runDriver({
+    target: input.target,
+    work,
+    token,
+    httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
+  });
+  // The receipt advances only by "what was actually delivered". Even
+  // on a failed run the delivered part is recorded, so the next plan
+  // shows only the remainder
+  const syncedAtMs = yield* Clock.currentTimeMillis;
+  const receipt = nextReceipt({
+    target: input.target,
+    previous: loaded.receipt,
+    result,
+    versions: work.versions,
+    syncedAt: new Date(syncedAtMs).toISOString(),
+  });
+  // The receipt's push starts from the view that may have advanced via
+  // the pulls of the sync source (and the token environment) (the view
+  // at loadReceipt can be stale)
+  const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
+  yield* reportApply(input, work, result, receiptVersion);
+});

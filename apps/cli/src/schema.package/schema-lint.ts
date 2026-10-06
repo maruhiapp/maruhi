@@ -278,7 +278,7 @@ const BEST_EFFORT_NOTE =
  * is non-zero only for the hard direction (code reads a name the store does
  * not declare).
  */
-export function schemaLintOp(input: {
+export const schemaLintOp = Effect.fn("schema-lint.schemaLintOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -287,49 +287,47 @@ export function schemaLintOp(input: {
   readonly scan: LintScan;
   /** Names excluded from the undeclared side (non-maruhi-managed like NODE_ENV — explicitly specified). */
   readonly ignore: readonly string[];
-}): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const scan = input.scan;
-    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    yield* logWarnings(metadata.warnings);
-    // The cross-check's target is the names of the verified live set (a
-    // v1 variable's name is also first-class — counted as "a variable the
-    // store holds" regardless of the schema column. What is being
-    // fabricated is not a name)
-    const declaredNames = new Set(metadata.variables.map((statement) => statement.name));
-    const ignored = new Set(input.ignore);
-    const undeclared = [...scan.references]
-      .filter((name) => !declaredNames.has(name) && !ignored.has(name))
-      .toSorted();
-    const unread = [...declaredNames].filter((name) => !scan.references.has(name)).toSorted();
-    const environment = displayText(input.environmentId);
-    yield* io.log(
-      `Scanned ${countNoun(scan.scannedFiles, "source file")} (${countNoun(scan.references.size, "distinct environment-variable reference")})`,
+}): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const scan = input.scan;
+  const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+  yield* logWarnings(metadata.warnings);
+  // The cross-check's target is the names of the verified live set (a
+  // v1 variable's name is also first-class — counted as "a variable the
+  // store holds" regardless of the schema column. What is being
+  // fabricated is not a name)
+  const declaredNames = new Set(metadata.variables.map((statement) => statement.name));
+  const ignored = new Set(input.ignore);
+  const undeclared = [...scan.references]
+    .filter((name) => !declaredNames.has(name) && !ignored.has(name))
+    .toSorted();
+  const unread = [...declaredNames].filter((name) => !scan.references.has(name)).toSorted();
+  const environment = displayText(input.environmentId);
+  yield* io.log(
+    `Scanned ${countNoun(scan.scannedFiles, "source file")} (${countNoun(scan.references.size, "distinct environment-variable reference")})`,
+  );
+  // The count lines are emitted even at 0 (the output's shape does not vary by run — env diff's discipline)
+  yield* io.log(
+    `Read by the scanned code but not declared in environment ${environment}: ${undeclared.length}`,
+  );
+  for (const name of undeclared) {
+    yield* io.log(`  ${displayText(name)}`);
+  }
+  yield* io.log(
+    `Declared in environment ${environment} but not read by the scanned code: ${unread.length}`,
+  );
+  for (const name of unread) {
+    yield* io.log(`  ${displayText(name)}`);
+  }
+  // The best-effort caveat is always emitted regardless of the
+  // conclusion (a gap in checking is not a gap in the guarantee —
+  // stderr: it is advice, not the command's output)
+  yield* logNote(BEST_EFFORT_NOTE);
+  if (undeclared.length > 0) {
+    return yield* Effect.fail(
+      cliError(
+        `The scanned code reads ${countNoun(undeclared.length, "environment variable")} not declared in environment ${environment} (listed on stdout). Declare them with \`maruhi schema set <NAME>\` (or \`maruhi schema import\`), or exclude non-maruhi runtime variables with --ignore <NAME>`,
+      ),
     );
-    // The count lines are emitted even at 0 (the output's shape does not vary by run — env diff's discipline)
-    yield* io.log(
-      `Read by the scanned code but not declared in environment ${environment}: ${undeclared.length}`,
-    );
-    for (const name of undeclared) {
-      yield* io.log(`  ${displayText(name)}`);
-    }
-    yield* io.log(
-      `Declared in environment ${environment} but not read by the scanned code: ${unread.length}`,
-    );
-    for (const name of unread) {
-      yield* io.log(`  ${displayText(name)}`);
-    }
-    // The best-effort caveat is always emitted regardless of the
-    // conclusion (a gap in checking is not a gap in the guarantee —
-    // stderr: it is advice, not the command's output)
-    yield* logNote(BEST_EFFORT_NOTE);
-    if (undeclared.length > 0) {
-      return yield* Effect.fail(
-        cliError(
-          `The scanned code reads ${countNoun(undeclared.length, "environment variable")} not declared in environment ${environment} (listed on stdout). Declare them with \`maruhi schema set <NAME>\` (or \`maruhi schema import\`), or exclude non-maruhi runtime variables with --ignore <NAME>`,
-        ),
-      );
-    }
-  });
-}
+  }
+});

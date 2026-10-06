@@ -196,53 +196,51 @@ function parseTokenResponse(
   });
 }
 
-function mintGithubApp(
+const mintGithubApp = Effect.fn("proxy-connector.mintGithubApp")(function* (
   inputs: ConnectorInputs,
   deps: ConnectorDeps,
-): Effect.Effect<Minted, ConnectorError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const appId = yield* textInput(inputs, "appId");
-    const installationId = yield* textInput(inputs, "installationId");
-    if (!/^\d+$/.test(installationId)) {
-      return yield* new ConnectorError({
-        message: "input installationId must be the numeric installation ID",
-      });
-    }
-    const keyBytes = inputs["privateKey"];
-    if (keyBytes === undefined) {
-      return yield* new ConnectorError({ message: "input privateKey is missing" });
-    }
-    const key = yield* importAppKey(decoder.decode(keyBytes));
-    const jwt = yield* appJwt(key, appId, deps.clock.currentTimeMillisUnsafe());
-    const base = deps.apiBase ?? GITHUB_API;
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client
-      .execute(
-        HttpClientRequest.post(`${base}/app/installations/${installationId}/access_tokens`).pipe(
-          HttpClientRequest.setHeaders({
-            authorization: `Bearer ${jwt}`,
-            accept: "application/vnd.github+json",
-            "x-github-api-version": "2022-11-28",
-            "user-agent": `maruhi-cli/${CLI_VERSION}`,
-          }),
-        ),
-      )
-      .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
-    // GitHub's edge answers HTML on a bad day: any body that is not the
-    // token JSON — unreadable, unparseable or the wrong shape — decodes to
-    // {} and the status wording below carries the failure ("GitHub
-    // answered 502 (no message)").
-    const record = yield* response.pipe(HttpClientResponse.schemaBodyJson(TokenResponse)).pipe(
-      Effect.catchReason("HttpClientError", "DecodeError", () => Effect.succeed<TokenResponse>({})),
-      Effect.catchTag(
-        "SchemaError",
-        () => Effect.succeed<TokenResponse>({}),
-        (error) => Effect.fail(new ConnectorError({ message: transportReason(error) })),
+): Effect.fn.Return<Minted, ConnectorError, HttpClient.HttpClient> {
+  const appId = yield* textInput(inputs, "appId");
+  const installationId = yield* textInput(inputs, "installationId");
+  if (!/^\d+$/.test(installationId)) {
+    return yield* new ConnectorError({
+      message: "input installationId must be the numeric installation ID",
+    });
+  }
+  const keyBytes = inputs["privateKey"];
+  if (keyBytes === undefined) {
+    return yield* new ConnectorError({ message: "input privateKey is missing" });
+  }
+  const key = yield* importAppKey(decoder.decode(keyBytes));
+  const jwt = yield* appJwt(key, appId, deps.clock.currentTimeMillisUnsafe());
+  const base = deps.apiBase ?? GITHUB_API;
+  const client = yield* HttpClient.HttpClient;
+  const response = yield* client
+    .execute(
+      HttpClientRequest.post(`${base}/app/installations/${installationId}/access_tokens`).pipe(
+        HttpClientRequest.setHeaders({
+          authorization: `Bearer ${jwt}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": `maruhi-cli/${CLI_VERSION}`,
+        }),
       ),
-    );
-    return yield* parseTokenResponse(response.status, record);
-  });
-}
+    )
+    .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
+  // GitHub's edge answers HTML on a bad day: any body that is not the
+  // token JSON — unreadable, unparseable or the wrong shape — decodes to
+  // {} and the status wording below carries the failure ("GitHub
+  // answered 502 (no message)").
+  const record = yield* response.pipe(HttpClientResponse.schemaBodyJson(TokenResponse)).pipe(
+    Effect.catchReason("HttpClientError", "DecodeError", () => Effect.succeed<TokenResponse>({})),
+    Effect.catchTag(
+      "SchemaError",
+      () => Effect.succeed<TokenResponse>({}),
+      (error) => Effect.fail(new ConnectorError({ message: transportReason(error) })),
+    ),
+  );
+  return yield* parseTokenResponse(response.status, record);
+});
 
 /**
  * Revokes an installation token at teardown (`DELETE /installation/token`,
@@ -250,34 +248,32 @@ function mintGithubApp(
  * run's, not GitHub's hour (pf4-design.md §19 D-14a). A refusal (already
  * expired, network) is reported by the caller as a Note.
  */
-function revokeGithubApp(
+const revokeGithubApp = Effect.fn("proxy-connector.revokeGithubApp")(function* (
   token: Uint8Array,
   deps: ConnectorDeps,
-): Effect.Effect<void, ConnectorError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const base = deps.apiBase ?? GITHUB_API;
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client
-      .execute(
-        HttpClientRequest.delete(`${base}/installation/token`).pipe(
-          HttpClientRequest.setHeaders({
-            // Reason for unwrapping: the token authenticates its own revocation (GitHub's API shape)
-            authorization: `token ${decoder.decode(token)}`,
-            accept: "application/vnd.github+json",
-            "x-github-api-version": "2022-11-28",
-            "user-agent": `maruhi-cli/${CLI_VERSION}`,
-          }),
-        ),
-      )
-      .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
-    // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
-    if (response.status !== 204 && response.status !== 401) {
-      return yield* new ConnectorError({
-        message: `GitHub answered ${response.status} to the revocation`,
-      });
-    }
-  });
-}
+): Effect.fn.Return<void, ConnectorError, HttpClient.HttpClient> {
+  const base = deps.apiBase ?? GITHUB_API;
+  const client = yield* HttpClient.HttpClient;
+  const response = yield* client
+    .execute(
+      HttpClientRequest.delete(`${base}/installation/token`).pipe(
+        HttpClientRequest.setHeaders({
+          // Reason for unwrapping: the token authenticates its own revocation (GitHub's API shape)
+          authorization: `token ${decoder.decode(token)}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": `maruhi-cli/${CLI_VERSION}`,
+        }),
+      ),
+    )
+    .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
+  // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
+  if (response.status !== 204 && response.status !== 401) {
+    return yield* new ConnectorError({
+      message: `GitHub answered ${response.status} to the revocation`,
+    });
+  }
+});
 
 interface ConnectorImpl {
   readonly mint: (

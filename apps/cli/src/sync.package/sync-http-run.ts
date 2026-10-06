@@ -45,31 +45,29 @@ type Listing =
  * name/ID matching). Also returns whether there might be a next page (if
  * there is, "absent" is not evidence — fail-closed).
  */
-function fetchListing(
+const fetchListing = Effect.fn("sync-http-run.fetchListing")(function* (
   input: HttpTargetInput,
   spec: HttpListSpec,
-): Effect.Effect<Listing, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const request = HttpClientRequest.get(
-      `https://${input.preset.host}${renderPath(spec.path, input.options, NO_SUBJECT)}`,
-      { urlParams: renderQuery(spec.query, input.options) },
-    );
-    const outcome = yield* send(input, request);
-    const body = parseJson(outcome.text);
-    const listed: unknown =
-      spec.itemsField === null ? body : isRecord(body) ? body[spec.itemsField] : undefined;
-    if (outcome.status < 200 || outcome.status >= 300 || !Array.isArray(listed)) {
-      return {
-        failure: scrubbed(
-          [`HTTP ${outcome.status} while listing variables at the target`],
-          [],
-          input.token,
-        ),
-      };
-    }
-    return { items: listed.filter(isRecord), complete: isListingComplete(spec, body) };
-  });
-}
+): Effect.fn.Return<Listing, CliError, HttpClient.HttpClient> {
+  const request = HttpClientRequest.get(
+    `https://${input.preset.host}${renderPath(spec.path, input.options, NO_SUBJECT)}`,
+    { urlParams: renderQuery(spec.query, input.options) },
+  );
+  const outcome = yield* send(input, request);
+  const body = parseJson(outcome.text);
+  const listed: unknown =
+    spec.itemsField === null ? body : isRecord(body) ? body[spec.itemsField] : undefined;
+  if (outcome.status < 200 || outcome.status >= 300 || !Array.isArray(listed)) {
+    return {
+      failure: scrubbed(
+        [`HTTP ${outcome.status} while listing variables at the target`],
+        [],
+        input.token,
+      ),
+    };
+  }
+  return { items: listed.filter(isRecord), complete: isListingComplete(spec, body) };
+});
 
 /** Whether there is no next page (Vercel's `pagination.next`. No declaration / null = the list is complete). */
 function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
@@ -183,91 +181,82 @@ function singleBatch(write: SyncWrite): HttpBatch {
  * create surfaces as a target-side failure — the next apply becomes an
  * update).
  */
-function createOrUpdate(
+const createOrUpdate = Effect.fn("sync-http-run.createOrUpdate")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
   batch: HttpBatch,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const listing = yield* fetchListing(input, write.list);
-    if ("failure" in listing) {
-      // The listing did get a response back (lines state the HTTP status),
-      // so don't say "not sent" — what failed is reported as the listing's
-      // failure
-      return {
-        delivered: [],
-        failure: {
-          names: batch.names,
-          what: `${input.preset.label} did not list the existing variables`,
-          lines: listing.failure,
-        },
-      };
-    }
-    if (!listing.complete) {
-      // Judging by a list that has a continuation would create a name that
-      // already exists and fail (or create it twice under the target's
-      // rules). Stop without sending anything
-      return {
-        delivered: [],
-        failure: {
-          names: batch.names,
-          what: "maruhi did not send the request",
-          lines: [
-            `${input.preset.label} returned a paginated list of variables, so maruhi could not tell which of them already exist at the target. Nothing was written; apply again later`,
-          ],
-        },
-      };
-    }
-    return yield* writeOneByOne(
-      input,
-      write,
-      batch,
-      listedByKey(listing.items, write.list.keyField),
-    );
-  });
-}
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const listing = yield* fetchListing(input, write.list);
+  if ("failure" in listing) {
+    // The listing did get a response back (lines state the HTTP status),
+    // so don't say "not sent" — what failed is reported as the listing's
+    // failure
+    return {
+      delivered: [],
+      failure: {
+        names: batch.names,
+        what: `${input.preset.label} did not list the existing variables`,
+        lines: listing.failure,
+      },
+    };
+  }
+  if (!listing.complete) {
+    // Judging by a list that has a continuation would create a name that
+    // already exists and fail (or create it twice under the target's
+    // rules). Stop without sending anything
+    return {
+      delivered: [],
+      failure: {
+        names: batch.names,
+        what: "maruhi did not send the request",
+        lines: [
+          `${input.preset.label} returned a paginated list of variables, so maruhi could not tell which of them already exist at the target. Nothing was written; apply again later`,
+        ],
+      },
+    };
+  }
+  return yield* writeOneByOne(input, write, batch, listedByKey(listing.items, write.list.keyField));
+});
 
 /** The sending part of create-or-update: one variable at a time, stopping at the first failure. */
-function writeOneByOne(
+const writeOneByOne = Effect.fn("sync-http-run.writeOneByOne")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
   batch: HttpBatch,
   existing: ReadonlyMap<string, Record<string, unknown>>,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const delivered: string[] = [];
-    for (const item of batch.writes) {
-      const one = singleBatch(item);
-      const listed = existing.get(item.name);
-      // Even if sending one variable fails with a typed error (attempts
-      // exhausted, Retry-After exceeded), the names delivered earlier in
-      // this batch are not lost: reported as that variable's failure, and
-      // the delivered ones go to the receipt (in create-or-update the whole
-      // write is one batch, so letting it fall erases the run's progress)
-      const result = yield* (
-        listed === undefined
-          ? createOrRecover(input, write, one)
-          : updateOne(input, write, one, listed)
-      ).pipe(
-        Effect.catch((error: CliError) =>
-          Effect.succeed({
-            delivered: [],
-            failure: {
-              names: one.names,
-              what: `the request to ${input.preset.label} failed`,
-              lines: [error.message],
-            },
-          }),
-        ),
-      );
-      if (result.failure !== null) {
-        return { delivered, failure: result.failure };
-      }
-      delivered.push(item.name);
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const delivered: string[] = [];
+  for (const item of batch.writes) {
+    const one = singleBatch(item);
+    const listed = existing.get(item.name);
+    // Even if sending one variable fails with a typed error (attempts
+    // exhausted, Retry-After exceeded), the names delivered earlier in
+    // this batch are not lost: reported as that variable's failure, and
+    // the delivered ones go to the receipt (in create-or-update the whole
+    // write is one batch, so letting it fall erases the run's progress)
+    const result = yield* (
+      listed === undefined
+        ? createOrRecover(input, write, one)
+        : updateOne(input, write, one, listed)
+    ).pipe(
+      Effect.catch((error: CliError) =>
+        Effect.succeed({
+          delivered: [],
+          failure: {
+            names: one.names,
+            what: `the request to ${input.preset.label} failed`,
+            lines: [error.message],
+          },
+        }),
+      ),
+    );
+    if (result.failure !== null) {
+      return { delivered, failure: result.failure };
     }
-    return { delivered, failure: null };
-  });
-}
+    delivered.push(item.name);
+  }
+  return { delivered, failure: null };
+});
 
 /** A name in the list: pass the guard (`updateGuards`), then send one update. */
 function updateOne(
@@ -298,34 +287,32 @@ function updateOne(
  * (regardless of the response's wording). If not, the create's failure
  * stands.
  */
-function createOrRecover(
+const createOrRecover = Effect.fn("sync-http-run.createOrRecover")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
   one: HttpBatch,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const outcome = yield* send(input, buildWriteRequest(input, write.create, one));
-    const created = readResponse(input.preset.response, outcome, one, input);
-    if (created.failure === null) {
-      return created;
-    }
-    // Even if the re-read listing fails (transport layer, attempts
-    // exhausted = a typed error), fall back to reporting the create's
-    // failure: failing here would keep names already delivered in the same
-    // batch off the receipt
-    const listing = yield* fetchListing(input, write.list).pipe(
-      Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
-    );
-    if ("failure" in listing) {
-      return withRecheckFailure(created, listing.failure);
-    }
-    if (!listing.complete) {
-      return created;
-    }
-    const listed = listedByKey(listing.items, write.list.keyField).get(one.names[0] ?? "");
-    return listed === undefined ? created : yield* updateOne(input, write, one, listed);
-  });
-}
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const outcome = yield* send(input, buildWriteRequest(input, write.create, one));
+  const created = readResponse(input.preset.response, outcome, one, input);
+  if (created.failure === null) {
+    return created;
+  }
+  // Even if the re-read listing fails (transport layer, attempts
+  // exhausted = a typed error), fall back to reporting the create's
+  // failure: failing here would keep names already delivered in the same
+  // batch off the receipt
+  const listing = yield* fetchListing(input, write.list).pipe(
+    Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
+  );
+  if ("failure" in listing) {
+    return withRecheckFailure(created, listing.failure);
+  }
+  if (!listing.complete) {
+    return created;
+  }
+  const listed = listedByKey(listing.items, write.list.keyField).get(one.names[0] ?? "");
+  return listed === undefined ? created : yield* updateOne(input, write, one, listed);
+});
 
 /** Attaches the re-read listing's failure (already-redacted lines) to a create's failure. */
 function withRecheckFailure(
@@ -361,11 +348,11 @@ function withRecheckFailure(
  * failure). A create-or-update write receives one variable at a time
  * inside and keeps the delivered share.
  */
-export function runBatch(
-  input: HttpTargetInput,
-  batch: HttpBatch,
-): Effect.Effect<HttpRequestResult, never, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+export const runBatch = Effect.fn("sync-http-run.runBatch")(
+  function* (
+    input: HttpTargetInput,
+    batch: HttpBatch,
+  ): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
     if (batch.kind === "write") {
       const { write } = input.preset;
       if (write.kind === "create-or-update") {
@@ -379,99 +366,95 @@ export function runBatch(
       throw new Error("a delete batch was built for a preset whose deletes ride along");
     }
     return yield* lookupAndRemove(input, spec, batch);
-  }).pipe(
-    Effect.catch((error: CliError) =>
-      Effect.succeed({
-        delivered: [],
-        failure: {
-          names: batch.names,
-          what: `the request to ${input.preset.label} failed`,
-          lines: [error.message],
-        },
-      }),
+  },
+  (effect, input, batch) =>
+    effect.pipe(
+      Effect.catch((error: CliError) =>
+        Effect.succeed({
+          delivered: [],
+          failure: {
+            names: batch.names,
+            what: `the request to ${input.preset.label} failed`,
+            lines: [error.message],
+          },
+        }),
+      ),
     ),
-  );
-}
+);
 
 /** A delete batch (one name): look the ID up in the list, then delete per value (or per item). */
-function lookupAndRemove(
+const lookupAndRemove = Effect.fn("sync-http-run.lookupAndRemove")(function* (
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
   batch: HttpBatch,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const name = batch.names[0] ?? "";
-    const listing = yield* fetchListing(input, spec.list);
-    if ("failure" in listing) {
-      // The listing did get a response back (lines state the HTTP status),
-      // so don't say "not sent"
-      return {
-        delivered: [],
-        failure: {
-          names: batch.names,
-          what: `${input.preset.label} did not list the existing variables`,
-          lines: listing.failure,
-        },
-      };
-    }
-    const looked = lookupIds(listing.items, spec, name, input.options);
-    if (looked.ids.length === 0 && !listing.complete) {
-      // A name missing from a list that has a continuation: cannot say
-      // it's "gone". Don't record it as delivered and leave it on the
-      // receipt (the next apply tries again — fail-closed)
-      return {
-        delivered: [],
-        failure: {
-          names: batch.names,
-          what: "maruhi did not send the request",
-          lines: [
-            `${input.preset.label} returned a paginated list of variables, so maruhi could not confirm that ${displayText(name)} is gone from the target. It stays in the receipt; remove it at the target yourself, or apply again`,
-          ],
-        },
-      };
-    }
-    // Absent from a complete list = already deleted at the target (the re-read only matches IDs; values are never read)
-    if (looked.whole && spec.removeItem !== undefined) {
-      return yield* removeOne(input, spec.removeItem, batch, { id: null, name });
-    }
-    return yield* removeByIds(input, spec, batch, name, looked.ids);
-  });
-}
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const name = batch.names[0] ?? "";
+  const listing = yield* fetchListing(input, spec.list);
+  if ("failure" in listing) {
+    // The listing did get a response back (lines state the HTTP status),
+    // so don't say "not sent"
+    return {
+      delivered: [],
+      failure: {
+        names: batch.names,
+        what: `${input.preset.label} did not list the existing variables`,
+        lines: listing.failure,
+      },
+    };
+  }
+  const looked = lookupIds(listing.items, spec, name, input.options);
+  if (looked.ids.length === 0 && !listing.complete) {
+    // A name missing from a list that has a continuation: cannot say
+    // it's "gone". Don't record it as delivered and leave it on the
+    // receipt (the next apply tries again — fail-closed)
+    return {
+      delivered: [],
+      failure: {
+        names: batch.names,
+        what: "maruhi did not send the request",
+        lines: [
+          `${input.preset.label} returned a paginated list of variables, so maruhi could not confirm that ${displayText(name)} is gone from the target. It stays in the receipt; remove it at the target yourself, or apply again`,
+        ],
+      },
+    };
+  }
+  // Absent from a complete list = already deleted at the target (the re-read only matches IDs; values are never read)
+  if (looked.whole && spec.removeItem !== undefined) {
+    return yield* removeOne(input, spec.removeItem, batch, { id: null, name });
+  }
+  return yield* removeByIds(input, spec, batch, name, looked.ids);
+});
 
 /** The delete's second step: DELETE each looked-up ID (404 = deleted concurrently right after the listing). */
-function removeByIds(
+const removeByIds = Effect.fn("sync-http-run.removeByIds")(function* (
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
   batch: HttpBatch,
   name: string,
   ids: readonly string[],
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    for (const id of ids) {
-      const result = yield* removeOne(input, spec.remove, batch, { id, name });
-      if (result.failure !== null) {
-        return result;
-      }
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  for (const id of ids) {
+    const result = yield* removeOne(input, spec.remove, batch, { id, name });
+    if (result.failure !== null) {
+      return result;
     }
-    return { delivered: batch.names, failure: null };
-  });
-}
+  }
+  return { delivered: batch.names, failure: null };
+});
 
 /** One DELETE (by ID or name). 404 is "already gone" = success. */
-function removeOne(
+const removeOne = Effect.fn("sync-http-run.removeOne")(function* (
   input: HttpTargetInput,
   spec: HttpRemoveSpec,
   batch: HttpBatch,
   subject: PathSubject,
-): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const request = HttpClientRequest.make(spec.method)(
-      `https://${input.preset.host}${renderPath(spec.path, input.options, subject)}`,
-      { urlParams: renderQuery(spec.query, input.options) },
-    );
-    const outcome = yield* send(input, request);
-    return outcome.status === 404
-      ? { delivered: batch.names, failure: null }
-      : readResponse(input.preset.response, outcome, batch, input);
-  });
-}
+): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+  const request = HttpClientRequest.make(spec.method)(
+    `https://${input.preset.host}${renderPath(spec.path, input.options, subject)}`,
+    { urlParams: renderQuery(spec.query, input.options) },
+  );
+  const outcome = yield* send(input, request);
+  return outcome.status === 404
+    ? { delivered: batch.names, failure: null }
+    : readResponse(input.preset.response, outcome, batch, input);
+});

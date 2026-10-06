@@ -164,13 +164,13 @@ interface SnapshotSourceInput {
  * generation rules split into 2 implementations, verify's
  * regeneration would silently disagree with export's output).
  */
-function pullSnapshot(input: SnapshotSourceInput): Effect.Effect<SchemaSnapshot, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    yield* logWarnings(metadata.warnings);
-    return buildSchemaSnapshot(input.environmentId, metadata.variables);
-  });
-}
+const pullSnapshot = Effect.fn("schema-snapshot.pullSnapshot")(function* (
+  input: SnapshotSourceInput,
+): Effect.fn.Return<SchemaSnapshot, CliError, CliIo> {
+  const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+  yield* logWarnings(metadata.warnings);
+  return buildSchemaSnapshot(input.environmentId, metadata.variables);
+});
 
 /**
  * Prints the environment's schema snapshot (a JSON Schema subset) to stdout.
@@ -178,13 +178,13 @@ function pullSnapshot(input: SnapshotSourceInput): Effect.Effect<SchemaSnapshot,
  * `maruhi schema verify-snapshot` (§1-6). stdout carries only the artifact
  * (the `maruhi project anchor` precedent); warnings go to stderr.
  */
-export function schemaExportOp(input: SnapshotSourceInput): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const snapshot = yield* pullSnapshot(input);
-    yield* io.log(formatSchemaSnapshot(snapshot).trimEnd());
-  });
-}
+export const schemaExportOp = Effect.fn("schema-snapshot.schemaExportOp")(function* (
+  input: SnapshotSourceInput,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const snapshot = yield* pullSnapshot(input);
+  yield* io.log(formatSchemaSnapshot(snapshot).trimEnd());
+});
 
 /* -------------------------------------------------------------------------- */
 /* verify-snapshot (CI's divergence check — §1-6)                */
@@ -313,14 +313,14 @@ function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapsho
  * form; the divergence report names variables and fields only — never
  * description contents.
  */
-export function schemaVerifySnapshotOp(
-  input: SnapshotSourceInput & {
-    /** The file path for display (the content is fileContent — reading is the caller's job). */
-    readonly filePath: string;
-    readonly fileContent: string;
-  },
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
+export const schemaVerifySnapshotOp = Effect.fn("schema-snapshot.schemaVerifySnapshotOp")(
+  function* (
+    input: SnapshotSourceInput & {
+      /** The file path for display (the content is fileContent — reading is the caller's job). */
+      readonly filePath: string;
+      readonly fileContent: string;
+    },
+  ): Effect.fn.Return<void, CliError, CliIo> {
     const io = yield* CliIo;
     const snapshot = yield* pullSnapshot(input);
     const expected = formatSchemaSnapshot(snapshot);
@@ -338,5 +338,5 @@ export function schemaVerifySnapshotOp(
           "\nThe store is the source of truth — regenerate the file with: `maruhi schema export` > <file>",
       ),
     );
-  });
-}
+  },
+);

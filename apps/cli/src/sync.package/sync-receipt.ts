@@ -135,7 +135,7 @@ export interface LoadedReceipt {
  * different platform, so acting on it (deletes by name, versions treated as
  * delivered) would be wrong — reset the receipt instead.
  */
-export function loadReceipt(input: {
+export const loadReceipt = Effect.fn("sync-receipt.loadReceipt")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -145,65 +145,63 @@ export function loadReceipt(input: {
   readonly target: string;
   /** The target's current preset (collated against the receipt writer's preset). */
   readonly preset: PresetId;
-}): Effect.Effect<LoadedReceipt, CliError> {
-  return Effect.gen(function* () {
-    const name = receiptVariableName(input.target);
-    // Decrypts only the receipt variable (even if the receipt
-    // environment holds the user's secrets, no plaintext is
-    // materialized in memory — pull.ts's select contract)
-    const pulled = yield* pullVariables({ ...input, select: (n) => n === name });
-    const variable = pulled.variables.find((entry) => entry.name === name);
-    if (variable === undefined) {
-      // Returns the view advanced by bounded re-sync (later pull / push take it over)
-      return {
-        receipt: null,
-        variableVersion: 0,
-        verified: pulled.verified,
-        warnings: pulled.warnings,
-      };
-    }
-    // Why it is unwrapped: interpreting the receipt JSON (a
-    // receipt is a name-to-version mapping, not a secret value.
-    // The product is only a struct, and the message carries only
-    // a reason)
-    const text = decodeValueText(Redacted.value(variable.value));
-    const decoded = text === null ? "not valid UTF-8" : decodeReceipt(text, input.target);
-    if (typeof decoded === "string") {
-      return yield* Effect.fail(
-        cliError(
-          `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} is not a valid sync receipt (${decoded}). Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
-        ),
-      );
-    }
-    // A receipt with a different preset's destination is a
-    // different platform: deleting by name and the "delivered"
-    // versions both lose their meaning. Guide recreation by name.
-    // Since this receipt is the only record of what is on the old
-    // destination, show the name list here before letting it be
-    // removed (same shape as driverFailureMessage's pendingHint.
-    // maruhi does not go delete the old destination: it never
-    // writes to or deletes from a place the config no longer
-    // points at)
-    if (decoded.preset !== input.preset) {
-      const delivered = Object.keys(decoded.variables).toSorted();
-      const orphanHint =
-        delivered.length === 0
-          ? ""
-          : ` Those deliveries stay at the ${decoded.preset} destination and this receipt is their only record, so remove them there yourself first: ${delivered.map(displayText).join(", ")}.`;
-      return yield* Effect.fail(
-        cliError(
-          `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} was written by the ${decoded.preset} preset, but target ${displayText(input.target)} is now configured with preset ${input.preset}, so its deliveries do not describe this destination.${orphanHint} Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
-        ),
-      );
-    }
+}): Effect.fn.Return<LoadedReceipt, CliError> {
+  const name = receiptVariableName(input.target);
+  // Decrypts only the receipt variable (even if the receipt
+  // environment holds the user's secrets, no plaintext is
+  // materialized in memory — pull.ts's select contract)
+  const pulled = yield* pullVariables({ ...input, select: (n) => n === name });
+  const variable = pulled.variables.find((entry) => entry.name === name);
+  if (variable === undefined) {
+    // Returns the view advanced by bounded re-sync (later pull / push take it over)
     return {
-      receipt: decoded,
-      variableVersion: variable.version,
+      receipt: null,
+      variableVersion: 0,
       verified: pulled.verified,
       warnings: pulled.warnings,
     };
-  });
-}
+  }
+  // Why it is unwrapped: interpreting the receipt JSON (a
+  // receipt is a name-to-version mapping, not a secret value.
+  // The product is only a struct, and the message carries only
+  // a reason)
+  const text = decodeValueText(Redacted.value(variable.value));
+  const decoded = text === null ? "not valid UTF-8" : decodeReceipt(text, input.target);
+  if (typeof decoded === "string") {
+    return yield* Effect.fail(
+      cliError(
+        `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} is not a valid sync receipt (${decoded}). Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
+      ),
+    );
+  }
+  // A receipt with a different preset's destination is a
+  // different platform: deleting by name and the "delivered"
+  // versions both lose their meaning. Guide recreation by name.
+  // Since this receipt is the only record of what is on the old
+  // destination, show the name list here before letting it be
+  // removed (same shape as driverFailureMessage's pendingHint.
+  // maruhi does not go delete the old destination: it never
+  // writes to or deletes from a place the config no longer
+  // points at)
+  if (decoded.preset !== input.preset) {
+    const delivered = Object.keys(decoded.variables).toSorted();
+    const orphanHint =
+      delivered.length === 0
+        ? ""
+        : ` Those deliveries stay at the ${decoded.preset} destination and this receipt is their only record, so remove them there yourself first: ${delivered.map(displayText).join(", ")}.`;
+    return yield* Effect.fail(
+      cliError(
+        `The receipt variable ${displayText(name)} in environment ${displayText(input.environmentId)} was written by the ${decoded.preset} preset, but target ${displayText(input.target)} is now configured with preset ${input.preset}, so its deliveries do not describe this destination.${orphanHint} Remove it with \`maruhi var rm ${displayText(name)} --env ${displayText(input.environmentId)}\` and apply again (the next apply rewrites every variable of the target)`,
+      ),
+    );
+  }
+  return {
+    receipt: decoded,
+    variableVersion: variable.version,
+    verified: pulled.verified,
+    warnings: pulled.warnings,
+  };
+});
 
 /** The nearing-cap warning text (null when not applicable). */
 export function receiptVersionWarning(input: {
