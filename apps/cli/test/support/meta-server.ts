@@ -211,7 +211,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
                   statement: state.envStatement,
                 },
               ],
-              schemaPolicy: input.schemaPolicy ?? "enabled",
+              schemaPolicy: "enabled" as const,
             },
           }
         : null,
