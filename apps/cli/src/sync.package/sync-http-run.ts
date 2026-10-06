@@ -348,11 +348,13 @@ function withRecheckFailure(
  * failure). A create-or-update write receives one variable at a time
  * inside and keeps the delivered share.
  */
-export const runBatch = Effect.fn("sync-http-run.runBatch")(
-  function* (
-    input: HttpTargetInput,
-    batch: HttpBatch,
-  ): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
+export const runBatch: (
+  input: HttpTargetInput,
+  batch: HttpBatch,
+) => Effect.Effect<HttpRequestResult, never, HttpClient.HttpClient> = Effect.fn(
+  "sync-http-run.runBatch",
+)(
+  function* (input, batch) {
     if (batch.kind === "write") {
       const { write } = input.preset;
       if (write.kind === "create-or-update") {
