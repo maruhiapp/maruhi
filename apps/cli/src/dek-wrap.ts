@@ -347,7 +347,8 @@ interface WritingMember {
  * The shared guard of composite operations (environment creation,
  * rotation): that I am a chain-derived current member, that the signing
  * device (the key at hand) is a valid device of that person, that the
- * **device's effective role** is member or above, and that **the target
+ * **device's effective role** is member or above (admin or above for
+ * environment deletion — minimumRole), and that **the target
  * environment is included in the device's effective scope** (§6.2 / §6.3
  * — 2026-09-15 ES K4; device effective permission 2026-09-19 DK K4-17:
  * for create, `listed` cannot contain a nonexistent id, so only devices
@@ -377,7 +378,10 @@ export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(f
    * for a widening" does not apply).
    */
   readonly outOfScope?: string;
+  /** The device's minimum effective role (omitted = member; environment deletion = admin — §12-3). */
+  readonly minimumRole?: "member" | "admin";
 }): Effect.fn.Return<WritingMember, CliError> {
+  const minimumRank = ROLE_RANK[input.minimumRole ?? "member"];
   const member = input.verified.state.members.get(input.signerUserId);
   if (member === undefined) {
     return yield* Effect.fail(
@@ -386,10 +390,10 @@ export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(f
   }
   const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
   const permission = effectivePermissionOf(member, device);
-  if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
+  if (ROLE_RANK[permission.role] < minimumRank) {
     return yield* Effect.fail(
       cliError(
-        ROLE_RANK[member.role] < ROLE_RANK.member
+        ROLE_RANK[member.role] < minimumRank
           ? input.forbidden
           : `${input.forbidden}. Your role is ${member.role}, but this device's key is capped at ${device.roleCap} (\`maruhi device list\`) — use a device without that cap`,
       ),

@@ -35,6 +35,7 @@ import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
+import { normalizeEnvironmentName } from "./env-meta.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -159,7 +160,7 @@ export const envCreateOp = Effect.fn("env-create.envCreateOp")(function* (input:
     input.signingKeyPair,
   );
   // Normalization is performed by the client before signing (§4.2 / §12-1)
-  const name = input.name.normalize("NFC");
+  const name = yield* normalizeEnvironmentName(input.name);
   // Wrapped right after generation (from here on the DEK only flows as a Redacted)
   const dek = Redacted.make(generateDek(), { label: "dek" });
   const commitment = yield* cryptoEffect(() =>

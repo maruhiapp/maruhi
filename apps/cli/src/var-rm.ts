@@ -34,12 +34,17 @@ import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
+import { confirmPermanentDeletion } from "./deletion-confirm.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { rejectIntentOnServerRejection } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
-import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
+import {
+  confirmAcceptedMetaMutation,
+  confirmsIssuedStatement,
+  issueManifestWithIntent,
+} from "./meta-confirm.ts";
 import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -48,7 +53,6 @@ import {
   resolveSchemaTarget,
   type SchemaSetState,
 } from "./schema.package/index.ts";
-import type { VerifiedEnvironmentMetadata } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -102,51 +106,29 @@ const resolveDeletionTarget = Effect.fn("var-rm.resolveDeletionTarget")(function
 });
 
 /**
- * The explicit deletion confirmation (fail-closed): without
- * --force, an interactive terminal (both stdin and stdout being
- * terminals — via the Stdio service) requires **retyping the
- * variable name**. Non-interactive refuses without --force.
- * Getting the judgment material via a service is CLAUDE.md's
- * "never read process.* directly" discipline.
+ * The explicit deletion confirmation (fail-closed — deletion-confirm.ts):
+ * without --force, an interactive terminal requires **retyping the
+ * variable name**; non-interactive refuses without --force.
  */
-const ensureDeletionConfirmed = Effect.fn("var-rm.ensureDeletionConfirmed")(function* (
+function ensureDeletionConfirmed(
   input: VarRmInput,
   target: VerifiedVariableStatement,
   name: string,
-): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
-  const io = yield* CliIo;
-  const consequence =
-    target.status === "active"
-      ? "its value (every stored version) is deleted immediately and cannot be recovered"
-      : "the declaration (no value was set) is removed";
-  if (input.force) {
-    // An explicit flag = explicit risk acceptance. The fact is still made visible (never delete silently)
-    yield* io.logError(
-      `Deleting ${displayText(name)} without confirmation (--force): ${consequence}. Deletion is terminal — the variable cannot be restored`,
-    );
-    return;
-  }
-  const stdio = yield* Stdio.Stdio;
-  const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
-  if (!interactive) {
-    return yield* Effect.fail(
-      cliError(
-        `Refusing to delete ${displayText(name)} in a non-interactive environment without --force (deletion is terminal and, for a variable with a value, destroys every stored version). Re-run with --force to accept that explicitly`,
-      ),
-    );
-  }
-  yield* io.logError(
-    `You are about to delete ${displayText(name)}: ${consequence}. Deletion is terminal — the variable cannot be restored`,
-  );
-  const answer = yield* io.promptLine({
-    prompt: `Type the variable name to confirm the permanent deletion: `,
+): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
+  return confirmPermanentDeletion(input.force, {
+    label: displayText(name),
+    consequence:
+      target.status === "active"
+        ? "its value (every stored version) is deleted immediately and cannot be recovered"
+        : "the declaration (no value was set) is removed",
+    irreversibility: "the variable cannot be restored",
+    refusalReason:
+      "deletion is terminal and, for a variable with a value, destroys every stored version",
+    typedNoun: "variable name",
+    mismatchNoun: "name",
+    expected: name,
   });
-  if (answer.trim().normalize("NFC") !== name) {
-    return yield* Effect.fail(
-      cliError("Aborted: the typed name did not match (nothing was signed or sent)"),
-    );
-  }
-});
+}
 
 interface AcceptedDeletion {
   readonly variableId: string;
@@ -359,28 +341,12 @@ export const varRmOp = Effect.fn("var-rm.varRmOp")(function* (
   // deletion's effect is a tombstone (at or above the issued
   // metaVersion. Same-version requires hash equality — never
   // misread a 2xx lost to a concurrent operation as effective)
-  const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
-  const tombstoneConfirms = (tombstone: {
-    readonly metaVersion: number;
-    readonly metaSigHashHex: string;
-  }) =>
-    tombstone.metaVersion > issued.metaVersion ||
-    (tombstone.metaVersion === issued.metaVersion &&
-      tombstone.metaSigHashHex === issued.metaSigHashHex);
-  yield* confirmMetaMutation({
-    client: input.client,
-    verified: accepted.state.verified,
-    environmentId: input.environmentId,
-    resync: input.resync,
-    floor: input.floor,
-    selfManifest: accepted.selfManifest,
-    intentId: accepted.intentId,
-    describe: "variable deletion",
-    effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
-      metadata.tombstones.some(
-        (tombstone) => tombstone.variableId === accepted.variableId && tombstoneConfirms(tombstone),
-      ),
-  });
+  yield* confirmAcceptedMetaMutation(input, accepted, "variable deletion", (metadata, issued) =>
+    metadata.tombstones.some(
+      (tombstone) =>
+        tombstone.variableId === accepted.variableId && confirmsIssuedStatement(tombstone, issued),
+    ),
+  );
   // The floor's tombstone advance (§6.3 — a later pull can
   // detect the deletion being silently undone.
   // journal-before-release: before the success report). Since

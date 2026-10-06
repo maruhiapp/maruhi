@@ -30,6 +30,7 @@ import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import type {
+  VerifiedEnvironmentStatement,
   VerifiedMetaEvidence,
   VerifiedSchemaFields,
   VerifiedTombstone,
@@ -494,7 +495,7 @@ export async function verifyEnvironmentStatement(
   verified: VerifiedProject,
   environmentId: string,
   statement: DistributedEnvironmentMetaStatement,
-): Promise<VerifyOutcome<VerifiedMetaEvidence>> {
+): Promise<VerifyOutcome<VerifiedEnvironmentStatement>> {
   if (statement.environmentId !== environmentId) {
     return {
       kind: "rejected",
@@ -523,6 +524,7 @@ export async function verifyEnvironmentStatement(
     kind: "ok",
     value: {
       status: "active",
+      name: statement.name,
       ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
     },
   };
@@ -787,23 +789,48 @@ export const verifiedDeletedEnvironments = Effect.fn("values-verify.verifiedDele
   ): Effect.fn.Return<ReadonlySet<string>, CliError> {
     const deleted = new Set<string>();
     for (const environment of environments) {
-      const statement = environment.statement;
-      if (statement.environmentId !== environment.environmentId || statement.status !== "deleted") {
-        continue;
-      }
       const outcome = yield* Effect.promise(() =>
-        verifyStatement(
-          verified,
-          environment.environmentId,
-          { kind: "environment" },
-          statement,
-          `environment ${displayText(environment.environmentId)}'s deletion statement`,
-        ),
+        verifyEnvironmentTombstone(verified, environment.environmentId, environment.statement),
       );
-      if (outcome.kind === "ok") {
+      if (outcome?.kind === "ok") {
         deleted.add(environment.environmentId);
       }
     }
     return deleted;
   },
 );
+
+/**
+ * Verifying an environment's deletion statement (§12-4 — the environment
+ * list keeps distributing it as the detection material for a denied or a
+ * silently revived deletion). null = the listed statement is not a deletion
+ * statement for these coordinates (no tombstone is claimed at all).
+ */
+export async function verifyEnvironmentTombstone(
+  verified: VerifiedProject,
+  environmentId: string,
+  statement: DistributedEnvironmentMetaStatement,
+): Promise<VerifyOutcome<VerifiedEnvironmentStatement> | null> {
+  if (statement.environmentId !== environmentId || statement.status !== "deleted") {
+    return null;
+  }
+  const outcome = await verifyStatement(
+    verified,
+    environmentId,
+    { kind: "environment" },
+    statement,
+    `environment ${displayText(environmentId)}'s deletion statement`,
+  );
+  if (outcome.kind !== "ok") {
+    return outcome;
+  }
+  return {
+    kind: "ok",
+    value: {
+      status: "deleted",
+      // deleted keeps the immediately preceding active name (§4.2)
+      name: statement.name,
+      ...metaEvidenceFields(statement, outcome.value.signedBytesHashHex),
+    },
+  };
+}

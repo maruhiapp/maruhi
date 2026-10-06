@@ -75,7 +75,14 @@ import {
   deviceRevokeConfig,
   makeDeviceCommands,
 } from "./device.ts";
-import { envCreateConfig, envDiffConfig, envRotateConfig, makeEnvCommands } from "./env.ts";
+import {
+  envCreateConfig,
+  envDiffConfig,
+  envRenameConfig,
+  envRmConfig,
+  envRotateConfig,
+  makeEnvCommands,
+} from "./env.ts";
 import { specOf } from "./flags.ts";
 import {
   guardianAddConfig,
@@ -157,7 +164,13 @@ import {
 const GROUP_CONFIGS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, Param.Any>>>>>
 > = {
-  env: { create: envCreateConfig, rotate: envRotateConfig, diff: envDiffConfig },
+  env: {
+    create: envCreateConfig,
+    rename: envRenameConfig,
+    rm: envRmConfig,
+    rotate: envRotateConfig,
+    diff: envDiffConfig,
+  },
   server: { grant: serverGrantConfig, revoke: serverRevokeConfig },
   mirror: {
     sync: mirrorSyncConfig,

@@ -14,9 +14,11 @@ import {
   openMetadataEnvironmentPair,
   openProject,
 } from "../context.ts";
-import { countNoun } from "../display.ts";
+import { countNoun, displayText, logWarnings } from "../display.ts";
 import { envCreateOp } from "../env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "../env-diff.ts";
+import { envRenameOp } from "../env-rename.ts";
+import { envRmOp } from "../env-rm.ts";
 import { envRotateOp } from "../env-rotate.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
@@ -68,6 +70,29 @@ export const envDiffConfig = {
     "other-environment-id",
     "Second environment ID to compare",
   ),
+};
+
+export const envRenameConfig = {
+  ...projectFlags(),
+  "environment-id": environmentIdArgument(
+    "environment-id",
+    "ID of the environment to rename (the ID itself never changes)",
+  ),
+  "new-name": Argument.String("new-name").pipe(
+    Argument.withDescription(
+      "New display name (NFC-normalized; unique among the environments that are not deleted)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+export const envRmConfig = {
+  ...projectFlags(),
+  force: singleFlag(
+    "force",
+    "Skip the interactive confirmation (the only non-interactive path; deletion is permanent)",
+  ),
+  "environment-id": environmentIdArgument("environment-id", "ID of the environment to delete"),
 };
 
 /**
@@ -202,6 +227,53 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   return code;
 });
 
+/** `maruhi env rename <id> <new-name>` (the environment's own meta statement + manifest — §12-4). */
+const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
+  flags: CommonFlags,
+  environmentId: EnvironmentId,
+  newName: string,
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openEnvironment({ ...flags, env: environmentId });
+  const renamed = yield* envRenameOp({
+    client: context.client,
+    verified: context.verified,
+    environmentId,
+    newName,
+    resync: context.resync,
+    floor: context.floorHandle,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+  });
+  yield* logWarnings(renamed.warnings);
+  yield* io.log(
+    `Renamed environment ${environmentId} from ${displayText(renamed.previousName)} to ${displayText(renamed.name)} (metaVersion=${renamed.metaVersion})`,
+  );
+});
+
+/** `maruhi env rm <id> [--force]` (the deletion statement — a tombstone; §12-4). */
+const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
+  flags: CommonFlags & { readonly force: boolean },
+  environmentId: EnvironmentId,
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openEnvironment({ ...flags, env: environmentId });
+  const deleted = yield* envRmOp({
+    client: context.client,
+    verified: context.verified,
+    environmentId,
+    force: flags.force,
+    resync: context.resync,
+    floor: context.floorHandle,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+  });
+  yield* logWarnings(deleted.warnings);
+  yield* io.log(
+    `Deleted environment ${environmentId} (${displayText(deleted.name)}; metaVersion=${deleted.metaVersion}). Its variables, values and DEK wraps are gone; a signed deletion record remains, and the ID ${environmentId} can never be reused`,
+  );
+});
+
 /**
  * `maruhi env diff <a> <b>`: compares the two environments' **variable
  * name sets** (values are neither fetched nor decrypted). A difference
@@ -296,11 +368,43 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     ),
   );
 
+  const envRename = Command.make(
+    "rename",
+    envRenameConfig,
+    Effect.fn("commands-env.envRename")(function* (values) {
+      const environmentId = yield* requireEnvironmentId(
+        values["environment-id"],
+        "`maruhi env rename dev Development`",
+      );
+      yield* envRenameCommand(values, environmentId, values["new-name"]);
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Rename an environment's display name (the environment ID and every value stay as they are)",
+    ),
+  );
+
+  const envRm = Command.make(
+    "rm",
+    envRmConfig,
+    Effect.fn("commands-env.envRm")(function* (values) {
+      const environmentId = yield* requireEnvironmentId(
+        values["environment-id"],
+        "`maruhi env rm staging`",
+      );
+      yield* envRmCommand(values, environmentId);
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused",
+    ),
+  );
+
   // The nested subcommands remove the need to hand-write the refusal of
   // "an option that does not apply to that operation"
   const env = Command.make("env").pipe(
-    Command.withDescription("Manage environments (create / rotate / diff)"),
-    Command.withSubcommands([envCreate, envRotate, envDiff]),
+    Command.withDescription("Manage environments (create / rename / rm / rotate / diff)"),
+    Command.withSubcommands([envCreate, envRename, envRm, envRotate, envDiff]),
   );
 
   return env;
