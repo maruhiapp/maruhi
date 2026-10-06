@@ -285,7 +285,7 @@ export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
  * typed error (the wrap is neither fetched nor unwrapped, and its
  * content never appears in the message).
  */
-export const environmentKeysFor = Effect.fnUntraced(function* (input: {
+export const environmentKeysFor = Effect.fn("deks.environmentKeysFor")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: string;

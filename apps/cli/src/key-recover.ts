@@ -671,7 +671,6 @@ const rotateReserveOnProject: (input: {
     readonly session: CliSession;
     readonly projectId: string;
     readonly newReserve: ReserveKeys;
-    /** The FPs of the old reserve keys to revoke (the opened B + the recorded old reserve keys — left behind by nothing on a re-run after interruption). */
     readonly oldFingerprintsHex: readonly string[];
   }) {
     const context: ProjectContext = yield* openProject(
