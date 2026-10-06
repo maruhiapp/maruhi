@@ -97,6 +97,21 @@ Every call does what `maruhi schema` does: it syncs the project's chain, verifie
 
 Descriptions and variable names are written by project members and reach the agent as data: control and invisible characters are escaped, non-ASCII text in descriptions arrives as `\u{…}` escapes, and every result, the tool description, and the server's instructions say to treat them as data, not instructions. A member can still write a description or name that reads like an instruction, so this narrows the injection surface; it does not close it.
 
+## Require a declared type for new variables
+
+By default a variable can be created without a declared type, so a typo such as `maruhi push DATABSE_URL` silently adds a new, untyped variable to the schema the agent reads. A project admin can lock the schema so that every new variable needs a declared type:
+
+```sh
+maruhi project policy schema
+# Schema policy: enabled — creating a variable without a declared type is allowed
+maruhi project policy schema --set locked
+# Schema policy: enabled → locked — creating a variable requires a declared type (`maruhi schema set NAME --type …`)
+```
+
+Under `locked`, declare a variable before its first value: `maruhi schema set DATABASE_URL --type url` creates it as `declared`, and `maruhi push DATABASE_URL` then sets the value. Creating a variable any other way, such as pushing a new name, is refused. The check applies only when a variable is created: existing variables keep working, and a later `maruhi schema set NAME --type none` is still allowed, because it is a signed change that shows up in the audit log, not a silent typo. `--set enabled` turns the check off again.
+
+Bare `maruhi project policy schema` works for any member. `--set` needs the admin role (or owner); every change is recorded in the audit log as `project.schema_policy_changed`. The policy is a setting on the server, not a signed entry on the project's chain, so it only governs an honest server — like the server's size limits, it is not a security boundary.
+
 ## Agents with a shell
 
 An agent that can run commands does not need MCP. Put one line in `AGENTS.md` (or `CLAUDE.md`):

@@ -129,6 +129,7 @@ import {
   projectInitConfig,
   projectListConfig,
   projectPolicyApprovalsConfig,
+  projectPolicySchemaConfig,
   projectVerifyConfig,
   makeProjectCommands,
 } from "./project.ts";
@@ -231,7 +232,7 @@ const GROUP_CONFIGS: Readonly<
     checkpoint: projectCheckpointConfig,
     export: projectExportConfig,
   },
-  "project policy": { approvals: projectPolicyApprovalsConfig },
+  "project policy": { approvals: projectPolicyApprovalsConfig, schema: projectPolicySchemaConfig },
   ci: { run: ciRunConfig, sync: ciSyncConfig, rotate: ciRotateConfig },
   agent: { status: agentStatusConfig },
   rotation: {

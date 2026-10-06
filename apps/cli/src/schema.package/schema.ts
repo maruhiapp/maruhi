@@ -48,7 +48,7 @@ import {
   issueManifestWithIntent,
 } from "../meta-confirm.ts";
 import { generateVariableId } from "../meta-statement.ts";
-import { logNote, logWarning } from "../notice.ts";
+import { logWarning } from "../notice.ts";
 import { retryOnConflict } from "../retry.ts";
 import {
   type ManifestIssueBase,
@@ -260,12 +260,6 @@ interface SchemaSetInput {
    * race after import's default-skip of existing names reaches here.
    */
   readonly requireCreation?: boolean;
-  /**
-   * true = emit no pre-guidance for the disabled advisory (import emits
-   * it once, itself — repeating it per variable is noise. Acceptance's
-   * source of truth stays the server §12-11).
-   */
-  readonly quietDisabledAdvisory?: boolean;
 }
 
 /** schema set's result (display is the caller's — schema.package/command.ts). */
@@ -603,18 +597,6 @@ export const schemaSetOp = Effect.fn("schema.schemaSetOp")(function* (
   // Normalization is the client's job before signing (§4.2 / §12-1)
   const name = input.name.normalize("NFC");
   const initial = yield* resolveSchemaTarget(input, input.verified, name);
-  // Pre-guidance from the schemaPolicy advisory (SHOULD — §1-2. Never
-  // an input to a verification rule: guidance only, the send still
-  // happens — acceptance's source of truth is the server)
-  if (
-    input.quietDisabledAdvisory !== true &&
-    initial.advisorySchemaPolicy === "disabled" &&
-    (initial.target === null || initial.target.layoutVersion === 1)
-  ) {
-    yield* logNote(
-      "the server reports this project's schema policy as disabled, so it will likely reject new layout-v3 schema statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
-    );
-  }
   const accepted = yield* retryOnConflict(initial, {
     maxAttempts: MAX_ATTEMPTS,
     attempt: (state) => attemptSchemaSet(input, name, state),

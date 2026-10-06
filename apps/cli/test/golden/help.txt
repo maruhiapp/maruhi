@@ -1148,7 +1148,7 @@ SUBCOMMANDS
   anchor        Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
   checkpoint    Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
   export        Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)
-  policy        Project policies (approvals)
+  policy        Project policies (approvals / schema)
 
 $ maruhi project init --help
 DESCRIPTION
@@ -1242,7 +1242,7 @@ GLOBAL FLAGS
 
 $ maruhi project policy --help
 DESCRIPTION
-  Project policies (approvals)
+  Project policies (approvals / schema)
 
 USAGE
   maruhi project policy <subcommand> [flags]
@@ -1253,6 +1253,7 @@ GLOBAL FLAGS
 
 SUBCOMMANDS
   approvals    Show or set the four-eyes approval policy (owner approvals required for sensitive operations); no flags = show
+  schema       Show or set the schema policy (enabled = types optional, locked = creating a variable requires a declared type); no flags = show
 
 $ maruhi project policy approvals --help
 DESCRIPTION
@@ -1268,6 +1269,22 @@ FLAGS
   --required string    Enable (or change) the four-eyes policy: number of distinct owner approvals an operation needs (at least 2; the project must have at least that many owners)
   --ops string         Comma-separated operations that need approval (grant_server | revoke_server | remove_member | change_role | add_member | set_approval_policy; default change_role,grant_server,remove_member,set_approval_policy — add_member is left out because adding an owner always needs approval, and other invites are already protected by the acceptance ceremony)
   --off                Turn the policy off (while a policy is active, this itself needs the approvals)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project policy schema --help
+DESCRIPTION
+  Show or set the schema policy (enabled = types optional, locked = creating a variable requires a declared type); no flags = show
+
+USAGE
+  maruhi project policy schema [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --set string        Set the schema policy (enabled | locked; locked = creating a variable requires a declared type; needs the admin role)
 
 GLOBAL FLAGS
   --help, -h       Show help information
