@@ -8,9 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "deploy": "bun run db:migrate && bun run web:build && cf deploy",
-    "deploy:dry-run": "bun run web:build && cf deploy --dry-run",
     "web:build": "bun run --filter @maruhi/web build",
-    "db:create": "cf d1 create --name maruhi",
     "db:migrate": "cf d1 migrations apply $(bun scripts/d1-id.ts) --dir drizzle --pattern 'drizzle/*/migration.sql'",
     "db:migrate:local": "cf d1 migrations apply $(bun scripts/d1-id.ts) --local --dir drizzle --pattern 'drizzle/*/migration.sql'",
     "db:migrate:hosted": "cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --dir drizzle --pattern 'drizzle/*/migration.sql'"
