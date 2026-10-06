@@ -52,15 +52,14 @@ function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effec
 
 export function makeSessionService(sessions: SessionRepoShape): SessionServiceShape {
   return {
-    issueSession: (userId, authMethod) =>
-      Effect.gen(function* () {
-        const rawValue = randomHex(32);
-        const idHash = yield* hashOf(rawValue);
-        const now = yield* Clock.currentTimeMillis;
-        const expiresAtMs = now + SESSION_TTL_MS;
-        yield* sessions.insert(idHash, userId, authMethod, now, expiresAtMs);
-        return { rawValue, expiresAtMs };
-      }),
+    issueSession: Effect.fn("session.issueSession")(function* (userId, authMethod) {
+      const rawValue = randomHex(32);
+      const idHash = yield* hashOf(rawValue);
+      const now = yield* Clock.currentTimeMillis;
+      const expiresAtMs = now + SESSION_TTL_MS;
+      yield* sessions.insert(idHash, userId, authMethod, now, expiresAtMs);
+      return { rawValue, expiresAtMs };
+    }),
     resolveSession: (rawValue) =>
       Effect.flatMap(hashOf(rawValue), (idHash) => resolveRecord(sessions, idHash)),
     // Explicit revocation goes through revokeByHash, which carries the

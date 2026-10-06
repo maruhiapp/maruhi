@@ -142,6 +142,15 @@ export interface FileFloorStoreOptions {
   readonly compactionThreshold?: number;
 }
 
+/**
+ * `Effect.fn` runs each pipeable as `p(effect, ...callArgs)`: binding the
+ * project id here keeps each refusal message naming the project's file.
+ */
+const mapErrorTo =
+  (message: (projectId: string) => string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>, projectId: string): Effect.Effect<A, CliError, R> =>
+    effect.pipe(Effect.mapError(() => cliError(message(projectId))));
+
 /** File-backed append-only floor store rooted at `dir` (production and tests share this). */
 export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions): FloorStoreShape {
   const compactionThreshold = options?.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
@@ -311,8 +320,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     );
 
   return {
-    load: (projectId) =>
-      Effect.gen(function* () {
+    load: Effect.fn("floor-log.load")(
+      function* (projectId) {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => pathOf(projectId),
@@ -348,12 +357,12 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           state: "loaded",
           droppedRecords: outcome.droppedLines,
         } satisfies FloorLoadResult;
-      }).pipe(
-        Effect.mapError(() =>
-          cliError(`Cannot read the local floor log: ${join(dir, `${projectId}.jsonl`)}`),
-        ),
-        Effect.provide(BunFileSystem.layer),
+      },
+      mapErrorTo(
+        (projectId) => `Cannot read the local floor log: ${join(dir, `${projectId}.jsonl`)}`,
       ),
+      Effect.provide(BunFileSystem.layer),
+    ),
     commitHead: (projectId, head) => Effect.asVoid(mutate(projectId, [{ r: "head", head }])),
     commitPull: (projectId, commit: PullCommit) =>
       mutate(projectId, [
@@ -413,8 +422,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           Effect.provide(BunFileSystem.layer),
         ),
       ),
-    listProjectIds: () =>
-      Effect.gen(function* () {
+    listProjectIds: Effect.fn("floor-log.listProjectIds")(
+      function* () {
         const fs = yield* FileSystem.FileSystem;
         const names = yield* fs
           .readDirectory(dir)
@@ -433,12 +442,12 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           }
         }
         return [...ids].toSorted();
-      }).pipe(
-        Effect.mapError(() => cliError(`Cannot list the local floor directory: ${dir}`)),
-        Effect.provide(BunFileSystem.layer),
-      ),
-    loadAttestedHead: (projectId) =>
-      Effect.gen(function* () {
+      },
+      Effect.mapError(() => cliError(`Cannot list the local floor directory: ${dir}`)),
+      Effect.provide(BunFileSystem.layer),
+    ),
+    loadAttestedHead: Effect.fn("floor-log.loadAttestedHead")(
+      function* (projectId) {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
@@ -468,16 +477,15 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           return null;
         }
         return decodeChainHead(isRecord(value) ? value["head"] : undefined);
-      }).pipe(
-        Effect.mapError(() =>
-          cliError(
-            `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
-          ),
-        ),
-        Effect.provide(BunFileSystem.layer),
+      },
+      mapErrorTo(
+        (projectId) =>
+          `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
       ),
-    saveAttestedHead: (projectId, head) =>
-      Effect.gen(function* () {
+      Effect.provide(BunFileSystem.layer),
+    ),
+    saveAttestedHead: Effect.fn("floor-log.saveAttestedHead")(
+      function* (projectId, head) {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
@@ -493,16 +501,15 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         const tmp = `${path}.tmp`;
         yield* fs.writeFileString(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });
         yield* fs.rename(tmp, path);
-      }).pipe(
-        Effect.mapError(() =>
-          cliError(
-            `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
-          ),
-        ),
-        Effect.provide(BunFileSystem.layer),
+      },
+      mapErrorTo(
+        (projectId) =>
+          `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
       ),
-    appendAttestationEvidence: (projectId, evidence) =>
-      Effect.gen(function* () {
+      Effect.provide(BunFileSystem.layer),
+    ),
+    appendAttestationEvidence: Effect.fn("floor-log.appendAttestationEvidence")(
+      function* (projectId, evidence) {
         const path = yield* Effect.try({
           try: () => evidencePathOf(projectId),
           catch: () =>
@@ -512,13 +519,15 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         });
         yield* appendJsonLine(path, evidence);
         return path;
-      }).pipe(
-        Effect.mapError(() =>
-          cliError(
-            `Cannot write the attestation-evidence log: ${join(dir, `${projectId}.attestation-evidence.jsonl`)}`,
-          ),
-        ),
-        Effect.provide(BunFileSystem.layer),
+      },
+      mapErrorTo(
+        (projectId) =>
+          `Cannot write the attestation-evidence log: ${join(
+            dir,
+            `${projectId}.attestation-evidence.jsonl`,
+          )}`,
       ),
+      Effect.provide(BunFileSystem.layer),
+    ),
   };
 }

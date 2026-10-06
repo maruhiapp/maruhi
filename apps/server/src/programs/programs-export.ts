@@ -47,43 +47,42 @@ export interface ExportPageValue {
   };
 }
 
-export const exportPageProgram = (
+export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(function* (
   actor: DataActor,
   cursorText: string | null,
   sql: SqlStorage,
   doIdHex: string,
   cache: StateCache,
-): Effect.Effect<ExportPageValue, DataRejectedError, ChainStore | DataStore | AuditStore> =>
-  Effect.gen(function* () {
-    const { state } = yield* requireMemberState(actor.userId, "owner", cache);
-    const nowMs = yield* Clock.currentTimeMillis;
-    const cursor = yield* continuationOf(cursorText, sql, actor.userId);
-    const exportedSeq =
-      cursor === null
-        ? yield* openExport(actor, state.headSeq, state.headHashHex, sql, nowMs)
-        : cursor.exportedSeq;
-    // The mark is read in the same synchronous call as the page's marks:
-    // "marked at the last page, marks unchanged since the first" then
-    // says by construction that no write landed after the export
-    const { page, mirrorOf } = yield* Effect.sync(() => ({
-      page: exportSnapshotPage({
-        sql,
-        tables: PROJECT_DO_TABLES,
-        schemaVersion: readProjectDoSchemaVersion(sql),
-        doIdHex,
-        takenAtMs: nowMs,
-        cursor,
-        exportedSeq,
-        maxRows: MAX_EXPORT_PAGE_ROWS,
-        maxBytes: MAX_EXPORT_PAGE_BYTES,
-      }),
-      mirrorOf: readMirrorState(sql)?.sourceOrigin ?? null,
-    }));
-    if (page.kind === "changed") {
-      return yield* rejectData({ kind: "export-changed" });
-    }
-    return pageValue(page, mirrorOf);
-  });
+): Effect.fn.Return<ExportPageValue, DataRejectedError, ChainStore | DataStore | AuditStore> {
+  const { state } = yield* requireMemberState(actor.userId, "owner", cache);
+  const nowMs = yield* Clock.currentTimeMillis;
+  const cursor = yield* continuationOf(cursorText, sql, actor.userId);
+  const exportedSeq =
+    cursor === null
+      ? yield* openExport(actor, state.headSeq, state.headHashHex, sql, nowMs)
+      : cursor.exportedSeq;
+  // The mark is read in the same synchronous call as the page's marks:
+  // "marked at the last page, marks unchanged since the first" then
+  // says by construction that no write landed after the export
+  const { page, mirrorOf } = yield* Effect.sync(() => ({
+    page: exportSnapshotPage({
+      sql,
+      tables: PROJECT_DO_TABLES,
+      schemaVersion: readProjectDoSchemaVersion(sql),
+      doIdHex,
+      takenAtMs: nowMs,
+      cursor,
+      exportedSeq,
+      maxRows: MAX_EXPORT_PAGE_ROWS,
+      maxBytes: MAX_EXPORT_PAGE_BYTES,
+    }),
+    mirrorOf: readMirrorState(sql)?.sourceOrigin ?? null,
+  }));
+  if (page.kind === "changed") {
+    return yield* rejectData({ kind: "export-changed" });
+  }
+  return pageValue(page, mirrorOf);
+});
 
 /**
  * The cursor of a continuation (null = the first page). A cursor this
@@ -134,37 +133,36 @@ function pageValue(
  * recomputes (bounded extension, run to convergence like a restore).
  * Returns the seq of the export's row (the cursor binds it).
  */
-const openExport = (
+const openExport = Effect.fn("programs-export.openExport")(function* (
   actor: DataActor,
   chainHeadSeq: number,
   chainHeadHashHex: string,
   sql: SqlStorage,
   nowMs: number,
-): Effect.Effect<number, DataRejectedError, DataStore | AuditStore> =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const audit = yield* AuditStore;
-    const window = yield* store.checkLeaseWindow("exported", MAX_EXPORTS_PER_WINDOW, nowMs);
-    if (!window.allowed) {
-      return yield* rejectData({
-        kind: "export-rate-limited",
-        retryAfterSeconds: window.retryAfterSeconds,
-      });
-    }
-    const exportedSeq = yield* Effect.sync(() => {
-      store.recordLeaseWindowUse("exported", nowMs);
-      audit.appendSync(
-        dataEvent(actor, nowMs, "project.exported", {
-          payload: { chainHeadSeq, chainHeadHashHex },
-        }),
-      );
-      return lastAuditSeq(sql);
+): Effect.fn.Return<number, DataRejectedError, DataStore | AuditStore> {
+  const store = yield* DataStore;
+  const audit = yield* AuditStore;
+  const window = yield* store.checkLeaseWindow("exported", MAX_EXPORTS_PER_WINDOW, nowMs);
+  if (!window.allowed) {
+    return yield* rejectData({
+      kind: "export-rate-limited",
+      retryAfterSeconds: window.retryAfterSeconds,
     });
-    while ((yield* audit.ensureHeadCurrent) === "more-remains") {
-      // Each call makes progress (the bounded contract of audit-store.ts)
-    }
-    return exportedSeq;
+  }
+  const exportedSeq = yield* Effect.sync(() => {
+    store.recordLeaseWindowUse("exported", nowMs);
+    audit.appendSync(
+      dataEvent(actor, nowMs, "project.exported", {
+        payload: { chainHeadSeq, chainHeadHashHex },
+      }),
+    );
+    return lastAuditSeq(sql);
   });
+  while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+    // Each call makes progress (the bounded contract of audit-store.ts)
+  }
+  return exportedSeq;
+});
 
 function lastAuditSeq(sql: SqlStorage): number {
   return Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"]);

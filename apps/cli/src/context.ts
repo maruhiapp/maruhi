@@ -121,39 +121,37 @@ export function resolveMirrorOrigin(
  * only: every verification duty runs unchanged against the mirror, and a
  * mirror behind the local floor is refused like any server.
  */
-export function withMirrorFallback<A>(
+export const withMirrorFallback = Effect.fn("context.withMirrorFallback")(function* <A>(
   flags: CommonFlags,
   read: (flags: CommonFlags) => Effect.Effect<A, CliError, CliServices>,
-): Effect.Effect<A, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const config = yield* loadCliConfig;
-    const mirror = yield* resolveMirrorOrigin(flags.mirror, config);
-    if (mirror === null) {
-      return yield* read(flags);
-    }
-    const primary = yield* resolveServerOrigin(flags.server, config);
-    if (mirror === primary) {
-      yield* logWarning(
-        "the mirror URL is the server URL itself — no fallback is possible (point `mirror` at the mirror deployment)",
-      );
-      return yield* read(flags);
-    }
-    return yield* read(flags).pipe(
-      Effect.catch((error: CliError) =>
-        error.unreachable === true
-          ? Effect.gen(function* () {
-              const io = yield* CliIo;
-              yield* io.logError(
-                `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
-              );
-              yield* ensureMirrorOf(config, mirror, primary, flags.project);
-              return yield* read({ ...flags, server: mirror, mirrorOf: primary });
-            })
-          : Effect.fail(error),
-      ),
+): Effect.fn.Return<A, CliError, CliServices> {
+  const config = yield* loadCliConfig;
+  const mirror = yield* resolveMirrorOrigin(flags.mirror, config);
+  if (mirror === null) {
+    return yield* read(flags);
+  }
+  const primary = yield* resolveServerOrigin(flags.server, config);
+  if (mirror === primary) {
+    yield* logWarning(
+      "the mirror URL is the server URL itself — no fallback is possible (point `mirror` at the mirror deployment)",
     );
-  });
-}
+    return yield* read(flags);
+  }
+  return yield* read(flags).pipe(
+    Effect.catch((error: CliError) =>
+      error.unreachable === true
+        ? Effect.gen(function* () {
+            const io = yield* CliIo;
+            yield* io.logError(
+              `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
+            );
+            yield* ensureMirrorOf(config, mirror, primary, flags.project);
+            return yield* read({ ...flags, server: mirror, mirrorOf: primary });
+          })
+        : Effect.fail(error),
+    ),
+  );
+});
 
 /**
  * Before a fallback read: the mirror must say it is a mirror of this
@@ -162,34 +160,32 @@ export function withMirrorFallback<A>(
  * another deployment is not this project's replica. The check reads the
  * mark with the mirror's own credential, like the read that follows.
  */
-function ensureMirrorOf(
+const ensureMirrorOf = Effect.fn("context.ensureMirrorOf")(function* (
   config: CliConfig,
   mirror: string,
   primary: string,
   projectFlag: string | undefined,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const projectId = yield* resolveProjectId(projectFlag, config);
-    const session = yield* openSessionWith(config, mirror, "mirror");
-    const status = yield* session.client.mirror
-      .status({ params: { projectId } })
-      .pipe(Effect.mapError(toCliError));
-    if (!status.mirror) {
-      return yield* Effect.fail(
-        cliError(
-          `${mirror} does not hold this project as a mirror (it was promoted, or never marked), so the read is not retried there. Confirm with an owner whether the project was promoted before pointing \`config set server\` at it — a mirror's own word is not what moves a member's writes`,
-        ),
-      );
-    }
-    if (status.sourceOrigin !== primary) {
-      return yield* Effect.fail(
-        cliError(
-          `${mirror} holds this project as a mirror of ${status.sourceOrigin ?? "another deployment"}, not of ${primary}: it is not this server's replica, so the read is not retried there (fix \`mirror\` in your config)`,
-        ),
-      );
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, CliServices> {
+  const projectId = yield* resolveProjectId(projectFlag, config);
+  const session = yield* openSessionWith(config, mirror, "mirror");
+  const status = yield* session.client.mirror
+    .status({ params: { projectId } })
+    .pipe(Effect.mapError(toCliError));
+  if (!status.mirror) {
+    return yield* Effect.fail(
+      cliError(
+        `${mirror} does not hold this project as a mirror (it was promoted, or never marked), so the read is not retried there. Confirm with an owner whether the project was promoted before pointing \`config set server\` at it — a mirror's own word is not what moves a member's writes`,
+      ),
+    );
+  }
+  if (status.sourceOrigin !== primary) {
+    return yield* Effect.fail(
+      cliError(
+        `${mirror} holds this project as a mirror of ${status.sourceOrigin ?? "another deployment"}, not of ${primary}: it is not this server's replica, so the read is not retried there (fix \`mirror\` in your config)`,
+      ),
+    );
+  }
+});
 
 // ID format validation (the client-side early check of AUTH_SPEC §12-1) uses
 // @maruhi/core's isProjectId / isEnvironmentId (no duplicated pattern definitions)
@@ -254,37 +250,33 @@ export interface SessionContext {
 
 /** Session resolution from an already-loaded config (the inner half that does not re-read config). */
 /** The client's bounds a session may be opened with (an uploader takes the body bound on its headers — ruling H revision, round 4). */
-export interface SessionClientOptions {
+interface SessionClientOptions {
   readonly timeout?: Duration.Duration;
 }
 
-export function openSessionWith(
+export const openSessionWith = Effect.fn("context.openSessionWith")(function* (
   config: CliConfig,
   serverFlag: string | undefined,
   credential: SessionCredential = "server",
   clientOptions: SessionClientOptions = {},
-): Effect.Effect<SessionContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const origin = yield* resolveServerOrigin(serverFlag, config);
-    const session = yield* resolveSession(origin, credential);
-    const client = yield* makeApiClient({
-      baseUrl: origin,
-      token: session.token,
-      ...(clientOptions.timeout === undefined ? {} : { timeout: clientOptions.timeout }),
-    });
-    return { config, origin, session, client };
+): Effect.fn.Return<SessionContext, CliError, CliServices> {
+  const origin = yield* resolveServerOrigin(serverFlag, config);
+  const session = yield* resolveSession(origin, credential);
+  const client = yield* makeApiClient({
+    baseUrl: origin,
+    token: session.token,
+    ...(clientOptions.timeout === undefined ? {} : { timeout: clientOptions.timeout }),
   });
-}
+  return { config, origin, session, client };
+});
 
-export function openSession(
+export const openSession = Effect.fn("context.openSession")(function* (
   serverFlag: string | undefined,
   credential: SessionCredential = "server",
   clientOptions: SessionClientOptions = {},
-): Effect.Effect<SessionContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    return yield* openSessionWith(yield* loadCliConfig, serverFlag, credential, clientOptions);
-  });
-}
+): Effect.fn.Return<SessionContext, CliError, CliServices> {
+  return yield* openSessionWith(yield* loadCliConfig, serverFlag, credential, clientOptions);
+});
 
 /**
  * The product of the prologue that needs no key material (ID validation →
@@ -306,7 +298,7 @@ export interface ProjectContext extends ProjectContextBase {
   readonly recipient: DekRecipient;
 }
 
-export interface CheckedFloor {
+interface CheckedFloor {
   readonly floor: ProjectFloor | null;
   /** The view that passed the chain floor check (it may have advanced via a bounded resync when shortening was suspected). */
   readonly verified: VerifiedProject;
@@ -331,61 +323,59 @@ export interface CheckedFloor {
  * floor's seq position is a contradiction of two verified artifacts (hard
  * evidence), so it stays an immediate rejection.
  */
-export function loadCheckedFloor(
+export const loadCheckedFloor = Effect.fn("context.loadCheckedFloor")(function* (
   projectId: string,
   verified: VerifiedProject,
   resync: Effect.Effect<VerifiedProject, CliError>,
-): Effect.Effect<CheckedFloor, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const store = yield* FloorStore;
-    const loaded = yield* store.load(projectId);
-    if (loaded.state === "missing") {
-      yield* logNote(
-        "this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
-      );
-    } else if (loaded.state === "corrupt") {
-      yield* logWarning(
-        "cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
-      );
-    } else if (loaded.droppedRecords > 0) {
-      // Partial corruption can continue via the fold's self-healing, but it
-      // is not left silent: if the dropped line was the latest head / manifest
-      // observation, the detection material at that coordinate is one
-      // generation thinner until the next verified observation (the same
-      // visibility level as the corrupt warning for whole-log corruption)
-      yield* logWarning(
-        `${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
+): Effect.fn.Return<CheckedFloor, CliError, CliServices> {
+  const store = yield* FloorStore;
+  const loaded = yield* store.load(projectId);
+  if (loaded.state === "missing") {
+    yield* logNote(
+      "this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
+    );
+  } else if (loaded.state === "corrupt") {
+    yield* logWarning(
+      "cannot read the local floor file (it is corrupt). Continuing without a floor — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
+    );
+  } else if (loaded.droppedRecords > 0) {
+    // Partial corruption can continue via the fold's self-healing, but it
+    // is not left silent: if the dropped line was the latest head / manifest
+    // observation, the detection material at that coordinate is one
+    // generation thinner until the next verified observation (the same
+    // visibility level as the corrupt warning for whole-log corruption)
+    yield* logWarning(
+      `${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
+    );
+  }
+  let view = verified;
+  if (loaded.floor !== null) {
+    if (loaded.floor.conflicts.length > 0) {
+      // A same-coordinate conflict surfaced by the fold (§6.3 — a pair of
+      // verified observations with the same version but different hashes)
+      // is hard evidence of equivocation. Refuse to use or advance the floor
+      return yield* Effect.fail(
+        evidenceError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
       );
     }
-    let view = verified;
-    if (loaded.floor !== null) {
-      if (loaded.floor.conflicts.length > 0) {
-        // A same-coordinate conflict surfaced by the fold (§6.3 — a pair of
-        // verified observations with the same version but different hashes)
-        // is hard evidence of equivocation. Refuse to use or advance the floor
-        return yield* Effect.fail(
-          evidenceError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
-        );
-      }
-      let violation = checkChainFloor(loaded.floor, view);
-      if (violation !== null && violation.kind === "chain-shortened") {
-        // Resync with an extension check: if the initial view was merely
-        // stale, the resynced view should have it as a prefix. If it is not an
-        // extension, reject as evidence that the initial view itself was a
-        // fork (a shortening + fork composite)
-        view = yield* resyncExtended(resync, view);
-        violation = checkChainFloor(loaded.floor, view);
-      }
-      if (violation !== null) {
-        // Reject + presentable evidence (the floor's recorded head and this
-        // sync's head): a contradiction between signed data, as the value
-        // pull's floor check flags it (round 11)
-        return yield* Effect.fail(evidenceError(formatFloorViolation({ projectId }, violation)));
-      }
+    let violation = checkChainFloor(loaded.floor, view);
+    if (violation !== null && violation.kind === "chain-shortened") {
+      // Resync with an extension check: if the initial view was merely
+      // stale, the resynced view should have it as a prefix. If it is not an
+      // extension, reject as evidence that the initial view itself was a
+      // fork (a shortening + fork composite)
+      view = yield* resyncExtended(resync, view);
+      violation = checkChainFloor(loaded.floor, view);
     }
-    return { floor: loaded.floor, verified: view };
-  });
-}
+    if (violation !== null) {
+      // Reject + presentable evidence (the floor's recorded head and this
+      // sync's head): a contradiction between signed data, as the value
+      // pull's floor check flags it (round 11)
+      return yield* Effect.fail(evidenceError(formatFloorViolation({ projectId }, violation)));
+    }
+  }
+  return { floor: loaded.floor, verified: view };
+});
 
 /**
  * The reconciliation result of an intent's composite entry. accepted /
@@ -453,65 +443,63 @@ function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
  * leave no trace on the chain, so the next verified pull (values.ts)
  * reconciles them.
  */
-function reconcileCompositeIntents(input: {
+const reconcileCompositeIntents = Effect.fn("context.reconcileCompositeIntents")(function* (input: {
   readonly store: FloorStoreShape;
   readonly projectId: string;
   readonly verified: VerifiedProject;
   readonly intents: readonly FloorIntent[];
-}): Effect.Effect<boolean, CliError, CliServices> {
-  return Effect.gen(function* () {
-    let resolved = false;
-    for (const intent of input.intents) {
-      if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
-        continue;
-      }
-      const state = intentEntryState(input.verified, intent);
-      if (state === "pending") {
-        // An empty slot cannot be told apart: a crash before sending, or our
-        // own sync before the composite landed. Leave it unreconciled without
-        // deciding (once the chain advances past the declared head, the next
-        // reconciliation decides accepted / rejected)
-        yield* logNote(
-          `an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
-        );
-        continue;
-      }
-      const environment = input.verified.state.environments.get(intent.environmentId);
-      if (state === "accepted") {
-        // Confirmed as accepted — promote the self-issued manifest to the floor (joining a verified fact)
-        yield* input.store.commitManifest(input.projectId, {
-          chainHead: {
-            seq: input.verified.state.headSeq,
-            hashHex: input.verified.state.headHashHex,
-          },
-          environmentId: intent.environmentId,
-          manifest: {
-            manifestVersion: intent.manifestVersion,
-            epoch: intent.epoch,
-            manifestSigHashHex: intent.manifestSigHashHex,
-          },
-        });
-        yield* input.store.resolveIntent(
-          input.projectId,
-          intent.id,
-          environment !== undefined && environment.currentEpoch === intent.epoch
-            ? "accepted"
-            : "accepted-superseded",
-        );
-        yield* logNote(
-          `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
-        );
-      } else {
-        yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
-        yield* logNote(
-          `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
-        );
-      }
-      resolved = true;
+}): Effect.fn.Return<boolean, CliError, CliServices> {
+  let resolved = false;
+  for (const intent of input.intents) {
+    if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
+      continue;
     }
-    return resolved;
-  });
-}
+    const state = intentEntryState(input.verified, intent);
+    if (state === "pending") {
+      // An empty slot cannot be told apart: a crash before sending, or our
+      // own sync before the composite landed. Leave it unreconciled without
+      // deciding (once the chain advances past the declared head, the next
+      // reconciliation decides accepted / rejected)
+      yield* logNote(
+        `an earlier ${intent.op} for environment ${intent.environmentId} is still awaiting confirmation (its chain slot is empty — the request may not have been sent, or may still be in flight). It will be reconciled once the chain advances`,
+      );
+      continue;
+    }
+    const environment = input.verified.state.environments.get(intent.environmentId);
+    if (state === "accepted") {
+      // Confirmed as accepted — promote the self-issued manifest to the floor (joining a verified fact)
+      yield* input.store.commitManifest(input.projectId, {
+        chainHead: {
+          seq: input.verified.state.headSeq,
+          hashHex: input.verified.state.headHashHex,
+        },
+        environmentId: intent.environmentId,
+        manifest: {
+          manifestVersion: intent.manifestVersion,
+          epoch: intent.epoch,
+          manifestSigHashHex: intent.manifestSigHashHex,
+        },
+      });
+      yield* input.store.resolveIntent(
+        input.projectId,
+        intent.id,
+        environment !== undefined && environment.currentEpoch === intent.epoch
+          ? "accepted"
+          : "accepted-superseded",
+      );
+      yield* logNote(
+        `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
+      );
+    } else {
+      yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
+      yield* logNote(
+        `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
+      );
+    }
+    resolved = true;
+  }
+  return resolved;
+});
 
 /**
  * The anchor reconciliation's 3 checks (head inclusion → inviter FP →
@@ -561,36 +549,34 @@ function anchorFailureOf(
  * exists (the check is 2 references only, and an always-on check is strictly
  * stronger).
  */
-export function checkInviteAnchor(
+export const checkInviteAnchor = Effect.fn("context.checkInviteAnchor")(function* (
   projectId: string,
   verified: VerifiedProject,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const store = yield* PinStore;
-    const loaded = yield* store.load(projectId);
-    if (loaded.state === "corrupt") {
-      yield* logWarning(
-        "cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this. If the file predates this release, delete `invites/<projectId>.json` in the maruhi configuration directory and accept the invite again",
-      );
-      return;
-    }
-    const anchor: InviteAnchor | null = loaded.pins?.anchor ?? null;
-    if (anchor === null) {
-      return;
-    }
-    const failure = anchorFailureOf(projectId, anchor, verified);
-    if (failure !== null) {
-      return yield* Effect.fail(evidenceError(failure));
-    }
-    if (anchor.verifiedAtSeq === null) {
-      yield* io.log(
-        "Invite-link anchor check passed (genesis match, head inclusion, inviter key — CRYPTO_SPEC §6.3 / §6.5)",
-      );
-      yield* store.saveAnchor(projectId, { ...anchor, verifiedAtSeq: verified.state.headSeq });
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const store = yield* PinStore;
+  const loaded = yield* store.load(projectId);
+  if (loaded.state === "corrupt") {
+    yield* logWarning(
+      "cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this. If the file predates this release, delete `invites/<projectId>.json` in the maruhi configuration directory and accept the invite again",
+    );
+    return;
+  }
+  const anchor: InviteAnchor | null = loaded.pins?.anchor ?? null;
+  if (anchor === null) {
+    return;
+  }
+  const failure = anchorFailureOf(projectId, anchor, verified);
+  if (failure !== null) {
+    return yield* Effect.fail(evidenceError(failure));
+  }
+  if (anchor.verifiedAtSeq === null) {
+    yield* io.log(
+      "Invite-link anchor check passed (genesis match, head inclusion, inviter key — CRYPTO_SPEC §6.3 / §6.5)",
+    );
+    yield* store.saveAnchor(projectId, { ...anchor, verifiedAtSeq: verified.state.headSeq });
+  }
+});
 
 /**
  * Prologue options. `quietMandateWarning` suppresses the standing warning of
@@ -599,7 +585,7 @@ export function checkInviteAnchor(
  * revoke / env rotate — the command's own sweep report conveys the same fact
  * more accurately, so the sync-time warning becomes double-reporting noise).
  */
-export interface OpenProjectOptions {
+interface OpenProjectOptions {
   readonly quietMandateWarning?: boolean;
 }
 
@@ -615,24 +601,22 @@ export interface OpenProjectOptions {
  * every future honest chain as a hash mismatch (floor pollution by a rejected
  * view).
  */
-export function reconcileGossip(
+export const reconcileGossip = Effect.fn("context.reconcileGossip")(function* (
   projectId: string,
   verified: VerifiedProject,
   resync: Effect.Effect<VerifiedProject, CliError>,
-): Effect.Effect<VerifiedProject, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const reconciled = yield* reconcileDistributedAttestations({
-      projectId,
-      view: verified,
-      resync,
-    });
-    if (reconciled !== verified) {
-      yield* checkInviteAnchor(projectId, reconciled);
-    }
-    yield* commitVerifiedHead(projectId, reconciled);
-    return reconciled;
+): Effect.fn.Return<VerifiedProject, CliError, CliServices> {
+  const reconciled = yield* reconcileDistributedAttestations({
+    projectId,
+    view: verified,
+    resync,
   });
-}
+  if (reconciled !== verified) {
+    yield* checkInviteAnchor(projectId, reconciled);
+  }
+  yield* commitVerifiedHead(projectId, reconciled);
+  return reconciled;
+});
 
 /**
  * The common prologue after session establishment: §6.3 sync → chain floor
@@ -653,109 +637,105 @@ export function reconcileGossip(
  * only reconciles and does not submit (submission is SHOULD, and keyless
  * execution — MARUHI_TOKEN — must not be broken for its sake).
  */
-function attachProject(
+const attachProject = Effect.fn("context.attachProject")(function* (
   context: SessionContext,
   projectId: string,
   options?: OpenProjectOptions,
   attester?: { readonly userId: string; readonly signingKey: CryptoKey },
-): Effect.Effect<ProjectContextBase, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const resync = syncProject(context.client, projectId);
-    const synced = yield* resync;
-    const checked = yield* loadCheckedFloor(projectId, synced, resync);
-    yield* checkInviteAnchor(projectId, checked.verified);
-    const verified = yield* reconcileGossip(projectId, checked.verified, resync);
-    // An unresolved composite intent (3-F) is "resolved by reconciliation
-    // before the next mutation to the same environment reports success" — the
-    // prologue fully syncs and verifies the chain every run, so this is that
-    // reconciliation point (if accepted, the floor's manifest advance is also
-    // recovered here)
-    let floor = checked.floor;
-    if (floor !== null && floor.intents.length > 0) {
-      const store = yield* FloorStore;
-      const resolved = yield* reconcileCompositeIntents({
-        store,
-        projectId,
-        verified,
-        intents: floor.intents,
-      });
-      if (resolved) {
-        // The reconciliation may have advanced the floor — re-read the fold.
-        // The conflict check is re-applied to the reloaded floor too: if a
-        // concurrent process appended a same-coordinate contradictory
-        // observation during or right after reconciliation, proceeding without
-        // the check would run the rest of this command on a representative
-        // value that ignored equivocation evidence (the same fail-closed as
-        // loadCheckedFloor, kept intact at every point that re-reads the floor)
-        const reloaded = (yield* store.load(projectId)).floor;
-        if (reloaded !== null && reloaded.conflicts.length > 0) {
-          return yield* Effect.fail(
-            evidenceError(formatFloorConflicts(projectId, reloaded.conflicts)),
-          );
-        }
-        floor = reloaded;
+): Effect.fn.Return<ProjectContextBase, CliError, CliServices> {
+  const resync = syncProject(context.client, projectId);
+  const synced = yield* resync;
+  const checked = yield* loadCheckedFloor(projectId, synced, resync);
+  yield* checkInviteAnchor(projectId, checked.verified);
+  const verified = yield* reconcileGossip(projectId, checked.verified, resync);
+  // An unresolved composite intent (3-F) is "resolved by reconciliation
+  // before the next mutation to the same environment reports success" — the
+  // prologue fully syncs and verifies the chain every run, so this is that
+  // reconciliation point (if accepted, the floor's manifest advance is also
+  // recovered here)
+  let floor = checked.floor;
+  if (floor !== null && floor.intents.length > 0) {
+    const store = yield* FloorStore;
+    const resolved = yield* reconcileCompositeIntents({
+      store,
+      projectId,
+      verified,
+      intents: floor.intents,
+    });
+    if (resolved) {
+      // The reconciliation may have advanced the floor — re-read the fold.
+      // The conflict check is re-applied to the reloaded floor too: if a
+      // concurrent process appended a same-coordinate contradictory
+      // observation during or right after reconciliation, proceeding without
+      // the check would run the rest of this command on a representative
+      // value that ignored equivocation evidence (the same fail-closed as
+      // loadCheckedFloor, kept intact at every point that re-reads the floor)
+      const reloaded = (yield* store.load(projectId)).floor;
+      if (reloaded !== null && reloaded.conflicts.length > 0) {
+        return yield* Effect.fail(
+          evidenceError(formatFloorConflicts(projectId, reloaded.conflicts)),
+        );
       }
+      floor = reloaded;
     }
-    if (options?.quietMandateWarning !== true) {
-      yield* warnUnconvergedMandates({ client: context.client, verified });
-    }
-    // Submission of the verified-head attestation (§6.3 head gossip —
-    // SHOULD; only views that passed every reconciliation are attested.
-    // Failure is a non-fatal warning — attestation.ts)
-    if (attester !== undefined) {
-      yield* submitHeadAttestationIfAdvanced({
-        client: context.client,
-        projectId,
-        view: verified,
-        attesterUserId: attester.userId,
-        signingKey: attester.signingKey,
-      });
-    }
-    return { ...context, projectId, verified, floor, resync };
-  });
-}
+  }
+  if (options?.quietMandateWarning !== true) {
+    yield* warnUnconvergedMandates({ client: context.client, verified });
+  }
+  // Submission of the verified-head attestation (§6.3 head gossip —
+  // SHOULD; only views that passed every reconciliation are attested.
+  // Failure is a non-fatal warning — attestation.ts)
+  if (attester !== undefined) {
+    yield* submitHeadAttestationIfAdvanced({
+      client: context.client,
+      projectId,
+      view: verified,
+      attesterUserId: attester.userId,
+      signingKey: attester.signingKey,
+    });
+  }
+  return { ...context, projectId, verified, floor, resync };
+});
 
 /** The prologue shared by data commands (loaded-config version). */
-function openProjectWith(
+const openProjectWith = Effect.fn("context.openProjectWith")(function* (
   config: CliConfig,
   flags: CommonFlags,
   options?: OpenProjectOptions,
-): Effect.Effect<ProjectContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // The project ID format check runs before any network access
-    const projectId = yield* resolveProjectId(flags.project, config);
-    const mirrorRead = flags.mirrorOf !== undefined;
-    const context = yield* openSessionWith(config, flags.server, mirrorRead ? "mirror" : "server");
-    // Loading the master key stays **before** sync (traffic) and floor
-    // advance: a write command run on a keyless device must not be made to
-    // round-trip the server before it fails. On a mirror read the key is
-    // the one stored for the server origin (the key is the person's)
-    const masterKeys = yield* loadMasterKeys({
-      ...context.session,
-      origin: flags.mirrorOf ?? context.session.origin,
-    });
-    // A mirror refuses attestations (AUTH_SPEC §11-7): the fallback read
-    // reconciles the gossip it serves but submits nothing there
-    const base = yield* attachProject(
-      context,
-      projectId,
-      options,
-      mirrorRead
-        ? undefined
-        : { userId: context.session.userId, signingKey: masterKeys.sigKeyPair.privateKey },
-    );
-    const recipient: DekRecipient = {
-      userId: context.session.userId,
-      encPubHex: masterKeys.record.encPubHex,
-      encKeyPair: masterKeys.encKeyPair,
-    };
-    const opened: ProjectContext = { ...base, masterKeys, recipient };
-    // Observation of the device set and registration of the first sync (DK
-    // K4-3 — keyed prologues only; idempotent, non-fatal). A mirror refuses
-    // the registration, so the fallback read skips it
-    return mirrorRead ? opened : yield* syncOwnDevices(opened);
+): Effect.fn.Return<ProjectContext, CliError, CliServices> {
+  // The project ID format check runs before any network access
+  const projectId = yield* resolveProjectId(flags.project, config);
+  const mirrorRead = flags.mirrorOf !== undefined;
+  const context = yield* openSessionWith(config, flags.server, mirrorRead ? "mirror" : "server");
+  // Loading the master key stays **before** sync (traffic) and floor
+  // advance: a write command run on a keyless device must not be made to
+  // round-trip the server before it fails. On a mirror read the key is
+  // the one stored for the server origin (the key is the person's)
+  const masterKeys = yield* loadMasterKeys({
+    ...context.session,
+    origin: flags.mirrorOf ?? context.session.origin,
   });
-}
+  // A mirror refuses attestations (AUTH_SPEC §11-7): the fallback read
+  // reconciles the gossip it serves but submits nothing there
+  const base = yield* attachProject(
+    context,
+    projectId,
+    options,
+    mirrorRead
+      ? undefined
+      : { userId: context.session.userId, signingKey: masterKeys.sigKeyPair.privateKey },
+  );
+  const recipient: DekRecipient = {
+    userId: context.session.userId,
+    encPubHex: masterKeys.record.encPubHex,
+    encKeyPair: masterKeys.encKeyPair,
+  };
+  const opened: ProjectContext = { ...base, masterKeys, recipient };
+  // Observation of the device set and registration of the first sync (DK
+  // K4-3 — keyed prologues only; idempotent, non-fatal). A mirror refuses
+  // the registration, so the fallback read skips it
+  return mirrorRead ? opened : yield* syncOwnDevices(opened);
+});
 
 /**
  * The prologue for commands that read only plaintext metadata (**does not
@@ -768,30 +748,26 @@ function openProjectWith(
  * too, and `project verify` already is a keyless read command of the same
  * shape.
  */
-function openMetadataProjectWith(
+const openMetadataProjectWith = Effect.fn("context.openMetadataProjectWith")(function* (
   config: CliConfig,
   flags: CommonFlags,
-): Effect.Effect<ProjectContextBase, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(
-      config,
-      flags.server,
-      flags.mirrorOf === undefined ? "server" : "mirror",
-    );
-    return yield* attachProject(context, projectId);
-  });
-}
+): Effect.fn.Return<ProjectContextBase, CliError, CliServices> {
+  const projectId = yield* resolveProjectId(flags.project, config);
+  const context = yield* openSessionWith(
+    config,
+    flags.server,
+    flags.mirrorOf === undefined ? "server" : "mirror",
+  );
+  return yield* attachProject(context, projectId);
+});
 
 /** The prologue shared by data commands: ID validation → session → master key → §6.3 sync check → floor check. */
-export function openProject(
+export const openProject = Effect.fn("context.openProject")(function* (
   flags: CommonFlags,
   options?: OpenProjectOptions,
-): Effect.Effect<ProjectContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    return yield* openProjectWith(yield* loadCliConfig, flags, options);
-  });
-}
+): Effect.fn.Return<ProjectContext, CliError, CliServices> {
+  return yield* openProjectWith(yield* loadCliConfig, flags, options);
+});
 
 /**
  * The prologue for commands that read only plaintext metadata and the chain
@@ -802,13 +778,11 @@ export function openProject(
  * key for the issuance signature (CRYPTO_SPEC §6.5), so it is on the
  * openProject side (2026-09-13 IV revision).
  */
-export function openMetadataProject(
+export const openMetadataProject = Effect.fn("context.openMetadataProject")(function* (
   flags: CommonFlags,
-): Effect.Effect<ProjectContextBase, CliError, CliServices> {
-  return Effect.gen(function* () {
-    return yield* openMetadataProjectWith(yield* loadCliConfig, flags);
-  });
-}
+): Effect.fn.Return<ProjectContextBase, CliError, CliServices> {
+  return yield* openMetadataProjectWith(yield* loadCliConfig, flags);
+});
 
 /** Per-environment floor handle (used by pull / push in the command for checks and commits). */
 export function floorHandleFor(
@@ -849,36 +823,34 @@ export interface EnvironmentContext extends ProjectContext {
  * difference — design note K4-C) → environment floor handle. Config is read
  * exactly once here.
  */
-export function openEnvironment(
+export const openEnvironment = Effect.fn("context.openEnvironment")(function* (
   flags: CommonFlags,
   options?: OpenProjectOptions,
-): Effect.Effect<EnvironmentContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const config = yield* loadCliConfig;
-    const environmentId = yield* resolveEnvironmentId(flags.env, config);
-    const context = yield* openProjectWith(config, flags, options);
-    // The check is **this device's effective scope** (person ∩ device — DK
-    // K4-17). If the key at hand is not on the chain (unregistered / revoked),
-    // guide to the registration path (approving the pending request, or
-    // syncing the device listed here — DK K10-5) before fetching values
-    const self = context.verified.state.members.get(context.session.userId);
-    const device =
-      self === undefined
-        ? undefined
-        : yield* ownDeviceOrFail(context.verified, self, {
-            encPubHex: context.masterKeys.record.encPubHex,
-          });
-    yield* requireEnvironmentInScope({
-      verified: context.verified,
-      userId: context.session.userId,
-      environmentId,
-      operation: "operate on",
-      device,
-    });
-    const floorHandle = yield* floorHandleFor(context, environmentId);
-    return { ...context, environmentId, floorHandle };
+): Effect.fn.Return<EnvironmentContext, CliError, CliServices> {
+  const config = yield* loadCliConfig;
+  const environmentId = yield* resolveEnvironmentId(flags.env, config);
+  const context = yield* openProjectWith(config, flags, options);
+  // The check is **this device's effective scope** (person ∩ device — DK
+  // K4-17). If the key at hand is not on the chain (unregistered / revoked),
+  // guide to the registration path (approving the pending request, or
+  // syncing the device listed here — DK K10-5) before fetching values
+  const self = context.verified.state.members.get(context.session.userId);
+  const device =
+    self === undefined
+      ? undefined
+      : yield* ownDeviceOrFail(context.verified, self, {
+          encPubHex: context.masterKeys.record.encPubHex,
+        });
+  yield* requireEnvironmentInScope({
+    verified: context.verified,
+    userId: context.session.userId,
+    environmentId,
+    operation: "operate on",
+    device,
   });
-}
+  const floorHandle = yield* floorHandleFor(context, environmentId);
+  return { ...context, environmentId, floorHandle };
+});
 
 /**
  * Records the verified view's chain head to the floor (material for §6.3
@@ -904,7 +876,7 @@ export function commitVerifiedHead(
 }
 
 /** Keyless environment context (commands that read only metadata — maruhi schema). */
-export interface MetadataEnvironmentContext extends ProjectContextBase {
+interface MetadataEnvironmentContext extends ProjectContextBase {
   readonly environmentId: string;
   /** Per-environment floor handle (§6.3 — metadata-only pull checks and environment-level commits). */
   readonly floorHandle: FloorHandle;
@@ -918,27 +890,25 @@ export interface MetadataEnvironmentContext extends ProjectContextBase {
  * **Scope is not checked** (AUTH_SPEC §12-7 — a metadata-only pull is allowed
  * outside scope; ruling G-2).
  */
-export function openMetadataEnvironment(
+export const openMetadataEnvironment = Effect.fn("context.openMetadataEnvironment")(function* (
   flags: CommonFlags,
-): Effect.Effect<MetadataEnvironmentContext, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const config = yield* loadCliConfig;
-    const environmentId = yield* resolveEnvironmentId(flags.env, config);
-    const context = yield* openMetadataProjectWith(config, flags);
-    const floorHandle = yield* floorHandleFor(context, environmentId);
-    return { ...context, environmentId, floorHandle };
-  });
-}
+): Effect.fn.Return<MetadataEnvironmentContext, CliError, CliServices> {
+  const config = yield* loadCliConfig;
+  const environmentId = yield* resolveEnvironmentId(flags.env, config);
+  const context = yield* openMetadataProjectWith(config, flags);
+  const floorHandle = yield* floorHandleFor(context, environmentId);
+  return { ...context, environmentId, floorHandle };
+});
 
 /** A floor handle for one environment (held paired with the environment ID so it cannot be mixed up). */
-export interface EnvironmentHandle {
+interface EnvironmentHandle {
   readonly environmentId: EnvironmentId;
   /** Per-environment floor handle (§6.3). */
   readonly floorHandle: FloorHandle;
 }
 
 /** The result of opening 2 environments under a single project prologue (env diff). */
-export interface EnvironmentPairContext extends ProjectContextBase {
+interface EnvironmentPairContext extends ProjectContextBase {
   readonly first: EnvironmentHandle;
   readonly second: EnvironmentHandle;
 }
@@ -960,12 +930,12 @@ export interface EnvironmentPairContext extends ProjectContextBase {
  * validation — the display side passes environment IDs through displayText
  * too (env-diff.ts).
  */
-export function openMetadataEnvironmentPair(
-  flags: CommonFlags,
-  first: EnvironmentId,
-  second: EnvironmentId,
-): Effect.Effect<EnvironmentPairContext, CliError, CliServices> {
-  return Effect.gen(function* () {
+export const openMetadataEnvironmentPair = Effect.fn("context.openMetadataEnvironmentPair")(
+  function* (
+    flags: CommonFlags,
+    first: EnvironmentId,
+    second: EnvironmentId,
+  ): Effect.fn.Return<EnvironmentPairContext, CliError, CliServices> {
     const config = yield* loadCliConfig;
     const context = yield* openMetadataProjectWith(config, flags);
     return {
@@ -973,5 +943,5 @@ export function openMetadataEnvironmentPair(
       first: { environmentId: first, floorHandle: yield* floorHandleFor(context, first) },
       second: { environmentId: second, floorHandle: yield* floorHandleFor(context, second) },
     };
-  });
-}
+  },
+);

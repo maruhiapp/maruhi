@@ -43,26 +43,29 @@ export function projectQuotaExceeded(activeProjectCount: number): boolean {
 }
 
 /** An extant (non-tombstone) environment. Absent → environment-not-found. */
-export const requireActiveEnvironment = (environmentId: string) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const environment = yield* store.findEnvironment(environmentId);
-    if (environment === null || environment.deletedAtMs !== null) {
-      return yield* rejectData({ kind: "environment-not-found", environmentId });
-    }
-    return environment;
-  });
+export const requireActiveEnvironment = Effect.fn("quotas.requireActiveEnvironment")(function* (
+  environmentId: string,
+) {
+  const store = yield* DataStore;
+  const environment = yield* store.findEnvironment(environmentId);
+  if (environment === null || environment.deletedAtMs !== null) {
+    return yield* rejectData({ kind: "environment-not-found", environmentId });
+  }
+  return environment;
+});
 
 /** An extant (non-tombstone) variable. Absent → variable-not-found. */
-export const requireActiveVariable = (environmentId: string, variableId: string) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const variable = yield* store.findVariable(environmentId, variableId);
-    if (variable === null || variable.deletedAtMs !== null) {
-      return yield* rejectData({ kind: "variable-not-found", variableId });
-    }
-    return variable;
-  });
+export const requireActiveVariable = Effect.fn("quotas.requireActiveVariable")(function* (
+  environmentId: string,
+  variableId: string,
+) {
+  const store = yield* DataStore;
+  const variable = yield* store.findVariable(environmentId, variableId);
+  if (variable === null || variable.deletedAtMs !== null) {
+    return yield* rejectData({ kind: "variable-not-found", variableId });
+  }
+  return variable;
+});
 
 /** The quantity policy on environment count (§12-8; called from composite creation — composite-programs.ts). */
 export const ensureEnvironmentQuota = Effect.gen(function* () {
@@ -85,25 +88,26 @@ export const ensureEnvironmentQuota = Effect.gen(function* () {
 });
 
 /** The quantity policy on variable count and variable-row count (tombstones included) (§12-8). */
-export const ensureVariableQuota = (environmentId: string) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const counts = yield* store.countVariables(environmentId);
-    if (counts.active + 1 > MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "variables",
-        limit: MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
-      });
-    }
-    if (counts.rows + 1 > MAX_VARIABLE_ROWS_PER_ENVIRONMENT) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "variable-rows",
-        limit: MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
-      });
-    }
-  });
+export const ensureVariableQuota = Effect.fn("quotas.ensureVariableQuota")(function* (
+  environmentId: string,
+) {
+  const store = yield* DataStore;
+  const counts = yield* store.countVariables(environmentId);
+  if (counts.active + 1 > MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "variables",
+      limit: MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
+    });
+  }
+  if (counts.rows + 1 > MAX_VARIABLE_ROWS_PER_ENVIRONMENT) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "variable-rows",
+      limit: MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
+    });
+  }
+});
 
 /**
  * The cap on metaVersion row count (interim ruling — applies the
@@ -130,18 +134,19 @@ export function projectBytesExceeded(storedBytes: number, addedBytes: number): b
   return storedBytes + addedBytes > MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES;
 }
 
-export const ensureProjectCapacity = (addedBytes: number) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const stored = yield* store.totalCiphertextBytes;
-    if (projectBytesExceeded(stored, addedBytes)) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "project-ciphertext-bytes",
-        limit: MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
-      });
-    }
-  });
+export const ensureProjectCapacity = Effect.fn("quotas.ensureProjectCapacity")(function* (
+  addedBytes: number,
+) {
+  const store = yield* DataStore;
+  const stored = yield* store.totalCiphertextBytes;
+  if (projectBytesExceeded(stored, addedBytes)) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "project-ciphertext-bytes",
+      limit: MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
+    });
+  }
+});
 
 /**
  * §12-8: the cap on accumulated DEK-wrap rows per project. A pure
@@ -154,18 +159,19 @@ export function wrapRowsExceeded(storedRows: number, addedRows: number): boolean
 }
 
 /** Called on every wrap-insertion path (DEK registration, environment creation) (§12-8). */
-export const ensureWrapRowCapacity = (addedRows: number) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const stored = yield* store.countWrapRows;
-    if (wrapRowsExceeded(stored, addedRows)) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "dek-wrap-rows",
-        limit: MAX_PROJECT_DEK_WRAP_ROWS,
-      });
-    }
-  });
+export const ensureWrapRowCapacity = Effect.fn("quotas.ensureWrapRowCapacity")(function* (
+  addedRows: number,
+) {
+  const store = yield* DataStore;
+  const stored = yield* store.countWrapRows;
+  if (wrapRowsExceeded(stored, addedRows)) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "dek-wrap-rows",
+      limit: MAX_PROJECT_DEK_WRAP_ROWS,
+    });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // The acceptance policy for four-eyes proposals (AUTH_SPEC §12-8 /
@@ -213,24 +219,23 @@ export function countLivePendingProposals(
  * Called after the membership check and the growth guard, before CAS
  * / verifyChain (appendProgram in chain-do.ts).
  */
-export const ensureProposalAdmitted = (
+export const ensureProposalAdmitted = Effect.fn("quotas.ensureProposalAdmitted")(function* (
   expiresAtMs: number,
   pending: ReadonlyMap<string, PendingProposal>,
   nowMs: number,
-) =>
-  Effect.gen(function* () {
-    if (proposalLifetimeExceeded(expiresAtMs, nowMs)) {
-      return yield* rejectData({
-        kind: "proposal-limit",
-        reason: "proposal-lifetime",
-        limit: MAX_PROPOSAL_LIFETIME_MS,
-      });
-    }
-    if (pendingProposalsExceeded(countLivePendingProposals(pending, nowMs))) {
-      return yield* rejectData({
-        kind: "proposal-limit",
-        reason: "pending-proposals",
-        limit: MAX_PENDING_PROPOSALS,
-      });
-    }
-  });
+) {
+  if (proposalLifetimeExceeded(expiresAtMs, nowMs)) {
+    return yield* rejectData({
+      kind: "proposal-limit",
+      reason: "proposal-lifetime",
+      limit: MAX_PROPOSAL_LIFETIME_MS,
+    });
+  }
+  if (pendingProposalsExceeded(countLivePendingProposals(pending, nowMs))) {
+    return yield* rejectData({
+      kind: "proposal-limit",
+      reason: "pending-proposals",
+      limit: MAX_PENDING_PROPOSALS,
+    });
+  }
+});

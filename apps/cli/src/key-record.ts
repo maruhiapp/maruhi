@@ -33,8 +33,8 @@ const keygenSerializeFailed = () =>
   cliError("Failed to generate the keypair (cannot serialize the private keys)");
 
 /** Generates a fresh (enc, sig) key record with the private halves redacted. */
-export function generateKeyRecord(): Effect.Effect<StoredMasterKey, CliError> {
-  return Effect.gen(function* () {
+export const generateKeyRecord = Effect.fn("key-record.generateKeyRecord")(
+  function* (): Effect.fn.Return<StoredMasterKey, CliError> {
     const encPair = yield* cryptoPromise("generateEncryptionKeyPair", () =>
       generateEncryptionKeyPair({ extractable: true }),
     ).pipe(Effect.mapError(keygenFailed));
@@ -60,5 +60,5 @@ export function generateKeyRecord(): Effect.Effect<StoredMasterKey, CliError> {
       sigPubHex: encodeHex(sigPub),
       sigSkSeedHex: Redacted.make(encodeHex(sigSeed), { label: "master-sig-seed" }),
     } satisfies StoredMasterKey;
-  });
-}
+  },
+);

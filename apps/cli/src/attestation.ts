@@ -58,86 +58,82 @@ type MatchOutcome =
  * view. Verification failures are skip (not reconciliation material); only
  * the two head-binding kinds (§6.3-2) come back as future / mismatch.
  */
-function matchAttestation(
+const matchAttestation = Effect.fnUntraced(function* (
   view: VerifiedProject,
   attestation: DistributedAttestationWire,
-): Effect.Effect<MatchOutcome> {
-  return Effect.gen(function* () {
-    // First half of §6.6 (1): the attester (user_id + key FP) must be a
-    // current member in the local view. An attestation by a non-current member
-    // is not reconciliation material (the server deletes the row at remove —
-    // §6.4; even when distributed, a past attestation within the membership
-    // interval has no warning value)
-    const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
-    // The attested FP is one of the attester's currently valid devices
-    // (2026-09-19 DK — per-device identification)
-    if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
-      return { kind: "skip" } satisfies MatchOutcome;
-    }
-    const outcome = yield* cryptoEffect(() =>
-      verifyDistributedHeadAttestation({
-        history: view.history,
-        context: {
-          suite: attestation.suite,
-          projectId: view.projectId,
-          attesterUserId: attestation.attesterUserId,
-          chainHeadHashHex: attestation.chainHeadHashHex,
-          chainHeadSeq: attestation.chainHeadSeq,
+): Effect.fn.Return<MatchOutcome> {
+  // First half of §6.6 (1): the attester (user_id + key FP) must be a
+  // current member in the local view. An attestation by a non-current member
+  // is not reconciliation material (the server deletes the row at remove —
+  // §6.4; even when distributed, a past attestation within the membership
+  // interval has no warning value)
+  const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
+  // The attested FP is one of the attester's currently valid devices
+  // (2026-09-19 DK — per-device identification)
+  if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
+    return { kind: "skip" } satisfies MatchOutcome;
+  }
+  const outcome = yield* cryptoEffect(() =>
+    verifyDistributedHeadAttestation({
+      history: view.history,
+      context: {
+        suite: attestation.suite,
+        projectId: view.projectId,
+        attesterUserId: attestation.attesterUserId,
+        chainHeadHashHex: attestation.chainHeadHashHex,
+        chainHeadSeq: attestation.chainHeadSeq,
+      },
+      attesterKeyFingerprintHex: attestation.attesterKeyFingerprintHex,
+      signatureHex: attestation.signatureHex,
+    }),
+  ).pipe(
+    Effect.as({ kind: "ok" } satisfies MatchOutcome),
+    // Every other wrapped kind is not reconciliation material — the
+    // else branch lands on skip (§6.6: verification failures are
+    // skipped, not warned — warning-induction DoS by forged
+    // attestations is eliminated that way)
+    Effect.catchTags(
+      {
+        CryptoHeadAttestationInvalid: (error) => {
+          if (error.reason === "chain-head-future") {
+            return Effect.succeed({ kind: "future" } satisfies MatchOutcome);
+          }
+          if (error.reason === "chain-head-mismatch") {
+            // Signature and key selection are already verified (check order — §6.6),
+            // so this mismatch makes the attestation itself evidence (distinct from a
+            // discarded skip)
+            return Effect.succeed({ kind: "mismatch" } satisfies MatchOutcome);
+          }
+          return Effect.succeed({ kind: "skip" } satisfies MatchOutcome);
         },
-        attesterKeyFingerprintHex: attestation.attesterKeyFingerprintHex,
-        signatureHex: attestation.signatureHex,
-      }),
-    ).pipe(
-      Effect.as({ kind: "ok" } satisfies MatchOutcome),
-      // Every other wrapped kind is not reconciliation material — the
-      // else branch lands on skip (§6.6: verification failures are
-      // skipped, not warned — warning-induction DoS by forged
-      // attestations is eliminated that way)
-      Effect.catchTags(
-        {
-          CryptoHeadAttestationInvalid: (error) => {
-            if (error.reason === "chain-head-future") {
-              return Effect.succeed({ kind: "future" } satisfies MatchOutcome);
-            }
-            if (error.reason === "chain-head-mismatch") {
-              // Signature and key selection are already verified (check order — §6.6),
-              // so this mismatch makes the attestation itself evidence (distinct from a
-              // discarded skip)
-              return Effect.succeed({ kind: "mismatch" } satisfies MatchOutcome);
-            }
-            return Effect.succeed({ kind: "skip" } satisfies MatchOutcome);
-          },
-        },
-        () => Effect.succeed({ kind: "skip" } satisfies MatchOutcome),
-      ),
-    );
-    return outcome;
-  });
-}
+      },
+      () => Effect.succeed({ kind: "skip" } satisfies MatchOutcome),
+    ),
+  );
+  return outcome;
+});
 
 interface Classified {
   readonly evidence: DistributedAttestationWire[];
   readonly future: DistributedAttestationWire[];
 }
 
-function classifyAll(
+const classifyAll = Effect.fn("attestation.classifyAll")(function* (
   view: VerifiedProject,
   attestations: readonly DistributedAttestationWire[],
-): Effect.Effect<Classified> {
-  return Effect.gen(function* () {
-    const evidence: DistributedAttestationWire[] = [];
-    const future: DistributedAttestationWire[] = [];
-    for (const attestation of attestations) {
-      const outcome = yield* matchAttestation(view, attestation);
-      if (outcome.kind === "mismatch") {
-        evidence.push(attestation);
-      } else if (outcome.kind === "future") {
-        future.push(attestation);
-      }
+): Effect.fn.Return<Classified> {
+  const evidence: DistributedAttestationWire[] = [];
+  const future: DistributedAttestationWire[] = [];
+  for (const attestation of attestations) {
+    const outcome = yield* matchAttestation(view, attestation);
+    if (outcome.kind === "mismatch") {
+      evidence.push(attestation);
+    } else if (outcome.kind === "future") {
+      future.push(attestation);
     }
-    return { evidence, future };
-  });
-}
+  }
+  return { evidence, future };
+});
 
 function evidenceRecordOf(
   view: VerifiedProject,
@@ -165,39 +161,37 @@ function evidenceRecordOf(
 }
 
 /** Save the evidence (append-only) + warn + stop using that sync's artifacts (fail). */
-function failWithEvidence(
+const failWithEvidence = Effect.fn("attestation.failWithEvidence")(function* (
   projectId: string,
   view: VerifiedProject,
   records: readonly {
     attestation: DistributedAttestationWire;
     kind: AttestationEvidenceRecord["kind"];
   }[],
-): Effect.Effect<never, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const store = yield* FloorStore;
-    const detectedAtMs = yield* Clock.currentTimeMillis;
-    const evidence = records.map((record) =>
-      evidenceRecordOf(view, record.attestation, record.kind, detectedAtMs),
-    );
-    let evidencePath = "(could not be written)";
-    for (const record of evidence) {
-      // A failure to save the evidence itself does not swallow the detection
-      // (the warning body carries the evidence — saving is additional
-      // preservation; the interruption and warning are unchanged if it fails)
-      const written = yield* store
-        .appendAttestationEvidence(projectId, record)
-        .pipe(Effect.orElseSucceed(() => null));
-      if (written !== null) {
-        evidencePath = written;
-      }
+): Effect.fn.Return<never, CliError, CliServices> {
+  const store = yield* FloorStore;
+  const detectedAtMs = yield* Clock.currentTimeMillis;
+  const evidence = records.map((record) =>
+    evidenceRecordOf(view, record.attestation, record.kind, detectedAtMs),
+  );
+  let evidencePath = "(could not be written)";
+  for (const record of evidence) {
+    // A failure to save the evidence itself does not swallow the detection
+    // (the warning body carries the evidence — saving is additional
+    // preservation; the interruption and warning are unchanged if it fails)
+    const written = yield* store
+      .appendAttestationEvidence(projectId, record)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (written !== null) {
+      evidencePath = written;
     }
-    // A contradiction between signed data: evidence, which a re-run does
-    // not resolve (round 12)
-    return yield* Effect.fail(
-      evidenceError(formatAttestationEvidence(projectId, evidence, evidencePath)),
-    );
-  });
-}
+  }
+  // A contradiction between signed data: evidence, which a re-run does
+  // not resolve (round 12)
+  return yield* Effect.fail(
+    evidenceError(formatAttestationEvidence(projectId, evidence, evidencePath)),
+  );
+});
 
 /**
  * Verify and reconcile the distributed attestation set ((a)/(b) in the module
@@ -207,66 +201,66 @@ function failWithEvidence(
  * ones. If unresolved: (a). On success, returns the reconciled view (it may
  * have advanced via the resync).
  */
-export function reconcileDistributedAttestations(input: {
+export const reconcileDistributedAttestations = Effect.fn(
+  "attestation.reconcileDistributedAttestations",
+)(function* (input: {
   readonly projectId: string;
   readonly view: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<VerifiedProject, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const first = yield* classifyAll(input.view, input.view.attestations);
-    if (first.evidence.length > 0) {
-      return yield* failWithEvidence(
-        input.projectId,
-        input.view,
-        first.evidence.map((attestation) => ({ attestation, kind: "head-mismatch" as const })),
-      );
+}): Effect.fn.Return<VerifiedProject, CliError, CliServices> {
+  const first = yield* classifyAll(input.view, input.view.attestations);
+  if (first.evidence.length > 0) {
+    return yield* failWithEvidence(
+      input.projectId,
+      input.view,
+      first.evidence.map((attestation) => ({ attestation, kind: "head-mismatch" as const })),
+    );
+  }
+  if (first.future.length === 0) {
+    return input.view;
+  }
+  // (b): bounded resync (once). The extension check (resyncExtended) drops
+  // a substitution to a different chain right there
+  const advanced = yield* resyncExtended(input.resync, input.view);
+  // Re-reconcile the post-resync view's own attestation set plus the
+  // unresolved future ones (the normal shape is that a future entry is
+  // replaced in the new set by a newer attestation from the same attester,
+  // but if it simply vanished, judge by whether the original attestation
+  // resolved).
+  // The union dedupes identical attestations (when the attester has not
+  // re-attested, the same record appears in the new set) — the same content
+  // listed twice in the evidence JSONL / warning would read as "two members
+  // contradicting each other".
+  // The key is every wire field: with a partial key, a malicious server
+  // could mix a one-field-rewritten record into the new set and make a
+  // genuine carried-over entry (first.future) get dropped on a key
+  // collision (the forged side is silently skipped at signature
+  // verification → the carried-over reconciliation misses, reopening the
+  // omission bypass that the session-37 ruling AA closed)
+  const seen = new Set<string>();
+  const union = [...advanced.attestations, ...first.future].filter((attestation) => {
+    const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
+    if (seen.has(key)) {
+      return false;
     }
-    if (first.future.length === 0) {
-      return input.view;
-    }
-    // (b): bounded resync (once). The extension check (resyncExtended) drops
-    // a substitution to a different chain right there
-    const advanced = yield* resyncExtended(input.resync, input.view);
-    // Re-reconcile the post-resync view's own attestation set plus the
-    // unresolved future ones (the normal shape is that a future entry is
-    // replaced in the new set by a newer attestation from the same attester,
-    // but if it simply vanished, judge by whether the original attestation
-    // resolved).
-    // The union dedupes identical attestations (when the attester has not
-    // re-attested, the same record appears in the new set) — the same content
-    // listed twice in the evidence JSONL / warning would read as "two members
-    // contradicting each other".
-    // The key is every wire field: with a partial key, a malicious server
-    // could mix a one-field-rewritten record into the new set and make a
-    // genuine carried-over entry (first.future) get dropped on a key
-    // collision (the forged side is silently skipped at signature
-    // verification → the carried-over reconciliation misses, reopening the
-    // omission bypass that the session-37 ruling AA closed)
-    const seen = new Set<string>();
-    const union = [...advanced.attestations, ...first.future].filter((attestation) => {
-      const key = `${attestation.suite}#${attestation.attesterUserId}#${attestation.attesterKeyFingerprintHex}#${attestation.chainHeadHashHex}#${attestation.chainHeadSeq}#${attestation.signatureHex}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-    const second = yield* classifyAll(advanced, union);
-    if (second.evidence.length > 0 || second.future.length > 0) {
-      return yield* failWithEvidence(input.projectId, advanced, [
-        ...second.evidence.map((attestation) => ({
-          attestation,
-          kind: "head-mismatch" as const,
-        })),
-        ...second.future.map((attestation) => ({
-          attestation,
-          kind: "unresolved-after-resync" as const,
-        })),
-      ]);
-    }
-    return advanced;
+    seen.add(key);
+    return true;
   });
-}
+  const second = yield* classifyAll(advanced, union);
+  if (second.evidence.length > 0 || second.future.length > 0) {
+    return yield* failWithEvidence(input.projectId, advanced, [
+      ...second.evidence.map((attestation) => ({
+        attestation,
+        kind: "head-mismatch" as const,
+      })),
+      ...second.future.map((attestation) => ({
+        attestation,
+        kind: "unresolved-after-resync" as const,
+      })),
+    ]);
+  }
+  return advanced;
+});
 
 /**
  * Submit an attestation for the verified head (§6.3 head gossip —
@@ -277,92 +271,92 @@ export function reconcileDistributedAttestations(input: {
  * is a local-view regression = warned separately as a sign of floor
  * damage or a concurrent CLI.
  */
-export function submitHeadAttestationIfAdvanced(input: {
+export const submitHeadAttestationIfAdvanced = Effect.fn(
+  "attestation.submitHeadAttestationIfAdvanced",
+)(function* (input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
   readonly view: VerifiedProject;
   readonly attesterUserId: string;
   readonly signingKey: CryptoKey;
-}): Effect.Effect<void, never, CliServices> {
-  return Effect.gen(function* () {
-    const store = yield* FloorStore;
-    const head = { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex };
-    const attested = yield* store
-      .loadAttestedHead(input.projectId)
-      .pipe(Effect.orElseSucceed(() => null));
-    if (attested !== null && head.seq <= attested.seq && head.hashHex === attested.hashHex) {
-      // Suppress only re-attesting the **identical head** that has not
-      // advanced (the SHOULD's trigger is "if advanced" — no submission, no
-      // rate-window consumption). It is not judged by seq alone because when
-      // the floor is missing / corrupt — first run or damaged — and we are
-      // shown a different chain at the same seq with a different hash
-      // (equivocation), the path by which other members detect the fork via
-      // this device's attestation would close too. A seq regression
-      // (necessarily a different hash) is submitted too, so the server's 409
-      // AttestationRegression surfaces as a warning sign of floor damage or
-      // a concurrent CLI
-      return;
-    }
-    const signed = yield* cryptoEffect(() =>
-      signHeadAttestation({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.projectId,
-          attesterUserId: input.attesterUserId,
-          chainHeadHashHex: head.hashHex,
-          chainHeadSeq: head.seq,
-        },
-        signingKey: input.signingKey,
-      }),
-    ).pipe(Effect.orElseSucceed(() => null));
-    if (signed === null) {
-      yield* logNote(
-        "could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
-      );
-      return;
-    }
-    // Reading `_tag` directly is banned by oxlint — the discrimination is
-    // the tag (catchTag); the diagnostic name is internalErrorKind (the
-    // type name only — carries no response fragment)
-    const submitted = yield* input.client.membership
-      .attest({
-        params: { projectId: input.projectId },
-        payload: {
-          suite: SUITE_ID,
-          chainHeadHashHex: head.hashHex,
-          chainHeadSeq: head.seq,
-          signatureHex: signed,
-        },
-      })
+}): Effect.fn.Return<void, never, CliServices> {
+  const store = yield* FloorStore;
+  const head = { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex };
+  const attested = yield* store
+    .loadAttestedHead(input.projectId)
+    .pipe(Effect.orElseSucceed(() => null));
+  if (attested !== null && head.seq <= attested.seq && head.hashHex === attested.hashHex) {
+    // Suppress only re-attesting the **identical head** that has not
+    // advanced (the SHOULD's trigger is "if advanced" — no submission, no
+    // rate-window consumption). It is not judged by seq alone because when
+    // the floor is missing / corrupt — first run or damaged — and we are
+    // shown a different chain at the same seq with a different hash
+    // (equivocation), the path by which other members detect the fork via
+    // this device's attestation would close too. A seq regression
+    // (necessarily a different hash) is submitted too, so the server's 409
+    // AttestationRegression surfaces as a warning sign of floor damage or
+    // a concurrent CLI
+    return;
+  }
+  const signed = yield* cryptoEffect(() =>
+    signHeadAttestation({
+      context: {
+        suite: SUITE_ID,
+        projectId: input.projectId,
+        attesterUserId: input.attesterUserId,
+        chainHeadHashHex: head.hashHex,
+        chainHeadSeq: head.seq,
+      },
+      signingKey: input.signingKey,
+    }),
+  ).pipe(Effect.orElseSucceed(() => null));
+  if (signed === null) {
+    yield* logNote(
+      "could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
+    );
+    return;
+  }
+  // Reading `_tag` directly is banned by oxlint — the discrimination is
+  // the tag (catchTag); the diagnostic name is internalErrorKind (the
+  // type name only — carries no response fragment)
+  const submitted = yield* input.client.membership
+    .attest({
+      params: { projectId: input.projectId },
+      payload: {
+        suite: SUITE_ID,
+        chainHeadHashHex: head.hashHex,
+        chainHeadSeq: head.seq,
+        signatureHex: signed,
+      },
+    })
+    .pipe(
+      Effect.as("submitted" as const),
+      Effect.catchTag(
+        "AttestationRegression",
+        () => Effect.succeed("regression" as const),
+        (error) => Effect.succeed(internalErrorKind(error)),
+      ),
+    );
+  if (submitted === "submitted") {
+    yield* store
+      .saveAttestedHead(input.projectId, head)
       .pipe(
-        Effect.as("submitted" as const),
-        Effect.catchTag(
-          "AttestationRegression",
-          () => Effect.succeed("regression" as const),
-          (error) => Effect.succeed(internalErrorKind(error)),
+        Effect.catch(() =>
+          logNote(
+            "the head attestation was submitted but its local tracking file could not be written (the next sync may re-submit the same head, which the server treats as an idempotent success)",
+          ),
         ),
       );
-    if (submitted === "submitted") {
-      yield* store
-        .saveAttestedHead(input.projectId, head)
-        .pipe(
-          Effect.catch(() =>
-            logNote(
-              "the head attestation was submitted but its local tracking file could not be written (the next sync may re-submit the same head, which the server treats as an idempotent success)",
-            ),
-          ),
-        );
-      return;
-    }
-    // A submission failure is non-fatal (SHOULD) but not ignored — reduced to a one-line warning
-    if (submitted === "regression") {
-      yield* logWarning(
-        "the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
-      );
-      return;
-    }
-    yield* logNote(
-      `could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds). This does not affect the current command (${submitted})`,
+    return;
+  }
+  // A submission failure is non-fatal (SHOULD) but not ignored — reduced to a one-line warning
+  if (submitted === "regression") {
+    yield* logWarning(
+      "the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
     );
-  });
-}
+    return;
+  }
+  yield* logNote(
+    `could not submit the head attestation for this sync (split-view gossip stays inactive for this account until it succeeds). This does not affect the current command (${submitted})`,
+  );
+});

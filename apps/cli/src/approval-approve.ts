@@ -88,7 +88,7 @@ export type Fulfilment =
       readonly sweep: SweepOutcome & { readonly skippedDeleted: readonly string[] };
     };
 
-export type ApproveOutcome =
+type ApproveOutcome =
   | { readonly kind: "recorded"; readonly view: ProposalView }
   | {
       readonly kind: "applied";
@@ -158,7 +158,7 @@ function ensureApprovable(
 }
 
 /** Fulfils the applied inner op (approval item 22 — the approver regardless of the inner op kind). */
-function fulfil<R>(input: {
+const fulfil = Effect.fn("approval-approve.fulfil")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly seq: number;
@@ -167,102 +167,100 @@ function fulfil<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<Fulfilment, CliError, R | CliIo> {
-  return Effect.gen(function* () {
-    const { inner, verified } = input;
-    switch (inner.op) {
-      case "remove_member": {
-        const sweep = yield* sweepMemberMandates({
-          client: input.client,
-          verified,
-          targetUserId: inner.payload.targetUserId,
-          actorUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-          rotateWith: input.rotateWith,
-        });
-        return { kind: "member-rotation", targetUserId: inner.payload.targetUserId, sweep };
-      }
-      case "add_member": {
-        const target = verified.state.members.get(inner.payload.targetUserId);
-        if (target === undefined) {
-          return yield* Effect.fail(
-            cliError(
-              "The resync after the completing approve does not show the added member on the chain (the server's response contradicts the chain). Investigate the served chain",
-            ),
-          );
-        }
-        const backfill = yield* backfillNewMember({
-          client: input.client,
-          verified,
-          target,
-          recipient: input.recipient,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-        });
-        return { kind: "member-backfill", targetUserId: target.userId, backfill };
-      }
-      case "change_role": {
-        const target = verified.state.members.get(inner.payload.targetUserId);
-        if (target === undefined) {
-          return yield* Effect.fail(
-            cliError(
-              "The resync after the completing approve does not show the target as a member (the server's response contradicts the chain). Investigate the served chain",
-            ),
-          );
-        }
-        const change = yield* fulfilRoleChange({
-          client: input.client,
-          verified,
-          target,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-          recipient: input.recipient,
-          rotateWith: input.rotateWith,
-        });
-        return { kind: "role-change", targetUserId: target.userId, change };
-      }
-      case "grant_server": {
-        const grant = verified.state.serverGrants.get(inner.payload.serverKeyFingerprintHex);
-        if (grant === undefined) {
-          return yield* Effect.fail(
-            cliError(
-              "The resync after the completing approve does not show the grant (the server's response contradicts the chain). Investigate the served chain",
-            ),
-          );
-        }
-        const result = yield* backfillServerGrant({
-          client: input.client,
-          verified,
-          grant,
-          recipient: input.recipient,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-        });
-        return {
-          kind: "server-backfill",
-          serverKeyFingerprintHex: grant.serverKeyFingerprintHex,
-          scopeEnvironmentIds: grant.scopeEnvironmentIds,
-          ...result,
-        };
-      }
-      case "revoke_server": {
-        const sweep = yield* sweepAfterRevoke({
-          client: input.client,
-          verified,
-          revokeSeq: input.seq,
-          rotate: input.rotateWith("server-revoked"),
-        });
-        return {
-          kind: "server-rotation",
-          serverKeyFingerprintHex: inner.payload.serverKeyFingerprintHex,
-          sweep,
-        };
-      }
-      default:
-        return { kind: "none" };
+}): Effect.fn.Return<Fulfilment, CliError, R | CliIo> {
+  const { inner, verified } = input;
+  switch (inner.op) {
+    case "remove_member": {
+      const sweep = yield* sweepMemberMandates({
+        client: input.client,
+        verified,
+        targetUserId: inner.payload.targetUserId,
+        actorUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+        rotateWith: input.rotateWith,
+      });
+      return { kind: "member-rotation", targetUserId: inner.payload.targetUserId, sweep };
     }
-  });
-}
+    case "add_member": {
+      const target = verified.state.members.get(inner.payload.targetUserId);
+      if (target === undefined) {
+        return yield* Effect.fail(
+          cliError(
+            "The resync after the completing approve does not show the added member on the chain (the server's response contradicts the chain). Investigate the served chain",
+          ),
+        );
+      }
+      const backfill = yield* backfillNewMember({
+        client: input.client,
+        verified,
+        target,
+        recipient: input.recipient,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+      });
+      return { kind: "member-backfill", targetUserId: target.userId, backfill };
+    }
+    case "change_role": {
+      const target = verified.state.members.get(inner.payload.targetUserId);
+      if (target === undefined) {
+        return yield* Effect.fail(
+          cliError(
+            "The resync after the completing approve does not show the target as a member (the server's response contradicts the chain). Investigate the served chain",
+          ),
+        );
+      }
+      const change = yield* fulfilRoleChange({
+        client: input.client,
+        verified,
+        target,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+        recipient: input.recipient,
+        rotateWith: input.rotateWith,
+      });
+      return { kind: "role-change", targetUserId: target.userId, change };
+    }
+    case "grant_server": {
+      const grant = verified.state.serverGrants.get(inner.payload.serverKeyFingerprintHex);
+      if (grant === undefined) {
+        return yield* Effect.fail(
+          cliError(
+            "The resync after the completing approve does not show the grant (the server's response contradicts the chain). Investigate the served chain",
+          ),
+        );
+      }
+      const result = yield* backfillServerGrant({
+        client: input.client,
+        verified,
+        grant,
+        recipient: input.recipient,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+      });
+      return {
+        kind: "server-backfill",
+        serverKeyFingerprintHex: grant.serverKeyFingerprintHex,
+        scopeEnvironmentIds: grant.scopeEnvironmentIds,
+        ...result,
+      };
+    }
+    case "revoke_server": {
+      const sweep = yield* sweepAfterRevoke({
+        client: input.client,
+        verified,
+        revokeSeq: input.seq,
+        rotate: input.rotateWith("server-revoked"),
+      });
+      return {
+        kind: "server-rotation",
+        serverKeyFingerprintHex: inner.payload.serverKeyFingerprintHex,
+        sweep,
+      };
+    }
+    default:
+      return { kind: "none" };
+  }
+});
 
 interface ApproveState {
   readonly verified: VerifiedProject;
@@ -273,7 +271,9 @@ interface ApproveState {
     | null;
 }
 
-export function approveProposalOp<R>(input: {
+export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")(function* <
+  R,
+>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly ref: string;
@@ -285,108 +285,106 @@ export function approveProposalOp<R>(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
   readonly nowMs: number;
-}): Effect.Effect<ApproveOutcome, CliError, R | CliIo> {
-  return Effect.gen(function* () {
-    const first = yield* ensureApprovable(
-      input.verified,
-      input.ref,
-      input.signerUserId,
-      input.signerFingerprintHex,
-      input.nowMs,
-    );
-    const proposal = first.proposal;
-    let mySeq: number | null = null;
-    const initial: ApproveState = { verified: input.verified, closed: null };
-    const outcome = yield* retryOnConflict(initial, {
-      maxAttempts: MAX_ATTEMPTS,
-      attempt: (state) =>
-        state.closed !== null
-          ? Effect.succeed(state)
-          : Effect.gen(function* () {
-              const entry = yield* signEntryAtHead({
-                verified: state.verified,
-                signerUserId: input.signerUserId,
-                operation: {
-                  op: "approve",
-                  payload: { proposalHashHex: proposal.proposalHashHex },
-                },
-                signingKeyPair: input.signingKeyPair,
-                failureText: "Failed to sign the approve entry",
-              });
-              mySeq = entry.seq;
-              yield* appendEntry(input.client, state.verified, entry);
-              return state;
-            }),
-      classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-      recover: (state) =>
-        Effect.gen(function* () {
-          const resynced = yield* resyncExtended(input.resync, state.verified);
-          const status = proposalStatusOf(resynced, proposal.proposalHashHex);
-          // Another owner completed / withdrew it first: re-signing and
-          // sending anyway would only be rejected as unknown-proposal, so
-          // stop here with a typed outcome (K6-B)
-          if (status.kind === "completed" || status.kind === "withdrawn") {
-            return { verified: resynced, closed: status };
-          }
-          yield* ensureApprovable(
-            resynced,
-            proposal.proposalHashHex,
-            input.signerUserId,
-            input.signerFingerprintHex,
-            input.nowMs,
-          );
-          return { verified: resynced, closed: null };
-        }),
-      exhaustedMessage: `approve's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-    });
-    if (outcome.closed !== null) {
-      return outcome.closed.kind === "completed"
-        ? { kind: "completed-by-other", proposal, completedAtSeq: outcome.closed.completedAtSeq }
-        : { kind: "withdrawn-concurrently", proposal };
-    }
-
-    // Learn the result from the post-acceptance resync (the server response does not carry whether it applied — K5-S)
-    const verified = yield* resyncExtended(input.resync, outcome.verified);
-    const status = proposalStatusOf(verified, proposal.proposalHashHex);
-    if (status.kind === "pending") {
-      const pending = verified.state.pendingProposals.get(proposal.proposalHashHex);
-      if (pending === undefined) {
-        return yield* Effect.fail(
-          cliError("Pending proposal vanished between two reads (internal contradiction)"),
+}): Effect.fn.Return<ApproveOutcome, CliError, R | CliIo> {
+  const first = yield* ensureApprovable(
+    input.verified,
+    input.ref,
+    input.signerUserId,
+    input.signerFingerprintHex,
+    input.nowMs,
+  );
+  const proposal = first.proposal;
+  let mySeq: number | null = null;
+  const initial: ApproveState = { verified: input.verified, closed: null };
+  const outcome = yield* retryOnConflict(initial, {
+    maxAttempts: MAX_ATTEMPTS,
+    attempt: (state) =>
+      state.closed !== null
+        ? Effect.succeed(state)
+        : Effect.gen(function* () {
+            const entry = yield* signEntryAtHead({
+              verified: state.verified,
+              signerUserId: input.signerUserId,
+              operation: {
+                op: "approve",
+                payload: { proposalHashHex: proposal.proposalHashHex },
+              },
+              signingKeyPair: input.signingKeyPair,
+              failureText: "Failed to sign the approve entry",
+            });
+            mySeq = entry.seq;
+            yield* appendEntry(input.client, state.verified, entry);
+            return state;
+          }),
+    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+    recover: (state) =>
+      Effect.gen(function* () {
+        const resynced = yield* resyncExtended(input.resync, state.verified);
+        const status = proposalStatusOf(resynced, proposal.proposalHashHex);
+        // Another owner completed / withdrew it first: re-signing and
+        // sending anyway would only be rejected as unknown-proposal, so
+        // stop here with a typed outcome (K6-B)
+        if (status.kind === "completed" || status.kind === "withdrawn") {
+          return { verified: resynced, closed: status };
+        }
+        yield* ensureApprovable(
+          resynced,
+          proposal.proposalHashHex,
+          input.signerUserId,
+          input.signerFingerprintHex,
+          input.nowMs,
         );
-      }
-      return { kind: "recorded", view: proposalViewOf(verified, pending, input.nowMs) };
-    }
-    if (status.kind === "withdrawn") {
-      return { kind: "withdrawn-concurrently", proposal };
-    }
-    if (status.kind === "unknown") {
+        return { verified: resynced, closed: null };
+      }),
+    exhaustedMessage: `approve's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+  });
+  if (outcome.closed !== null) {
+    return outcome.closed.kind === "completed"
+      ? { kind: "completed-by-other", proposal, completedAtSeq: outcome.closed.completedAtSeq }
+      : { kind: "withdrawn-concurrently", proposal };
+  }
+
+  // Learn the result from the post-acceptance resync (the server response does not carry whether it applied — K5-S)
+  const verified = yield* resyncExtended(input.resync, outcome.verified);
+  const status = proposalStatusOf(verified, proposal.proposalHashHex);
+  if (status.kind === "pending") {
+    const pending = verified.state.pendingProposals.get(proposal.proposalHashHex);
+    if (pending === undefined) {
       return yield* Effect.fail(
-        cliError(
-          "The resync after the approve entry was accepted no longer knows the proposal (the server's response contradicts the chain). Investigate the served chain",
-        ),
+        cliError("Pending proposal vanished between two reads (internal contradiction)"),
       );
     }
-    const seq: number | null = mySeq;
-    if (seq === null || status.completedAtSeq !== seq) {
-      // Another owner's approve completed it after mine (my vote counted,
-      // but that owner is the fulfiller)
-      return { kind: "completed-by-other", proposal, completedAtSeq: status.completedAtSeq };
-    }
-    const io = yield* CliIo;
-    yield* io.log(
-      `Your approval reached the quorum: applied ${proposal.inner.op} at seq=${seq} (proposed by ${displayText(proposal.proposerUserId)}). You are the fulfiller of its obligations (CRYPTO_SPEC §7)`,
+    return { kind: "recorded", view: proposalViewOf(verified, pending, input.nowMs) };
+  }
+  if (status.kind === "withdrawn") {
+    return { kind: "withdrawn-concurrently", proposal };
+  }
+  if (status.kind === "unknown") {
+    return yield* Effect.fail(
+      cliError(
+        "The resync after the approve entry was accepted no longer knows the proposal (the server's response contradicts the chain). Investigate the served chain",
+      ),
     );
-    const fulfilment = yield* fulfil({
-      client: input.client,
-      verified,
-      seq,
-      inner: proposal.inner,
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-      recipient: input.recipient,
-      rotateWith: input.rotateWith,
-    });
-    return { kind: "applied", seq, proposal, fulfilment };
+  }
+  const seq: number | null = mySeq;
+  if (seq === null || status.completedAtSeq !== seq) {
+    // Another owner's approve completed it after mine (my vote counted,
+    // but that owner is the fulfiller)
+    return { kind: "completed-by-other", proposal, completedAtSeq: status.completedAtSeq };
+  }
+  const io = yield* CliIo;
+  yield* io.log(
+    `Your approval reached the quorum: applied ${proposal.inner.op} at seq=${seq} (proposed by ${displayText(proposal.proposerUserId)}). You are the fulfiller of its obligations (CRYPTO_SPEC §7)`,
+  );
+  const fulfilment = yield* fulfil({
+    client: input.client,
+    verified,
+    seq,
+    inner: proposal.inner,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
+    recipient: input.recipient,
+    rotateWith: input.rotateWith,
   });
-}
+  return { kind: "applied", seq, proposal, fulfilment };
+});

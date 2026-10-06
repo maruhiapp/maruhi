@@ -156,63 +156,61 @@ function namesVariableTwice(variables: readonly { readonly variableId: string }[
 }
 
 /** §14-5 (4)–(6): one variable's checks (active, base version current, recipients exact, no pending proposal). */
-const variableRefusal = (
+const variableRefusal = Effect.fnUntraced(function* (
   store: DataStoreShape,
   environmentId: string,
   recipients: ReadonlySet<string>,
   variable: ProposalVariableInput,
   nowMs: number,
-): Effect.Effect<RotationProposalRejectReason | null> =>
-  Effect.gen(function* () {
-    const stored = yield* store.findVariable(environmentId, variable.variableId);
-    if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
-      return "variable-inactive";
-    }
-    if (stored.latestVersion !== variable.baseVersion) {
-      return "base-version-stale";
-    }
-    if (!recipientsMatch(recipients, variable.wraps)) {
-      return "recipients-mismatch";
-    }
-    // One proposal per variable at a time, at the mint as at the pre-flight
-    // (ruling O revision, round 4 — two jobs that both pre-flighted before
-    // either minted must not both store)
-    return (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs))
-      ? "variable-pending"
-      : null;
-  });
+): Effect.fn.Return<RotationProposalRejectReason | null> {
+  const stored = yield* store.findVariable(environmentId, variable.variableId);
+  if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
+    return "variable-inactive";
+  }
+  if (stored.latestVersion !== variable.baseVersion) {
+    return "base-version-stale";
+  }
+  if (!recipientsMatch(recipients, variable.wraps)) {
+    return "recipients-mismatch";
+  }
+  // One proposal per variable at a time, at the mint as at the pre-flight
+  // (ruling O revision, round 4 — two jobs that both pre-flighted before
+  // either minted must not both store)
+  return (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs))
+    ? "variable-pending"
+    : null;
+});
 
 /** The §14-5 acceptance checks in their order ((2)–(7)); null = acceptable. */
-const proposalRefusal = (
+const proposalRefusal = Effect.fn("programs-proposal.proposalRefusal")(function* (
   store: DataStoreShape,
   state: ChainState,
   environmentId: string,
   proposal: RotationProposalInput,
   nowMs: number,
-): Effect.Effect<RotationProposalRejectReason | null> =>
-  Effect.gen(function* () {
-    if (yield* store.proposalExists(proposal.proposalId)) {
-      return "duplicate-id";
+): Effect.fn.Return<RotationProposalRejectReason | null> {
+  if (yield* store.proposalExists(proposal.proposalId)) {
+    return "duplicate-id";
+  }
+  if (namesVariableTwice(proposal.variables)) {
+    return "duplicate-variable";
+  }
+  const recipients = proposalRecipientKeys(state, environmentId);
+  for (const variable of proposal.variables) {
+    const reason = yield* variableRefusal(store, environmentId, recipients, variable, nowMs);
+    if (reason !== null) {
+      return reason;
     }
-    if (namesVariableTwice(proposal.variables)) {
-      return "duplicate-variable";
-    }
-    const recipients = proposalRecipientKeys(state, environmentId);
-    for (const variable of proposal.variables) {
-      const reason = yield* variableRefusal(store, environmentId, recipients, variable, nowMs);
-      if (reason !== null) {
-        return reason;
-      }
-    }
-    const pending = yield* store.countPendingProposals(nowMs);
-    if (pending >= MAX_PENDING_ROTATION_PROPOSALS) {
-      return "pending-limit";
-    }
-    // The sealed values count toward the project's ciphertext cap
-    // (§12-8 — the meter includes pending proposals), judged like a push
-    const stored = yield* store.totalCiphertextBytes;
-    return projectBytesExceeded(stored, proposalCiphertextBytes(proposal)) ? "storage-limit" : null;
-  });
+  }
+  const pending = yield* store.countPendingProposals(nowMs);
+  if (pending >= MAX_PENDING_ROTATION_PROPOSALS) {
+    return "pending-limit";
+  }
+  // The sealed values count toward the project's ciphertext cap
+  // (§12-8 — the meter includes pending proposals), judged like a push
+  const stored = yield* store.totalCiphertextBytes;
+  return projectBytesExceeded(stored, proposalCiphertextBytes(proposal)) ? "storage-limit" : null;
+});
 
 /** The bytes a proposal's sealed values add to the project's ciphertext meter (hex — two characters per byte). */
 function proposalCiphertextBytes(proposal: RotationProposalInput): number {
@@ -225,18 +223,18 @@ function proposalCiphertextBytes(proposal: RotationProposalInput): number {
   return total;
 }
 
-export const proposeRotationProgram = (
-  environmentId: string,
-  ephemeralPubHex: string,
-  facts: LeaseTokenFacts,
-  proposal: RotationProposalInput,
-  cache: StateCache,
-): Effect.Effect<
-  ProposalReceipt,
-  ProposalRejection,
-  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
-> =>
-  Effect.gen(function* () {
+export const proposeRotationProgram = Effect.fn("programs-proposal.proposeRotationProgram")(
+  function* (
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    proposal: RotationProposalInput,
+    cache: StateCache,
+  ): Effect.fn.Return<
+    ProposalReceipt,
+    ProposalRejection,
+    ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+  > {
     // Steps 0–2 are the lease's (server key present, chain, grant ×
     // policy × scope → uniform 404, first-come binding → 401,
     // environment existence)
@@ -330,7 +328,8 @@ export const proposeRotationProgram = (
       });
     });
     return { proposalId: proposal.proposalId, expiresAtMs };
-  });
+  },
+);
 
 /**
  * The expiry sweep (before a mint, a pre-flight and a resolution): every
@@ -347,25 +346,24 @@ export const proposeRotationProgram = (
  * right now (ruling P revision: an expired-but-unswept proposal whose
  * member evidently did not abandon it is resolved, not swept).
  */
-const sweepExpired = (
+const sweepExpired = Effect.fn("programs-proposal.sweepExpired")(function* (
   nowMs: number,
   except?: string,
-): Effect.Effect<void, never, DataStore | AuditStore> =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const audit = yield* AuditStore;
-    yield* Effect.sync(() => {
-      for (const expired of store.write.deleteExpiredProposals(nowMs, except)) {
-        audit.appendSync({
-          event: "rotation.proposal_expired",
-          serverTs: nowMs,
-          actorType: "system",
-          environmentId: expired.environmentId,
-          payload: { proposalId: expired.proposalId, expiresAtMs: expired.expiresAtMs },
-        });
-      }
-    });
+): Effect.fn.Return<void, never, DataStore | AuditStore> {
+  const store = yield* DataStore;
+  const audit = yield* AuditStore;
+  yield* Effect.sync(() => {
+    for (const expired of store.write.deleteExpiredProposals(nowMs, except)) {
+      audit.appendSync({
+        event: "rotation.proposal_expired",
+        serverTs: nowMs,
+        actorType: "system",
+        environmentId: expired.environmentId,
+        payload: { proposalId: expired.proposalId, expiresAtMs: expired.expiresAtMs },
+      });
+    }
   });
+});
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -394,19 +392,19 @@ export type PreflightOutcome =
  * the mirror mark. Nothing is stored and no window is consumed; the
  * token's first-come binding is taken like the lease's.
  */
-export const preflightRotationProgram = (
-  environmentId: string,
-  ephemeralPubHex: string,
-  facts: LeaseTokenFacts,
-  variables: readonly PreflightVariableInput[],
-  cache: StateCache,
-  recipients?: readonly PreflightRecipientInput[],
-): Effect.Effect<
-  void,
-  ProposalRejection,
-  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
-> =>
-  Effect.gen(function* () {
+export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRotationProgram")(
+  function* (
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    variables: readonly PreflightVariableInput[],
+    cache: StateCache,
+    recipients?: readonly PreflightRecipientInput[],
+  ): Effect.fn.Return<
+    void,
+    ProposalRejection,
+    ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+  > {
     const { state } = yield* authorizeWorkload(environmentId, ephemeralPubHex, facts, cache);
     const store = yield* DataStore;
     const nowMs = yield* Clock.currentTimeMillis;
@@ -452,30 +450,30 @@ export const preflightRotationProgram = (
     if ((yield* store.countPendingProposals(nowMs)) >= MAX_PENDING_ROTATION_PROPOSALS) {
       return yield* preflightRefusal("pending-limit");
     }
-  });
+  },
+);
 
 const preflightRefusal = (reason: RotationProposalRejectReason) =>
   Effect.fail<ProposalRejection>({ kind: "proposal-rejected", reason });
 
 /** The mint's per-variable checks that do not depend on the sealed content (the same order as the mint). */
-const preflightVariable = (
+const preflightVariable = Effect.fnUntraced(function* (
   store: DataStore["Service"],
   environmentId: string,
   variable: PreflightVariableInput,
   nowMs: number,
-): Effect.Effect<void, ProposalRejection> =>
-  Effect.gen(function* () {
-    const stored = yield* store.findVariable(environmentId, variable.variableId);
-    if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
-      return yield* preflightRefusal("variable-inactive");
-    }
-    if (stored.latestVersion !== variable.baseVersion) {
-      return yield* preflightRefusal("base-version-stale");
-    }
-    if (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs)) {
-      return yield* preflightRefusal("variable-pending");
-    }
-  });
+): Effect.fn.Return<void, ProposalRejection> {
+  const stored = yield* store.findVariable(environmentId, variable.variableId);
+  if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
+    return yield* preflightRefusal("variable-inactive");
+  }
+  if (stored.latestVersion !== variable.baseVersion) {
+    return yield* preflightRefusal("base-version-stale");
+  }
+  if (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs)) {
+    return yield* preflightRefusal("variable-pending");
+  }
+});
 
 /** A stored proposal narrowed to one member's view: the caller's own wraps only. */
 function ownView(proposal: StoredProposal, userId: string): MemberProposalValue {
@@ -489,105 +487,106 @@ function ownView(proposal: StoredProposal, userId: string): MemberProposalValue 
   };
 }
 
-export const listRotationProposalsProgram = (actor: DataActor, cache: StateCache) =>
-  Effect.gen(function* () {
-    // member or above (§14-5 — a reader is never a recipient, so the
-    // view would be empty by construction; the role floor says so
-    // explicitly). Environments outside the person's scope are filtered
-    const { member } = yield* requireMemberState(actor.userId, "member", cache);
-    const store = yield* DataStore;
-    const nowMs = yield* Clock.currentTimeMillis;
-    // The list is the read that is about proposals, and the one a project
-    // whose rotation job is gone still runs (the cron's --fail-on-pending):
-    // it sweeps too, so expired rows get their closing audit row and leave
-    // the §12-8 meter (ruling P revision, round 4 — the var.read precedent
-    // for a read that appends). A mirror writes nothing; its source sweeps
-    if (!store.isMirrorSync()) {
-      yield* sweepExpired(nowMs);
-    }
-    const pending = yield* store.listPendingProposals(nowMs);
-    return pending
-      .filter((proposal) => scopeIncludesEnvironment(member.scope, proposal.environmentId))
-      .map((proposal) => ownView(proposal, actor.userId));
-  });
+export const listRotationProposalsProgram = Effect.fn(
+  "programs-proposal.listRotationProposalsProgram",
+)(function* (actor: DataActor, cache: StateCache) {
+  // member or above (§14-5 — a reader is never a recipient, so the
+  // view would be empty by construction; the role floor says so
+  // explicitly). Environments outside the person's scope are filtered
+  const { member } = yield* requireMemberState(actor.userId, "member", cache);
+  const store = yield* DataStore;
+  const nowMs = yield* Clock.currentTimeMillis;
+  // The list is the read that is about proposals, and the one a project
+  // whose rotation job is gone still runs (the cron's --fail-on-pending):
+  // it sweeps too, so expired rows get their closing audit row and leave
+  // the §12-8 meter (ruling P revision, round 4 — the var.read precedent
+  // for a read that appends). A mirror writes nothing; its source sweeps
+  if (!store.isMirrorSync()) {
+    yield* sweepExpired(nowMs);
+  }
+  const pending = yield* store.listPendingProposals(nowMs);
+  return pending
+    .filter((proposal) => scopeIncludesEnvironment(member.scope, proposal.environmentId))
+    .map((proposal) => ownView(proposal, actor.userId));
+});
 
 /** §14-5 accepted: every proposed variable is named with a stored version newer than its base. */
-const versionsRefusal = (
+const versionsRefusal = Effect.fn("programs-proposal.versionsRefusal")(function* (
   store: DataStoreShape,
   proposal: StoredProposal,
   versions: ProposalResolutionInput["versions"],
-): Effect.Effect<RotationProposalRejectReason | null> =>
-  Effect.gen(function* () {
-    for (const variable of proposal.variables) {
-      const named = versions.find((entry) => entry.variableId === variable.variableId);
-      if (named === undefined || named.version <= variable.baseVersion) {
-        return "version-missing";
-      }
-      const anchor = yield* store.versionAnchor(
-        proposal.environmentId,
-        variable.variableId,
-        named.version,
-      );
-      if (anchor === null) {
-        return "version-missing";
-      }
+): Effect.fn.Return<RotationProposalRejectReason | null> {
+  for (const variable of proposal.variables) {
+    const named = versions.find((entry) => entry.variableId === variable.variableId);
+    if (named === undefined || named.version <= variable.baseVersion) {
+      return "version-missing";
     }
-    return null;
-  });
+    const anchor = yield* store.versionAnchor(
+      proposal.environmentId,
+      variable.variableId,
+      named.version,
+    );
+    if (anchor === null) {
+      return "version-missing";
+    }
+  }
+  return null;
+});
 
-export const resolveRotationProposalProgram = (
+export const resolveRotationProposalProgram = Effect.fn(
+  "programs-proposal.resolveRotationProposalProgram",
+)(function* (
   actor: DataActor,
   proposalId: string,
   resolution: ProposalResolutionInput,
   cache: StateCache,
-): Effect.Effect<void, DataRejectedError, ChainStore | DataStore | AuditStore> =>
-  Effect.gen(function* () {
-    const { member } = yield* requireMemberState(actor.userId, "member", cache);
-    const nowMs = yield* Clock.currentTimeMillis;
-    // The resolved proposal is reached expired or not: a member who began
-    // the acceptance before the expiry has pushed signed versions already,
-    // and their outcome belongs in the log as theirs, not as "nobody's"
-    // (ruling P revision). Unknown / resolved / swept fold into one 404
-    // (indistinguishable by design — a resolution cannot probe which)
-    yield* sweepExpired(nowMs, proposalId);
-    const store = yield* DataStore;
-    const proposal = yield* store.findProposal(proposalId);
-    if (proposal === null) {
-      return yield* rejectData({ kind: "rotation-proposal-not-found", proposalId });
+): Effect.fn.Return<void, DataRejectedError, ChainStore | DataStore | AuditStore> {
+  const { member } = yield* requireMemberState(actor.userId, "member", cache);
+  const nowMs = yield* Clock.currentTimeMillis;
+  // The resolved proposal is reached expired or not: a member who began
+  // the acceptance before the expiry has pushed signed versions already,
+  // and their outcome belongs in the log as theirs, not as "nobody's"
+  // (ruling P revision). Unknown / resolved / swept fold into one 404
+  // (indistinguishable by design — a resolution cannot probe which)
+  yield* sweepExpired(nowMs, proposalId);
+  const store = yield* DataStore;
+  const proposal = yield* store.findProposal(proposalId);
+  if (proposal === null) {
+    return yield* rejectData({ kind: "rotation-proposal-not-found", proposalId });
+  }
+  // The environment axis (§12-3): the person's scope, judged on the
+  // stored environment (an unsigned operation — judged on the person,
+  // like dismissals). The environment is known only from the stored
+  // row, so the scope check cannot precede existence; folding the
+  // refusal into the same 404 keeps an out-of-scope member from
+  // telling "pending" apart from "resolved / expired / unknown"
+  if (!scopeIncludesEnvironment(member.scope, proposal.environmentId)) {
+    return yield* rejectData({ kind: "rotation-proposal-not-found", proposalId });
+  }
+  if (resolution.outcome === "accepted") {
+    const reason = yield* versionsRefusal(store, proposal, resolution.versions);
+    if (reason !== null) {
+      return yield* rejectData({ kind: "rotation-proposal-rejected", reason });
     }
-    // The environment axis (§12-3): the person's scope, judged on the
-    // stored environment (an unsigned operation — judged on the person,
-    // like dismissals). The environment is known only from the stored
-    // row, so the scope check cannot precede existence; folding the
-    // refusal into the same 404 keeps an out-of-scope member from
-    // telling "pending" apart from "resolved / expired / unknown"
-    if (!scopeIncludesEnvironment(member.scope, proposal.environmentId)) {
-      return yield* rejectData({ kind: "rotation-proposal-not-found", proposalId });
-    }
-    if (resolution.outcome === "accepted") {
-      const reason = yield* versionsRefusal(store, proposal, resolution.versions);
-      if (reason !== null) {
-        return yield* rejectData({ kind: "rotation-proposal-rejected", reason });
-      }
-    }
-    const audit = yield* AuditStore;
-    yield* Effect.sync(() => {
-      store.write.deleteProposal(proposalId);
-      audit.appendSync(
-        dataEvent(
-          actor,
-          nowMs,
-          resolution.outcome === "accepted"
-            ? "rotation.proposal_accepted"
-            : "rotation.proposal_rejected",
-          {
-            environmentId: proposal.environmentId,
-            payload: {
-              proposalId,
-              ...(resolution.outcome === "accepted" ? { versions: resolution.versions } : {}),
-            },
+  }
+  const audit = yield* AuditStore;
+  yield* Effect.sync(() => {
+    store.write.deleteProposal(proposalId);
+    audit.appendSync(
+      dataEvent(
+        actor,
+        nowMs,
+        resolution.outcome === "accepted"
+          ? "rotation.proposal_accepted"
+          : "rotation.proposal_rejected",
+        {
+          environmentId: proposal.environmentId,
+          payload: {
+            proposalId,
+            ...(resolution.outcome === "accepted" ? { versions: resolution.versions } : {}),
           },
-        ),
-      );
-    });
+        },
+      ),
+    );
   });
+});

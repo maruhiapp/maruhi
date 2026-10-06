@@ -32,57 +32,57 @@ import { ChainStore } from "./chain-store.ts";
  * otherwise).
  */
 /** The device FP carried by `add_device` (CRYPTO_SPEC §3 — first 16 bytes of SHA-256 over enc ‖ sig). */
-const mirrorSubjectOf = (entry: ChainEntry): Effect.Effect<ChainMirrorSubject> =>
-  Effect.gen(function* () {
-    if (entry.op !== "add_device") {
-      return {};
-    }
-    // The payload already passed verifyChain (lowercase hex, 64 chars), so
-    // decode / computation succeed. Failure is a verifier bug = defect (do
-    // not quietly produce a row with no FP — the K2-12 contract)
-    const enc = decodeHex(entry.payload.encPubHex);
-    const sig = decodeHex(entry.payload.sigPubHex);
-    if (enc === null || sig === null) {
-      return yield* Effect.die(new Error("add_device payload keys are not valid hex"));
-    }
-    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
-      Effect.orDie,
-    );
-    return { addedDeviceKeyFingerprintHex: encodeHex(fingerprint) };
-  });
+const mirrorSubjectOf = Effect.fn("chain-commit.mirrorSubjectOf")(function* (
+  entry: ChainEntry,
+): Effect.fn.Return<ChainMirrorSubject> {
+  if (entry.op !== "add_device") {
+    return {};
+  }
+  // The payload already passed verifyChain (lowercase hex, 64 chars), so
+  // decode / computation succeed. Failure is a verifier bug = defect (do
+  // not quietly produce a row with no FP — the K2-12 contract)
+  const enc = decodeHex(entry.payload.encPubHex);
+  const sig = decodeHex(entry.payload.sigPubHex);
+  if (enc === null || sig === null) {
+    return yield* Effect.die(new Error("add_device payload keys are not valid hex"));
+  }
+  const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+    Effect.orDie,
+  );
+  return { addedDeviceKeyFingerprintHex: encodeHex(fingerprint) };
+});
 
-export const commitAcceptedEntry = (
+export const commitAcceptedEntry = Effect.fn("chain-commit.commitAcceptedEntry")(function* (
   chain: StoredChain,
   entry: ChainEntry,
   applied: VerifiedChainView,
   canonicalBytes: number,
   extraSync?: (nowMs: number) => void,
-): Effect.Effect<AppliedProposal | null, never, ChainStore | AuditStore | DataStore> =>
-  Effect.gen(function* () {
-    const chainStore = yield* ChainStore;
-    const audit = yield* AuditStore;
-    // Acceptance side effects (chain-accept.ts): add_member's old-key wrap
-    // sweep deletes wrap rows, so generic chain acceptance is also handed
-    // the data store's write surface
-    const dataStore = yield* DataStore;
-    const nowMs = yield* Clock.currentTimeMillis;
-    const proposals = proposalIndexOf([...chain.entries, entry], applied);
-    // add_device's mirror row (AUDIT_SPEC §3.4) needs the carried device's
-    // FP. SHA-256 is async, so the acceptance side computes it before the
-    // synchronous write phase and hands it to the mapping (design record
-    // dk-design.md §7 K2-12)
-    const subject = yield* mirrorSubjectOf(entry);
-    return yield* Effect.sync(() => {
-      const appliedProposal = insertAcceptedEntrySync(
-        { chainStore, audit, dataStore },
-        entry,
-        applied,
-        canonicalBytes,
-        nowMs,
-        proposals,
-        subject,
-      );
-      extraSync?.(nowMs);
-      return appliedProposal;
-    });
+): Effect.fn.Return<AppliedProposal | null, never, ChainStore | AuditStore | DataStore> {
+  const chainStore = yield* ChainStore;
+  const audit = yield* AuditStore;
+  // Acceptance side effects (chain-accept.ts): add_member's old-key wrap
+  // sweep deletes wrap rows, so generic chain acceptance is also handed
+  // the data store's write surface
+  const dataStore = yield* DataStore;
+  const nowMs = yield* Clock.currentTimeMillis;
+  const proposals = proposalIndexOf([...chain.entries, entry], applied);
+  // add_device's mirror row (AUDIT_SPEC §3.4) needs the carried device's
+  // FP. SHA-256 is async, so the acceptance side computes it before the
+  // synchronous write phase and hands it to the mapping (design record
+  // dk-design.md §7 K2-12)
+  const subject = yield* mirrorSubjectOf(entry);
+  return yield* Effect.sync(() => {
+    const appliedProposal = insertAcceptedEntrySync(
+      { chainStore, audit, dataStore },
+      entry,
+      applied,
+      canonicalBytes,
+      nowMs,
+      proposals,
+      subject,
+    );
+    extraSync?.(nowMs);
+    return appliedProposal;
   });
+});

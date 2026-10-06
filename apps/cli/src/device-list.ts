@@ -29,43 +29,41 @@ interface ListRows {
 }
 
 /** Collects my device from each project's chain (a project that cannot sync is a Note). */
-function collectChainRows(input: {
+const collectChainRows = Effect.fn("device-list.collectChainRows")(function* (input: {
   readonly session: CliSession;
   readonly projectIds: readonly string[];
-}): Effect.Effect<ListRows, never, CliServices> {
-  return Effect.gen(function* () {
-    const rows: ListRows["rows"] = new Map();
-    const chains: ListRows["chains"][number][] = [];
-    for (const projectId of input.projectIds) {
-      const context = yield* openMetadataProject({
-        server: input.session.origin,
-        project: projectId,
-      }).pipe(Effect.orElseSucceed((): ProjectContextBase | null => null));
-      if (context === null) {
-        yield* logNote(
-          `${displayText(projectId)}: could not sync this project; its devices are not shown`,
-        );
-        continue;
-      }
-      chains.push({ projectId, verified: context.verified });
-      const self = context.verified.state.members.get(input.session.userId);
-      for (const device of self === undefined ? [] : devicesOf(self)) {
-        const provenance = deviceProvenanceOf(context.verified, input.session.userId, device);
-        const adder =
-          provenance.addedByFingerprintHex === null
-            ? "first key"
-            : `added by ${provenance.addedByFingerprintHex}${provenance.adderStillActive ? "" : " (that device is now revoked)"}`;
-        const lines = rows.get(device.keyFingerprintHex) ?? [];
-        lines.push({
-          projectId,
-          line: `${displayText(projectId)}: cap=${describeCap(device)} seq=${device.addedSeq} ${adder}`,
-        });
-        rows.set(device.keyFingerprintHex, lines);
-      }
+}): Effect.fn.Return<ListRows, never, CliServices> {
+  const rows: ListRows["rows"] = new Map();
+  const chains: ListRows["chains"][number][] = [];
+  for (const projectId of input.projectIds) {
+    const context = yield* openMetadataProject({
+      server: input.session.origin,
+      project: projectId,
+    }).pipe(Effect.orElseSucceed((): ProjectContextBase | null => null));
+    if (context === null) {
+      yield* logNote(
+        `${displayText(projectId)}: could not sync this project; its devices are not shown`,
+      );
+      continue;
     }
-    return { rows, chains };
-  });
-}
+    chains.push({ projectId, verified: context.verified });
+    const self = context.verified.state.members.get(input.session.userId);
+    for (const device of self === undefined ? [] : devicesOf(self)) {
+      const provenance = deviceProvenanceOf(context.verified, input.session.userId, device);
+      const adder =
+        provenance.addedByFingerprintHex === null
+          ? "first key"
+          : `added by ${provenance.addedByFingerprintHex}${provenance.adderStillActive ? "" : " (that device is now revoked)"}`;
+      const lines = rows.get(device.keyFingerprintHex) ?? [];
+      lines.push({
+        projectId,
+        line: `${displayText(projectId)}: cap=${describeCap(device)} seq=${device.addedSeq} ${adder}`,
+      });
+      rows.set(device.keyFingerprintHex, lines);
+    }
+  }
+  return { rows, chains };
+});
 
 /**
  * One device's on-chain appearance: the valid rows (cap, provenance) and
@@ -118,92 +116,88 @@ function describeListRow(input: {
 }
 
 /** `maruhi device list [--project]` (no values, no keys needed, no gate). */
-export function deviceListOp(input: {
+export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly project: string | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const store = yield* OwnDeviceStore;
-    const registry = yield* fetchRegistry(input.client);
-    const lookup = yield* store.load(input.session.origin, input.session.userId);
-    const local = lookup.state === "loaded" ? lookup.devices : [];
-    // Even when the project list cannot be fetched, the registry and local records can still be shown, so it isn't dropped (DK K13-6)
-    const projectIds = yield* resolveProjectIds(input.client, input.project).pipe(
-      Effect.catch((error) =>
-        logNote(
-          `your projects could not be listed (${error.message}), so no project chain is shown`,
-        ).pipe(Effect.as<readonly string[]>([])),
-      ),
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const store = yield* OwnDeviceStore;
+  const registry = yield* fetchRegistry(input.client);
+  const lookup = yield* store.load(input.session.origin, input.session.userId);
+  const local = lookup.state === "loaded" ? lookup.devices : [];
+  // Even when the project list cannot be fetched, the registry and local records can still be shown, so it isn't dropped (DK K13-6)
+  const projectIds = yield* resolveProjectIds(input.client, input.project).pipe(
+    Effect.catch((error) =>
+      logNote(
+        `your projects could not be listed (${error.message}), so no project chain is shown`,
+      ).pipe(Effect.as<readonly string[]>([])),
+    ),
+  );
+  const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
+    Effect.succeed<MasterKeys | null>(null),
+  );
+  // FP → display rows (the chain is the truth. The registry and local records sit alongside as annotations)
+  const listed = yield* collectChainRows({ session: input.session, projectIds });
+  const active = local.filter((entry) => entry.revokedAtMs === null);
+  // This device's key is printed even when absent from every chain,
+  // the registry, and every valid record (the place a revoked device's
+  // error defers to with "check with `maruhi device list`" — DK K13-6)
+  const fingerprints = [
+    ...new Set([
+      ...listed.rows.keys(),
+      ...(registry ?? []).map((row) => row.keyFingerprintHex),
+      ...active.map((entry) => entry.keyFingerprintHex),
+      ...(localKeys === null ? [] : [localKeys.fingerprintHex]),
+    ]),
+  ].toSorted(compareCodePoints);
+  if (fingerprints.length === 0) {
+    yield* io.log(
+      "No devices found (no project chain lists a device of yours, and the registry is empty)",
     );
-    const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
-      Effect.succeed<MasterKeys | null>(null),
+    return;
+  }
+  if (registry === null) {
+    yield* logNote(
+      "the device registry could not be read (labels are server-reported and advisory anyway)",
     );
-    // FP → display rows (the chain is the truth. The registry and local records sit alongside as annotations)
-    const listed = yield* collectChainRows({ session: input.session, projectIds });
-    const active = local.filter((entry) => entry.revokedAtMs === null);
-    // This device's key is printed even when absent from every chain,
-    // the registry, and every valid record (the place a revoked device's
-    // error defers to with "check with `maruhi device list`" — DK K13-6)
-    const fingerprints = [
-      ...new Set([
-        ...listed.rows.keys(),
-        ...(registry ?? []).map((row) => row.keyFingerprintHex),
-        ...active.map((entry) => entry.keyFingerprintHex),
-        ...(localKeys === null ? [] : [localKeys.fingerprintHex]),
-      ]),
-    ].toSorted(compareCodePoints);
-    if (fingerprints.length === 0) {
-      yield* io.log(
-        "No devices found (no project chain lists a device of yours, and the registry is empty)",
-      );
-      return;
-    }
-    if (registry === null) {
-      yield* logNote(
-        "the device registry could not be read (labels are server-reported and advisory anyway)",
-      );
-    }
-    for (const fingerprintHex of fingerprints) {
-      yield* io.log(
-        describeListRow({
-          fingerprintHex,
-          ownFingerprintHex: localKeys?.fingerprintHex ?? null,
-          registryRow: registry?.find((row) => row.keyFingerprintHex === fingerprintHex),
-          record: local.find((entry) => entry.keyFingerprintHex === fingerprintHex),
-        }),
-      );
-      yield* printChainLines({
-        lines: chainLinesOf({ listed, userId: input.session.userId, fingerprintHex }),
-        project: input.project,
-        unsynced: projectIds.length - listed.chains.length,
-      });
-    }
-  });
-}
+  }
+  for (const fingerprintHex of fingerprints) {
+    yield* io.log(
+      describeListRow({
+        fingerprintHex,
+        ownFingerprintHex: localKeys?.fingerprintHex ?? null,
+        registryRow: registry?.find((row) => row.keyFingerprintHex === fingerprintHex),
+        record: local.find((entry) => entry.keyFingerprintHex === fingerprintHex),
+      }),
+    );
+    yield* printChainLines({
+      lines: chainLinesOf({ listed, userId: input.session.userId, fingerprintHex }),
+      project: input.project,
+      unsynced: projectIds.length - listed.chains.length,
+    });
+  }
+});
 
 /**
  * One device's on-chain appearances (when none, say the shown range to
  * that effect — DK K13-6). Never says "none" about a project that could
  * not be synced (Bugbot's catch — K13-16).
  */
-function printChainLines(input: {
+const printChainLines = Effect.fn("device-list.printChainLines")(function* (input: {
   readonly lines: readonly string[];
   readonly project: string | undefined;
   /** The count of projects that could not be synced (the ones `collectChainRows` noted). */
   readonly unsynced: number;
-}): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    if (input.lines.length === 0) {
-      yield* io.log(describeNoChainLines(input.project, input.unsynced));
-    }
-    for (const line of input.lines) {
-      yield* io.log(`  ${line}`);
-    }
-  });
-}
+}): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  if (input.lines.length === 0) {
+    yield* io.log(describeNoChainLines(input.project, input.unsynced));
+  }
+  for (const line of input.lines) {
+    yield* io.log(`  ${line}`);
+  }
+});
 
 function describeNoChainLines(project: string | undefined, unsynced: number): string {
   if (project !== undefined) {

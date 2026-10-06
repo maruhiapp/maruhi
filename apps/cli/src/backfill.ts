@@ -30,7 +30,7 @@ export type RegisterOutcome =
   | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string };
 
 /** Resolution of a per-epoch 409 (the caller's semantics). */
-export type SlotConflictResolution = "already-registered" | "repaired";
+type SlotConflictResolution = "already-registered" | "repaired";
 
 export interface BackfillEnvironmentOutcome {
   readonly registered: number;
@@ -40,7 +40,7 @@ export interface BackfillEnvironmentOutcome {
 }
 
 /** Aggregate of a multi-environment backfill (one environment's failure does not stop the rest — §7). */
-export interface BackfillAggregate {
+interface BackfillAggregate {
   readonly registered: number;
   readonly alreadyRegistered: number;
   readonly repaired: number;
@@ -52,33 +52,29 @@ export interface BackfillAggregate {
  * shared by member add / change-role widenings / device addition).
  * Failures are collected per environment and the run continues.
  */
-export function backfillEachEnvironment<R>(
+export const backfillEachEnvironment = Effect.fn("backfill.backfillEachEnvironment")(function* <R>(
   environments: readonly string[],
   run: (environmentId: string) => Effect.Effect<BackfillEnvironmentOutcome, CliError, R>,
-): Effect.Effect<BackfillAggregate, never, R> {
-  return Effect.gen(function* () {
-    let registered = 0;
-    let alreadyRegistered = 0;
-    let repaired = 0;
-    const failed: { readonly environmentId: string; readonly message: string }[] = [];
-    for (const environmentId of environments) {
-      const result = yield* run(environmentId).pipe(
-        Effect.map((outcome) => ({ kind: "ok", outcome }) as const),
-        Effect.catch((error) =>
-          Effect.succeed({ kind: "failed", message: error.message } as const),
-        ),
-      );
-      if (result.kind === "ok") {
-        registered += result.outcome.registered;
-        alreadyRegistered += result.outcome.alreadyRegistered;
-        repaired += result.outcome.repaired;
-      } else {
-        failed.push({ environmentId, message: result.message });
-      }
+): Effect.fn.Return<BackfillAggregate, never, R> {
+  let registered = 0;
+  let alreadyRegistered = 0;
+  let repaired = 0;
+  const failed: { readonly environmentId: string; readonly message: string }[] = [];
+  for (const environmentId of environments) {
+    const result = yield* run(environmentId).pipe(
+      Effect.map((outcome) => ({ kind: "ok", outcome }) as const),
+      Effect.catch((error) => Effect.succeed({ kind: "failed", message: error.message } as const)),
+    );
+    if (result.kind === "ok") {
+      registered += result.outcome.registered;
+      alreadyRegistered += result.outcome.alreadyRegistered;
+      repaired += result.outcome.repaired;
+    } else {
+      failed.push({ environmentId, message: result.message });
     }
-    return { registered, alreadyRegistered, repaired, failed };
-  });
-}
+  }
+  return { registered, alreadyRegistered, repaired, failed };
+});
 
 /**
  * Wraps every epoch's DEK of one environment for the target recipient and
@@ -88,38 +84,38 @@ export function backfillEachEnvironment<R>(
  * partial registration gets a 409 for the bulk). A per-epoch 409 is
  * resolved by `onSlotConflict` (default = treat as registered).
  */
-export function backfillEnvironmentFor(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  /** Recipient info of myself (the DEK holder = the one performing the wrap — §7). */
-  readonly recipient: DekRecipient;
-  /** The wrap's destination (a server key / a new member). */
-  readonly wrapRecipient: WrapRecipient;
-  /** Destination label used in the wrap-generation failure message (e.g. "for the server"). */
-  readonly recipientLabel: string;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-  /**
-   * Resolution of a per-epoch 409 (omitted = treat as registered). member
-   * add's re-add repair performs delete → re-register here (the §12-6
-   * repair path). The second argument is the stored recipient enc public
-   * key of the occupying wrap carried by the 409.
-   */
-  readonly onSlotConflict?: (
-    wrap: WrappedDek,
-    storedRecipientEncPubHex: string,
-  ) => Effect.Effect<SlotConflictResolution, CliError>;
-  /**
-   * The epochs to wrap (omitted = all of 1 through the current epoch).
-   * Device gap filling (device-gaps.ts — DK K11-1) passes only the missing
-   * epochs it could open.
-   */
-  readonly epochs?: readonly number[];
-  /** My-addressed DEKs already verified and unwrapped in this session (the `cached` of `environmentKeysFor`). */
-  readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
-}): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
-  return Effect.gen(function* () {
+export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+    readonly environmentId: string;
+    /** Recipient info of myself (the DEK holder = the one performing the wrap — §7). */
+    readonly recipient: DekRecipient;
+    /** The wrap's destination (a server key / a new member). */
+    readonly wrapRecipient: WrapRecipient;
+    /** Destination label used in the wrap-generation failure message (e.g. "for the server"). */
+    readonly recipientLabel: string;
+    readonly signerUserId: string;
+    readonly signingKeyPair: SigningKeyPair;
+    /**
+     * Resolution of a per-epoch 409 (omitted = treat as registered). member
+     * add's re-add repair performs delete → re-register here (the §12-6
+     * repair path). The second argument is the stored recipient enc public
+     * key of the occupying wrap carried by the 409.
+     */
+    readonly onSlotConflict?: (
+      wrap: WrappedDek,
+      storedRecipientEncPubHex: string,
+    ) => Effect.Effect<SlotConflictResolution, CliError>;
+    /**
+     * The epochs to wrap (omitted = all of 1 through the current epoch).
+     * Device gap filling (device-gaps.ts — DK K11-1) passes only the missing
+     * epochs it could open.
+     */
+    readonly epochs?: readonly number[];
+    /** My-addressed DEKs already verified and unwrapped in this session (the `cached` of `environmentKeysFor`). */
+    readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
+  }): Effect.fn.Return<BackfillEnvironmentOutcome, CliError> {
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified: input.verified,
@@ -191,8 +187,8 @@ export function backfillEnvironmentFor(input: {
       }
     }
     return { registered, alreadyRegistered, repaired };
-  });
-}
+  },
+);
 
 /** Epochs to wrap: the given ones, or 1 through the current epoch (the backfill default). */
 function epochsToWrap(

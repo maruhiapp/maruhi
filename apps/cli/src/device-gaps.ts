@@ -108,7 +108,7 @@ function ownDeviceGapsOf(input: {
  * Wraps only the epochs this device could open; never fails (every problem is
  * returned as a fact for the report).
  */
-export function fillOwnDeviceGaps(input: {
+export const fillOwnDeviceGaps = Effect.fn("device-gaps.fillOwnDeviceGaps")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -118,60 +118,58 @@ export function fillOwnDeviceGaps(input: {
   readonly currentEpoch: number;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly rows: readonly RecipientDek[];
-}): Effect.Effect<readonly OwnDeviceGapFill[]> {
-  return Effect.gen(function* () {
-    const { signer } = input;
-    const self = input.verified.state.members.get(input.recipient.userId);
-    const gaps = signer === undefined ? [] : ownDeviceGapsOf(input);
-    if (signer === undefined || self === undefined || gaps.length === 0) {
-      return [];
+}): Effect.fn.Return<readonly OwnDeviceGapFill[]> {
+  const { signer } = input;
+  const self = input.verified.state.members.get(input.recipient.userId);
+  const gaps = signer === undefined ? [] : ownDeviceGapsOf(input);
+  if (signer === undefined || self === undefined || gaps.length === 0) {
+    return [];
+  }
+  const fills: OwnDeviceGapFill[] = [];
+  for (const gap of gaps) {
+    const fillable = gap.missingEpochs.filter((epoch) => input.deksByEpoch.has(epoch));
+    const unavailableEpochs = gap.missingEpochs.filter((epoch) => !input.deksByEpoch.has(epoch));
+    const base = {
+      deviceFingerprintHex: gap.device.keyFingerprintHex,
+      missingEpochs: gap.missingEpochs,
+      unavailableEpochs,
+    };
+    if (fillable.length === 0) {
+      fills.push({ ...base, registered: 0, alreadyPresent: 0, failure: null });
+      continue;
     }
-    const fills: OwnDeviceGapFill[] = [];
-    for (const gap of gaps) {
-      const fillable = gap.missingEpochs.filter((epoch) => input.deksByEpoch.has(epoch));
-      const unavailableEpochs = gap.missingEpochs.filter((epoch) => !input.deksByEpoch.has(epoch));
-      const base = {
-        deviceFingerprintHex: gap.device.keyFingerprintHex,
-        missingEpochs: gap.missingEpochs,
-        unavailableEpochs,
-      };
-      if (fillable.length === 0) {
-        fills.push({ ...base, registered: 0, alreadyPresent: 0, failure: null });
-        continue;
-      }
-      fills.push(
-        yield* backfillEnvironmentFor({
-          client: input.client,
-          verified: input.verified,
-          environmentId: input.environmentId,
-          recipient: input.recipient,
-          wrapRecipient: { kind: "member", member: self, device: gap.device },
-          recipientLabel: "device-addressed",
-          signerUserId: input.recipient.userId,
-          signingKeyPair: signer.signingKeyPair,
-          epochs: fillable,
-          cached: input.deksByEpoch,
-        }).pipe(
-          Effect.map((outcome): OwnDeviceGapFill => ({
+    fills.push(
+      yield* backfillEnvironmentFor({
+        client: input.client,
+        verified: input.verified,
+        environmentId: input.environmentId,
+        recipient: input.recipient,
+        wrapRecipient: { kind: "member", member: self, device: gap.device },
+        recipientLabel: "device-addressed",
+        signerUserId: input.recipient.userId,
+        signingKeyPair: signer.signingKeyPair,
+        epochs: fillable,
+        cached: input.deksByEpoch,
+      }).pipe(
+        Effect.map((outcome): OwnDeviceGapFill => ({
+          ...base,
+          registered: outcome.registered,
+          alreadyPresent: outcome.alreadyRegistered,
+          failure: null,
+        })),
+        Effect.catch((error) =>
+          Effect.succeed<OwnDeviceGapFill>({
             ...base,
-            registered: outcome.registered,
-            alreadyPresent: outcome.alreadyRegistered,
-            failure: null,
-          })),
-          Effect.catch((error) =>
-            Effect.succeed<OwnDeviceGapFill>({
-              ...base,
-              registered: 0,
-              alreadyPresent: 0,
-              failure: error.message,
-            }),
-          ),
+            registered: 0,
+            alreadyPresent: 0,
+            failure: error.message,
+          }),
         ),
-      );
-    }
-    return fills;
-  });
-}
+      ),
+    );
+  }
+  return fills;
+});
 
 /**
  * The command that fills missing epochs (DK K11-5 — the wording of the
@@ -206,12 +204,12 @@ function epochList(epochs: readonly number[]): string {
 }
 
 /** Reporting the fill (Note only — does not change pull's exit code). */
-export function reportOwnDeviceGapFills(input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly fills: readonly OwnDeviceGapFill[];
-}): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
+export const reportOwnDeviceGapFills = Effect.fn("device-gaps.reportOwnDeviceGapFills")(
+  function* (input: {
+    readonly projectId: string;
+    readonly environmentId: string;
+    readonly fills: readonly OwnDeviceGapFill[];
+  }): Effect.fn.Return<void, never, CliIo> {
     const environment = displayText(input.environmentId);
     for (const fill of input.fills) {
       const device = `your device ${fill.deviceFingerprintHex}`;
@@ -240,5 +238,5 @@ export function reportOwnDeviceGapFills(input: {
         );
       }
     }
-  });
-}
+  },
+);

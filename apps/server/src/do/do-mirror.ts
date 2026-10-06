@@ -659,44 +659,42 @@ function stagedAuditHeadStart(
  * derivation over the rows it covers. Runs between the two transactions,
  * under the permit, like the staged chain's content verification.
  */
-export function verifyStagedAuditHeads(
+export const verifyStagedAuditHeads = Effect.fn("do-mirror.verifyStagedAuditHeads")(function* (
   sql: SqlStorage,
   state: MirrorState,
-): Effect.Effect<void, MirrorPageRefusedError> {
-  return Effect.gen(function* () {
-    const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
-    const stagedLog = stagingOf(AUDIT_TABLE);
-    if (!hasTable(sql, stagedLog)) {
-      return;
-    }
-    // A replica without the head column's table line is derived from seq 1
-    // into a staged column created for it (round 11: an absent column
-    // installed an empty one, and the extension after the commit met the
-    // replica's rows unchecked)
-    if (!hasTable(sql, stagedHeads)) {
-      sql.exec(
-        `CREATE TABLE ${stagedHeads} AS SELECT seq, head_hash_hex FROM ${AUDIT_HEAD_TABLE} LIMIT 0`,
-      );
-      sql.exec(`CREATE INDEX ${stagedHeads}_seq ON ${stagedHeads} (seq)`);
-    }
-    const { from, start } = stagedAuditHeadStart(sql, state, stagedHeads);
-    if (from !== 0 && !isAuditHeadHex(start)) {
-      return yield* malformed();
-    }
-    // The uploaded claim past the start goes first; the derivation then
-    // writes chunk by chunk into the staged column (one chunk of memory)
-    sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
-    const derived = yield* Effect.promise(() =>
-      deriveAuditHeads(sql, stagedLog, stagedHeads, from, from === 0 ? "" : String(start)),
+): Effect.fn.Return<void, MirrorPageRefusedError> {
+  const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
+  const stagedLog = stagingOf(AUDIT_TABLE);
+  if (!hasTable(sql, stagedLog)) {
+    return;
+  }
+  // A replica without the head column's table line is derived from seq 1
+  // into a staged column created for it (round 11: an absent column
+  // installed an empty one, and the extension after the commit met the
+  // replica's rows unchecked)
+  if (!hasTable(sql, stagedHeads)) {
+    sql.exec(
+      `CREATE TABLE ${stagedHeads} AS SELECT seq, head_hash_hex FROM ${AUDIT_HEAD_TABLE} LIMIT 0`,
     );
-    if (!derived) {
-      return yield* malformed();
-    }
-  });
-}
+    sql.exec(`CREATE INDEX ${stagedHeads}_seq ON ${stagedHeads} (seq)`);
+  }
+  const { from, start } = stagedAuditHeadStart(sql, state, stagedHeads);
+  if (from !== 0 && !isAuditHeadHex(start)) {
+    return yield* malformed();
+  }
+  // The uploaded claim past the start goes first; the derivation then
+  // writes chunk by chunk into the staged column (one chunk of memory)
+  sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
+  const derived = yield* Effect.promise(() =>
+    deriveAuditHeads(sql, stagedLog, stagedHeads, from, from === 0 ? "" : String(start)),
+  );
+  if (!derived) {
+    return yield* malformed();
+  }
+});
 
 /** One staged chain row as the content verification reads it (programs-mirror.ts). */
-export interface StagedChainRow {
+interface StagedChainRow {
   readonly seq: number;
   readonly entryJson: string;
   readonly entryHashHex: string;
@@ -704,37 +702,35 @@ export interface StagedChainRow {
 }
 
 /** The staged chain in seq order (contiguous from 1, every column of the shape the server writes — else malformed). */
-export function stagedChainRows(
+export const stagedChainRows = Effect.fn("do-mirror.stagedChainRows")(function* (
   sql: SqlStorage,
-): Effect.Effect<readonly StagedChainRow[], MirrorPageRefusedError> {
-  return Effect.gen(function* () {
-    const staging = stagingOf(CHAIN_TABLE);
-    if (!hasTable(sql, staging)) {
-      return yield* new MirrorPageRefusedError({ reason: "chain-not-extension" });
+): Effect.fn.Return<readonly StagedChainRow[], MirrorPageRefusedError> {
+  const staging = stagingOf(CHAIN_TABLE);
+  if (!hasTable(sql, staging)) {
+    return yield* new MirrorPageRefusedError({ reason: "chain-not-extension" });
+  }
+  const rows = sql
+    .exec(`SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM ${staging} ORDER BY seq`)
+    .toArray();
+  const out: StagedChainRow[] = [];
+  for (const [index, row] of rows.entries()) {
+    const seq = row["seq"];
+    const entryJson = row["entry_json"];
+    const entryHashHex = row["entry_hash_hex"];
+    const canonicalBytes = row["canonical_bytes"];
+    if (
+      seq !== index + 1 ||
+      typeof entryJson !== "string" ||
+      typeof entryHashHex !== "string" ||
+      typeof canonicalBytes !== "number" ||
+      !Number.isInteger(canonicalBytes)
+    ) {
+      return yield* malformed();
     }
-    const rows = sql
-      .exec(`SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM ${staging} ORDER BY seq`)
-      .toArray();
-    const out: StagedChainRow[] = [];
-    for (const [index, row] of rows.entries()) {
-      const seq = row["seq"];
-      const entryJson = row["entry_json"];
-      const entryHashHex = row["entry_hash_hex"];
-      const canonicalBytes = row["canonical_bytes"];
-      if (
-        seq !== index + 1 ||
-        typeof entryJson !== "string" ||
-        typeof entryHashHex !== "string" ||
-        typeof canonicalBytes !== "number" ||
-        !Number.isInteger(canonicalBytes)
-      ) {
-        return yield* malformed();
-      }
-      out.push({ seq, entryJson, entryHashHex, canonicalBytes });
-    }
-    return out;
-  });
-}
+    out.push({ seq, entryJson, entryHashHex, canonicalBytes });
+  }
+  return out;
+});
 
 export interface MirrorCommitInput {
   readonly storage: DurableObjectStorage;

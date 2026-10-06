@@ -118,80 +118,76 @@ function decodeBlobWrap(blob: {
 }
 
 /** Opens an approval's value (segment) with the ephemeral key. A context mismatch = decryption failure = abort. */
-function openApproval(input: {
+const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
   readonly ephemeral: EncryptionKeyPair;
   readonly userId: string;
   readonly requestId: string;
   readonly approval: ApprovalWire;
-}): Effect.Effect<Uint8Array, CliError> {
-  return Effect.gen(function* () {
-    const wrapped = yield* decodeWrapped(input.approval);
-    return yield* cryptoEffect(() =>
-      openHandoffValue({
-        ephemeralKeyPair: input.ephemeral,
-        wrapped,
-        context: {
-          userId: input.userId,
-          requestId: input.requestId,
-          source: input.approval.source,
-          shareIndex: input.approval.shareIndex,
-          approverUserId: input.approval.approverUserId,
-        },
-      }),
-    ).pipe(
-      Effect.mapError(() =>
-        cliError(
-          `Cannot open the approval from ${displayText(input.approval.approverUserId)}: it was not sealed to this request's key, or its context was altered in transit. The handoff was aborted — re-run and hand the new code to the guardians again`,
-        ),
+}): Effect.fn.Return<Uint8Array, CliError> {
+  const wrapped = yield* decodeWrapped(input.approval);
+  return yield* cryptoEffect(() =>
+    openHandoffValue({
+      ephemeralKeyPair: input.ephemeral,
+      wrapped,
+      context: {
+        userId: input.userId,
+        requestId: input.requestId,
+        source: input.approval.source,
+        shareIndex: input.approval.shareIndex,
+        approverUserId: input.approval.approverUserId,
+      },
+    }),
+  ).pipe(
+    Effect.mapError(() =>
+      cliError(
+        `Cannot open the approval from ${displayText(input.approval.approverUserId)}: it was not sealed to this request's key, or its context was altered in transit. The handoff was aborted — re-run and hand the new code to the guardians again`,
       ),
-    );
-  });
-}
+    ),
+  );
+});
 
 /** Assembles the KEK from the assembled set and decrypts the ledger's group wrap. */
-function recoverBlob(input: {
+const recoverBlob = Effect.fn("handoff.recoverBlob")(function* (input: {
   readonly client: MaruhiClient;
   readonly ephemeral: EncryptionKeyPair;
   readonly userId: string;
   readonly requestId: string;
   readonly assembled: Assembled;
-}): Effect.Effect<Uint8Array, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const values: Uint8Array[] = [];
-    for (const approval of input.assembled.approvals) {
-      values.push(yield* openApproval({ ...input, approval }));
-    }
-    const kek = yield* fromCryptoResult(
-      joinGuardianShares({
-        mode: input.assembled.group.mode,
-        shares: values,
-        expectedCount: input.assembled.group.guardianCount,
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to reassemble the group key from the shares")));
-    const group = yield* input.client.keyWraps
-      .guardianGet({ params: { groupId: input.assembled.group.groupId } })
-      .pipe(Effect.mapError(toCliError));
-    const wrapped = yield* decodeBlobWrap(group.wrap);
-    return yield* cryptoEffect(() =>
-      unwrapMasterBlob({
-        kek,
-        wrapped,
-        context: {
-          userId: input.userId,
-          kind: "guardian",
-          wrapRef: group.groupId,
-          mode: group.mode,
-        },
-      }),
-    ).pipe(
-      Effect.mapError(() =>
-        cliError(
-          "Cannot decrypt the wrapped reserve key with the approvals received. The wrap and the approvals do not match (the ledger or the approvals were altered) — the handoff was aborted",
-        ),
+}): Effect.fn.Return<Uint8Array, CliError, HttpClient.HttpClient> {
+  const values: Uint8Array[] = [];
+  for (const approval of input.assembled.approvals) {
+    values.push(yield* openApproval({ ...input, approval }));
+  }
+  const kek = yield* fromCryptoResult(
+    joinGuardianShares({
+      mode: input.assembled.group.mode,
+      shares: values,
+      expectedCount: input.assembled.group.guardianCount,
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to reassemble the group key from the shares")));
+  const group = yield* input.client.keyWraps
+    .guardianGet({ params: { groupId: input.assembled.group.groupId } })
+    .pipe(Effect.mapError(toCliError));
+  const wrapped = yield* decodeBlobWrap(group.wrap);
+  return yield* cryptoEffect(() =>
+    unwrapMasterBlob({
+      kek,
+      wrapped,
+      context: {
+        userId: input.userId,
+        kind: "guardian",
+        wrapRef: group.groupId,
+        mode: group.mode,
+      },
+    }),
+  ).pipe(
+    Effect.mapError(() =>
+      cliError(
+        "Cannot decrypt the wrapped reserve key with the approvals received. The wrap and the approvals do not match (the ledger or the approvals were altered) — the handoff was aborted",
       ),
-    );
-  });
-}
+    ),
+  );
+});
 
 /** The ephemeral key E and its code / request_id (E exists only in this process's memory — §8.4). */
 interface HandoffRequest {
@@ -200,157 +196,152 @@ interface HandoffRequest {
   readonly requestId: string;
 }
 
-function newHandoffRequest(): Effect.Effect<HandoffRequest, CliError> {
-  return Effect.gen(function* () {
-    const ephemeral = yield* cryptoPromise("generateEncryptionKeyPair", () =>
-      generateEncryptionKeyPair(),
-    ).pipe(Effect.mapError(() => cliError("Failed to generate the handoff key (crypto error)")));
-    const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
-      exportEncryptionPublicKey(ephemeral.publicKey),
-    ).pipe(Effect.mapError(() => cliError("Failed to export the handoff key (crypto error)")));
-    const code = yield* cryptoEffect(() => encodeHandoffCode(publicKey)).pipe(
-      Effect.mapError(() => cliError("Failed to derive the handoff code")),
-    );
-    const requestId = yield* cryptoEffect(() => computeHandoffRequestId(publicKey)).pipe(
-      Effect.mapError(() => cliError("Failed to derive the handoff code")),
-    );
-    return { ephemeral, code, requestId };
-  });
-}
+const newHandoffRequest = Effect.fn("handoff.newHandoffRequest")(function* (): Effect.fn.Return<
+  HandoffRequest,
+  CliError
+> {
+  const ephemeral = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+    generateEncryptionKeyPair(),
+  ).pipe(Effect.mapError(() => cliError("Failed to generate the handoff key (crypto error)")));
+  const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
+    exportEncryptionPublicKey(ephemeral.publicKey),
+  ).pipe(Effect.mapError(() => cliError("Failed to export the handoff key (crypto error)")));
+  const code = yield* cryptoEffect(() => encodeHandoffCode(publicKey)).pipe(
+    Effect.mapError(() => cliError("Failed to derive the handoff code")),
+  );
+  const requestId = yield* cryptoEffect(() => computeHandoffRequestId(publicKey)).pipe(
+    Effect.mapError(() => cliError("Failed to derive the handoff code")),
+  );
+  return { ephemeral, code, requestId };
+});
 
 /** Displays the code and the guidance (the code is a public key = not secret, but it goes to the same stderr as the guidance). */
-function announceCode(
+const announceCode = Effect.fn("handoff.announceCode")(function* (
   io: CliIoShape,
   code: string,
   groups: readonly GroupSummary[],
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    yield* io.logError("");
-    yield* io.logError("Handoff code (this is a public key, not a secret):");
-    yield* io.logError("");
-    yield* io.logError(`    ${code}`);
-    yield* io.logError("");
-    yield* io.logError(
-      "Send this code to a guardian and ask them to run `maruhi guardian approve` with it (confirm with them out of band that it is you)",
-    );
-    yield* io.logError(
-      `Registered guardian groups: ${groups.map((g) => `${g.groupId} (${g.mode}, ${g.guardianCount} guardians)`).join(", ")}`,
-    );
-    yield* io.logError(
-      "Waiting for approvals (the request expires after 15 minutes; press Ctrl+C to cancel)",
-    );
-  });
-}
+): Effect.fn.Return<void> {
+  yield* io.logError("");
+  yield* io.logError("Handoff code (this is a public key, not a secret):");
+  yield* io.logError("");
+  yield* io.logError(`    ${code}`);
+  yield* io.logError("");
+  yield* io.logError(
+    "Send this code to a guardian and ask them to run `maruhi guardian approve` with it (confirm with them out of band that it is you)",
+  );
+  yield* io.logError(
+    `Registered guardian groups: ${groups.map((g) => `${g.groupId} (${g.mode}, ${g.guardianCount} guardians)`).join(", ")}`,
+  );
+  yield* io.logError(
+    "Waiting for approvals (the request expires after 15 minutes; press Ctrl+C to cancel)",
+  );
+});
 
 /** Polls until the approvals arrive (expiry is a failure). */
-function awaitApprovals(input: {
+const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
   readonly groups: readonly GroupSummary[];
   readonly expiresAtMs: number;
-}): Effect.Effect<Assembled, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    let received = 0;
-    const outcome = yield* Effect.repeat(
-      Effect.gen(function* () {
-        // The deadline bounds the next fetch: it is judged at the loop's
-        // top (before the request), not during the wait between polls
-        if ((yield* Clock.currentTimeMillis) >= input.expiresAtMs) {
-          return { kind: "expired" as const };
-        }
-        const page = yield* input.client.keyWraps
-          .handoffApprovals({ params: { requestId: input.requestId } })
-          .pipe(Effect.mapError(toCliError));
-        received = page.approvals.length;
-        const assembled = assemble(page.approvals, input.groups);
-        return assembled === null
-          ? { kind: "waiting" as const }
-          : { kind: "assembled" as const, assembled };
-      }),
-      {
-        schedule: Schedule.spaced(POLL_INTERVAL),
-        until: (round) => round.kind !== "waiting",
-      },
-    );
-    return outcome.kind === "assembled"
-      ? outcome.assembled
-      : yield* Effect.fail(
-          cliError(
-            `The handoff request expired without enough approvals (${received} received). Re-run to issue a new code`,
-          ),
-        );
-  });
-}
+}): Effect.fn.Return<Assembled, CliError, HttpClient.HttpClient> {
+  let received = 0;
+  const outcome = yield* Effect.repeat(
+    Effect.gen(function* () {
+      // The deadline bounds the next fetch: it is judged at the loop's
+      // top (before the request), not during the wait between polls
+      if ((yield* Clock.currentTimeMillis) >= input.expiresAtMs) {
+        return { kind: "expired" as const };
+      }
+      const page = yield* input.client.keyWraps
+        .handoffApprovals({ params: { requestId: input.requestId } })
+        .pipe(Effect.mapError(toCliError));
+      received = page.approvals.length;
+      const assembled = assemble(page.approvals, input.groups);
+      return assembled === null
+        ? { kind: "waiting" as const }
+        : { kind: "assembled" as const, assembled };
+    }),
+    {
+      schedule: Schedule.spaced(POLL_INTERVAL),
+      until: (round) => round.kind !== "waiting",
+    },
+  );
+  return outcome.kind === "assembled"
+    ? outcome.assembled
+    : yield* Effect.fail(
+        cliError(
+          `The handoff request expired without enough approvals (${received} received). Re-run to issue a new code`,
+        ),
+      );
+});
 
 /**
  * `maruhi key recover --handoff`'s pre-stage: request approvals from
  * your guardians and open the reserve key (memory only —
  * key-recover.ts owns the downstream).
  */
-export function requestHandoffReserve(input: {
+export const requestHandoffReserve = Effect.fn("handoff.requestHandoffReserve")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensureHandoffRequestAllowed(io);
-    const status = yield* input.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
-    const groups: GroupSummary[] = status.guardianGroups.map((g) => ({
-      groupId: g.groupId,
-      mode: g.mode,
-      guardianCount: new Set(g.guardians.map((row) => row.shareIndex)).size,
-    }));
-    if (groups.length === 0) {
-      return yield* Effect.fail(
-        cliError(
-          "You have no guardians registered, so nobody can approve a handoff. Open the reserve key with your recovery code (`maruhi key recover`) or a passkey (`--passkey`) instead",
-        ),
-      );
-    }
-    const request = yield* newHandoffRequest();
-    const created = yield* input.client.keyWraps
-      .handoffCreate({ payload: { requestId: request.requestId } })
-      .pipe(
-        Effect.catchTag("KeyWrapRateLimited", (error) =>
-          Effect.fail(
-            cliError(
-              `The handoff request limit was reached. Retry after ${error.retryAfterSeconds} seconds`,
-            ),
+}): Effect.fn.Return<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* ensureHandoffRequestAllowed(io);
+  const status = yield* input.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
+  const groups: GroupSummary[] = status.guardianGroups.map((g) => ({
+    groupId: g.groupId,
+    mode: g.mode,
+    guardianCount: new Set(g.guardians.map((row) => row.shareIndex)).size,
+  }));
+  if (groups.length === 0) {
+    return yield* Effect.fail(
+      cliError(
+        "You have no guardians registered, so nobody can approve a handoff. Open the reserve key with your recovery code (`maruhi key recover`) or a passkey (`--passkey`) instead",
+      ),
+    );
+  }
+  const request = yield* newHandoffRequest();
+  const created = yield* input.client.keyWraps
+    .handoffCreate({ payload: { requestId: request.requestId } })
+    .pipe(
+      Effect.catchTag("KeyWrapRateLimited", (error) =>
+        Effect.fail(
+          cliError(
+            `The handoff request limit was reached. Retry after ${error.retryAfterSeconds} seconds`,
           ),
         ),
-        Effect.mapError(toCliError),
-      );
-    yield* announceCode(io, request.code, groups);
-    const assembled = yield* awaitApprovals({
-      client: input.client,
-      requestId: request.requestId,
-      groups,
-      expiresAtMs: created.expiresAtMs,
-    });
-    const blob = yield* recoverBlob({
-      client: input.client,
-      ephemeral: request.ephemeral,
-      userId: input.session.userId,
-      requestId: request.requestId,
-      assembled,
-    });
-    const record = parseStoredMasterKey(new TextDecoder().decode(blob));
-    if (record === null) {
-      return yield* Effect.fail(
-        cliError(
-          "The decrypted blob is not a key record. The ledger holds a broken record, or a newer maruhi wrote it — update maruhi, or open the reserve key another way",
-        ),
-      );
-    }
-    for (const approval of assembled.approvals) {
-      yield* io.log(
-        `approved by ${displayText(approval.approverUserId)} (guardian, group ${displayText(approval.source)}; device key fingerprint ${approval.approverKeyFingerprintHex})`,
-      );
-    }
-    // The request has served its purpose (the approvals become worthless together with E, but still delete the row)
-    yield* input.client.keyWraps
-      .handoffCancel({ params: { requestId: request.requestId } })
-      .pipe(Effect.ignore);
-    return record;
+      ),
+      Effect.mapError(toCliError),
+    );
+  yield* announceCode(io, request.code, groups);
+  const assembled = yield* awaitApprovals({
+    client: input.client,
+    requestId: request.requestId,
+    groups,
+    expiresAtMs: created.expiresAtMs,
   });
-}
+  const blob = yield* recoverBlob({
+    client: input.client,
+    ephemeral: request.ephemeral,
+    userId: input.session.userId,
+    requestId: request.requestId,
+    assembled,
+  });
+  const record = parseStoredMasterKey(new TextDecoder().decode(blob));
+  if (record === null) {
+    return yield* Effect.fail(
+      cliError(
+        "The decrypted blob is not a key record. The ledger holds a broken record, or a newer maruhi wrote it — update maruhi, or open the reserve key another way",
+      ),
+    );
+  }
+  for (const approval of assembled.approvals) {
+    yield* io.log(
+      `approved by ${displayText(approval.approverUserId)} (guardian, group ${displayText(approval.source)}; device key fingerprint ${approval.approverKeyFingerprintHex})`,
+    );
+  }
+  // The request has served its purpose (the approvals become worthless together with E, but still delete the row)
+  yield* input.client.keyWraps
+    .handoffCancel({ params: { requestId: request.requestId } })
+    .pipe(Effect.ignore);
+  return record;
+});
