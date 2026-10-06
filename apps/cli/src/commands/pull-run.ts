@@ -56,39 +56,37 @@ export const runConfig = {
  * error before any child starts), the advisory type check (§14.3-7 — a
  * mismatch warns only).
  */
-function pullForRun(
+const pullForRun = Effect.fn("commands-pull-run.pullForRun")(function* (
   context: EnvironmentContext,
-): Effect.Effect<PulledVariables, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const pulled = yield* pullVariables({
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId,
-      recipient: context.recipient,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    yield* logWarnings(pulled.warnings);
-    yield* enforceDeclaredPresence(pulled.declared);
-    yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
-    // The point-of-use nudge (PF7a): one note when a value just pulled is
-    // past the max age its schema declares (never changes the outcome)
-    yield* notePastDueValues({
-      client: context.client,
-      projectId: context.projectId,
-      environmentId: context.environmentId,
-      variables: pulled.variables,
-    });
-    return pulled;
+): Effect.fn.Return<PulledVariables, CliError, CliServices> {
+  const pulled = yield* pullVariables({
+    client: context.client,
+    verified: context.verified,
+    environmentId: context.environmentId,
+    recipient: context.recipient,
+    resync: context.resync,
+    floor: context.floorHandle,
   });
-}
+  yield* logWarnings(pulled.warnings);
+  yield* enforceDeclaredPresence(pulled.declared);
+  yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+  // The point-of-use nudge (PF7a): one note when a value just pulled is
+  // past the max age its schema declares (never changes the outcome)
+  yield* notePastDueValues({
+    client: context.client,
+    projectId: context.projectId,
+    environmentId: context.environmentId,
+    variables: pulled.variables,
+  });
+  return pulled;
+});
 
 /**
  * The brokered run shared by `maruhi proxy run` and by `maruhi run` when
  * the repository has a proxy config: project check → environment →
  * verified pull → presence fail-fast → type advisory → proxy-run.ts.
  */
-export function brokeredRun(input: {
+export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* (input: {
   readonly command: readonly string[];
   readonly flags: CommonFlags;
   readonly loaded: LoadedProxyConfig;
@@ -96,56 +94,56 @@ export function brokeredRun(input: {
   readonly verbose: boolean;
   readonly listen?: string | undefined;
   readonly advertise?: string | undefined;
-}): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const { config } = input.loaded;
-    yield* checkProxyConfigProject(config, input.flags.project);
-    // A config is applied only once a person accepted its content on this
-    // machine **for this project** (pf4-design.md §21 R-8 / R-24 — an agent
-    // cannot accept its own rules, nor point another project's accepted
-    // rules at this one). Checked before any network when the project is
-    // known without it, and again against the project the prologue resolved
-    const accepted = (projectId: string) =>
-      ensureProxyConfigAccepted({
-        path: input.configPath,
-        content: input.loaded.content,
-        projectId,
-      });
-    const early = input.flags.project ?? config.projectId ?? (yield* loadCliConfig).defaultProject;
-    if (early !== undefined) {
-      yield* accepted(early);
-    }
-    // The read may be retried against the configured mirror (PF2); the proxy then starts once
-    const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
-      Effect.gen(function* () {
-        const opened = yield* openEnvironment({
-          ...flags,
-          project: flags.project ?? config.projectId,
-        });
-        if (opened.projectId !== early) {
-          yield* accepted(opened.projectId);
-        }
-        // From now on plain `run` without a config is gated for this project (R-13)
-        yield* markProjectBrokered({ projectId: opened.projectId, configPath: input.configPath });
-        return { context: opened, pulled: yield* pullForRun(opened) };
-      }),
-    );
-    return yield* proxyRunOp({
-      command: input.command,
-      config,
-      configPath: input.configPath,
-      environmentId: context.environmentId,
-      variables: pulled.variables,
-      verbose: input.verbose,
-      listen: input.listen,
-      advertise: input.advertise,
+}): Effect.fn.Return<number, CliError, CliServices> {
+  const { config } = input.loaded;
+  yield* checkProxyConfigProject(config, input.flags.project);
+  // A config is applied only once a person accepted its content on this
+  // machine **for this project** (pf4-design.md §21 R-8 / R-24 — an agent
+  // cannot accept its own rules, nor point another project's accepted
+  // rules at this one). Checked before any network when the project is
+  // known without it, and again against the project the prologue resolved
+  const accepted = (projectId: string) =>
+    ensureProxyConfigAccepted({
+      path: input.configPath,
+      content: input.loaded.content,
+      projectId,
     });
+  const early = input.flags.project ?? config.projectId ?? (yield* loadCliConfig).defaultProject;
+  if (early !== undefined) {
+    yield* accepted(early);
+  }
+  // The read may be retried against the configured mirror (PF2); the proxy then starts once
+  const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
+    Effect.gen(function* () {
+      const opened = yield* openEnvironment({
+        ...flags,
+        project: flags.project ?? config.projectId,
+      });
+      if (opened.projectId !== early) {
+        yield* accepted(opened.projectId);
+      }
+      // From now on plain `run` without a config is gated for this project (R-13)
+      yield* markProjectBrokered({ projectId: opened.projectId, configPath: input.configPath });
+      return { context: opened, pulled: yield* pullForRun(opened) };
+    }),
+  );
+  return yield* proxyRunOp({
+    command: input.command,
+    config,
+    configPath: input.configPath,
+    environmentId: context.environmentId,
+    variables: pulled.variables,
+    verbose: input.verbose,
+    listen: input.listen,
+    advertise: input.advertise,
   });
-}
+});
 
 export function makePullRunCommands(onExitCode: (code: number) => void) {
-  const pull = Command.make("pull", pullConfig, (values) =>
-    Effect.gen(function* () {
+  const pull = Command.make(
+    "pull",
+    pullConfig,
+    Effect.fn("commands-pull-run.pull")(function* (values) {
       const io = yield* CliIo;
       // The value-display refusal is the command entry = checked **before
       // decryption** (never decrypt the whole environment first and then
@@ -216,8 +214,10 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const run = Command.make("run", runConfig, (values) =>
-    Effect.gen(function* () {
+  const run = Command.make(
+    "run",
+    runConfig,
+    Effect.fn("commands-pull-run.run")(function* (values) {
       const { command: parsed, plain, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);

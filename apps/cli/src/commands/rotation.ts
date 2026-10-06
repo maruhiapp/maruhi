@@ -94,8 +94,10 @@ export const rotationRejectConfig = {
 };
 
 export function makeRotationCommands(onExitCode: (code: number) => void) {
-  const rotationList = Command.make("list", rotationListConfig, (values) =>
-    Effect.gen(function* () {
+  const rotationList = Command.make(
+    "list",
+    rotationListConfig,
+    Effect.fn("commands-rotation.rotationList")(function* (values) {
       const dueWithin = values["due-within"];
       if (
         dueWithin !== undefined &&
@@ -125,8 +127,10 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const rotationDismiss = Command.make("dismiss", rotationDismissConfig, (values) =>
-    Effect.gen(function* () {
+  const rotationDismiss = Command.make(
+    "dismiss",
+    rotationDismissConfig,
+    Effect.fn("commands-rotation.rotationDismiss")(function* (values) {
       // The targets' format is checked before any network
       const environmentId = values.env;
       if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
@@ -174,15 +178,18 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationProposals = Command.make(
     "proposals",
     rotationProposalsConfig,
-    (values): Effect.Effect<void, CliError, CliServices> =>
-      Effect.gen(function* () {
-        const environmentId = values.env;
-        if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
-          return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-        }
-        const context = yield* openMetadataProject(values);
-        yield* rotationProposalsOp(context, { environmentId });
-      }),
+    Effect.fn("commands-rotation.rotationProposals")(function* (values): Effect.fn.Return<
+      void,
+      CliError,
+      CliServices
+    > {
+      const environmentId = values.env;
+      if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
+        return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+      }
+      const context = yield* openMetadataProject(values);
+      yield* rotationProposalsOp(context, { environmentId });
+    }),
   ).pipe(
     Command.withDescription(
       "List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)",
@@ -192,25 +199,28 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationAccept = Command.make(
     "accept",
     rotationAcceptConfig,
-    (values): Effect.Effect<void, CliError, CliServices> =>
-      Effect.gen(function* () {
-        const io = yield* CliIo;
-        // The proposal decides the environment: it is looked up through a
-        // keyless project context first, then the environment context (the
-        // device key) is opened for its environment
-        const lookup = yield* openMetadataProject(values);
-        const proposal = yield* findProposal(
-          yield* fetchRotationProposals(lookup.client, lookup.projectId),
-          values.id,
-        );
-        const context = yield* openEnvironment({ ...values, env: proposal.environmentId });
-        const result = yield* rotationAcceptOp({ context, proposal, yes: values.yes });
-        yield* logRotationWarnings(result.warnings);
-        for (const line of describeAcceptance(result, context.environmentId)) {
-          yield* io.log(line);
-        }
-        yield* proposeCheckpointRefresh(context, { includeAnchor: true });
-      }),
+    Effect.fn("commands-rotation.rotationAccept")(function* (values): Effect.fn.Return<
+      void,
+      CliError,
+      CliServices
+    > {
+      const io = yield* CliIo;
+      // The proposal decides the environment: it is looked up through a
+      // keyless project context first, then the environment context (the
+      // device key) is opened for its environment
+      const lookup = yield* openMetadataProject(values);
+      const proposal = yield* findProposal(
+        yield* fetchRotationProposals(lookup.client, lookup.projectId),
+        values.id,
+      );
+      const context = yield* openEnvironment({ ...values, env: proposal.environmentId });
+      const result = yield* rotationAcceptOp({ context, proposal, yes: values.yes });
+      yield* logRotationWarnings(result.warnings);
+      for (const line of describeAcceptance(result, context.environmentId)) {
+        yield* io.log(line);
+      }
+      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+    }),
   ).pipe(
     Command.withDescription(
       "Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value",
@@ -220,15 +230,18 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationReject = Command.make(
     "reject",
     rotationRejectConfig,
-    (values): Effect.Effect<void, CliError, CliServices> =>
-      Effect.gen(function* () {
-        const context = yield* openMetadataProject(values);
-        const proposal = yield* findProposal(
-          yield* fetchRotationProposals(context.client, context.projectId),
-          values.id,
-        );
-        yield* rotationRejectOp({ context, proposal });
-      }),
+    Effect.fn("commands-rotation.rotationReject")(function* (values): Effect.fn.Return<
+      void,
+      CliError,
+      CliServices
+    > {
+      const context = yield* openMetadataProject(values);
+      const proposal = yield* findProposal(
+        yield* fetchRotationProposals(context.client, context.projectId),
+        values.id,
+      );
+      yield* rotationRejectOp({ context, proposal });
+    }),
   ).pipe(
     Command.withDescription(
       "Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)",

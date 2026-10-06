@@ -56,8 +56,10 @@ export const guardianRemoveConfig = {
 export const guardianWardsConfig = serverOnlyFlags();
 
 export function makeGuardianCommands() {
-  const guardianAdd = Command.make("add", guardianAddConfig, (values) =>
-    Effect.gen(function* () {
+  const guardianAdd = Command.make(
+    "add",
+    guardianAddConfig,
+    Effect.fn("commands-guardian.guardianAdd")(function* (values) {
       if (!isGuardianMode(values.mode)) {
         return yield* Effect.fail(usageError(`Specify --mode (${GUARDIAN_MODES.join(" | ")})`));
       }
@@ -80,8 +82,10 @@ export function makeGuardianCommands() {
     ),
   );
 
-  const guardianApprove = Command.make("approve", guardianApproveConfig, (values) =>
-    Effect.gen(function* () {
+  const guardianApprove = Command.make(
+    "approve",
+    guardianApproveConfig,
+    Effect.fn("commands-guardian.guardianApprove")(function* (values) {
       const context = yield* openSession(values.server);
       yield* guardianApproveOp({
         session: context.session,
@@ -103,8 +107,10 @@ export function makeGuardianCommands() {
     ),
   );
 
-  const guardianRemove = Command.make("remove", guardianRemoveConfig, (values) =>
-    Effect.gen(function* () {
+  const guardianRemove = Command.make(
+    "remove",
+    guardianRemoveConfig,
+    Effect.fn("commands-guardian.guardianRemove")(function* (values) {
       const context = yield* openSession(values.server);
       yield* guardianRemoveOp({
         session: context.session,
@@ -114,8 +120,10 @@ export function makeGuardianCommands() {
     }),
   ).pipe(Command.withDescription("Remove a guardian group"));
 
-  const guardianWards = Command.make("wards", guardianWardsConfig, (values) =>
-    Effect.gen(function* () {
+  const guardianWards = Command.make(
+    "wards",
+    guardianWardsConfig,
+    Effect.fn("commands-guardian.guardianWards")(function* (values) {
       const context = yield* openSession(values.server);
       yield* guardianWardsOp({ session: context.session, client: context.client });
     }),

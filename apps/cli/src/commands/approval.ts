@@ -124,76 +124,72 @@ function readyNote(view: ProposalView): string | null {
 }
 
 /** `maruhi approval list [--json]` (the verified chain's pending — K5-M. Vote counts are re-tallied). */
-function approvalListCommand(
+const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openMetadataProject(flags);
-    const views = proposalViews(context.verified, yield* Clock.currentTimeMillis);
-    if (flags.json) {
-      yield* io.log(approvalListJson(context.verified.state.approvalPolicy, views));
-      return;
-    }
-    yield* io.log(`Four-eyes policy: ${describePolicy(context.verified.state.approvalPolicy)}`);
-    yield* io.log(
-      `Pending proposals (${views.length}) — verified chain head seq=${context.verified.state.headSeq}:`,
-    );
-    for (const view of views) {
-      yield* io.log(`  ${formatProposalRow(view)}`);
-    }
-    for (const view of views) {
-      const note = readyNote(view);
-      if (note !== null) {
-        yield* logNote(note);
-      }
-    }
-  });
-}
-
-/** `maruhi approval show <id>` (the proposer, the inner op, the expiry, the voters, whether I can approve). */
-function approvalShowCommand(
-  flags: CommonFlags & { readonly ref: string },
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openMetadataProject(flags);
-    const resolution = resolveProposalRef(context.verified, flags.ref);
-    if (resolution.kind !== "pending") {
-      return yield* Effect.fail(cliError(describeUnresolvedRef(resolution)));
-    }
-    const view = proposalViewOf(
-      context.verified,
-      resolution.proposal,
-      yield* Clock.currentTimeMillis,
-    );
-    for (const line of proposalDetailLines(view)) {
-      yield* io.log(line);
-    }
-    // The approver-side key-FP re-registration warning (K6-I′ — same predicate and wording as the proposer-side K6-I)
-    if (view.proposal.inner.op === "add_member") {
-      for (const reuse of keyReuseOf(context.verified, view.proposal.inner.payload)) {
-        yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
-      }
-    }
-    // A vote's eligibility is the signing device's effective role (DK
-    // K4). On a keyless run (MARUHI_TOKEN) no device is determined, so
-    // only that is stated (show stays a key-free command)
-    const localKeys = yield* loadMasterKeys(context.session).pipe(Effect.orElseSucceed(() => null));
-    yield* io.log(
-      eligibilityLine(
-        context.verified,
-        context.session.userId,
-        localKeys === null ? null : localKeys.fingerprintHex,
-        view,
-      ),
-    );
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openMetadataProject(flags);
+  const views = proposalViews(context.verified, yield* Clock.currentTimeMillis);
+  if (flags.json) {
+    yield* io.log(approvalListJson(context.verified.state.approvalPolicy, views));
+    return;
+  }
+  yield* io.log(`Four-eyes policy: ${describePolicy(context.verified.state.approvalPolicy)}`);
+  yield* io.log(
+    `Pending proposals (${views.length}) — verified chain head seq=${context.verified.state.headSeq}:`,
+  );
+  for (const view of views) {
+    yield* io.log(`  ${formatProposalRow(view)}`);
+  }
+  for (const view of views) {
     const note = readyNote(view);
     if (note !== null) {
       yield* logNote(note);
     }
-  });
-}
+  }
+});
+
+/** `maruhi approval show <id>` (the proposer, the inner op, the expiry, the voters, whether I can approve). */
+const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(function* (
+  flags: CommonFlags & { readonly ref: string },
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openMetadataProject(flags);
+  const resolution = resolveProposalRef(context.verified, flags.ref);
+  if (resolution.kind !== "pending") {
+    return yield* Effect.fail(cliError(describeUnresolvedRef(resolution)));
+  }
+  const view = proposalViewOf(
+    context.verified,
+    resolution.proposal,
+    yield* Clock.currentTimeMillis,
+  );
+  for (const line of proposalDetailLines(view)) {
+    yield* io.log(line);
+  }
+  // The approver-side key-FP re-registration warning (K6-I′ — same predicate and wording as the proposer-side K6-I)
+  if (view.proposal.inner.op === "add_member") {
+    for (const reuse of keyReuseOf(context.verified, view.proposal.inner.payload)) {
+      yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
+    }
+  }
+  // A vote's eligibility is the signing device's effective role (DK
+  // K4). On a keyless run (MARUHI_TOKEN) no device is determined, so
+  // only that is stated (show stays a key-free command)
+  const localKeys = yield* loadMasterKeys(context.session).pipe(Effect.orElseSucceed(() => null));
+  yield* io.log(
+    eligibilityLine(
+      context.verified,
+      context.session.userId,
+      localKeys === null ? null : localKeys.fingerprintHex,
+      view,
+    ),
+  );
+  const note = readyNote(view);
+  if (note !== null) {
+    yield* logNote(note);
+  }
+});
 
 /** `approval show`'s detail lines (the proposer, the inner op, the expiry, the votes — a pure function). */
 function proposalDetailLines(view: ProposalView): readonly string[] {
@@ -251,7 +247,7 @@ function eligibilityLine(
 }
 
 /** Reporting the sweep part of the approver's fulfillment (remove / revoke) (preamble → sweep → the completion line). */
-function reportFulfilledSweep(
+const reportFulfilledSweep = Effect.fn("commands-approval.reportFulfilledSweep")(function* (
   io: CliIoShape,
   input: {
     readonly intro: string;
@@ -260,19 +256,17 @@ function reportFulfilledSweep(
     readonly alreadyRotatedBasis: string;
     readonly done: string;
   },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    yield* io.log(input.intro);
-    const code = yield* reportSweepOutcome(input.sweep, {
-      rerunCommand: input.rerunCommand,
-      alreadyRotatedBasis: input.alreadyRotatedBasis,
-    });
-    if (code === 0) {
-      yield* io.log(input.done);
-    }
-    return code;
+): Effect.fn.Return<number, CliError, CliServices> {
+  yield* io.log(input.intro);
+  const code = yield* reportSweepOutcome(input.sweep, {
+    rerunCommand: input.rerunCommand,
+    alreadyRotatedBasis: input.alreadyRotatedBasis,
   });
-}
+  if (code === 0) {
+    yield* io.log(input.done);
+  }
+  return code;
+});
 
 /** Reporting the approver's fulfillment (approval item 22) and the exit code (per inner op kind). */
 const FULFILMENT_REPORTERS: {
@@ -339,71 +333,67 @@ function reportFulfilment(
 }
 
 /** `maruhi approval approve <id>` (sign → fulfill if complete — K6-B / approval item 22). */
-function approvalApproveCommand(
+const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
-    const context = yield* openProject(flags, { quietMandateWarning: true });
-    const outcome = yield* approveProposalOp({
-      client: context.client,
-      verified: context.verified,
-      ref: flags.ref,
-      signerUserId: context.session.userId,
-      signerFingerprintHex: context.masterKeys.fingerprintHex,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      recipient: context.recipient,
-      resync: context.resync,
-      rotateWith: (reason) => sweepRotateFor(context, reason),
-      nowMs: yield* Clock.currentTimeMillis,
-    });
-    switch (outcome.kind) {
-      case "recorded":
-        yield* io.log(
-          `Recorded your approval of ${describeInnerOperation(outcome.view.proposal.inner)} (proposal ${outcome.view.proposal.proposalHashHex.slice(0, 12)}…). It still ${describeNeeded(outcome.view)} — nothing has been applied yet`,
-        );
-        return 0;
-      case "completed-by-other":
-        yield* io.log(
-          `This proposal was already completed by another owner's approval at seq=${outcome.completedAtSeq} — your approval was not needed. That owner's CLI fulfils the follow-up rotation / key distribution (CRYPTO_SPEC §7); any unconverged mandate stays visible in \`maruhi project verify\``,
-        );
-        return 0;
-      case "withdrawn-concurrently":
-        return yield* Effect.fail(
-          cliError("The proposal was withdrawn concurrently — nothing to approve"),
-        );
-      case "applied":
-        return yield* reportFulfilment(io, outcome.fulfilment);
-    }
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
+  const context = yield* openProject(flags, { quietMandateWarning: true });
+  const outcome = yield* approveProposalOp({
+    client: context.client,
+    verified: context.verified,
+    ref: flags.ref,
+    signerUserId: context.session.userId,
+    signerFingerprintHex: context.masterKeys.fingerprintHex,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    recipient: context.recipient,
+    resync: context.resync,
+    rotateWith: (reason) => sweepRotateFor(context, reason),
+    nowMs: yield* Clock.currentTimeMillis,
   });
-}
+  switch (outcome.kind) {
+    case "recorded":
+      yield* io.log(
+        `Recorded your approval of ${describeInnerOperation(outcome.view.proposal.inner)} (proposal ${outcome.view.proposal.proposalHashHex.slice(0, 12)}…). It still ${describeNeeded(outcome.view)} — nothing has been applied yet`,
+      );
+      return 0;
+    case "completed-by-other":
+      yield* io.log(
+        `This proposal was already completed by another owner's approval at seq=${outcome.completedAtSeq} — your approval was not needed. That owner's CLI fulfils the follow-up rotation / key distribution (CRYPTO_SPEC §7); any unconverged mandate stays visible in \`maruhi project verify\``,
+      );
+      return 0;
+    case "withdrawn-concurrently":
+      return yield* Effect.fail(
+        cliError("The proposal was withdrawn concurrently — nothing to approve"),
+      );
+    case "applied":
+      return yield* reportFulfilment(io, outcome.fulfilment);
+  }
+});
 
 /** `maruhi approval withdraw <id>` (the proposer or an owner — K6-L). */
-function approvalWithdrawCommand(
+const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openProject(flags);
-    const summary = yield* withdrawProposalOp({
-      client: context.client,
-      verified: context.verified,
-      ref: flags.ref,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-    });
-    if (summary.closedByOtherOwner) {
-      yield* logNote(
-        `withdrawing a proposal made by ${displayText(summary.proposerUserId)} (owners may close any proposal)`,
-      );
-    }
-    yield* io.log(
-      `Withdrew proposal ${summary.proposalHashHex.slice(0, 12)}… (seq=${summary.proposalSeq}) — nothing was applied`,
-    );
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openProject(flags);
+  const summary = yield* withdrawProposalOp({
+    client: context.client,
+    verified: context.verified,
+    ref: flags.ref,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    resync: context.resync,
   });
-}
+  if (summary.closedByOtherOwner) {
+    yield* logNote(
+      `withdrawing a proposal made by ${displayText(summary.proposerUserId)} (owners may close any proposal)`,
+    );
+  }
+  yield* io.log(
+    `Withdrew proposal ${summary.proposalHashHex.slice(0, 12)}… (seq=${summary.proposalSeq}) — nothing was applied`,
+  );
+});
 
 export function makeApprovalCommands(onExitCode: (code: number) => void) {
   const approvalList = Command.make("list", approvalListConfig, (values) =>
@@ -426,8 +416,10 @@ export function makeApprovalCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const approvalApprove = Command.make("approve", approvalApproveConfig, (values) =>
-    Effect.gen(function* () {
+  const approvalApprove = Command.make(
+    "approve",
+    approvalApproveConfig,
+    Effect.fn("commands-approval.approvalApprove")(function* (values) {
       onExitCode(
         yield* approvalApproveCommand({
           server: values.server,

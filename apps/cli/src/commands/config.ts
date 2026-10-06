@@ -49,8 +49,10 @@ function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
 }
 
 export function makeConfigCommands() {
-  const configGet = Command.make("get", configGetConfig, (values) =>
-    Effect.gen(function* () {
+  const configGet = Command.make(
+    "get",
+    configGetConfig,
+    Effect.fn("commands-config.configGet")(function* (values) {
       const io = yield* CliIo;
       const configKey = yield* requireConfigKey(values.key);
       const config = yield* loadCliConfig;
@@ -60,8 +62,10 @@ export function makeConfigCommands() {
     }),
   ).pipe(Command.withDescription("Print one non-secret setting to stdout"));
 
-  const configSet = Command.make("set", configSetConfig, (values) =>
-    Effect.gen(function* () {
+  const configSet = Command.make(
+    "set",
+    configSetConfig,
+    Effect.fn("commands-config.configSet")(function* (values) {
       const io = yield* CliIo;
       const store = yield* ConfigStore;
       const configKey = yield* requireConfigKey(values.key);

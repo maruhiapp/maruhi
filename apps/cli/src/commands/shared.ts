@@ -45,10 +45,10 @@ const RUN_TERMINATOR_HINT =
  * when a value-taking flag is added). The contents never appear in
  * diagnostics.
  */
-export function commandAfterTerminator(
-  parsed: readonly string[],
-): Effect.Effect<readonly string[], CliError, Stdio.Stdio> {
-  return Effect.gen(function* () {
+export const commandAfterTerminator = Effect.fn("commands-shared.commandAfterTerminator")(
+  function* (
+    parsed: readonly string[],
+  ): Effect.fn.Return<readonly string[], CliError, Stdio.Stdio> {
     const stdio = yield* Stdio.Stdio;
     const argv = yield* stdio.args;
     const terminator = argv.indexOf("--");
@@ -64,8 +64,8 @@ export function commandAfterTerminator(
       );
     }
     return parsed;
-  });
-}
+  },
+);
 
 /** The environment ID's shape (the wording for the --env flag. The given value itself never appears in the error). */
 export const ENV_FLAG_SHAPE_MESSAGE =
@@ -76,19 +76,19 @@ export const ENV_FLAG_SHAPE_MESSAGE =
  * is down is no fallback (ruling E revision), so the member is told now when
  * no session for the mirror is in the keychain.
  */
-export function noteMirrorSession(raw: string): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
-      fix: "mirror in your config",
-    });
-    const keychain = yield* Keychain;
-    if ((yield* keychain.get(tokenEntryName(origin))) === null) {
-      yield* logWarning(
-        `no session for ${origin} is stored: run \`maruhi login --server ${origin}\` now, while the server is up — a fallback read uses the mirror's own credential, and a login is not possible once the server is the reason you need the mirror. Rehearse it with \`maruhi pull --server ${origin}\``,
-      );
-    }
+export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(function* (
+  raw: string,
+): Effect.fn.Return<void, CliError, CliServices> {
+  const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
+    fix: "mirror in your config",
   });
-}
+  const keychain = yield* Keychain;
+  if ((yield* keychain.get(tokenEntryName(origin))) === null) {
+    yield* logWarning(
+      `no session for ${origin} is stored: run \`maruhi login --server ${origin}\` now, while the server is up — a fallback read uses the mirror's own credential, and a login is not possible once the server is the reason you need the mirror. Rehearse it with \`maruhi pull --server ${origin}\``,
+    );
+  }
+});
 
 /** Format check of the flag taking a GitHub login (`--github` / `--from`) (unspecified = null). */
 export function parseGithubLoginFlag(
@@ -137,11 +137,11 @@ function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<vo
  * anchor-update proposal is bundled into the end of the same line (DP5
  * ruling C — never split into 2 lines).
  */
-export function proposeCheckpointRefresh(
-  context: Pick<ProjectContext, "client" | "verified" | "session">,
-  options: { readonly includeAnchor: boolean },
-): Effect.Effect<void, never, CliServices> {
-  return Effect.gen(function* () {
+export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckpointRefresh")(
+  function* (
+    context: Pick<ProjectContext, "client" | "verified" | "session">,
+    options: { readonly includeAnchor: boolean },
+  ): Effect.fn.Return<void, never, CliServices> {
     const proposal = yield* checkpointProposal({
       client: context.client,
       verified: context.verified,
@@ -152,8 +152,8 @@ export function proposeCheckpointRefresh(
       return;
     }
     yield* logNote(options.includeAnchor ? `${proposal}. ${ANCHOR_REFRESH_PROPOSAL}` : proposal);
-  });
-}
+  },
+);
 
 /** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
 /**
@@ -161,18 +161,16 @@ export function proposeCheckpointRefresh(
  * clock. Never read on an operation the policy doesn't target, but a
  * malformed format drops as usage (2) before any communication.
  */
-export function proposalInputOf(
+export const proposalInputOf = Effect.fn("commands-shared.proposalInputOf")(function* (
   expires: string | undefined,
-): Effect.Effect<ProposalInput, CliError> {
-  return Effect.gen(function* () {
-    const parsed = parseProposalExpiry(expires);
-    if (!parsed.ok) {
-      return yield* Effect.fail(usageError(parsed.message));
-    }
-    const nowMs = yield* Clock.currentTimeMillis;
-    return { nowMs, expiresAtMs: nowMs + parsed.lifetimeMs };
-  });
-}
+): Effect.fn.Return<ProposalInput, CliError> {
+  const parsed = parseProposalExpiry(expires);
+  if (!parsed.ok) {
+    return yield* Effect.fail(usageError(parsed.message));
+  }
+  const nowMs = yield* Clock.currentTimeMillis;
+  return { nowMs, expiresAtMs: nowMs + parsed.lifetimeMs };
+});
 
 /** The wording of a proposal's remaining vote count ("needs N more owner approval(s)" — ruling P8). */
 export function describeNeeded(view: ProposalView): string {
@@ -188,29 +186,27 @@ export function describeNeeded(view: ProposalView): string {
  * shape never mistaken for "appended"). States that nothing was applied
  * and who does what next.
  */
-export function reportProposed(
+export const reportProposed = Effect.fn("commands-shared.reportProposed")(function* (
   io: CliIoShape,
   proposal: ProposedSummary,
-): Effect.Effect<number, never, CliIo> {
-  return Effect.gen(function* () {
-    const view = proposal.view;
-    const id = view.proposal.proposalHashHex;
-    if (proposal.kind === "proposed") {
-      yield* io.log(
-        `Proposed ${describeInnerOperation(view.proposal.inner)} (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — the four-eyes policy requires approval, so nothing has been applied yet`,
-      );
-    } else {
-      yield* io.log(
-        `The same operation is already proposed (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}, by ${displayText(view.proposal.proposerUserId)}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — nothing new was proposed and nothing has been applied`,
-      );
-    }
-    yield* io.log(`  proposal id: ${id}`);
+): Effect.fn.Return<number, never, CliIo> {
+  const view = proposal.view;
+  const id = view.proposal.proposalHashHex;
+  if (proposal.kind === "proposed") {
     yield* io.log(
-      `  ${describeNeeded(view)}. Another owner runs \`maruhi approval approve ${id.slice(0, 12)}\`; the approver whose approval completes it runs the follow-up rotation / key distribution (CRYPTO_SPEC §7). \`maruhi approval list\` shows the status`,
+      `Proposed ${describeInnerOperation(view.proposal.inner)} (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — the four-eyes policy requires approval, so nothing has been applied yet`,
     );
-    return 0;
-  });
-}
+  } else {
+    yield* io.log(
+      `The same operation is already proposed (proposal ${id.slice(0, 12)}…, seq=${view.proposal.proposalSeq}, by ${displayText(view.proposal.proposerUserId)}; expires ${formatUtcMinutes(view.proposal.expiresAtMs)}) — nothing new was proposed and nothing has been applied`,
+    );
+  }
+  yield* io.log(`  proposal id: ${id}`);
+  yield* io.log(
+    `  ${describeNeeded(view)}. Another owner runs \`maruhi approval approve ${id.slice(0, 12)}\`; the approver whose approval completes it runs the follow-up rotation / key distribution (CRYPTO_SPEC §7). \`maruhi approval list\` shows the status`,
+  );
+  return 0;
+});
 
 /**
  * Reporting the sweep result (the §7 all-environment scan) and deriving
@@ -220,50 +216,48 @@ export function reportProposed(
  * shape and §7's "never silently skip a failed rotate" discipline are
  * kept in one place — held twice, only one would get fixed.
  */
-export function reportSweepOutcome(
+export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome")(function* (
   sweep: SweepOutcome & {
     readonly skippedDeleted: readonly string[];
     readonly outOfScope?: readonly string[];
   },
   options: { readonly rerunCommand: string; readonly alreadyRotatedBasis: string },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* warnOutOfScopeMandates(sweep.outOfScope ?? []);
-    if (sweep.skippedDeleted.length > 0) {
-      yield* io.log(
-        `Skipped deleted environments (signed deletion statements verified): ${sweep.skippedDeleted.join(", ")}`,
-      );
-    }
-    if (sweep.alreadyRotated.length > 0) {
-      yield* io.log(
-        `Already rotated (epoch newer than ${options.alreadyRotatedBasis}, no incomplete re-encryption confirmed): ${sweep.alreadyRotated.join(", ")}`,
-      );
-    }
-    let exitCode = 0;
-    for (const item of sweep.rotated) {
-      const code = yield* reportRotation(
-        item.environmentId as EnvironmentId,
-        item.summary,
-        item.forcedNewEpoch,
-      );
-      if (code !== 0) {
-        exitCode = 1;
-      }
-    }
-    for (const failure of sweep.failed) {
-      // §7: never silently skip a rotate refusal of an environment
-      // believed active (never make selective rotation blocking by a
-      // malicious server invisible)
-      yield* logWarning(
-        `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
-      );
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  yield* warnOutOfScopeMandates(sweep.outOfScope ?? []);
+  if (sweep.skippedDeleted.length > 0) {
+    yield* io.log(
+      `Skipped deleted environments (signed deletion statements verified): ${sweep.skippedDeleted.join(", ")}`,
+    );
+  }
+  if (sweep.alreadyRotated.length > 0) {
+    yield* io.log(
+      `Already rotated (epoch newer than ${options.alreadyRotatedBasis}, no incomplete re-encryption confirmed): ${sweep.alreadyRotated.join(", ")}`,
+    );
+  }
+  let exitCode = 0;
+  for (const item of sweep.rotated) {
+    const code = yield* reportRotation(
+      item.environmentId as EnvironmentId,
+      item.summary,
+      item.forcedNewEpoch,
+    );
+    if (code !== 0) {
       exitCode = 1;
     }
-    if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
-      // The anchor-update proposal — emitted as one line across the whole sweep
-      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
-    }
-    return exitCode;
-  });
-}
+  }
+  for (const failure of sweep.failed) {
+    // §7: never silently skip a rotate refusal of an environment
+    // believed active (never make selective rotation blocking by a
+    // malicious server invisible)
+    yield* logWarning(
+      `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
+    );
+    exitCode = 1;
+  }
+  if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
+    // The anchor-update proposal — emitted as one line across the whole sweep
+    yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
+  }
+  return exitCode;
+});
