@@ -16,13 +16,12 @@
 //
 // The format: a single JSON file (default `maruhi.sync.json`,
 // overridable with `--config`). Has a version field, and unknown keys
-// are refused (a typo is never silently ignored). `version: 1` stays
-// stage-1-shaped (every stage-2 key is optional and a stage-1 config
-// still reads as-is. A stage-1 CLI refuses stage-2 keys as "unknown
-// keys" — compatibility runs backward only. Ruling H). Stage 3's
-// `onPush` / `workflow` get the same treatment (omitted = manual sync
-// only). The validation's wording says "which key and why" and never
-// shows the value that was typed.
+// are refused (a typo is never silently ignored). `version: 1` is the
+// only version. The keys beyond the correspondence itself (`driver`,
+// `token`, `onPush`, `workflow`) are optional, and an omitted one takes
+// its default (the preset's default driver; `onPush` omitted = manual
+// sync only). The validation's wording says "which key and why" and
+// never shows the value that was typed.
 //
 // The JSON is read in one pass of steps over Schema-decoded leaves
 // (String / Boolean / Literals / Record / Array / Struct), in the sequence

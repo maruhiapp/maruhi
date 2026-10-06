@@ -120,8 +120,7 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
 }
 
 /**
- * Runs one of the migrated commands (`pull` / `run` / `env create`) through
- * `effect/cli` and returns the process exit code.
+ * Runs a command through `effect/cli` and returns the process exit code.
  *
  * `commandKey` is the **resolved command stage** decided by runCli's
  * dispatch, used as the diagnostics' destination (which declaration to

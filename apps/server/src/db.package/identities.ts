@@ -76,7 +76,7 @@ interface IdentityRepoShape {
   ) => Effect.Effect<readonly LinkedIdentityRecord[]>;
   /**
    * The signupPolicy at acceptance time (AUTH_SPEC §3). No row = 'open'
-   * (the default = legacy behavior); an unknown stored value = 'closed'
+   * (the spec's default); an unknown stored value = 'closed'
    * (fail-closed — an operator's misconfiguration never silently turns
    * into 'open'). Read by `/auth/config`'s advisory and by the wording
    * branch of the CLI signup-guidance page.
