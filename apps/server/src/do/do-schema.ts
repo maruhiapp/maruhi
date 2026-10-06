@@ -307,7 +307,7 @@ const PROJECT_DO_DDL = [
      window_start INTEGER NOT NULL,
      count INTEGER NOT NULL
    )`,
-  // Project settings (one row). No row = schemaPolicy 'disabled' (the default
+  // Project settings (one row). No row = schemaPolicy 'enabled' (the default
   // — AUTH_SPEC §12-11). Audited via project.schema_policy_changed (AUDIT_SPEC
   // §3.3)
   `CREATE TABLE project_settings (

@@ -161,20 +161,12 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
  * Reason codes for a 422 from the project schema policy (AUTH_SPEC §12-11 /
  * §12-5):
  *
- * - `schema-policy-disabled` — new adoption of layout v3 (a v3
- *   creation at metaVersion 1, or a v3 reissuance of a v1 variable) is
- *   not accepted in a disabled project (the enablement gate;
- *   continuation statements of an already-v3 variable are accepted
- *   regardless of policy)
  * - `schema-required` — in a locked project, a variable creation
  *   (metaVersion 1) does not satisfy layoutVersion 3 and non-empty
  *   varType (a one-time check at creation — a later schema reissuance
  *   can still downgrade)
  */
-export const SchemaPolicyRejectReasonSchema = Schema.Literals([
-  "schema-policy-disabled",
-  "schema-required",
-]);
+export const SchemaPolicyRejectReasonSchema = Schema.Literals(["schema-required"]);
 
 /** 422: the request violates the project's schema policy (AUTH_SPEC §12-11). */
 export class SchemaPolicyRejectedError extends Schema.TaggedError<SchemaPolicyRejectedError>()(

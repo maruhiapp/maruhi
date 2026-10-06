@@ -37,7 +37,6 @@ import {
   ensureMetaCas,
   ensureMetaStatementSignature,
   ensureNfcName,
-  ensureSchemaPolicyAllowsLayout,
   ensureSupportedLayout,
   statementLayoutVersion,
 } from "../data/verify-meta.ts";
@@ -135,22 +134,15 @@ function ensureSchemaLockedCreation(
 
 /**
  * Run the creation-time (metaVersion 1) schema-family acceptance checks
- * (§12-11 / §12-8) under the policy at acceptance time: the disabled
- * enablement gate (reject new v3 adoption) → the schema-locked creation check
- * → the description acceptance policy. The layoutVersion support-range check
+ * (§12-11 / §12-8) under the policy at acceptance time: the schema-locked
+ * creation check → the description acceptance policy. The layoutVersion support-range check
  * is done by the caller (createVariableProgram) before every
  * statement-dependent check.
  */
 const ensureCreationSchemaGates = Effect.fn("programs-variable.ensureCreationSchemaGates")(
   function* (statement: MetaStatementInput) {
     const store = yield* DataStore;
-    const schemaPolicy = yield* store.schemaPolicy;
-    yield* ensureSchemaPolicyAllowsLayout({
-      schemaPolicy,
-      statement,
-      predecessorLayoutVersion: 1,
-    });
-    yield* ensureSchemaLockedCreation(schemaPolicy, statement);
+    yield* ensureSchemaLockedCreation(yield* store.schemaPolicy, statement);
     yield* ensureDescriptionPolicy(statement);
   },
 );
@@ -258,8 +250,7 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
     yield* ensureStorageAdmitsGrowth;
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // The schema policy (§12-11 — read the policy at acceptance time under
-    // the permit): disabled rejects new v3 adoption (v3 creation at
-    // metaVersion 1); locked requires v3 + non-empty varType on creation. The
+    // the permit): locked requires v3 + non-empty varType on creation. The
     // description bound and character class are §12-8
     yield* ensureCreationSchemaGates(input.statement);
     // Creation = the bundled version-1 value + the metaVersion-1 statement
@@ -503,10 +494,8 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     // general-purpose composite of "value push + meta reissue"). Since the
     // value CAS only enforces version = latestVersion + 1 it cannot double as
     // the target check (sending version N+1 to an active variable would pass),
-    // so this explicit guard is what makes the schemaPolicy exemption's
-    // premise below hold — "the predecessor is necessarily v3 (declared is
-    // v3-only)". Without it, an active v1 variable could be promoted to v3
-    // under disabled, bypassing the §12-11 enablement gate
+    // so this explicit guard is what keeps a value push to an active variable
+    // from riding the activation composite
     if (variable.latestStatus !== "declared") {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
@@ -524,10 +513,7 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
     // The meta acceptance pipeline (§12-5): CAS → anchor → description
     // acceptance check → signature verification (the declared → active
-    // transition and layout monotonicity are crypto's predecessor check).
-    // schemaPolicy is not passed — thanks to the declared guard above the
-    // predecessor is necessarily v3, and a continuation statement is accepted
-    // regardless of the policy (§12-11)
+    // transition and layout monotonicity are crypto's predecessor check)
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -646,7 +632,6 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    const schemaPolicy = yield* store.schemaPolicy;
     const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -658,11 +643,6 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
           history,
           member: candidate,
           statement,
-          // The enablement gate (§12-11): rejects "v3 reissue of a v1
-          // variable" under disabled (a continuation whose predecessor is v3
-          // passes regardless of the policy — judged on the anchor's real
-          // values)
-          schemaPolicy,
         }),
     );
     yield* ensureDevicePermission(author, "member", environmentId);

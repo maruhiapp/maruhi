@@ -6,7 +6,7 @@
 //   204. A change writes project.schema_policy_changed (AUDIT_SPEC
 //   §3.3 — payload = old value / new value, actor = type=user; being a
 //   setting operation without a signature, it carries no key FP)
-// - The acceptance-check side (programs-variable.ts / verify-meta.ts)
+// - The acceptance-check side (programs-variable.ts — schema-locked)
 //   reads store.schemaPolicy under the same permit — no race window
 //   against a change (§12-11)
 

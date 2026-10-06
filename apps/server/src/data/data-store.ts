@@ -623,7 +623,7 @@ export interface DataStoreShape {
   ) => void;
   /**
    * The project's schemaPolicy (AUTH_SPEC §12-11 — no row = the default
-   * disabled). The acceptance decision reads this in each program under
+   * enabled). The acceptance decision reads this in each program under
    * the DO permit (the policy at acceptance time).
    */
   readonly schemaPolicy: Effect.Effect<SchemaPolicy>;

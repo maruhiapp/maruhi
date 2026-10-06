@@ -483,14 +483,14 @@ export type MetaStatementRejectReason =
   | "unsupported-layout";
 
 /**
- * A project's schema policy (AUTH_SPEC §12-11 — default disabled). The
+ * A project's schema policy (AUTH_SPEC §12-11 — default enabled). The
  * acceptance decision reads the policy at acceptance time (inside the
  * project DO's serialization).
  */
-export type SchemaPolicy = "disabled" | "enabled" | "locked";
+export type SchemaPolicy = "enabled" | "locked";
 
 /** The 422 reasons from schemaPolicy (§12-11 / §12-5). */
-export type SchemaPolicyRejectReason = "schema-policy-disabled" | "schema-required";
+export type SchemaPolicyRejectReason = "schema-required";
 
 /** The 422 reasons of the schema-description acceptance check (§12-8). */
 export type SchemaDescriptionRejectReason = "too-long" | "control-characters";
@@ -636,8 +636,8 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
-  // The schemaPolicy acceptance gate (§12-11): new v3 adoption under
-  // disabled / a creation without varType under locked
+  // The schemaPolicy acceptance check (§12-11): a creation without varType
+  // under locked
   | { readonly kind: "schema-policy-rejected"; readonly reason: SchemaPolicyRejectReason }
   // A normal push to a declared variable (§12-5 — requires the activation composite)
   | { readonly kind: "activation-required"; readonly variableId: string }

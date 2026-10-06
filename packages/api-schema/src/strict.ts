@@ -182,7 +182,7 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   // only an enumeration of (environment, variable) identifiers (AUDIT_SPEC §7)
   ["rotation", "dismiss"],
   // schemaPolicy configuration (AUTH_SPEC §12-11 — carries no signed
-  // structure; the 3-value Literal closes Schema validation)
+  // structure; the 2-value Literal closes Schema validation)
   ["schemaPolicy", "set"],
   // handoff request (§13-7 — KL3): only request_id (the SHA-256 of the
   // ephemeral public key). Carries no signed structure, ciphertext, or

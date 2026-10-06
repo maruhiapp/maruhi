@@ -568,15 +568,14 @@ export const CheckpointValueSnapshotSchema = Schema.Struct({
 export type CheckpointValueSnapshot = typeof CheckpointValueSnapshotSchema.Type;
 
 /**
- * The project's schema policy (AUTH_SPEC §12-11 — the enablement gate
- * and schema-locked; default disabled): disabled = refuse new
- * adoption of layout v3 / enabled = accept v3 (schema fields
- * optional) / locked = enabled + require layoutVersion 3 and non-empty
- * varType on variable creation. A write acceptance policy; not placed
+ * The project's schema policy (AUTH_SPEC §12-11 — schema-locked;
+ * default enabled): enabled = accept v3 (schema fields optional) /
+ * locked = enabled + require layoutVersion 3 and non-empty varType on
+ * variable creation. A write acceptance policy; not placed
  * on the chain (nor an input to verification rules — distribution is
  * advisory).
  */
-export const SchemaPolicySchema = Schema.Literals(["disabled", "enabled", "locked"]);
+export const SchemaPolicySchema = Schema.Literals(["enabled", "locked"]);
 
 /** The project's schema policy (AUTH_SPEC §12-11). */
 export type SchemaPolicy = typeof SchemaPolicySchema.Type;

@@ -19,7 +19,6 @@ import type {
   MemberWithDevice,
   MetaStatementInput,
   MetaStatementRejectReason,
-  SchemaPolicy,
 } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
 import type { MetaAnchor } from "./data-store.ts";
@@ -214,8 +213,7 @@ export const statementLayoutVersion = (statement: MetaStatementInput): number =>
  * Support-range check for the declared layoutVersion (ruling CR — §12-2 /
  * CRYPTO_SPEC §4.2). Call it **before every other schema-layout acceptance
  * check**: for an unsupported layout (the retired 2, or v4+ — the normal
- * case of "old server × new client"), the schemaPolicy gate, schema-locked
- * check, and the
+ * case of "old server × new client"), the schema-locked check and the
  * delete-statement predecessor match are in principle undefinable, and
  * returning those errors first would be misleading in a "fix the policy and it
  * passes" direction. Always return the honest update-required =
@@ -255,29 +253,6 @@ export const ensureDescriptionPolicy = (
   }
   return Effect.void;
 };
-
-/**
- * §12-11 / §12-5 enablement gate: a project whose schemaPolicy is disabled
- * rejects with 422 the **new adoption** of layout v3 (creating a v3 statement
- * at metaVersion 1, and reissuing as v3 a variable whose previous statement is
- * v1). Continuation statements on a variable whose predecessor is already v3
- * (delete, activation, rename, schema reissue) are accepted regardless of the
- * policy (reversibility — downgrading does not freeze the lifecycle of existing
- * v3 variables). v1 statements are accepted regardless of the policy, as
- * before. The decision uses the policy at acceptance time (the caller reads it
- * inside the project DO's serialization).
- */
-export const ensureSchemaPolicyAllowsLayout = (input: {
-  readonly schemaPolicy: SchemaPolicy;
-  readonly statement: MetaStatementInput;
-  /** Effective layout of the previous statement (pass 1 for creation = no predecessor). */
-  readonly predecessorLayoutVersion: number;
-}): Effect.Effect<void, DataRejectedError> =>
-  input.schemaPolicy === "disabled" &&
-  statementLayoutVersion(input.statement) !== 1 &&
-  input.predecessorLayoutVersion === 1
-    ? Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-policy-disabled" }))
-    : Effect.void;
 
 /**
  * §12-5: a delete statement's schema fields and layout must match the previous
@@ -341,8 +316,8 @@ const ensureMetaQuota = (
  * activation (§12-5): metaVersion bound → CAS (409 returns the latest number
  * only) → fetch the stored predecessor statement's anchor (it always exists
  * after CAS passes — absence is a defect) → acceptance-surface schema checks (the
- * schemaPolicy enablement gate, the description acceptance policy, the delete
- * statement's schema-field/layout predecessor match) → signature verification
+ * description acceptance policy, the delete statement's schema-field/layout
+ * predecessor match) → signature verification
  * (predecessor included — prev chaining, rejecting re-statement after delete,
  * transition rules, layout monotonicity).
  * On success, returns the server-recomputed signed_bytes hash.
@@ -355,12 +330,6 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
   readonly statement: MetaStatementInput;
-  /**
-   * schemaPolicy at acceptance time (variable statements only — the caller
-   * reads it under the DO permit; environment statements are not v3 targets, so
-   * it is not passed for them).
-   */
-  readonly schemaPolicy?: SchemaPolicy;
 }) {
   // The support-range check runs first (see the ensureSupportedLayout doc — ruling CR)
   yield* ensureSupportedLayout(input.statement);
@@ -377,16 +346,6 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
       : yield* store.environmentMetaAnchor(input.environmentId, input.latestMetaVersion);
   if (anchor === null) {
     return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
-  }
-  // Enablement gate (§12-11): reject v3 reissue of a v1 variable while
-  // disabled (continuation statements whose predecessor is v3 pass regardless
-  // of the policy)
-  if (input.schemaPolicy !== undefined) {
-    yield* ensureSchemaPolicyAllowsLayout({
-      schemaPolicy: input.schemaPolicy,
-      statement: input.statement,
-      predecessorLayoutVersion: anchor.layoutVersion,
-    });
   }
   if (input.target.kind === "variable" && input.statement.status === "deleted") {
     // The delete statement's schema fields and layout must match the
