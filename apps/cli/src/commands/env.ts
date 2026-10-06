@@ -73,32 +73,30 @@ export const envDiffConfig = {
 /**
  * `maruhi env create <id>`'s body (the composite request — §12-4).
  */
-function envCreateCommand(
+const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
   environmentId: string,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openProject(flags);
-    const floor = yield* floorHandleFor(context, environmentId);
-    const created = yield* envCreateOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId,
-      name: flags.name ?? environmentId,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      floor,
-    });
-    yield* io.log(
-      // The member count is the size of **the wrap set actually
-      // registered** (when rebuilt under a CAS retry, it may disagree with
-      // the run-start view's member count)
-      `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${countNoun(created.memberCount, "current member")})`,
-    );
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openProject(flags);
+  const floor = yield* floorHandleFor(context, environmentId);
+  const created = yield* envCreateOp({
+    client: context.client,
+    verified: context.verified,
+    environmentId,
+    name: flags.name ?? environmentId,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    resync: context.resync,
+    floor,
   });
-}
+  yield* io.log(
+    // The member count is the size of **the wrap set actually
+    // registered** (when rebuilt under a CAS retry, it may disagree with
+    // the run-start view's member count)
+    `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${countNoun(created.memberCount, "current member")})`,
+  );
+});
 
 /** Format validation of an environment ID passed as a positional (**the given value itself never appears in the error**). */
 function requireEnvironmentId(
@@ -115,96 +113,94 @@ function requireEnvironmentId(
 }
 
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]` (§7 / §12-4). */
-function envRotateCommand(
+const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   flags: CommonFlags & {
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
     readonly config?: string | undefined;
   },
   environmentId: EnvironmentId,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // The sync config (M1) is read **before any network**: detecting a
-    // broken file or another project's config is never placed behind the
-    // epoch advance (failing after advancing would make the rotation look
-    // failed over a cleanup omission)
-    const syncConfig = flags.config === undefined ? null : yield* loadSyncConfig(flags.config);
-    // Opened as an environment context to use the environment floor (§6.3)
-    // (the environment is fixed by the positional). Being a convergent
-    // command, the always-on warning of unconverged duties is suppressed
-    // (this command's own rotation report conveys the same fact —
-    // context.ts's OpenProjectOptions)
-    const context = yield* openEnvironment(
-      { ...flags, env: environmentId },
-      { quietMandateWarning: true },
-    );
-    if (syncConfig !== null) {
-      yield* checkRotateConfigProject(syncConfig, context.projectId);
-    }
-    const summary = yield* envRotateOp({
-      client: context.client,
-      verified: context.verified,
-      environmentId,
-      recipient: context.recipient,
-      // Unspecified (undefined) and an empty string are passed as
-      // **distinct values**: an empty `--reason` is dropped by the
-      // declaration (NonBlank) with exit 2, so an undefined reaching here
-      // is only a run **without `--reason` itself** (env-rotate's
-      // checkReasonLength stays as a defense line)
-      reason: flags.reason,
-      forceNewEpoch: flags.newEpoch === true,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    // "Was a new epoch requested" is fixed by the launch-time flag
-    // (--reason is required only on the path that creates a new epoch —
-    // env-rotate.ts's requireReason)
-    const code = yield* reportRotation(
-      environmentId,
-      summary,
-      flags.newEpoch === true || flags.reason !== undefined,
-    );
-    if (summary.mode === "rotated") {
-      // The anchor-update proposal (CRYPTO_SPEC §6.3 (b)): an advanced
-      // epoch = the committed anchor's epoch floor went stale. Emitted
-      // **before** the cleanup: even when the cleanup fails on evidence,
-      // the fact the epoch advanced and the anchor's staleness do not
-      // change
-      yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
-    }
-    if (syncConfig !== null) {
-      // Cleanup: the receipt advances to the new version only for the
-      // accepted re-encryptions. A failure stays a warning and the exit
-      // code remains the rotation's report (sync-rotate.ts). When the
-      // receipt environment is the rotated environment itself, the same
-      // floor handle is reused (never open two handles on one
-      // environment)
-      const receiptsFloor =
-        syncConfig.receiptsEnvironment === environmentId
-          ? context.floorHandle
-          : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
-      yield* advanceReceiptsAfterRotation({
-        client: context.client,
-        // The rotation advanced the chain: the cleanup starts from the
-        // resynced verified view (checked to be an extension of
-        // openEnvironment's view). A resync communication failure is
-        // folded into a warning inside the cleanup
-        verified: context.verified,
-        recipient: context.recipient,
-        resync: context.resync,
-        config: syncConfig,
-        environmentId,
-        written: summary.written,
-        receiptsFloor,
-        writerUserId: context.session.userId,
-        signingKey: context.masterKeys.sigKeyPair.privateKey,
-      });
-    }
-    return code;
+): Effect.fn.Return<number, CliError, CliServices> {
+  // The sync config (M1) is read **before any network**: detecting a
+  // broken file or another project's config is never placed behind the
+  // epoch advance (failing after advancing would make the rotation look
+  // failed over a cleanup omission)
+  const syncConfig = flags.config === undefined ? null : yield* loadSyncConfig(flags.config);
+  // Opened as an environment context to use the environment floor (§6.3)
+  // (the environment is fixed by the positional). Being a convergent
+  // command, the always-on warning of unconverged duties is suppressed
+  // (this command's own rotation report conveys the same fact —
+  // context.ts's OpenProjectOptions)
+  const context = yield* openEnvironment(
+    { ...flags, env: environmentId },
+    { quietMandateWarning: true },
+  );
+  if (syncConfig !== null) {
+    yield* checkRotateConfigProject(syncConfig, context.projectId);
+  }
+  const summary = yield* envRotateOp({
+    client: context.client,
+    verified: context.verified,
+    environmentId,
+    recipient: context.recipient,
+    // Unspecified (undefined) and an empty string are passed as
+    // **distinct values**: an empty `--reason` is dropped by the
+    // declaration (NonBlank) with exit 2, so an undefined reaching here
+    // is only a run **without `--reason` itself** (env-rotate's
+    // checkReasonLength stays as a defense line)
+    reason: flags.reason,
+    forceNewEpoch: flags.newEpoch === true,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    resync: context.resync,
+    floor: context.floorHandle,
   });
-}
+  // "Was a new epoch requested" is fixed by the launch-time flag
+  // (--reason is required only on the path that creates a new epoch —
+  // env-rotate.ts's requireReason)
+  const code = yield* reportRotation(
+    environmentId,
+    summary,
+    flags.newEpoch === true || flags.reason !== undefined,
+  );
+  if (summary.mode === "rotated") {
+    // The anchor-update proposal (CRYPTO_SPEC §6.3 (b)): an advanced
+    // epoch = the committed anchor's epoch floor went stale. Emitted
+    // **before** the cleanup: even when the cleanup fails on evidence,
+    // the fact the epoch advanced and the anchor's staleness do not
+    // change
+    yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
+  }
+  if (syncConfig !== null) {
+    // Cleanup: the receipt advances to the new version only for the
+    // accepted re-encryptions. A failure stays a warning and the exit
+    // code remains the rotation's report (sync-rotate.ts). When the
+    // receipt environment is the rotated environment itself, the same
+    // floor handle is reused (never open two handles on one
+    // environment)
+    const receiptsFloor =
+      syncConfig.receiptsEnvironment === environmentId
+        ? context.floorHandle
+        : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
+    yield* advanceReceiptsAfterRotation({
+      client: context.client,
+      // The rotation advanced the chain: the cleanup starts from the
+      // resynced verified view (checked to be an extension of
+      // openEnvironment's view). A resync communication failure is
+      // folded into a warning inside the cleanup
+      verified: context.verified,
+      recipient: context.recipient,
+      resync: context.resync,
+      config: syncConfig,
+      environmentId,
+      written: summary.written,
+      receiptsFloor,
+      writerUserId: context.session.userId,
+      signingKey: context.masterKeys.sigKeyPair.privateKey,
+    });
+  }
+  return code;
+});
 
 /**
  * `maruhi env diff <a> <b>`: compares the two environments' **variable
@@ -214,34 +210,34 @@ function envRotateCommand(
  * indistinguishable from a verification failure / floor violation (=
  * evidence of a malicious server) or a communication failure.
  */
-function envDiffCommand(
+const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
   flags: CommonFlags,
   environmentId: EnvironmentId,
   otherEnvironmentId: EnvironmentId,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // The prologue (chain sync + §6.3 verification) runs exactly once. The
-    // master key is not required (nothing is decrypted — context.ts's
-    // openMetadataProjectWith)
-    const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
-    const diff = yield* envDiffOp({
-      client: context.client,
-      verified: context.verified,
-      resync: context.resync,
-      first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
-      second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
-      // No environment-level meta floor is built (no values were read),
-      // but the **chain floor's head** advances the same as pull / push.
-      // Recording happens per pull (envDiffOp)
-      commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
-    });
-    yield* reportEnvironmentDiff(diff);
+): Effect.fn.Return<void, CliError, CliServices> {
+  // The prologue (chain sync + §6.3 verification) runs exactly once. The
+  // master key is not required (nothing is decrypted — context.ts's
+  // openMetadataProjectWith)
+  const context = yield* openMetadataEnvironmentPair(flags, environmentId, otherEnvironmentId);
+  const diff = yield* envDiffOp({
+    client: context.client,
+    verified: context.verified,
+    resync: context.resync,
+    first: { environmentId: context.first.environmentId, floor: context.first.floorHandle },
+    second: { environmentId: context.second.environmentId, floor: context.second.floorHandle },
+    // No environment-level meta floor is built (no values were read),
+    // but the **chain floor's head** advances the same as pull / push.
+    // Recording happens per pull (envDiffOp)
+    commitHead: (verified) => commitVerifiedHead(context.projectId, verified),
   });
-}
+  yield* reportEnvironmentDiff(diff);
+});
 
 export function makeEnvCommands(onExitCode: (code: number) => void) {
-  const envCreate = Command.make("create", envCreateConfig, (values) =>
-    Effect.gen(function* () {
+  const envCreate = Command.make(
+    "create",
+    envCreateConfig,
+    Effect.fn("commands-env.envCreate")(function* (values) {
       // The format is an additional check after the declaration (NonBlank). Seen before the network
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
@@ -251,8 +247,10 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(Command.withDescription("Create an environment"));
 
-  const envRotate = Command.make("rotate", envRotateConfig, (values) =>
-    Effect.gen(function* () {
+  const envRotate = Command.make(
+    "rotate",
+    envRotateConfig,
+    Effect.fn("commands-env.envRotate")(function* (values) {
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
         "`maruhi env rotate dev`",
@@ -268,8 +266,10 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const envDiff = Command.make("diff", envDiffConfig, (values) =>
-    Effect.gen(function* () {
+  const envDiff = Command.make(
+    "diff",
+    envDiffConfig,
+    Effect.fn("commands-env.envDiff")(function* (values) {
       const environmentId = yield* requireEnvironmentId(
         values["environment-id"],
         "`maruhi env diff dev prod`",

@@ -44,44 +44,42 @@ export const mirrorPromoteConfig = {
 };
 
 /** `maruhi mirror mark --server <mirror> --source <server>`: the owner marks the project read-only there. */
-function mirrorMarkCommand(flags: {
+const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly source?: string | undefined;
   readonly force?: boolean | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    if (flags.source === undefined) {
-      return yield* Effect.fail(
-        usageError("mirror mark requires --source <url> (the deployment this project mirrors)"),
-      );
-    }
-    const sourceOrigin = yield* normalizeHttpOrigin(flags.source, "the --source URL");
-    const context = yield* openSession(flags.server);
-    if (yield* sameDeployment(sourceOrigin, context.origin)) {
-      return yield* Effect.fail(
-        usageError(
-          sourceOrigin === context.origin
-            ? "--source is the server itself (run this against the mirror deployment with --server <mirror url>)"
-            : "--source publishes this server's key fingerprint: it is this deployment under another hostname (run this against the mirror deployment with --server <mirror url>), or another deployment sharing one SERVER_ENC_KEY_IKM — one key per deployment; generate a distinct IKM for the mirror first",
-        ),
-      );
-    }
-    const projectId = yield* resolveProjectId(flags.project, context.config);
-    // A project whose chain is not part of the source's (a former primary
-    // that advanced past the fork) can never be synced: every replica is
-    // refused as not an extension, and there is no way out but another
-    // promotion. Refused here, before the mark (ruling C revision, round 3)
-    yield* ensureMarkable(context, sourceOrigin, projectId, flags.force === true);
-    yield* context.client.mirror
-      .mark({ params: { projectId }, payload: { sourceOrigin } })
-      .pipe(Effect.mapError(toCliError));
-    yield* io.log(
-      `Marked project ${projectId} on ${context.origin} as a mirror of ${sourceOrigin}: it refuses writes from now on and serves reads and leases. Keep it current with \`maruhi mirror sync --server ${sourceOrigin} --mirror ${context.origin}\`; members fall back to it with \`maruhi config set mirror ${context.origin}\``,
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  if (flags.source === undefined) {
+    return yield* Effect.fail(
+      usageError("mirror mark requires --source <url> (the deployment this project mirrors)"),
     );
-  });
-}
+  }
+  const sourceOrigin = yield* normalizeHttpOrigin(flags.source, "the --source URL");
+  const context = yield* openSession(flags.server);
+  if (yield* sameDeployment(sourceOrigin, context.origin)) {
+    return yield* Effect.fail(
+      usageError(
+        sourceOrigin === context.origin
+          ? "--source is the server itself (run this against the mirror deployment with --server <mirror url>)"
+          : "--source publishes this server's key fingerprint: it is this deployment under another hostname (run this against the mirror deployment with --server <mirror url>), or another deployment sharing one SERVER_ENC_KEY_IKM — one key per deployment; generate a distinct IKM for the mirror first",
+      ),
+    );
+  }
+  const projectId = yield* resolveProjectId(flags.project, context.config);
+  // A project whose chain is not part of the source's (a former primary
+  // that advanced past the fork) can never be synced: every replica is
+  // refused as not an extension, and there is no way out but another
+  // promotion. Refused here, before the mark (ruling C revision, round 3)
+  yield* ensureMarkable(context, sourceOrigin, projectId, flags.force === true);
+  yield* context.client.mirror
+    .mark({ params: { projectId }, payload: { sourceOrigin } })
+    .pipe(Effect.mapError(toCliError));
+  yield* io.log(
+    `Marked project ${projectId} on ${context.origin} as a mirror of ${sourceOrigin}: it refuses writes from now on and serves reads and leases. Keep it current with \`maruhi mirror sync --server ${sourceOrigin} --mirror ${context.origin}\`; members fall back to it with \`maruhi config set mirror ${context.origin}\``,
+  );
+});
 
 /**
  * The mark's precondition: the two chains are one chain — the project's
@@ -95,64 +93,59 @@ function mirrorMarkCommand(flags: {
  * without one, or when the source does not answer, the mark proceeds with
  * a warning (the first sync tells).
  */
-function ensureMarkable(
+const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(function* (
   context: SessionContext,
   sourceOrigin: string,
   projectId: string,
   forced: boolean,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const here = yield* syncProject(context.client, projectId);
-    // Each read stands alone (round 10): a transient failure of the mark's
-    // read does not discard the chain already read, nor the other way round
-    const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
-      Effect.flatMap((session) =>
-        Effect.all(
-          {
-            view: syncProject(session.client, projectId).pipe(
-              Effect.catch(sourceUnread("chain", "this project's chain is part of it")),
+): Effect.fn.Return<void, CliError, CliServices> {
+  const here = yield* syncProject(context.client, projectId);
+  // Each read stands alone (round 10): a transient failure of the mark's
+  // read does not discard the chain already read, nor the other way round
+  const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
+    Effect.flatMap((session) =>
+      Effect.all(
+        {
+          view: syncProject(session.client, projectId).pipe(
+            Effect.catch(sourceUnread("chain", "this project's chain is part of it")),
+          ),
+          mark: session.client.mirror
+            .status({ params: { projectId } })
+            .pipe(
+              Effect.mapError(toCliError),
+              Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
             ),
-            mark: session.client.mirror
-              .status({ params: { projectId } })
-              .pipe(
-                Effect.mapError(toCliError),
-                Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
-              ),
-          },
-          // Concurrently: a source that does not answer costs one bound, not two (round 12)
-          { concurrency: 2 },
-        ),
+        },
+        // Concurrently: a source that does not answer costs one bound, not two (round 12)
+        { concurrency: 2 },
       ),
-      Effect.catch(
-        sourceUnread(
-          "chain and mark",
-          "this project's chain is part of it and that it is a primary",
-        ),
-      ),
-    );
-    const verdict = source === null ? null : markRefusal(context, sourceOrigin, here, source);
-    if (verdict === null) {
-      return;
-    }
-    if (verdict.kind === "note") {
-      yield* logNote(verdict.text);
-      return;
-    }
-    // A source frozen for this deployment under another hostname (C-13):
-    // the star instruction would be refused as a self-mark, so the way out
-    // is the mark under that name (round 11)
-    const body =
-      verdict.star !== undefined && (yield* sameDeployment(verdict.star, context.origin))
-        ? `${sourceOrigin} holds this project as a mirror of ${verdict.star}, which publishes this server's key fingerprint: that is this deployment under the name the freeze used — run the mark with \`--server ${verdict.star}\`; if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`
-        : verdict.body;
-    // --force marks anyway, but says what it overrides (round 10) — without
-    // the refusal's own escape clause (round 11)
-    if (!forced) {
-      return yield* Effect.fail(cliError(`${body}${verdict.escape}`));
-    }
-    yield* logWarning(`marking with --force. ${body}`);
-  });
-}
+    ),
+    Effect.catch(
+      sourceUnread("chain and mark", "this project's chain is part of it and that it is a primary"),
+    ),
+  );
+  const verdict = source === null ? null : markRefusal(context, sourceOrigin, here, source);
+  if (verdict === null) {
+    return;
+  }
+  if (verdict.kind === "note") {
+    yield* logNote(verdict.text);
+    return;
+  }
+  // A source frozen for this deployment under another hostname (C-13):
+  // the star instruction would be refused as a self-mark, so the way out
+  // is the mark under that name (round 11)
+  const body =
+    verdict.star !== undefined && (yield* sameDeployment(verdict.star, context.origin))
+      ? `${sourceOrigin} holds this project as a mirror of ${verdict.star}, which publishes this server's key fingerprint: that is this deployment under the name the freeze used — run the mark with \`--server ${verdict.star}\`; if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`
+      : verdict.body;
+  // --force marks anyway, but says what it overrides (round 10) — without
+  // the refusal's own escape clause (round 11)
+  if (!forced) {
+    return yield* Effect.fail(cliError(`${body}${verdict.escape}`));
+  }
+  yield* logWarning(`marking with --force. ${body}`);
+});
 
 /** The mark proceeds without the check a failed read of the source would feed, with a warning. */
 function sourceUnread(
@@ -278,12 +271,12 @@ const onChain = headOnChain;
  * after the promotion, so it is refused unless `--force` (ruling C
  * revision — a split brain is an owner's explicit decision).
  */
-function mirrorPromoteCommand(flags: {
-  readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly force?: boolean | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
+const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteCommand")(
+  function* (flags: {
+    readonly server?: string | undefined;
+    readonly project?: string | undefined;
+    readonly force?: boolean | undefined;
+  }): Effect.fn.Return<void, CliError, CliServices> {
     const io = yield* CliIo;
     const context = yield* openSession(flags.server);
     const projectId = yield* resolveProjectId(flags.project, context.config);
@@ -318,8 +311,8 @@ function mirrorPromoteCommand(flags: {
     )) {
       yield* io.log(line);
     }
-  });
-}
+  },
+);
 
 /**
  * The promotion's guard on what the source holds: fails with the refusal,
@@ -328,7 +321,7 @@ function mirrorPromoteCommand(flags: {
  * on it — a strict prefix holds nothing the mirror lacks, anything else is
  * a fork; ruling C revision, round 8).
  */
-function promotionGuard(
+const promotionGuard = Effect.fn("commands-mirror-write.promotionGuard")(function* (
   context: SessionContext,
   projectId: string,
   sourceOrigin: string,
@@ -337,40 +330,32 @@ function promotionGuard(
     readonly lastSync?: { readonly auditMaxSeq: number } | undefined;
   },
   forced: boolean,
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly leftBehind: string | null; readonly mirrorChain: VerifiedProject | null },
   CliError,
   CliServices
 > {
-  return Effect.gen(function* () {
-    const source = yield* sourceState(context.config, sourceOrigin, projectId, context.origin);
-    const frozenAt =
-      typeof source === "string" ? null : "frozenAt" in source ? source.frozenAt : null;
-    const mirrorChain =
-      frozenAt !== null && frozenAt.chainHeadSeq < status.head.chainHeadSeq
-        ? yield* syncProject(context.client, projectId)
-        : null;
-    const refusal = promotionRefusal(
-      source,
-      sourceOrigin,
-      status.head,
-      context.origin,
-      mirrorChain,
-    );
-    if (refusal !== null) {
-      // --force promotes anyway, but says what it abandons (round 9),
-      // without the refusal's own escape clause (round 10)
-      if (!forced) {
-        return yield* Effect.fail(cliError(`${refusal.body}${refusal.escape}`));
-      }
-      yield* logWarning(`promoting with --force. ${refusal.forced ?? refusal.body}`);
+  const source = yield* sourceState(context.config, sourceOrigin, projectId, context.origin);
+  const frozenAt =
+    typeof source === "string" ? null : "frozenAt" in source ? source.frozenAt : null;
+  const mirrorChain =
+    frozenAt !== null && frozenAt.chainHeadSeq < status.head.chainHeadSeq
+      ? yield* syncProject(context.client, projectId)
+      : null;
+  const refusal = promotionRefusal(source, sourceOrigin, status.head, context.origin, mirrorChain);
+  if (refusal !== null) {
+    // --force promotes anyway, but says what it abandons (round 9),
+    // without the refusal's own escape clause (round 10)
+    if (!forced) {
+      return yield* Effect.fail(cliError(`${refusal.body}${refusal.escape}`));
     }
-    return {
-      leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
-      mirrorChain,
-    };
-  });
-}
+    yield* logWarning(`promoting with --force. ${refusal.forced ?? refusal.body}`);
+  }
+  return {
+    leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
+    mirrorChain,
+  };
+});
 
 /**
  * What stays on the frozen source after the promotion (ruling C revision,
@@ -522,50 +507,48 @@ type SourceState =
  * here, or a refusal) but its public `/auth/config` answers (any HTTP
  * answer counts); `gone` = nothing answers.
  */
-function sourceState(
+const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   config: MaruhiCliConfig,
   sourceOrigin: string,
   projectId: string,
   thisOrigin: string,
-): Effect.Effect<SourceState, never, CliServices> {
-  return Effect.gen(function* () {
-    const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
-      Effect.flatMap((source) =>
-        source.client.mirror.status({ params: { projectId } }).pipe(
-          Effect.flatMap((status): Effect.Effect<SourceState | null, never, CliServices> => {
-            if (!status.mirror) {
-              return Effect.succeed("writable");
-            }
-            if (status.sourceOrigin === undefined) {
-              return Effect.succeed(null);
-            }
-            const movedTo = status.sourceOrigin;
-            if (movedTo === thisOrigin) {
-              return Effect.succeed({
-                frozenAt: {
-                  ...status.head,
-                  ...(status.lastSync === undefined ? {} : { lastSync: status.lastSync }),
-                },
-              });
-            }
-            // A fingerprint match never lifts the guard (it is self-reported
-            // and shared by deployments cloned from one secrets set — round
-            // 6); it only names the honest way out
-            return Effect.map(sameDeployment(movedTo, thisOrigin), (same) => ({
-              movedTo,
-              sameKey: same,
-            }));
-          }),
-        ),
+): Effect.fn.Return<SourceState, never, CliServices> {
+  const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
+    Effect.flatMap((source) =>
+      source.client.mirror.status({ params: { projectId } }).pipe(
+        Effect.flatMap((status): Effect.Effect<SourceState | null, never, CliServices> => {
+          if (!status.mirror) {
+            return Effect.succeed("writable");
+          }
+          if (status.sourceOrigin === undefined) {
+            return Effect.succeed(null);
+          }
+          const movedTo = status.sourceOrigin;
+          if (movedTo === thisOrigin) {
+            return Effect.succeed({
+              frozenAt: {
+                ...status.head,
+                ...(status.lastSync === undefined ? {} : { lastSync: status.lastSync }),
+              },
+            });
+          }
+          // A fingerprint match never lifts the guard (it is self-reported
+          // and shared by deployments cloned from one secrets set — round
+          // 6); it only names the honest way out
+          return Effect.map(sameDeployment(movedTo, thisOrigin), (same) => ({
+            movedTo,
+            sameKey: same,
+          }));
+        }),
       ),
-      Effect.orElseSucceed(() => null),
-    );
-    if (marked !== null) {
-      return marked;
-    }
-    return (yield* sourceAnswers(sourceOrigin)) ? "answers" : "gone";
-  });
-}
+    ),
+    Effect.orElseSucceed(() => null),
+  );
+  if (marked !== null) {
+    return marked;
+  }
+  return (yield* sourceAnswers(sourceOrigin)) ? "answers" : "gone";
+});
 
 /**
  * After a promotion: the other server keys the chain grants (each with
@@ -574,49 +557,47 @@ function sourceState(
  * granted (CI leases need it). From the verified chain and this server's
  * public key; never a guess at a fingerprint (ruling F revision, round 3).
  */
-function keyFollowUps(
+const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
   client: MaruhiClient,
   origin: string,
   projectId: string,
   prefetched: VerifiedProject | null = null,
-): Effect.Effect<readonly string[], CliError, CliServices> {
-  return Effect.gen(function* () {
-    const verified = prefetched ?? (yield* syncProject(client, projectId));
-    const own = yield* client.auth.authConfig({}).pipe(
-      Effect.map((config) => config.serverKeyFingerprintHex ?? null),
-      Effect.orElseSucceed(() => null),
+): Effect.fn.Return<readonly string[], CliError, CliServices> {
+  const verified = prefetched ?? (yield* syncProject(client, projectId));
+  const own = yield* client.auth.authConfig({}).pipe(
+    Effect.map((config) => config.serverKeyFingerprintHex ?? null),
+    Effect.orElseSucceed(() => null),
+  );
+  const lines: string[] = [];
+  for (const grant of [...verified.state.serverGrants.values()].toSorted((a, b) =>
+    a.serverKeyFingerprintHex < b.serverKeyFingerprintHex ? -1 : 1,
+  )) {
+    if (grant.serverKeyFingerprintHex === own) {
+      continue;
+    }
+    lines.push(
+      `Another server key is granted on this chain: ${grant.serverKeyFingerprintHex} (environments ${grant.scopeEnvironmentIds.map(displayText).join(", ")}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke ${grant.serverKeyFingerprintHex}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
     );
-    const lines: string[] = [];
-    for (const grant of [...verified.state.serverGrants.values()].toSorted((a, b) =>
-      a.serverKeyFingerprintHex < b.serverKeyFingerprintHex ? -1 : 1,
-    )) {
-      if (grant.serverKeyFingerprintHex === own) {
-        continue;
-      }
-      lines.push(
-        `Another server key is granted on this chain: ${grant.serverKeyFingerprintHex} (environments ${grant.scopeEnvironmentIds.map(displayText).join(", ")}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke ${grant.serverKeyFingerprintHex}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
-      );
-    }
-    if (own !== null && !verified.state.serverGrants.has(own)) {
-      lines.push(
-        `This deployment's server key (${own}) is not granted on the chain: CI leases are not issued here until an owner runs \`maruhi server grant --server ${origin}\``,
-      );
-    }
-    return lines;
-  });
-}
+  }
+  if (own !== null && !verified.state.serverGrants.has(own)) {
+    lines.push(
+      `This deployment's server key (${own}) is not granted on the chain: CI leases are not issued here until an owner runs \`maruhi server grant --server ${origin}\``,
+    );
+  }
+  return lines;
+});
 
 /** Whether the source deployment answers its public auth config within the probe's bound (an error of any kind = it does not). */
-function sourceAnswers(sourceOrigin: string): Effect.Effect<boolean, never, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
-    return yield* client.auth.authConfig({}).pipe(
-      Effect.map(() => true),
-      // Any HTTP answer counts, even an error; only no answer at all does not
-      Effect.catch((error) => Effect.succeed(!isNoAnswer(error))),
-    );
-  });
-}
+const sourceAnswers = Effect.fn("commands-mirror-write.sourceAnswers")(function* (
+  sourceOrigin: string,
+): Effect.fn.Return<boolean, never, HttpClient.HttpClient> {
+  const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
+  return yield* client.auth.authConfig({}).pipe(
+    Effect.map(() => true),
+    // Any HTTP answer counts, even an error; only no answer at all does not
+    Effect.catch((error) => Effect.succeed(!isNoAnswer(error))),
+  );
+});
 
 export const mirrorMark = Command.make("mark", mirrorMarkConfig, (values) =>
   mirrorMarkCommand(values),

@@ -148,39 +148,37 @@ interface CiTarget {
  * --audience was given (the mirror's own grant names its audience). Never
  * on an answer of the server (a 404 or a 401 is not retried)
  */
-function withCiMirrorFallback<A>(
+const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(function* <A>(
   values: { readonly mirror?: string | undefined; readonly audience?: string | undefined },
   primary: CiTarget,
   attempt: (target: CiTarget) => Effect.Effect<A, CliError, CliServices>,
-): Effect.Effect<A, CliError, CliServices> {
-  return Effect.gen(function* () {
-    if (values.mirror === undefined) {
-      return yield* attempt(primary);
-    }
-    const mirror = yield* normalizeHttpOrigin(values.mirror, "the mirror URL");
-    if (mirror === primary.origin) {
-      return yield* Effect.fail(
-        usageError("--mirror is the server URL itself (pass the mirror deployment's URL)"),
-      );
-    }
-    return yield* attempt(primary).pipe(
-      Effect.catch((error: CliError) =>
-        error.unreachable === true
-          ? Effect.gen(function* () {
-              const io = yield* CliIo;
-              yield* io.logError(
-                `${error.message}. Retrying against the mirror ${mirror} (a read-only replica that may be behind the server)`,
-              );
-              return yield* attempt({ origin: mirror, audience: values.audience ?? mirror });
-            })
-          : Effect.fail(error),
-      ),
+): Effect.fn.Return<A, CliError, CliServices> {
+  if (values.mirror === undefined) {
+    return yield* attempt(primary);
+  }
+  const mirror = yield* normalizeHttpOrigin(values.mirror, "the mirror URL");
+  if (mirror === primary.origin) {
+    return yield* Effect.fail(
+      usageError("--mirror is the server URL itself (pass the mirror deployment's URL)"),
     );
-  });
-}
+  }
+  return yield* attempt(primary).pipe(
+    Effect.catch((error: CliError) =>
+      error.unreachable === true
+        ? Effect.gen(function* () {
+            const io = yield* CliIo;
+            yield* io.logError(
+              `${error.message}. Retrying against the mirror ${mirror} (a read-only replica that may be behind the server)`,
+            );
+            return yield* attempt({ origin: mirror, audience: values.audience ?? mirror });
+          })
+        : Effect.fail(error),
+    ),
+  );
+});
 
 /** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
-function ciRunCommand(values: {
+const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
@@ -188,42 +186,40 @@ function ciRunCommand(values: {
   readonly mirror?: string | undefined;
   readonly anchor?: string | undefined;
   readonly command: readonly string[];
-}): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // Every format check precedes network / key generation (the same discipline as the existing commands)
-    const origin = yield* normalizeHttpOrigin(
-      yield* requireCiFlag(values.server, "--server"),
-      "the server URL",
+}): Effect.fn.Return<number, CliError, CliServices> {
+  // Every format check precedes network / key generation (the same discipline as the existing commands)
+  const origin = yield* normalizeHttpOrigin(
+    yield* requireCiFlag(values.server, "--server"),
+    "the server URL",
+  );
+  const projectFlag = yield* requireCiFlag(values.project, "--project");
+  if (!isProjectId(projectFlag)) {
+    return yield* Effect.fail(
+      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
     );
-    const projectFlag = yield* requireCiFlag(values.project, "--project");
-    if (!isProjectId(projectFlag)) {
-      return yield* Effect.fail(
-        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-      );
-    }
-    const envFlag = yield* requireCiFlag(values.env, "--env");
-    if (!isEnvironmentId(envFlag)) {
-      return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-    }
-    // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
-    return yield* withCiMirrorFallback(
-      values,
-      { origin, audience: values.audience ?? origin },
-      (target) =>
-        ciRunOp({
-          origin: target.origin,
-          projectId: projectFlag,
-          environmentId: envFlag,
-          audience: target.audience,
-          anchorPath: values.anchor,
-          command: values.command,
-        }),
-    );
-  });
-}
+  }
+  const envFlag = yield* requireCiFlag(values.env, "--env");
+  if (!isEnvironmentId(envFlag)) {
+    return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+  }
+  // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
+  return yield* withCiMirrorFallback(
+    values,
+    { origin, audience: values.audience ?? origin },
+    (target) =>
+      ciRunOp({
+        origin: target.origin,
+        projectId: projectFlag,
+        environmentId: envFlag,
+        audience: target.audience,
+        anchorPath: values.anchor,
+        command: values.command,
+      }),
+  );
+});
 
 /** `maruhi ci sync <target>`'s body (the lease and the sync live in sync-ci.ts). */
-function ciSyncCommand(values: {
+const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly audience?: string | undefined;
@@ -232,45 +228,43 @@ function ciSyncCommand(values: {
   readonly config?: string | undefined;
   readonly yes: boolean;
   readonly target: string;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    // The format checks and the config read precede network / key
-    // generation (the same discipline as ci run). There is no `--env`: the
-    // sync config's target decides the environment
-    const origin = yield* normalizeHttpOrigin(
-      yield* requireCiFlag(values.server, "--server", "ci sync"),
-      "the server URL",
+}): Effect.fn.Return<void, CliError, CliServices> {
+  // The format checks and the config read precede network / key
+  // generation (the same discipline as ci run). There is no `--env`: the
+  // sync config's target decides the environment
+  const origin = yield* normalizeHttpOrigin(
+    yield* requireCiFlag(values.server, "--server", "ci sync"),
+    "the server URL",
+  );
+  const projectFlag = yield* requireCiFlag(values.project, "--project", "ci sync");
+  if (!isProjectId(projectFlag)) {
+    return yield* Effect.fail(
+      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
     );
-    const projectFlag = yield* requireCiFlag(values.project, "--project", "ci sync");
-    if (!isProjectId(projectFlag)) {
-      return yield* Effect.fail(
-        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-      );
-    }
-    const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
-    const target = yield* requireSyncTarget(config, values.target);
-    yield* checkConfigProject(config, projectFlag);
-    yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
-      ciSyncOp({
-        origin: where.origin,
-        projectId: projectFlag,
-        audience: where.audience,
-        anchorPath: values.anchor,
-        target,
-        yes: values.yes,
-      }),
-    );
-  });
-}
+  }
+  const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
+  const target = yield* requireSyncTarget(config, values.target);
+  yield* checkConfigProject(config, projectFlag);
+  yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
+    ciSyncOp({
+      origin: where.origin,
+      projectId: projectFlag,
+      audience: where.audience,
+      anchorPath: values.anchor,
+      target,
+      yes: values.yes,
+    }),
+  );
+});
 
 /** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
 /** The coordinates of `maruhi ci rotate` (every format check before the config read and the network). */
-function ciRotateCoordinates(values: {
+const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
   readonly "expires-in"?: number | undefined;
-}): Effect.Effect<
+}): Effect.fn.Return<
   {
     readonly origin: string;
     readonly projectId: string;
@@ -279,37 +273,31 @@ function ciRotateCoordinates(values: {
   },
   CliError
 > {
-  return Effect.gen(function* () {
-    const origin = yield* normalizeHttpOrigin(
-      yield* requireCiFlag(values.server, "--server", "ci rotate"),
-      "the server URL",
+  const origin = yield* normalizeHttpOrigin(
+    yield* requireCiFlag(values.server, "--server", "ci rotate"),
+    "the server URL",
+  );
+  const projectId = yield* requireCiFlag(values.project, "--project", "ci rotate");
+  if (!isProjectId(projectId)) {
+    return yield* Effect.fail(
+      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
     );
-    const projectId = yield* requireCiFlag(values.project, "--project", "ci rotate");
-    if (!isProjectId(projectId)) {
-      return yield* Effect.fail(
-        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-      );
-    }
-    const environmentId = yield* requireCiFlag(values.env, "--env", "ci rotate");
-    if (!isEnvironmentId(environmentId)) {
-      return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-    }
-    const expiresInDays = values["expires-in"] ?? 7;
-    if (
-      !Number.isInteger(expiresInDays) ||
-      expiresInDays < 1 ||
-      expiresInDays > MAX_PROPOSAL_DAYS
-    ) {
-      return yield* Effect.fail(
-        usageError(`--expires-in must be a number of days from 1 to ${MAX_PROPOSAL_DAYS}`),
-      );
-    }
-    return { origin, projectId, environmentId, expiresInDays };
-  });
-}
+  }
+  const environmentId = yield* requireCiFlag(values.env, "--env", "ci rotate");
+  if (!isEnvironmentId(environmentId)) {
+    return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+  }
+  const expiresInDays = values["expires-in"] ?? 7;
+  if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > MAX_PROPOSAL_DAYS) {
+    return yield* Effect.fail(
+      usageError(`--expires-in must be a number of days from 1 to ${MAX_PROPOSAL_DAYS}`),
+    );
+  }
+  return { origin, projectId, environmentId, expiresInDays };
+});
 
 /** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
-function ciRotateCommand(values: {
+const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
@@ -318,39 +306,39 @@ function ciRotateCommand(values: {
   readonly "rotate-config"?: string | undefined;
   readonly "expires-in"?: number | undefined;
   readonly name: string;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const coordinates = yield* ciRotateCoordinates(values);
-    // The config is read before any network / key generation (the same
-    // discipline as ci run)
-    const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
-    const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
-    if (!rotateConfigNamesProject(rotateConfig, coordinates.projectId)) {
-      return yield* Effect.fail(
-        usageError(
-          `The rotation config ${displayText(rotateConfigPath)} belongs to a different project (its \`project\` does not match --project)`,
-        ),
-      );
-    }
-    const result = yield* ciRotateOp({
-      ...coordinates,
-      audience: values.audience ?? coordinates.origin,
-      anchorPath: values.anchor,
-      name: values.name,
-      config: rotateConfig,
-      configPath: rotateConfigPath,
-    });
-    yield* logRotationWarnings(result.warnings);
-    for (const line of describeProposal(result, coordinates.environmentId)) {
-      yield* io.log(line);
-    }
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const coordinates = yield* ciRotateCoordinates(values);
+  // The config is read before any network / key generation (the same
+  // discipline as ci run)
+  const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
+  const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
+  if (!rotateConfigNamesProject(rotateConfig, coordinates.projectId)) {
+    return yield* Effect.fail(
+      usageError(
+        `The rotation config ${displayText(rotateConfigPath)} belongs to a different project (its \`project\` does not match --project)`,
+      ),
+    );
+  }
+  const result = yield* ciRotateOp({
+    ...coordinates,
+    audience: values.audience ?? coordinates.origin,
+    anchorPath: values.anchor,
+    name: values.name,
+    config: rotateConfig,
+    configPath: rotateConfigPath,
   });
-}
+  yield* logRotationWarnings(result.warnings);
+  for (const line of describeProposal(result, coordinates.environmentId)) {
+    yield* io.log(line);
+  }
+});
 
 export function makeCiCommands(onExitCode: (code: number) => void) {
-  const ciRun = Command.make("run", ciRunConfig, (values) =>
-    Effect.gen(function* () {
+  const ciRun = Command.make(
+    "run",
+    ciRunConfig,
+    Effect.fn("commands-ci.ciRun")(function* (values) {
       const { command: parsed, ...flags } = values;
       // Drops before communication / key generation (at the command body's head) (the same `--` discipline as run)
       const command = yield* commandAfterTerminator(parsed);

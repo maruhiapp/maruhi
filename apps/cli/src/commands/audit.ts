@@ -195,8 +195,10 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const auditInvites = Command.make("invites", auditInvitesConfig, (values) =>
-    Effect.gen(function* () {
+  const auditInvites = Command.make(
+    "invites",
+    auditInvitesConfig,
+    Effect.fn("commands-audit.auditInvites")(function* (values) {
       const page = yield* parseAuditPage(values.limit, values.before);
       const context = yield* openMetadataProject({
         server: values.server,
@@ -206,16 +208,20 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(Command.withDescription("List invite.* audit events (admin only)"));
 
-  const auditSelf = Command.make("self", auditSelfConfig, (values) =>
-    Effect.gen(function* () {
+  const auditSelf = Command.make(
+    "self",
+    auditSelfConfig,
+    Effect.fn("commands-audit.auditSelf")(function* (values) {
       const page = yield* parseAuditPage(values.limit, values.before);
       const context = yield* openSession(values.server);
       onExitCode(yield* auditSelfOp(context, page));
     }),
   ).pipe(Command.withDescription("List the audit events of your own account"));
 
-  const auditVerify = Command.make("verify", auditVerifyConfig, (values) =>
-    Effect.gen(function* () {
+  const auditVerify = Command.make(
+    "verify",
+    auditVerifyConfig,
+    Effect.fn("commands-audit.auditVerify")(function* (values) {
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,
@@ -228,8 +234,10 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const auditReconcile = Command.make("reconcile", auditReconcileConfig, (values) =>
-    Effect.gen(function* () {
+  const auditReconcile = Command.make(
+    "reconcile",
+    auditReconcileConfig,
+    Effect.fn("commands-audit.auditReconcile")(function* (values) {
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,

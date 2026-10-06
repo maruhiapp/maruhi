@@ -88,19 +88,17 @@ export const deviceRevokeConfig = {
   ),
 };
 /** `maruhi device revoke`'s report (the per-project revoked FPs and the sweep — K4-7 / K4-8). */
-function reportDeviceRevoke(
+const reportDeviceRevoke = Effect.fn("commands-device.reportDeviceRevoke")(function* (
   summary: DeviceRevokeSummary,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    let exitCode = 0;
-    for (const project of summary.projects) {
-      if (project.skipped === null && (yield* reportRevokedProject(project)) !== 0) {
-        exitCode = 1;
-      }
+): Effect.fn.Return<number, CliError, CliServices> {
+  let exitCode = 0;
+  for (const project of summary.projects) {
+    if (project.skipped === null && (yield* reportRevokedProject(project)) !== 0) {
+      exitCode = 1;
     }
-    return exitCode;
-  });
-}
+  }
+  return exitCode;
+});
 
 /** Reporting one project's revocation result (exit code: an append failure, a sweep failure, a rotate failure = 1). */
 function reportRevokedProject(
@@ -139,8 +137,10 @@ function reportRevokedProject(
 }
 
 export function makeDeviceCommands(onExitCode: (code: number) => void) {
-  const deviceAdd = Command.make("add", deviceAddConfig, (values) =>
-    Effect.gen(function* () {
+  const deviceAdd = Command.make(
+    "add",
+    deviceAddConfig,
+    Effect.fn("commands-device.deviceAdd")(function* (values) {
       const context = yield* openSession(values.server);
       yield* deviceAddOp({
         session: context.session,
@@ -155,8 +155,10 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const deviceApprove = Command.make("approve", deviceApproveConfig, (values) =>
-    Effect.gen(function* () {
+  const deviceApprove = Command.make(
+    "approve",
+    deviceApproveConfig,
+    Effect.fn("commands-device.deviceApprove")(function* (values) {
       const ref = yield* parseApproveRef(values.ref);
       const roleCap = yield* parseCapRole(values.cap);
       const scope =
@@ -181,8 +183,10 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const deviceList = Command.make("list", deviceListConfig, (values) =>
-    Effect.gen(function* () {
+  const deviceList = Command.make(
+    "list",
+    deviceListConfig,
+    Effect.fn("commands-device.deviceList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* deviceListOp({
         session: context.session,
@@ -196,8 +200,10 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const deviceRevoke = Command.make("revoke", deviceRevokeConfig, (values) =>
-    Effect.gen(function* () {
+  const deviceRevoke = Command.make(
+    "revoke",
+    deviceRevokeConfig,
+    Effect.fn("commands-device.deviceRevoke")(function* (values) {
       const context = yield* openSession(values.server);
       const summary = yield* deviceRevokeOp({
         session: context.session,

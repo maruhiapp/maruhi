@@ -92,67 +92,65 @@ export const projectPolicyApprovalsConfig = {
 };
 
 /** `maruhi project verify`: chain verification + floor / anchor checks + state display. */
-function projectVerify(
+const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
   serverFlag: string | undefined,
   projectFlag: string | undefined,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const context = yield* openSession(serverFlag);
-    const projectId = yield* resolveProjectId(projectFlag, context.config);
-    const synced = yield* syncProject(context.client, projectId);
-    // The chain-floor check (§6.3 rule (a)) is also part of verify
-    const checked = (yield* loadCheckedFloor(
-      projectId,
-      synced,
-      syncProject(context.client, projectId),
-    )).verified;
-    // The mechanical matching of the invite-link anchor (§6.3 (a) / §6.5) is also part of verify
-    yield* checkInviteAnchor(projectId, checked);
-    // Matching against other members' head claims (§6.3 head gossip /
-    // §6.6) is also part of verify (a contradictory claim = hard evidence
-    // of a split view → abort and preserve the evidence). No submission
-    // happens (verify is a read command that does not require the master
-    // key). The floor head's advance happens inside reconcileGossip after
-    // every check passes, same as attachProject
-    const verified = yield* reconcileGossip(
-      projectId,
-      checked,
-      syncProject(context.client, projectId),
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openSession(serverFlag);
+  const projectId = yield* resolveProjectId(projectFlag, context.config);
+  const synced = yield* syncProject(context.client, projectId);
+  // The chain-floor check (§6.3 rule (a)) is also part of verify
+  const checked = (yield* loadCheckedFloor(
+    projectId,
+    synced,
+    syncProject(context.client, projectId),
+  )).verified;
+  // The mechanical matching of the invite-link anchor (§6.3 (a) / §6.5) is also part of verify
+  yield* checkInviteAnchor(projectId, checked);
+  // Matching against other members' head claims (§6.3 head gossip /
+  // §6.6) is also part of verify (a contradictory claim = hard evidence
+  // of a split view → abort and preserve the evidence). No submission
+  // happens (verify is a read command that does not require the master
+  // key). The floor head's advance happens inside reconcileGossip after
+  // every check passes, same as attachProject
+  const verified = yield* reconcileGossip(
+    projectId,
+    checked,
+    syncProject(context.client, projectId),
+  );
+  yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
+  yield* io.log(`head: ${verified.state.headHashHex}`);
+  // The scope column (2026-09-15 ES K4 — ruling M). The same row format as `maruhi member list`
+  yield* io.log(`Members (${verified.state.members.size}):`);
+  for (const row of memberListRows(verified)) {
+    yield* io.log(`  ${formatMemberListRow(row)}`);
+  }
+  for (const [environmentId, environment] of verified.state.environments) {
+    yield* io.log(
+      `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq})`,
     );
-    yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
-    yield* io.log(`head: ${verified.state.headHashHex}`);
-    // The scope column (2026-09-15 ES K4 — ruling M). The same row format as `maruhi member list`
-    yield* io.log(`Members (${verified.state.members.size}):`);
-    for (const row of memberListRows(verified)) {
-      yield* io.log(`  ${formatMemberListRow(row)}`);
-    }
-    for (const [environmentId, environment] of verified.state.environments) {
-      yield* io.log(
-        `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq})`,
-      );
-    }
-    // The unconverged rotation duties (§7 — chain-derived, verified
-    // deletions excluded) are also part of verify (the always-on warning —
-    // rotation-sweep.ts — detail display. With zero candidates it settles
-    // with no communication). A deleted environment's verification failure
-    // is only the caveat "could not be confirmed" — verify itself counts
-    // as successful (the chain verification is done)
-    const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
-    if (pending === null) {
-      return;
-    }
-    if (pending.length === 0) {
-      yield* io.log("Rotation mandates: none unconverged (CRYPTO_SPEC §7)");
-      return;
-    }
-    for (const mandate of pending) {
-      yield* io.logError(
-        `Unconverged rotation mandate: ${describeUnconvergedMandate(verified, mandate)} (holders of the old DEK may still be able to read current values)`,
-      );
-    }
-  });
-}
+  }
+  // The unconverged rotation duties (§7 — chain-derived, verified
+  // deletions excluded) are also part of verify (the always-on warning —
+  // rotation-sweep.ts — detail display. With zero candidates it settles
+  // with no communication). A deleted environment's verification failure
+  // is only the caveat "could not be confirmed" — verify itself counts
+  // as successful (the chain verification is done)
+  const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
+  if (pending === null) {
+    return;
+  }
+  if (pending.length === 0) {
+    yield* io.log("Rotation mandates: none unconverged (CRYPTO_SPEC §7)");
+    return;
+  }
+  for (const mandate of pending) {
+    yield* io.logError(
+      `Unconverged rotation mandate: ${describeUnconvergedMandate(verified, mandate)} (holders of the old DEK may still be able to read current values)`,
+    );
+  }
+});
 
 /** Parsing `--ops a,b` (a closed set — a typo is a usage error. Ascending, no duplicates). */
 function parsePolicyOps(
@@ -179,34 +177,32 @@ function parsePolicyOps(
 }
 
 /** `--required N` / `--off` → the policy request (neither = null = display only). */
-function parsePolicyRequest(flags: {
+const parsePolicyRequest = Effect.fn("commands-project.parsePolicyRequest")(function* (flags: {
   readonly required?: string | undefined;
   readonly ops?: string | undefined;
   readonly off: boolean;
-}): Effect.Effect<PolicyRequest | null, CliError> {
-  return Effect.gen(function* () {
-    if (flags.off) {
-      if (flags.required !== undefined || flags.ops !== undefined) {
-        return yield* Effect.fail(usageError("--off cannot be combined with --required / --ops"));
-      }
-      return { kind: "off" } as const;
+}): Effect.fn.Return<PolicyRequest | null, CliError> {
+  if (flags.off) {
+    if (flags.required !== undefined || flags.ops !== undefined) {
+      return yield* Effect.fail(usageError("--off cannot be combined with --required / --ops"));
     }
-    if (flags.required === undefined) {
-      if (flags.ops !== undefined) {
-        return yield* Effect.fail(usageError("--ops requires --required <n>"));
-      }
-      return null;
+    return { kind: "off" } as const;
+  }
+  if (flags.required === undefined) {
+    if (flags.ops !== undefined) {
+      return yield* Effect.fail(usageError("--ops requires --required <n>"));
     }
-    const required = Number(flags.required);
-    if (!Number.isInteger(required) || required < 2 || required > 64) {
-      return yield* Effect.fail(
-        usageError("--required must be an integer of at least 2 (CRYPTO_SPEC §6.2)"),
-      );
-    }
-    const ops = yield* parsePolicyOps(flags.ops);
-    return { kind: "on", requiredApprovals: required, ops } as const;
-  });
-}
+    return null;
+  }
+  const required = Number(flags.required);
+  if (!Number.isInteger(required) || required < 2 || required > 64) {
+    return yield* Effect.fail(
+      usageError("--required must be an integer of at least 2 (CRYPTO_SPEC §6.2)"),
+    );
+  }
+  const ops = yield* parsePolicyOps(flags.ops);
+  return { kind: "on", requiredApprovals: required, ops } as const;
+});
 
 /**
  * `maruhi project policy approvals [--required N [--ops …]] [--off]`
@@ -215,15 +211,15 @@ function parsePolicyRequest(flags: {
  * policy is enabled, set_approval_policy itself is a four-eyes target, so
  * it becomes a proposal (CRYPTO_SPEC §6.2).
  */
-function projectPolicyApprovalsCommand(
-  flags: CommonFlags & {
-    readonly required?: string | undefined;
-    readonly ops?: string | undefined;
-    readonly off: boolean;
-    readonly expires?: string | undefined;
-  },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
+const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyApprovalsCommand")(
+  function* (
+    flags: CommonFlags & {
+      readonly required?: string | undefined;
+      readonly ops?: string | undefined;
+      readonly off: boolean;
+      readonly expires?: string | undefined;
+    },
+  ): Effect.fn.Return<number, CliError, CliServices> {
     const io = yield* CliIo;
     const request = yield* parsePolicyRequest(flags);
     const proposal = yield* proposalInputOf(flags.expires);
@@ -266,37 +262,37 @@ function projectPolicyApprovalsCommand(
     );
     yield* warnPolicyAvailability(context.verified, request);
     return 0;
-  });
-}
+  },
+);
 
 /**
  * The guidance of the enablement's operational prerequisites (the owner
  * selection (i) of approval item 17 — kept as guidance, never a prompt):
  * owner ≥ required + 1, and every owner's recovery registration.
  */
-function warnPolicyAvailability(
+const warnPolicyAvailability = Effect.fn("commands-project.warnPolicyAvailability")(function* (
   verified: Parameters<typeof proposalViews>[0],
   request: PolicyRequest,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    if (request.kind === "off") {
-      return;
-    }
-    const owners = [...verified.state.members.values()].filter((m) => m.role === "owner").length;
-    if (owners <= request.requiredApprovals) {
-      yield* logWarning(
-        `the project has ${countNoun(owners, "owner")} and the policy requires ${request.requiredApprovals} approvals: if one owner becomes unavailable (lost key, left the team), owner additions, removals and policy changes can no longer reach the quorum and the admin plane locks up (data access keeps working). Keep at least ${request.requiredApprovals + 1} owners`,
-      );
-    }
-    yield* logNote(
-      "make sure every owner has a recovery registered (`maruhi key recovery` or a guardian group) — under the four-eyes policy a lost owner key cannot be replaced without the quorum",
+): Effect.fn.Return<void, never, CliIo> {
+  if (request.kind === "off") {
+    return;
+  }
+  const owners = [...verified.state.members.values()].filter((m) => m.role === "owner").length;
+  if (owners <= request.requiredApprovals) {
+    yield* logWarning(
+      `the project has ${countNoun(owners, "owner")} and the policy requires ${request.requiredApprovals} approvals: if one owner becomes unavailable (lost key, left the team), owner additions, removals and policy changes can no longer reach the quorum and the admin plane locks up (data access keeps working). Keep at least ${request.requiredApprovals + 1} owners`,
     );
-  });
-}
+  }
+  yield* logNote(
+    "make sure every owner has a recovery registered (`maruhi key recovery` or a guardian group) — under the four-eyes policy a lost owner key cannot be replaced without the quorum",
+  );
+});
 
 export function makeProjectCommands(onExitCode: (code: number) => void) {
-  const projectInit = Command.make("init", projectInitConfig, (values) =>
-    Effect.gen(function* () {
+  const projectInit = Command.make(
+    "init",
+    projectInitConfig,
+    Effect.fn("commands-project.projectInit")(function* (values) {
       const context = yield* openSession(values.server);
       const masterKeys = yield* loadMasterKeys(context.session);
       yield* projectInitOp({
@@ -308,8 +304,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(Command.withDescription("Create a project (signs and submits the genesis entry)"));
 
-  const projectList = Command.make("list", projectListConfig, (values) =>
-    Effect.gen(function* () {
+  const projectList = Command.make(
+    "list",
+    projectListConfig,
+    Effect.fn("commands-project.projectList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* projectListOp({ client: context.client });
     }),
@@ -317,8 +315,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     Command.withDescription("List the projects you are a member of (as reported by the server)"),
   );
 
-  const projectExport = Command.make("export", projectExportConfig, (values) =>
-    Effect.gen(function* () {
+  const projectExport = Command.make(
+    "export",
+    projectExportConfig,
+    Effect.fn("commands-project.projectExport")(function* (values) {
       const io = yield* CliIo;
       if (values.out === undefined) {
         return yield* Effect.fail(
@@ -359,8 +359,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const projectAnchor = Command.make("anchor", projectAnchorConfig, (values) =>
-    Effect.gen(function* () {
+  const projectAnchor = Command.make(
+    "anchor",
+    projectAnchorConfig,
+    Effect.fn("commands-project.projectAnchor")(function* (values) {
       const io = yield* CliIo;
       // The prologue is the same keyless class as verify (chain sync +
       // §6.3 checks + floor + the invite anchor's mechanical matching) —
@@ -380,8 +382,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const projectPolicyApprovals = Command.make("approvals", projectPolicyApprovalsConfig, (values) =>
-    Effect.gen(function* () {
+  const projectPolicyApprovals = Command.make(
+    "approvals",
+    projectPolicyApprovalsConfig,
+    Effect.fn("commands-project.projectPolicyApprovals")(function* (values) {
       onExitCode(
         yield* projectPolicyApprovalsCommand({
           server: values.server,
@@ -404,8 +408,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     Command.withSubcommands([projectPolicyApprovals]),
   );
 
-  const projectCheckpoint = Command.make("checkpoint", projectCheckpointConfig, (values) =>
-    Effect.gen(function* () {
+  const projectCheckpoint = Command.make(
+    "checkpoint",
+    projectCheckpointConfig,
+    Effect.fn("commands-project.projectCheckpoint")(function* (values) {
       const io = yield* CliIo;
       // Issuance accompanies a chain append (an Ed25519 signature), so it
       // requires the master key. Building the verified view (the verified

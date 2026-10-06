@@ -92,8 +92,10 @@ export const keyReserveRotateConfig = {
 };
 
 export function makeKeyCommands(onExitCode: (code: number) => void) {
-  const keyGenerate = Command.make("generate", keyGenerateConfig, (values) =>
-    Effect.gen(function* () {
+  const keyGenerate = Command.make(
+    "generate",
+    keyGenerateConfig,
+    Effect.fn("commands-key.keyGenerate")(function* (values) {
       const context = yield* openSession(values.server);
       yield* keyGenerateOp({
         session: context.session,
@@ -108,8 +110,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const keyShow = Command.make("show", keyShowConfig, (values) =>
-    Effect.gen(function* () {
+  const keyShow = Command.make(
+    "show",
+    keyShowConfig,
+    Effect.fn("commands-key.keyShow")(function* (values) {
       const context = yield* openSession(values.server);
       yield* keyShowOp({ session: context.session, client: context.client });
     }),
@@ -119,8 +123,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const keyPublish = Command.make("publish", keyPublishConfig, (values) =>
-    Effect.gen(function* () {
+  const keyPublish = Command.make(
+    "publish",
+    keyPublishConfig,
+    Effect.fn("commands-key.keyPublish")(function* (values) {
       const context = yield* openSession(values.server);
       yield* keyPublishOp({ session: context.session, viaGh: values.gh });
     }),
@@ -130,8 +136,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const keyRecover = Command.make("recover", keyRecoverConfig, (values) =>
-    Effect.gen(function* () {
+  const keyRecover = Command.make(
+    "recover",
+    keyRecoverConfig,
+    Effect.fn("commands-key.keyRecover")(function* (values) {
       // A misspelling drops before the session resolution (network)
       if (values.handoff && values.passkey) {
         return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
@@ -150,8 +158,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const keySealPasskey = Command.make("passkey", keySealPasskeyConfig, (values) =>
-    Effect.gen(function* () {
+  const keySealPasskey = Command.make(
+    "passkey",
+    keySealPasskeyConfig,
+    Effect.fn("commands-key.keySealPasskey")(function* (values) {
       const context = yield* openSession(values.server);
       const reserve = yield* openLedgerReserveForChange({
         session: context.session,
@@ -172,15 +182,19 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const keySealList = Command.make("list", keySealListConfig, (values) =>
-    Effect.gen(function* () {
+  const keySealList = Command.make(
+    "list",
+    keySealListConfig,
+    Effect.fn("commands-key.keySealList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* listPasskeysOp({ client: context.client });
     }),
   ).pipe(Command.withDescription("List the passkeys your reserve key is sealed to"));
 
-  const keySealRemove = Command.make("remove", keySealRemoveConfig, (values) =>
-    Effect.gen(function* () {
+  const keySealRemove = Command.make(
+    "remove",
+    keySealRemoveConfig,
+    Effect.fn("commands-key.keySealRemove")(function* (values) {
       const context = yield* openSession(values.server);
       yield* removePasskeyOp({ client: context.client, wrapId: values["wrap-id"] });
     }),
@@ -191,8 +205,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     Command.withSubcommands([keySealPasskey, keySealList, keySealRemove]),
   );
 
-  const keyReserveRotate = Command.make("rotate", keyReserveRotateConfig, (values) =>
-    Effect.gen(function* () {
+  const keyReserveRotate = Command.make(
+    "rotate",
+    keyReserveRotateConfig,
+    Effect.fn("commands-key.keyReserveRotate")(function* (values) {
       const context = yield* openSession(values.server);
       onExitCode(
         yield* keyReserveRotateOp({
@@ -213,8 +229,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     Command.withSubcommands([keyReserveRotate]),
   );
 
-  const keyRecovery = Command.make("recovery", keyRecoveryConfig, (values) =>
-    Effect.gen(function* () {
+  const keyRecovery = Command.make(
+    "recovery",
+    keyRecoveryConfig,
+    Effect.fn("commands-key.keyRecovery")(function* (values) {
       const context = yield* openSession(values.server);
       onExitCode(
         yield* keyRecoveryOp({

@@ -17,15 +17,19 @@ export const tokenRevokeConfig = {
 };
 
 export function makeTokenCommands() {
-  const tokenList = Command.make("list", tokenListConfig, (values) =>
-    Effect.gen(function* () {
+  const tokenList = Command.make(
+    "list",
+    tokenListConfig,
+    Effect.fn("commands-token.tokenList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* tokenListOp({ client: context.client });
     }),
   ).pipe(Command.withDescription("List your API tokens (ids, names, scopes, expiry)"));
 
-  const tokenRevoke = Command.make("revoke", tokenRevokeConfig, (values) =>
-    Effect.gen(function* () {
+  const tokenRevoke = Command.make(
+    "revoke",
+    tokenRevokeConfig,
+    Effect.fn("commands-token.tokenRevoke")(function* (values) {
       const context = yield* openSession(values.server);
       yield* tokenRevokeOp({ client: context.client, tokenId: values["token-id"] });
     }),

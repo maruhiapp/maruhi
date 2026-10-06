@@ -71,8 +71,10 @@ function requireTokenTtlDays(
 }
 
 export function makeLoginLogoutCommands() {
-  const login = Command.make("login", loginConfig, (values) =>
-    Effect.gen(function* () {
+  const login = Command.make(
+    "login",
+    loginConfig,
+    Effect.fn("commands-login-logout.login")(function* (values) {
       // Checked **before any communication**. The bound is shared with
       // api-schema (MAX_TOKEN_NAME_LENGTH). Without it, a too-long name
       // surfaces as start's encode failure (a diagnostic confusingly close
@@ -110,8 +112,10 @@ export function makeLoginLogoutCommands() {
     ),
   );
 
-  const logout = Command.make("logout", logoutConfig, (values) =>
-    Effect.gen(function* () {
+  const logout = Command.make(
+    "logout",
+    logoutConfig,
+    Effect.fn("commands-login-logout.logout")(function* (values) {
       const config = yield* loadCliConfig;
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });

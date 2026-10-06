@@ -53,44 +53,43 @@ export const mirrorSyncConfig = {
 /* -------------------------------------------------------------------------- */
 
 /** The mirror's session and the project of `mirror sync` / `status` (the server session is opened separately). */
-function openMirrorTarget(flags: {
+const openMirrorTarget = Effect.fn("commands-mirror.openMirrorTarget")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
 }) {
-  return Effect.gen(function* () {
-    const config = yield* loadCliConfig;
-    const projectId = yield* resolveProjectId(flags.project, config);
-    const serverOrigin = yield* resolveServerOrigin(flags.server, config);
-    const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, config);
-    if (mirrorOrigin === null) {
-      return yield* Effect.fail(
-        cliError(
-          "No mirror URL. Pass --mirror <url> or set it with `maruhi config set mirror <url>`",
-        ),
-      );
-    }
-    // By string here (a cron's "current" tick stays the status reads
-    // — H-9); the mark, where a self-mirror would be created, and the
-    // promotion compare deployments by server key fingerprint (C-13)
-    if (mirrorOrigin === serverOrigin) {
-      return yield* Effect.fail(
-        usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
-      );
-    }
-    const mirror = yield* openSession(mirrorOrigin, "mirror");
-    return { mirror, mirrorOrigin, serverOrigin, projectId };
-  });
-}
+  const config = yield* loadCliConfig;
+  const projectId = yield* resolveProjectId(flags.project, config);
+  const serverOrigin = yield* resolveServerOrigin(flags.server, config);
+  const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, config);
+  if (mirrorOrigin === null) {
+    return yield* Effect.fail(
+      cliError(
+        "No mirror URL. Pass --mirror <url> or set it with `maruhi config set mirror <url>`",
+      ),
+    );
+  }
+  // By string here (a cron's "current" tick stays the status reads
+  // — H-9); the mark, where a self-mirror would be created, and the
+  // promotion compare deployments by server key fingerprint (C-13)
+  if (mirrorOrigin === serverOrigin) {
+    return yield* Effect.fail(
+      usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
+    );
+  }
+  const mirror = yield* openSession(mirrorOrigin, "mirror");
+  return { mirror, mirrorOrigin, serverOrigin, projectId };
+});
 
 /** The server's verified view (the same keyless prologue as `project export`). */
-function verifiedServerView(serverFlag: string | undefined, projectId: string) {
-  return Effect.gen(function* () {
-    const source = yield* openSession(serverFlag);
-    const verified = yield* verifiedViewOf(source, projectId);
-    return { source, verified };
-  });
-}
+const verifiedServerView = Effect.fn("commands-mirror.verifiedServerView")(function* (
+  serverFlag: string | undefined,
+  projectId: string,
+) {
+  const source = yield* openSession(serverFlag);
+  const verified = yield* verifiedViewOf(source, projectId);
+  return { source, verified };
+});
 
 /**
  * The server's verified view from an open session: the same keyless
@@ -99,22 +98,15 @@ function verifiedServerView(serverFlag: string | undefined, projectId: string) {
  * once every check passes (ruling H revision, round 7: a sync whose view
  * left the floor behind took the view on every tick, forever).
  */
-function verifiedViewOf(source: SessionContext, projectId: string) {
-  return Effect.gen(function* () {
-    const synced = yield* syncProject(source.client, projectId);
-    const checked = yield* loadCheckedFloor(
-      projectId,
-      synced,
-      syncProject(source.client, projectId),
-    );
-    yield* checkInviteAnchor(projectId, checked.verified);
-    return yield* reconcileGossip(
-      projectId,
-      checked.verified,
-      syncProject(source.client, projectId),
-    );
-  });
-}
+const verifiedViewOf = Effect.fn("commands-mirror.verifiedViewOf")(function* (
+  source: SessionContext,
+  projectId: string,
+) {
+  const synced = yield* syncProject(source.client, projectId);
+  const checked = yield* loadCheckedFloor(projectId, synced, syncProject(source.client, projectId));
+  yield* checkInviteAnchor(projectId, checked.verified);
+  return yield* reconcileGossip(projectId, checked.verified, syncProject(source.client, projectId));
+});
 
 /**
  * `maruhi mirror sync`: the export's pages uploaded to the mirror in
@@ -123,56 +115,54 @@ function verifiedViewOf(source: SessionContext, projectId: string) {
  * only when something is uploaded — a cron's "current" tick is the two
  * status reads (ruling H revision, round 4).
  */
-function mirrorSyncCommand(flags: {
+const mirrorSyncCommand = Effect.fn("commands-mirror.mirrorSyncCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
   readonly force?: boolean | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const target = yield* openMirrorTarget(flags);
-    const source = yield* openSession(flags.server);
-    // The pages go through the mirror under the body bound on their
-    // headers (a full page on a slow uplink is not "did not answer" — H-10);
-    // the status reads keep the usual bound (H-12)
-    const pages = yield* makeApiClient({
-      baseUrl: target.mirrorOrigin,
-      token: target.mirror.session.token,
-      timeout: BODY_TIMEOUT,
-    });
-    const floor = yield* (yield* FloorStore).load(target.projectId);
-    const result = yield* mirrorSyncOp({
-      source: source.client,
-      mirror: target.mirror.client,
-      pages,
-      projectId: target.projectId,
-      sourceOrigin: source.origin,
-      mirrorOrigin: target.mirrorOrigin,
-      ...(flags.force === true ? { force: true } : {}),
-      floorHead: floor.floor?.chainHead ?? null,
-      verified: verifiedViewOf(source, target.projectId),
-    });
-    for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
-      yield* io.log(line);
-    }
-    // A replica behind the view taken before the export, past the one
-    // taken after the commit, or off either's chain is evidence against
-    // the server, reported above; the sync fails so a cron notices (ruling
-    // H revision, rounds 8 and 9)
-    const verdict =
-      result.kind === "replicated"
-        ? replicaVerdict(result.committed, result.viewBefore, result.verified)
-        : null;
-    if (verdict !== null) {
-      return yield* Effect.fail(
-        cliError(
-          `The replica ${target.mirrorOrigin} now holds is ${verdict} — against ${source.origin} and against the mirror`,
-        ),
-      );
-    }
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const target = yield* openMirrorTarget(flags);
+  const source = yield* openSession(flags.server);
+  // The pages go through the mirror under the body bound on their
+  // headers (a full page on a slow uplink is not "did not answer" — H-10);
+  // the status reads keep the usual bound (H-12)
+  const pages = yield* makeApiClient({
+    baseUrl: target.mirrorOrigin,
+    token: target.mirror.session.token,
+    timeout: BODY_TIMEOUT,
   });
-}
+  const floor = yield* (yield* FloorStore).load(target.projectId);
+  const result = yield* mirrorSyncOp({
+    source: source.client,
+    mirror: target.mirror.client,
+    pages,
+    projectId: target.projectId,
+    sourceOrigin: source.origin,
+    mirrorOrigin: target.mirrorOrigin,
+    ...(flags.force === true ? { force: true } : {}),
+    floorHead: floor.floor?.chainHead ?? null,
+    verified: verifiedViewOf(source, target.projectId),
+  });
+  for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
+    yield* io.log(line);
+  }
+  // A replica behind the view taken before the export, past the one
+  // taken after the commit, or off either's chain is evidence against
+  // the server, reported above; the sync fails so a cron notices (ruling
+  // H revision, rounds 8 and 9)
+  const verdict =
+    result.kind === "replicated"
+      ? replicaVerdict(result.committed, result.viewBefore, result.verified)
+      : null;
+  if (verdict !== null) {
+    return yield* Effect.fail(
+      cliError(
+        `The replica ${target.mirrorOrigin} now holds is ${verdict} — against ${source.origin} and against the mirror`,
+      ),
+    );
+  }
+});
 
 /**
  * `maruhi mirror status`: the server's verified head and the mirror's,
@@ -181,57 +171,55 @@ function mirrorSyncCommand(flags: {
  * mirror's head alone on the report (announced), any other failure of the
  * server side fails as usual.
  */
-function mirrorStatusCommand(flags: {
+const mirrorStatusCommand = Effect.fn("commands-mirror.mirrorStatusCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const target = yield* openMirrorTarget(flags);
-    const status = yield* mirrorStatusOp({
-      client: target.mirror.client,
-      projectId: target.projectId,
-    });
-    const verified = yield* verifiedServerView(flags.server, target.projectId).pipe(
-      Effect.map((view) => view.verified),
-      Effect.catch((error: CliError) =>
-        error.unreachable === true
-          ? Effect.gen(function* () {
-              yield* io.logError(`${error.message}. Reporting the mirror's head alone`);
-              return null;
-            })
-          : Effect.fail(error),
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const target = yield* openMirrorTarget(flags);
+  const status = yield* mirrorStatusOp({
+    client: target.mirror.client,
+    projectId: target.projectId,
+  });
+  const verified = yield* verifiedServerView(flags.server, target.projectId).pipe(
+    Effect.map((view) => view.verified),
+    Effect.catch((error: CliError) =>
+      error.unreachable === true
+        ? Effect.gen(function* () {
+            yield* io.logError(`${error.message}. Reporting the mirror's head alone`);
+            return null;
+          })
+        : Effect.fail(error),
+    ),
+  );
+  for (const line of describeMirrorStatus(status, verified, target.mirrorOrigin)) {
+    yield* io.log(line);
+  }
+  // Fork evidence fails the status as it fails the sync (round 11): a
+  // cron or a member's "is my mirror usable" must not read it as fine
+  const evidence = verified === null ? null : statusEvidence(status, verified);
+  if (evidence !== null) {
+    // A recorded source that is this server under another hostname is
+    // this server (the fingerprints decide, on the failing path only — round 13)
+    const recordedElsewhere =
+      status.mirror &&
+      status.sourceOrigin !== undefined &&
+      status.sourceOrigin !== target.serverOrigin &&
+      !(yield* sameDeployment(status.sourceOrigin, target.serverOrigin));
+    return yield* Effect.fail(
+      evidenceError(
+        statusEvidenceText(
+          status,
+          target.mirrorOrigin,
+          target.serverOrigin,
+          evidence,
+          recordedElsewhere,
+        ),
       ),
     );
-    for (const line of describeMirrorStatus(status, verified, target.mirrorOrigin)) {
-      yield* io.log(line);
-    }
-    // Fork evidence fails the status as it fails the sync (round 11): a
-    // cron or a member's "is my mirror usable" must not read it as fine
-    const evidence = verified === null ? null : statusEvidence(status, verified);
-    if (evidence !== null) {
-      // A recorded source that is this server under another hostname is
-      // this server (the fingerprints decide, on the failing path only — round 13)
-      const recordedElsewhere =
-        status.mirror &&
-        status.sourceOrigin !== undefined &&
-        status.sourceOrigin !== target.serverOrigin &&
-        !(yield* sameDeployment(status.sourceOrigin, target.serverOrigin));
-      return yield* Effect.fail(
-        evidenceError(
-          statusEvidenceText(
-            status,
-            target.mirrorOrigin,
-            target.serverOrigin,
-            evidence,
-            recordedElsewhere,
-          ),
-        ),
-      );
-    }
-  });
-}
+  }
+});
 
 /**
  * The status's fork evidence attributed to the state it was seen in (round

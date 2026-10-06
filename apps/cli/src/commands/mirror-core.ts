@@ -29,15 +29,15 @@ export function sameDeployment(a: string, b: string): Effect.Effect<boolean, nev
 }
 
 /** The server key fingerprint a deployment publishes (null = none, or no answer within the probe's bound). */
-function deploymentFingerprint(origin: string): Effect.Effect<string | null, never, CliServices> {
-  return Effect.gen(function* () {
-    const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
-    return yield* client.auth.authConfig({}).pipe(
-      Effect.map((config) => config.serverKeyFingerprintHex ?? null),
-      Effect.orElseSucceed(() => null),
-    );
-  });
-}
+const deploymentFingerprint = Effect.fn("commands-mirror-core.deploymentFingerprint")(function* (
+  origin: string,
+): Effect.fn.Return<string | null, never, CliServices> {
+  const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
+  return yield* client.auth.authConfig({}).pipe(
+    Effect.map((config) => config.serverKeyFingerprintHex ?? null),
+    Effect.orElseSucceed(() => null),
+  );
+});
 
 /** How long the promotion waits for the source to answer its probe (a black-holed source must not hold a failover). */
 export const PROMOTE_PROBE_TIMEOUT = Duration.seconds(10);

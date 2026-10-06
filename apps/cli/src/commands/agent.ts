@@ -40,8 +40,10 @@ export function makeAgentCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const agent = Command.make("agent", agentConfig, (values) =>
-    Effect.gen(function* () {
+  const agent = Command.make(
+    "agent",
+    agentConfig,
+    Effect.fn("commands-agent.agent")(function* (values) {
       // A path with neither communication nor keys, but the `--` discipline is the same as run's (a misspelling drops first)
       const command = yield* commandAfterTerminator(values.command);
       const keyTtl =

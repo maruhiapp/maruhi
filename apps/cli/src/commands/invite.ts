@@ -83,54 +83,51 @@ export const inviteRevokeConfig = {
 };
 
 /** `maruhi invite create --role <r> [--env <id>]… [--github <login>]` (§15-2 issuance + §15-3 link assembly). */
-function inviteCreateCommand(
+const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
     readonly env: readonly string[];
     readonly noEnvs: boolean;
     readonly github?: string | undefined;
   },
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    if (!isInviteRole(flags.role)) {
-      return yield* Effect.fail(
-        usageError(
-          `Specify --role (${INVITE_ROLES.join(" | ")} — owner cannot be granted via an invite. AUTH_SPEC §15-1)`,
-        ),
-      );
-    }
-    // scope: `--env` repetition = listed (ascending, duplicates refused),
-    // `--no-envs` = listed{}, omitted = all (ruling K — no `--all-envs`)
-    const scope =
-      (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ??
-      ALL_SCOPE;
-    const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
-    const identityBacking = yield* loadIdentityBacking;
-    // The issuance signature (CRYPTO_SPEC §6.5) is made with the inviter's chain sig key = requires the master key
-    const context = yield* openProject({ server: flags.server, project: flags.project });
-    // The link's `il` (§15-3): a display snapshot of my GitHub login
-    // (/auth/me). Unfetchable still lets the issuance succeed (the
-    // acceptor just falls back to the ceremony)
-    const inviterLogin =
-      identityBacking === "none"
-        ? null
-        : yield* context.client.auth.me({}).pipe(
-            Effect.map((me) => me.providerLogin ?? null),
-            Effect.orElseSucceed(() => null),
-          );
-    yield* inviteCreateOp({
-      client: context.client,
-      verified: context.verified,
-      origin: context.origin,
-      role: flags.role,
-      scope,
-      sessionUserId: context.session.userId,
-      masterKeys: context.masterKeys,
-      expectedGithubLogin,
-      inviterLogin,
-    });
+): Effect.fn.Return<void, CliError, CliServices> {
+  if (!isInviteRole(flags.role)) {
+    return yield* Effect.fail(
+      usageError(
+        `Specify --role (${INVITE_ROLES.join(" | ")} — owner cannot be granted via an invite. AUTH_SPEC §15-1)`,
+      ),
+    );
+  }
+  // scope: `--env` repetition = listed (ascending, duplicates refused),
+  // `--no-envs` = listed{}, omitted = all (ruling K — no `--all-envs`)
+  const scope =
+    (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ?? ALL_SCOPE;
+  const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
+  const identityBacking = yield* loadIdentityBacking;
+  // The issuance signature (CRYPTO_SPEC §6.5) is made with the inviter's chain sig key = requires the master key
+  const context = yield* openProject({ server: flags.server, project: flags.project });
+  // The link's `il` (§15-3): a display snapshot of my GitHub login
+  // (/auth/me). Unfetchable still lets the issuance succeed (the
+  // acceptor just falls back to the ceremony)
+  const inviterLogin =
+    identityBacking === "none"
+      ? null
+      : yield* context.client.auth.me({}).pipe(
+          Effect.map((me) => me.providerLogin ?? null),
+          Effect.orElseSucceed(() => null),
+        );
+  yield* inviteCreateOp({
+    client: context.client,
+    verified: context.verified,
+    origin: context.origin,
+    role: flags.role,
+    scope,
+    sessionUserId: context.session.userId,
+    masterKeys: context.masterKeys,
+    expectedGithubLogin,
+    inviterLogin,
   });
-}
+});
 
 /** An `invite accept` input-rejection reason → the usage wording. */
 function acceptInputRejectionMessage(reason: InviteInputRejection): string {
@@ -160,56 +157,54 @@ function resolveAcceptLink(
 }
 
 /** `maruhi invite accept <link>` (§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5). */
-function inviteAcceptCommand(flags: {
+const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly target: Redacted.Redacted<string>;
   readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const link = yield* resolveAcceptLink(flags.target);
-    const expectedFromLogin = yield* parseGithubLoginFlag("--from", flags.from);
-    const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
-      "--inviter-fingerprint",
-      flags.inviterFingerprint,
-    );
-    const context = yield* openSession(flags.server);
-    const identityBacking = identityBackingOf(context.config);
-    yield* inviteAcceptOp({
-      client: context.client,
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const link = yield* resolveAcceptLink(flags.target);
+  const expectedFromLogin = yield* parseGithubLoginFlag("--from", flags.from);
+  const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
+    "--inviter-fingerprint",
+    flags.inviterFingerprint,
+  );
+  const context = yield* openSession(flags.server);
+  const identityBacking = identityBackingOf(context.config);
+  yield* inviteAcceptOp({
+    client: context.client,
+    session: context.session,
+    link,
+    expectInviterFingerprintHex,
+    expectedFromLogin,
+    identityBacking,
+    keyGenerate: keyGenerateOp({
       session: context.session,
-      link,
-      expectInviterFingerprintHex,
-      expectedFromLogin,
+      client: context.client,
       identityBacking,
-      keyGenerate: keyGenerateOp({
-        session: context.session,
-        client: context.client,
-        identityBacking,
-        newIdentity: false,
-      }),
-    });
+      newIdentity: false,
+    }),
   });
-}
+});
 
 /** `maruhi invite list` (§6.5 independent verification of the acceptance blocks + the issuance-pin cross-check). */
-function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const context = yield* openMetadataProject(flags);
-    const store = yield* PinStore;
-    const loaded = yield* store.load(context.projectId);
-    const summary = yield* inviteListOp({
-      client: context.client,
-      verified: context.verified,
-      pins: loaded.pins,
-      nowMs: yield* Clock.currentTimeMillis,
-    });
-    // A signature-verification failure or a pin mismatch is not "a
-    // successful read" but a detection of evidence — never 0 (a script can
-    // use it as a health check)
-    return summary.integrityFailures > 0 ? 1 : 0;
+const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(function* (
+  flags: CommonFlags,
+): Effect.fn.Return<number, CliError, CliServices> {
+  const context = yield* openMetadataProject(flags);
+  const store = yield* PinStore;
+  const loaded = yield* store.load(context.projectId);
+  const summary = yield* inviteListOp({
+    client: context.client,
+    verified: context.verified,
+    pins: loaded.pins,
+    nowMs: yield* Clock.currentTimeMillis,
   });
-}
+  // A signature-verification failure or a pin mismatch is not "a
+  // successful read" but a detection of evidence — never 0 (a script can
+  // use it as a health check)
+  return summary.integrityFailures > 0 ? 1 : 0;
+});
 
 export function makeInviteCommands(onExitCode: (code: number) => void) {
   const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
@@ -232,8 +227,10 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(Command.withDescription("Accept an invite link"));
 
-  const inviteList = Command.make("list", inviteListConfig, (values) =>
-    Effect.gen(function* () {
+  const inviteList = Command.make(
+    "list",
+    inviteListConfig,
+    Effect.fn("commands-invite.inviteList")(function* (values) {
       onExitCode(yield* inviteListCommand(values));
     }),
   ).pipe(
@@ -242,8 +239,10 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const inviteRevoke = Command.make("revoke", inviteRevokeConfig, (values) =>
-    Effect.gen(function* () {
+  const inviteRevoke = Command.make(
+    "revoke",
+    inviteRevokeConfig,
+    Effect.fn("commands-invite.inviteRevoke")(function* (values) {
       const context = yield* openMetadataProject(values);
       yield* inviteRevokeOp({
         client: context.client,

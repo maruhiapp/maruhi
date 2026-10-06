@@ -138,50 +138,48 @@ function checkPreviousFlag(values: {
 }
 
 /** `maruhi var rotate <name> --finalize`: invalidates the previous credential and reports. */
-function runVarFinalize(
+const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
   input: Parameters<typeof varFinalizeOp>[0],
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const result = yield* varFinalizeOp(input);
-    yield* logRotationWarnings(result.warnings);
-    for (const line of describeFinalization(result, input.context.environmentId)) {
-      yield* io.log(line);
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const result = yield* varFinalizeOp(input);
+  yield* logRotationWarnings(result.warnings);
+  for (const line of describeFinalization(result, input.context.environmentId)) {
+    yield* io.log(line);
+  }
+});
 
 /** `maruhi var rotate <name>`: the rotation, its report, the checkpoint proposal, and the onPush sync. */
-function runVarRotate(
+const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
   input: Parameters<typeof varRotateOp>[0],
   syncSetup: PushSyncSetup | null,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { context } = input;
-    const syncDecision =
-      syncSetup === null
-        ? null
-        : yield* decidePushSync(syncSetup, {
-            projectId: context.projectId,
-            environmentId: context.environmentId,
-            name: input.name,
-          });
-    const result = yield* varRotateOp(input);
-    yield* logRotationWarnings(result.warnings);
-    for (const line of describeRotation(result, context.environmentId)) {
-      yield* io.log(line);
-    }
-    yield* proposeCheckpointRefresh(context, { includeAnchor: true });
-    if (syncSetup !== null && syncDecision !== null) {
-      yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const { context } = input;
+  const syncDecision =
+    syncSetup === null
+      ? null
+      : yield* decidePushSync(syncSetup, {
+          projectId: context.projectId,
+          environmentId: context.environmentId,
+          name: input.name,
+        });
+  const result = yield* varRotateOp(input);
+  yield* logRotationWarnings(result.warnings);
+  for (const line of describeRotation(result, context.environmentId)) {
+    yield* io.log(line);
+  }
+  yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+  if (syncSetup !== null && syncDecision !== null) {
+    yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
+  }
+});
 
 export function makeVarCommands() {
-  const varRm = Command.make("rm", varRmConfig, (values) =>
-    Effect.gen(function* () {
+  const varRm = Command.make(
+    "rm",
+    varRmConfig,
+    Effect.fn("commands-var.varRm")(function* (values) {
       const io = yield* CliIo;
       const context = yield* openEnvironment(values);
       const summary = yield* varRmOp({
@@ -210,8 +208,10 @@ export function makeVarCommands() {
     ),
   );
 
-  const varHistory = Command.make("history", varHistoryConfig, (values) =>
-    Effect.gen(function* () {
+  const varHistory = Command.make(
+    "history",
+    varHistoryConfig,
+    Effect.fn("commands-var.varHistory")(function* (values) {
       const io = yield* CliIo;
       // Metadata only (§12-7): keyless, scope-agnostic, no value is read —
       // the agent gate does not apply (zero values — the permissive side)
@@ -239,8 +239,10 @@ export function makeVarCommands() {
     ),
   );
 
-  const varRollback = Command.make("rollback", varRollbackConfig, (values) =>
-    Effect.gen(function* () {
+  const varRollback = Command.make(
+    "rollback",
+    varRollbackConfig,
+    Effect.fn("commands-var.varRollback")(function* (values) {
       const io = yield* CliIo;
       const toVersion = values.to;
       if (toVersion === undefined || toVersion < 1) {
@@ -297,8 +299,10 @@ export function makeVarCommands() {
     ),
   );
 
-  const varRotate = Command.make("rotate", varRotateConfig, (values) =>
-    Effect.gen(function* () {
+  const varRotate = Command.make(
+    "rotate",
+    varRotateConfig,
+    Effect.fn("commands-var.varRotate")(function* (values) {
       yield* checkPreviousFlag(values);
       // Both configs are read before any network: a broken or absent rotation
       // config is a usage problem, not something to find after a pull

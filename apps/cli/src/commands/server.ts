@@ -95,21 +95,19 @@ interface GrantKeySource {
  * server itself). The endpoint is unauthenticated, so a tokenless client
  * reads it; naming the server itself is the default spelled out.
  */
-function grantKeySource(
+const grantKeySource = Effect.fn("commands-server.grantKeySource")(function* (
   keyOrigin: string | null,
   serverOrigin: string,
-): Effect.Effect<GrantKeySource | null, CliError, CliServices> {
-  return Effect.gen(function* () {
-    if (keyOrigin === null) {
-      return null;
-    }
-    if (keyOrigin === serverOrigin) {
-      yield* logNote("--key-from names the server itself; granting its own key");
-      return null;
-    }
-    return { origin: keyOrigin, client: yield* makeApiClient({ baseUrl: keyOrigin }) };
-  });
-}
+): Effect.fn.Return<GrantKeySource | null, CliError, CliServices> {
+  if (keyOrigin === null) {
+    return null;
+  }
+  if (keyOrigin === serverOrigin) {
+    yield* logNote("--key-from names the server itself; granting its own key");
+    return null;
+  }
+  return { origin: keyOrigin, client: yield* makeApiClient({ baseUrl: keyOrigin }) };
+});
 
 /** After a grant of another deployment's key: how the grant reaches it. */
 function noteGrantKeySource(keySource: GrantKeySource | null) {
@@ -120,7 +118,7 @@ function noteGrantKeySource(keySource: GrantKeySource | null) {
       );
 }
 
-function serverGrantCommand(
+const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(function* (
   flags: CommonFlags & {
     readonly environments?: string | undefined;
     readonly leasePolicyPath?: string | undefined;
@@ -128,104 +126,100 @@ function serverGrantCommand(
     readonly expires?: string | undefined;
     readonly keyFrom?: string | undefined;
   },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
-    const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
-    const expectFingerprintHex = yield* parseFingerprintFlag(
-      "--expect-fingerprint",
-      flags.expectFingerprint,
-    );
-    const proposal = yield* proposalInputOf(flags.expires);
-    // The key of another deployment (a mirror — AUTH_SPEC §11-7 ruling F);
-    // the URL's format check precedes any network
-    const keyOrigin =
-      flags.keyFrom === undefined
-        ? null
-        : yield* normalizeHttpOrigin(flags.keyFrom, "the --key-from URL");
-    const context = yield* openProject(flags);
-    const keySource = yield* grantKeySource(keyOrigin, context.origin);
-    const outcome = yield* serverGrantOp({
-      client: context.client,
-      ...(keySource === null ? {} : { keySource: keySource.client }),
-      verified: context.verified,
-      environmentIds,
-      leasePolicy,
-      expectFingerprintHex,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      recipient: context.recipient,
-      resync: context.resync,
-      proposal,
-    });
-    if (outcome.kind === "proposed") {
-      return yield* reportProposed(io, outcome.proposal);
-    }
-    const summary = outcome.summary;
-    const policyNote =
-      summary.leasePolicyCount === 0
-        ? "no lease path (lease_policy is empty)"
-        : `lease_policy has ${countNoun(summary.leasePolicyCount, "element")}`;
-    const keyNote = keySource === null ? "" : ` (the key of ${keySource.origin})`;
-    yield* io.log(
-      `Done: disclosure to server key ${summary.serverKeyFingerprintHex}${keyNote} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
-    );
-    yield* noteGrantKeySource(keySource);
-    // §9: always indicate that it is being disclosed (the revocation path is also guided on the spot)
-    yield* logNote(
-      "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
-    );
-    return 0;
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
+  const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
+  const expectFingerprintHex = yield* parseFingerprintFlag(
+    "--expect-fingerprint",
+    flags.expectFingerprint,
+  );
+  const proposal = yield* proposalInputOf(flags.expires);
+  // The key of another deployment (a mirror — AUTH_SPEC §11-7 ruling F);
+  // the URL's format check precedes any network
+  const keyOrigin =
+    flags.keyFrom === undefined
+      ? null
+      : yield* normalizeHttpOrigin(flags.keyFrom, "the --key-from URL");
+  const context = yield* openProject(flags);
+  const keySource = yield* grantKeySource(keyOrigin, context.origin);
+  const outcome = yield* serverGrantOp({
+    client: context.client,
+    ...(keySource === null ? {} : { keySource: keySource.client }),
+    verified: context.verified,
+    environmentIds,
+    leasePolicy,
+    expectFingerprintHex,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    recipient: context.recipient,
+    resync: context.resync,
+    proposal,
   });
-}
+  if (outcome.kind === "proposed") {
+    return yield* reportProposed(io, outcome.proposal);
+  }
+  const summary = outcome.summary;
+  const policyNote =
+    summary.leasePolicyCount === 0
+      ? "no lease path (lease_policy is empty)"
+      : `lease_policy has ${countNoun(summary.leasePolicyCount, "element")}`;
+  const keyNote = keySource === null ? "" : ` (the key of ${keySource.origin})`;
+  yield* io.log(
+    `Done: disclosure to server key ${summary.serverKeyFingerprintHex}${keyNote} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
+  );
+  yield* noteGrantKeySource(keySource);
+  // §9: always indicate that it is being disclosed (the revocation path is also guided on the spot)
+  yield* logNote(
+    "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
+  );
+  return 0;
+});
 
 /** `maruhi server revoke [--fingerprint <hex>]` (§7 / §9). */
-function serverRevokeCommand(
+const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(function* (
   flags: CommonFlags & {
     readonly fingerprint?: string | undefined;
     readonly expires?: string | undefined;
   },
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
-    const proposal = yield* proposalInputOf(flags.expires);
-    // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
-    const context = yield* openProject(flags, { quietMandateWarning: true });
-    // One environment's rotation (reusing envRotateOp — sweepRotateFor)
-    const outcome = yield* serverRevokeOp({
-      client: context.client,
-      verified: context.verified,
-      fingerprintHex,
-      signerUserId: context.session.userId,
-      signingKeyPair: context.masterKeys.sigKeyPair,
-      resync: context.resync,
-      rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
-      proposal,
-    });
-    if (outcome.kind === "proposed") {
-      return yield* reportProposed(io, outcome.proposal);
-    }
-    const summary = outcome.summary;
-    yield* reportRevokeAppend(io, summary);
-    const exitCode = yield* reportSweepOutcome(summary, {
-      rerunCommand: "`maruhi server revoke`",
-      alreadyRotatedBasis: "the revocation",
-    });
-    if (exitCode === 0) {
-      yield* io.log("Done: the revocation and the rotation of every environment completed");
-    }
-    // The needs-rotation-flag count and route (the revoke variant of AUDIT_SPEC §4.1)
-    if (summary.serverKeyFingerprintHex !== null) {
-      yield* reportRotationChecklist({
-        context,
-        target: { kind: "server", fingerprintHex: summary.serverKeyFingerprintHex },
-      });
-    }
-    return exitCode;
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
+  const proposal = yield* proposalInputOf(flags.expires);
+  // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
+  const context = yield* openProject(flags, { quietMandateWarning: true });
+  // One environment's rotation (reusing envRotateOp — sweepRotateFor)
+  const outcome = yield* serverRevokeOp({
+    client: context.client,
+    verified: context.verified,
+    fingerprintHex,
+    signerUserId: context.session.userId,
+    signingKeyPair: context.masterKeys.sigKeyPair,
+    resync: context.resync,
+    rotate: sweepRotateFor(context, REVOKE_ROTATION_REASON),
+    proposal,
   });
-}
+  if (outcome.kind === "proposed") {
+    return yield* reportProposed(io, outcome.proposal);
+  }
+  const summary = outcome.summary;
+  yield* reportRevokeAppend(io, summary);
+  const exitCode = yield* reportSweepOutcome(summary, {
+    rerunCommand: "`maruhi server revoke`",
+    alreadyRotatedBasis: "the revocation",
+  });
+  if (exitCode === 0) {
+    yield* io.log("Done: the revocation and the rotation of every environment completed");
+  }
+  // The needs-rotation-flag count and route (the revoke variant of AUDIT_SPEC §4.1)
+  if (summary.serverKeyFingerprintHex !== null) {
+    yield* reportRotationChecklist({
+      context,
+      target: { kind: "server", fingerprintHex: summary.serverKeyFingerprintHex },
+    });
+  }
+  return exitCode;
+});
 
 /** Reporting revoke's append result (the sweep's shared part is carried by reportSweepOutcome). */
 function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effect<void, CliError> {
@@ -248,8 +242,10 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
 }
 
 export function makeServerCommands(onExitCode: (code: number) => void) {
-  const serverGrant = Command.make("grant", serverGrantConfig, (values) =>
-    Effect.gen(function* () {
+  const serverGrant = Command.make(
+    "grant",
+    serverGrantConfig,
+    Effect.fn("commands-server.serverGrant")(function* (values) {
       onExitCode(
         yield* serverGrantCommand({
           server: values.server,
@@ -268,8 +264,10 @@ export function makeServerCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  const serverRevoke = Command.make("revoke", serverRevokeConfig, (values) =>
-    Effect.gen(function* () {
+  const serverRevoke = Command.make(
+    "revoke",
+    serverRevokeConfig,
+    Effect.fn("commands-server.serverRevoke")(function* (values) {
       onExitCode(
         yield* serverRevokeCommand({
           server: values.server,

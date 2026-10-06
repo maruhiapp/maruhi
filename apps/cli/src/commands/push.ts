@@ -45,8 +45,10 @@ export const pushConfig = {
 };
 
 export function makePushCommand() {
-  const push = Command.make("push", pushConfig, (values) =>
-    Effect.gen(function* () {
+  const push = Command.make(
+    "push",
+    pushConfig,
+    Effect.fn("commands-push.push")(function* (values) {
       const io = yield* CliIo;
       // The sync config is read **before any network**: detecting a broken
       // file or an explicitly-given other project's config is never placed
