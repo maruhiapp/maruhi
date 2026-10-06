@@ -49,7 +49,6 @@ export interface MetaEnvironmentServerInput {
   readonly initialTombstones?: readonly WireDistributedVariableStatement[];
   /** Self-addressed DEK wrap (needed for activation's value push; omitted = deks not wired). */
   readonly wrap?: WireRecipientDek;
-  readonly schemaPolicy?: "disabled" | "enabled" | "locked";
   /** Accepts removals (DELETE) without advancing state (reproduces the 1-E′ failure path). */
   readonly ignoreRemovals?: boolean;
   /** Accepts environment renames / deletions without advancing state (the 1-E′ failure path). */
@@ -141,7 +140,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           variables: state.variables,
           deletedVariables: state.tombstones,
           manifest,
-          schemaPolicy: input.schemaPolicy ?? "enabled",
+          schemaPolicy: "enabled" as const,
         },
       };
     },

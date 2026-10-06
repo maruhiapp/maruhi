@@ -493,7 +493,7 @@ export async function activateVariableRequest(input: {
 
 /** Set schemaPolicy (PUT — §12-11. The default actor is OWNER = chain role owner). */
 export async function setSchemaPolicyOk(
-  policy: "disabled" | "enabled" | "locked",
+  policy: "enabled" | "locked",
   actorUserId = OWNER,
 ): Promise<void> {
   const response = await requestJson("PUT", "/schema-policy", token(actorUserId), {

@@ -605,7 +605,7 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "epoch-conflict": { kind: "epoch-conflict", currentEpoch: 2 },
     "value-rejected": { kind: "value-rejected", reason: "signature-invalid" },
     "meta-rejected": { kind: "meta-rejected", reason: "signature-invalid" },
-    "schema-policy-rejected": { kind: "schema-policy-rejected", reason: "schema-policy-disabled" },
+    "schema-policy-rejected": { kind: "schema-policy-rejected", reason: "schema-required" },
     "activation-required": { kind: "activation-required", variableId: "var-contract" },
     "description-rejected": { kind: "description-rejected", reason: "too-long" },
     "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },

@@ -259,7 +259,7 @@ describe("environment management (the §12-4 composite request)", () => {
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
     // Nothing was written (atomicity: a CAS failure leaves no trace on chain or data)
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "enabled" });
 
     // The retried positive case passes the wrapped DEK's own commitment
     const retried = await createEnvironmentComposite(fixture, {
@@ -446,7 +446,7 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("recipient-missing");
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "enabled" });
     // Composite atomicity (§12-4): a composite that failed the wrap
     // check appends no chain entry either (no "commitment exists but
     // wraps do not" intermediate state)

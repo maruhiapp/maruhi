@@ -123,7 +123,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["authCli", "cliApprove"],
       ["deks", "remove"],
       ["rotation", "dismiss"],
-      // schemaPolicy's PUT (§12-11 — a 3-value Literal carrying no signed structure)
+      // schemaPolicy's PUT (§12-11 — a 2-value Literal carrying no signed structure)
       ["schemaPolicy", "set"],
       // handoff request (§13-7 — KL3): request_id only
       ["keyWraps", "handoffCreate"],
