@@ -92,10 +92,20 @@ jobs:
       #     @astryxdesign/build > fast-glob > micromatch — lint and build time
       #     only, over the repository's own glob patterns. No published fix
       #     at the time of the ignore (2026-10-03); `bun audit fix` finds none
-      #   GHSA-ch52-4w7c-c8xp: http-cache-semantics@4.2.0 (max-stale handling
-      #     of cached responses) via blume > @scalar/astro > astro — the docs
-      #     site's build-time asset fetching, no served cache. No published
-      #     fix at the time of the ignore (2026-10-03)
+      #   GHSA-238p-pmpm-9mq7: katex@0.16.47 (prototype pollution bypassing
+      #     trust restrictions; low) via blume > mermaid, which pins
+      #     katex@^0.16.47 — the docs site renders only the repository's own
+      #     Markdown at build time and deploys static assets only
+      #     (apps/site/cloudflare.config.ts has no worker script)
+      #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
+      #     selector parsing) via blume > @tailwindcss/typography, which pins
+      #     6.0.10 — build-time CSS over the repository's own stylesheets
+      #   GHSA-hp3w-g68c-fv3c: sprintf-js@1.0.3 (unbounded precision
+      #     specifiers) via blume > astro > js-yaml > argparse — build-time
+      #     argument parsing only. No published fix at the time of the ignore
+      #     (2026-10-06)
+      # Removed as stale (2026-10-06): the http-cache-semantics@4.2.0 ignore
+      # (GHSA-ch52-4w7c-c8xp) — every copy is 4.3.0 since `bun audit fix`.
       # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
       # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — image-size left the tree
       # with a Blume update) and the sharp@0.35.2 ignore (GHSA-rgj7-g3m4-5g8c —
@@ -107,7 +117,9 @@ jobs:
           bun audit
           --ignore GHSA-9wv6-86v2-598j
           --ignore GHSA-vfj7-8cjw-p6xm
-          --ignore GHSA-ch52-4w7c-c8xp
+          --ignore GHSA-238p-pmpm-9mq7
+          --ignore GHSA-rj75-hqrm-r3gf
+          --ignore GHSA-hp3w-g68c-fv3c
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
