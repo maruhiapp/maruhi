@@ -438,6 +438,21 @@ describe("maruhi env rm", () => {
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(1);
   });
 
+  it("renders a name payload-mismatch as a statement refusal, not an AAD mismatch", async () => {
+    const { env, requests } = await startEnv({
+      before: () => [
+        conflictOnce("DELETE", { status: 422, json: { _tag: "PayloadMismatch", field: "name" } }),
+      ],
+    });
+    expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "The server refused the deletion statement: its name does not match environment dev's current state",
+    );
+    expect(errors).not.toContain("declared AAD");
+    expect(environmentCalls(requests(), "DELETE")).toHaveLength(1);
+  });
+
   it("fails when the 2xx is not reflected in the verified environment list (1-E′)", async () => {
     const { env } = await startEnv({ ignoreEnvironmentMutations: true });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);

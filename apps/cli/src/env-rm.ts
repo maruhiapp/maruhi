@@ -26,6 +26,7 @@
 // lost response is settled by re-running, which finds the verified
 // tombstone and reports the environment as already deleted.
 
+import { PayloadMismatchError } from "@maruhi/api-schema";
 import { Effect, Stdio } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -167,6 +168,24 @@ const attemptDeletion = Effect.fn("env-rm.attemptDeletion")(function* (
 });
 
 /**
+ * The deletion refusal the generic rendering would misdescribe:
+ * payload-mismatch here is about the statement, not a value's AAD — the
+ * server stores a different active name than the one signed (§4.2 — the
+ * name check precedes the metaVersion CAS, so a concurrent rename lands
+ * here rather than as a 409).
+ */
+function deletionRefusal(
+  input: EnvironmentMetaInput,
+  error: DeletionAttemptError,
+): CliError | null {
+  return error instanceof PayloadMismatchError
+    ? cliError(
+        `The server refused the deletion statement: its ${displayText(error.field)} does not match environment ${input.environmentId}'s current state (payload-mismatch — a deletion must keep the last active name). The environment may have been renamed concurrently — re-run \`maruhi env rm\` to sign over the refreshed state`,
+      )
+    : null;
+}
+
+/**
  * Effect confirmation (1-E′ — §12-10 (3)): the environment list must
  * distribute a verified deletion statement at or past the issued one.
  */
@@ -214,7 +233,10 @@ export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
   yield* ensureDeletionConfirmed(input, initial);
   const accepted = yield* retryOnConflict(initial, {
     maxAttempts: MAX_ATTEMPTS,
-    attempt: (state) => attemptDeletion(input, state),
+    attempt: (state) =>
+      attemptDeletion(input, state).pipe(
+        Effect.mapError((error) => deletionRefusal(input, error) ?? error),
+      ),
     classify: (error) => (isEnvironmentMetaConflict(error) ? "re-resolve" : null),
     // A concurrent meta operation (a rename) re-resolves: refetch → verify
     // → re-sign with the then-current name (§12-5). Losing to a concurrent
