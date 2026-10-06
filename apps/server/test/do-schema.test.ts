@@ -24,6 +24,7 @@ import {
   ensureProjectDoTables,
   PROJECT_DO_LATEST_SCHEMA_VERSION,
   PROJECT_DO_LOCAL_TABLES,
+  PROJECT_DO_MIGRATIONS,
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
@@ -67,8 +68,15 @@ function canonSql(sql: unknown): string | null {
   return String(sql).replaceAll('"', "").replace(/\s+/g, "");
 }
 
+interface SchemaObject {
+  type: string;
+  name: string;
+  tblName: string;
+  sql: string | null;
+}
+
 /** The schema objects in sqlite_master rowid order (creation order), the pinned shape. */
-function schemaObjects(sql: SqlStorage): unknown[] {
+function schemaObjects(sql: SqlStorage): SchemaObject[] {
   return sql
     .exec(
       `SELECT type, name, tbl_name, sql FROM sqlite_master
@@ -83,6 +91,10 @@ function schemaObjects(sql: SqlStorage): unknown[] {
       sql: canonSql(row["sql"]),
     }));
 }
+
+/** The audit write trigger is derived schema: its text embeds READ_PATH_AUDIT_EVENTS and ensureAuditWriteTrigger rewrites it when the list changes — mask its sql so the v9 pin does not break on a routine list change (export.test.ts pins the text itself). */
+const stripDerivedSql = (object: SchemaObject): SchemaObject =>
+  object.name === "mutation_audit_events_write" ? { ...object, sql: "<derived>" } : object;
 
 describe("project DO schema migrations", () => {
   it("applies the squashed base to an empty DB and records version 9", async () => {
@@ -114,13 +126,22 @@ describe("project DO schema migrations", () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
-      ensureProjectDoTables(storage);
+      // Apply only the base: the pin is the version-9 schema, and it stays a
+      // v9 pin when a later step is appended above it
+      applyProjectDoMigrations(storage, { ...PROJECT_DO_MIGRATIONS, steps: [] });
 
       // fixtures/do-schema-v9.json is the normalized dump the W4-Z3
       // differential probe generated from origin/main's steps 1-9 (the
-      // mirror_state residue column the squash drops removed). Every object
-      // — table / index / trigger, in creation order — must match
-      expect(schemaObjects(sql)).toEqual(expectedV9Schema.objects);
+      // mirror_state residue column the squash drops removed; regenerate by
+      // re-running that probe against the pre-squash do-schema.ts). Every
+      // object — table / index / trigger, in creation order — must match
+      const fresh = schemaObjects(sql);
+      expect(fresh.map(stripDerivedSql)).toEqual(
+        (expectedV9Schema.objects as readonly SchemaObject[]).map(stripDerivedSql),
+      );
+      const auditTrigger = fresh.find((object) => object.name === "mutation_audit_events_write");
+      expect(auditTrigger?.tblName).toBe("audit_events");
+      expect(auditTrigger?.sql).toContain("AFTERINSERTONaudit_events");
       for (const [table, columns] of Object.entries(expectedV9Schema.tableXinfo)) {
         expect(sql.exec(`SELECT * FROM pragma_table_xinfo('${table}')`).toArray()).toEqual(columns);
       }

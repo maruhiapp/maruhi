@@ -464,7 +464,7 @@ const PROJECT_DO_BASE_TABLES: readonly string[] = [
 // it in `tables` and creates the table's own mutation triggers in its body
 // (mutationTriggers below) — the base creates them for the tracked tables
 // it declares.
-const PROJECT_DO_MIGRATIONS: ProjectDoMigrationPlan = {
+export const PROJECT_DO_MIGRATIONS: ProjectDoMigrationPlan = {
   baseVersion: PROJECT_DO_BASE_VERSION,
   base: {
     tables: PROJECT_DO_BASE_TABLES,
