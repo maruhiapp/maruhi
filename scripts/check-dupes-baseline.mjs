@@ -15,6 +15,12 @@
 // used to name an offending entry. A fingerprint passes when the base holds
 // the same hash with at least as many occurrences (removing one copy of a
 // baselined clone is shrinking, adding one is growth).
+//
+// A refactor that trims a baselined clone without removing it changes the
+// clone's content hash. Such an in-place shrink also passes: a new entry is
+// accepted when it replaces a base entry that left the baseline, spans the
+// same files with no more copies, and is no longer per copy. Each base entry
+// covers at most one replacement.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -36,6 +42,33 @@ function baselineAt(rev) {
   return git("show", `${rev}:${BASELINE}`);
 }
 
+/** `a.ts:3-9|b.ts:4-10` → the file list and the longest copy's line count. */
+function shapeOf(group) {
+  const ranges = group.split("|").map((instance) => {
+    const match = /^(.*):(\d+)-(\d+)$/.exec(instance);
+    return match === null
+      ? null
+      : { file: match[1], lines: Number(match[3]) - Number(match[2]) + 1 };
+  });
+  if (ranges.some((range) => range === null)) return null;
+  return {
+    files: ranges.map((range) => range.file),
+    lines: Math.max(...ranges.map((range) => range.lines)),
+  };
+}
+
+/** Whether `entry` is `base` trimmed in place: same files, no more copies, no longer. */
+function shrinksInPlace(entry, base) {
+  const next = shapeOf(entry.group);
+  const previous = shapeOf(base.group);
+  if (next === null || previous === null) return false;
+  return (
+    entry.count <= base.count &&
+    next.lines <= previous.lines &&
+    next.files.every((file) => previous.files.includes(file))
+  );
+}
+
 /** Fingerprint → { hash, count, group } for one baseline file's text. */
 function entriesOf(text, label) {
   if (text === null) return [];
@@ -53,15 +86,19 @@ function entriesOf(text, label) {
 
 const mergeBase = git("merge-base", "HEAD", baseRef).trim();
 const baseText = baselineAt(mergeBase);
-const baseCounts = new Map(
-  entriesOf(baseText, `${baseRef} (${mergeBase.slice(0, 12)})`).map((entry) => [
-    entry.hash,
-    entry.count,
-  ]),
-);
-const grown = entriesOf(readFileSync(BASELINE, "utf8"), BASELINE).filter(
-  (entry) => (baseCounts.get(entry.hash) ?? 0) < entry.count,
-);
+const baseEntries = entriesOf(baseText, `${baseRef} (${mergeBase.slice(0, 12)})`);
+const baseCounts = new Map(baseEntries.map((entry) => [entry.hash, entry.count]));
+const currentEntries = entriesOf(readFileSync(BASELINE, "utf8"), BASELINE);
+const currentHashes = new Set(currentEntries.map((entry) => entry.hash));
+// Base entries that left the baseline; each may absorb one in-place shrink
+const departed = baseEntries.filter((entry) => !currentHashes.has(entry.hash));
+const grown = currentEntries.filter((entry) => {
+  if ((baseCounts.get(entry.hash) ?? 0) >= entry.count) return false;
+  const index = departed.findIndex((base) => shrinksInPlace(entry, base));
+  if (index === -1) return true;
+  departed.splice(index, 1);
+  return false;
+});
 
 if (grown.length === 0) {
   console.log(

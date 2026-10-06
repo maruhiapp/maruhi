@@ -211,6 +211,27 @@ const requireVariableWriteContext = Effect.fn("programs-variable.requireVariable
 );
 
 /**
+ * The shared prefix of the meta ops on an existing variable (activation,
+ * rename / schema reissue, delete): the write context, then the
+ * support-range check, which runs before every statement-dependent check
+ * (ruling CR — for an unsupported layout, a v3 client always gets the honest
+ * update-required rather than a misleading error from a later check).
+ */
+const requireVariableMetaOpContext = Effect.fn("programs-variable.requireVariableMetaOpContext")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    statement: MetaStatementInput,
+    cache: StateCache,
+  ) {
+    const context = yield* requireVariableWriteContext(actor, environmentId, variableId, cache);
+    yield* ensureSupportedLayout(statement);
+    return context;
+  },
+);
+
+/**
  * The shared acceptance core of rename / schema reissue and delete (§12-5):
  * the meta acceptance pipeline under the signing device (verify-meta.ts's
  * acceptMetaStatement) → the author's member permission → the composite
@@ -526,17 +547,13 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     },
     cache: StateCache,
   ) {
-    const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
+    const { state, history, member, projectId, variable } = yield* requireVariableMetaOpContext(
       actor,
       environmentId,
       variableId,
+      input.statement,
       cache,
     );
-    // The support-range check runs before every statement-dependent check
-    // (same discipline as rename / delete — to a v3 client, always return the
-    // honest update-required rather than a misleading error from the status /
-    // name guards or the value CAS below)
-    yield* ensureSupportedLayout(input.statement);
     // The DO storage total guard (§12-8): after existence and the support
     // range, before the status / name guards, CAS, and signature
     yield* ensureStorageAdmitsGrowth;
@@ -653,16 +670,13 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     manifest: EnvManifestInput,
     cache: StateCache,
   ) {
-    const { history, member, projectId, variable } = yield* requireVariableWriteContext(
+    const { history, member, projectId, variable } = yield* requireVariableMetaOpContext(
       actor,
       environmentId,
       variableId,
+      statement,
       cache,
     );
-    // The support-range check runs before every statement-dependent check
-    // (ruling CR — for an unsupported layout, never return a misleading error
-    // from a later check)
-    yield* ensureSupportedLayout(statement);
     // The DO storage total guard (§12-8): rename / schema reissue is a growth
     // surface that stacks a statement row + a manifest (applies independently
     // of the metaVersion bound). It sits after the existence and layout checks
@@ -738,15 +752,13 @@ export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariable
     manifest: EnvManifestInput,
     cache: StateCache,
   ) {
-    const { history, member, projectId, variable } = yield* requireVariableWriteContext(
+    const { history, member, projectId, variable } = yield* requireVariableMetaOpContext(
       actor,
       environmentId,
       variableId,
+      statement,
       cache,
     );
-    // The support-range check runs before every statement-dependent check
-    // (same discipline as rename)
-    yield* ensureSupportedLayout(statement);
     // A deleted statement's name preserves the previous active name (§4.2 —
     // byte-exact)
     if (statement.name !== variable.name) {

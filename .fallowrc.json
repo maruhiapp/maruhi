@@ -41,6 +41,9 @@
   // apps/site/test/unit/shims are fake vendor CLIs launched over PATH by the
   // docs recipe checks (recipes.test.ts) (the bin/ sh wrappers run them under
   // bun); never imported, so declared manually.
+  // apps/cli/scripts are release tooling that installer.yml / release.yml
+  // run directly with bun (the smoke matrix, the Homebrew formula); never
+  // imported, so declared manually.
   // apps/cli/test/support/exec-probe.ts / run-probe.ts / pipe-probe.ts /
   // proxy-probe.ts are real-process probes that live-exec / live-run /
   // live-proxy.test.ts launch
@@ -62,6 +65,7 @@
     "apps/site/vitest.unit.config.ts",
     "apps/site/test/unit/*.test.ts",
     "apps/site/test/unit/shims/*.ts",
+    "apps/cli/scripts/*.ts",
     "apps/cli/test/support/exec-probe.ts",
     "apps/cli/test/support/run-probe.ts",
     "apps/cli/test/support/pipe-probe.ts",
