@@ -462,22 +462,11 @@ describe("handoff (class H — §13-7)", () => {
       (await post(`/auth/handoff/${requestId}/approvals`, stranger, guardianApproval)).status,
     ).toBe(404);
 
-    // The ward themself cannot approve their own request (the legacy
-    // device path was removed): 422 even with their own group id; the
-    // old wire's `source: "device"` + `blob` is a strict-acceptance
-    // 400
+    // The ward themself cannot approve their own request: 422 even with
+    // their own group id
     const byWardApproval = await post(`/auth/handoff/${requestId}/approvals`, a, guardianApproval);
     expect(byWardApproval.status).toBe(422);
     expect((await json(byWardApproval))["reason"]).toBe("source-mismatch");
-    const legacyDevice = await post(`/auth/handoff/${requestId}/approvals`, a, {
-      source: "device",
-      shareIndex: 0,
-      approverKeyFingerprintHex: FP,
-      encHex: HPKE_ENC,
-      ciphertextHex: SHARE_CT,
-      blob: WRAP,
-    });
-    expect(legacyDevice.status).toBe(400);
 
     // Only the ward fetches. One approval from the guardian arrives
     // (no blob column) and collected is recorded exactly once

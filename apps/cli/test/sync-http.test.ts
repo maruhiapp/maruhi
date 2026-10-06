@@ -592,15 +592,15 @@ describe("the http presets' declarations", () => {
         }),
       ),
     ).toContain("targets.t.variables lists the token variable");
-    // A driver-less config reads as exec as-is (backward compat)
-    const legacy = base({
+    // A driver-less config takes the preset's default driver (exec)
+    const driverless = base({
       preset: "vercel",
       environment: "p",
       variables: ["A"],
       options: { environment: "production" },
     });
-    expect(typeof legacy).not.toBe("string");
-    expect(targetOf(legacy).driver.kind).toBe("exec");
+    expect(typeof driverless).not.toBe("string");
+    expect(targetOf(driverless).driver.kind).toBe("exec");
   });
 });
 

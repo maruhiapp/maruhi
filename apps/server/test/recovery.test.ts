@@ -41,7 +41,7 @@ async function putWrap(headers: Record<string, string>, ciphertextHex?: string):
 }
 
 describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
-  it("registers a blob for a device-flow token (default * × admin scope)", async () => {
+  it("registers a blob for a CLI login token (default * × admin scope)", async () => {
     const token = await cliToken(501);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(204);
