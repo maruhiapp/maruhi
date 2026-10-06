@@ -3,9 +3,10 @@
 // - Building and ES256-signing OIDC tokens (the key is the dummy in
 //   support/oidc-issuer.ts; outboundService serves the JWKS of the same key)
 // - The deployment keypair (actually derived from the SERVER_ENC_KEY_IKM
-//   binding — .dev.vars.example's dummy, injected by vitest.config.ts). Because tests check as far as "the server can really
-//   open a wrap addressed to itself", they use the real derived key, not a
-//   dummy public key
+//   binding — .dev.vars.example's dummy, injected by vitest.config.ts).
+//   Because tests check as far as "the server can really open a wrap
+//   addressed to itself", they use the real derived key, not a dummy public
+//   key
 //
 // All key material is disposable test-only dummies and is never used in real
 // environments.

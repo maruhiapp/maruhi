@@ -18,9 +18,12 @@
 //
 // A refactor that trims a baselined clone without removing it changes the
 // clone's content hash. Such an in-place shrink also passes: a new entry is
-// accepted when it replaces a base entry that left the baseline, spans the
-// same files with no more copies, and is no longer per copy. Each base entry
-// covers at most one replacement.
+// accepted when it replaces a base entry that left the baseline, keeps its
+// copies in that entry's files (per file, no more copies than before), and is
+// no longer per copy. Each base entry covers at most one replacement. The
+// check cannot tell a trim from a different clone that lands in exactly the
+// same files with no more copies and lines; such a swap passes, and review
+// catches it.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -57,15 +60,23 @@ function shapeOf(group) {
   };
 }
 
-/** Whether `entry` is `base` trimmed in place: same files, no more copies, no longer. */
+/** File → number of copies in it. */
+function copiesPerFile(files) {
+  const counts = new Map();
+  for (const file of files) counts.set(file, (counts.get(file) ?? 0) + 1);
+  return counts;
+}
+
+/** Whether `entry` is `base` trimmed in place: no file gains a copy, no copy is longer. */
 function shrinksInPlace(entry, base) {
   const next = shapeOf(entry.group);
   const previous = shapeOf(base.group);
   if (next === null || previous === null) return false;
+  const before = copiesPerFile(previous.files);
   return (
     entry.count <= base.count &&
     next.lines <= previous.lines &&
-    next.files.every((file) => previous.files.includes(file))
+    [...copiesPerFile(next.files)].every(([file, copies]) => copies <= (before.get(file) ?? 0))
   );
 }
 
