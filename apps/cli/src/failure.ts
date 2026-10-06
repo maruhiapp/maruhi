@@ -438,7 +438,9 @@ const renderers: readonly Renderer[] = [
       Schema.isSchemaError(error) && isMissingManifestIssue(error.issue),
     () => MANIFEST_SUPPRESSION_MESSAGE,
   ),
-  // The third kind of typed-client failure (with the two above, the declaration is exhausted)
+  // The third kind of typed-client failure (the first two kinds — an
+  // unreachable response and every other HttpClientError — are mapped
+  // in toCliError / above; the declaration is exhausted)
   when(Schema.isSchemaError, renderSchemaFailure),
 ];
 
