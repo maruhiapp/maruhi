@@ -1,6 +1,6 @@
 // `maruhi var` (discipline: see commands/index.ts).
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { type CliServices, openEnvironment, openMetadataEnvironment } from "../context.ts";
@@ -166,7 +166,8 @@ const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
         });
   const result = yield* varRotateOp(input);
   yield* logRotationWarnings(result.warnings);
-  for (const line of describeRotation(result, context.environmentId)) {
+  const nowMs = yield* Clock.currentTimeMillis;
+  for (const line of describeRotation(result, context.environmentId, nowMs)) {
     yield* io.log(line);
   }
   yield* proposeCheckpointRefresh(context, { includeAnchor: true });

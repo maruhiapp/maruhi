@@ -13,9 +13,6 @@ import { Effect } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 
-/** Every `_tag` literal carried by E's tagged members. */
-type TagsOf<E> = E extends { readonly _tag: infer Tag extends string } ? Tag : never;
-
 /** The members of E carrying `_tag` K (never when none do). */
 type TaggedMember<E, K extends string> = E extends { readonly _tag: K } ? E : never;
 
@@ -30,14 +27,16 @@ interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> 
   /** Message for when every attempt is exhausted on conflicts. */
   readonly exhaustedMessage: string;
   /**
-   * A failure `_tag` that bypasses classification and propagates as its
+   * A failure class that bypasses classification and propagates as its
    * own tagged error (an outer retry's signal — the unclassified path's
    * toCliError mapping would erase the distinction the caller branches
    * on). Everything else is classified or mapped, as without the option.
-   * A `_tag` E does not carry is not a compile error — it simply never
-   * matches, degrading that error to the toCliError path.
+   * Passing the class itself (not a `_tag` string) keeps the tag at a
+   * single source of truth — the class declaration — so a mistyped tag
+   * is a compile error (identifier resolution), and the propagated type
+   * still narrows to the matching member of E.
    */
-  readonly passthrough?: K;
+  readonly passthrough?: abstract new (args: any) => { readonly _tag: K };
 }
 
 /**
@@ -77,15 +76,28 @@ export const retryOnConflict = Effect.fn("retry.retryOnConflict")(function* <
       : Effect.succeed({ kind: "conflict", conflict } as const);
   };
   let state = initial;
+  const passthrough = options.passthrough;
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     const outcome = yield* options.attempt(state).pipe(
       Effect.map((value) => ({ kind: "accepted", value }) as const),
-      options.passthrough === undefined
+      passthrough === undefined
         ? Effect.catch(unclassified)
-        : // The option documents "a tag E carries"; the cast is contained
-          // inside this abstraction (catchTag's K must be provably a tag
-          // of E, while the option's K infers from the caller's literal)
-          Effect.catchTag(options.passthrough as string as TagsOf<E>, Effect.fail, unclassified),
+        : // instanceof matches catchTag semantics here: the bypassed
+          // error is always constructed through this class. The cast
+          // narrows E to its K-tagged member — E is a union of tagged
+          // classes whose K-member is the only one instanceof accepts.
+          Effect.catch(
+            (
+              error: E,
+            ): Effect.Effect<
+              | { readonly kind: "accepted"; readonly value: A }
+              | { readonly kind: "conflict"; readonly conflict: C },
+              CliError | TaggedMember<E, K>
+            > =>
+              error instanceof passthrough
+                ? Effect.fail(error as TaggedMember<E, K>)
+                : unclassified(error),
+          ),
     );
     if (outcome.kind === "accepted") {
       return outcome.value;

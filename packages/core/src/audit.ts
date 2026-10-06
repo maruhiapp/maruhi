@@ -517,9 +517,8 @@ export function auditReadPayload(variables: readonly AuditReadVariable[]): Audit
 
 /**
  * Reads the variables listed by an aggregated `var.read` payload. Returns
- * `null` when the payload is not the aggregated form — a legacy per-variable
- * `var.read` row (variableId in the column, no `variables` list) or an
- * unrelated event. Entries that are not well-formed are skipped rather than
+ * `null` when the payload is not the aggregated form — an unrelated event
+ * or a malformed payload. Entries that are not well-formed are skipped rather than
  * failing the caller (the audit log is server-managed data; a malformed entry
  * is corruption to surface, not a reason to abort rotation detection).
  */

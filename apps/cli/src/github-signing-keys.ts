@@ -39,7 +39,7 @@ const REQUEST_TIMEOUT = Duration.seconds(10);
 /** One element of GitHub's `GET /users/{login}/ssh_signing_keys` (only the fields needed). */
 const SigningKeyEntry = Schema.Struct({ key: Schema.String });
 const SigningKeysResponse = Schema.Array(SigningKeyEntry);
-const decodeSigningKeys = Schema.decodeUnknownEffect(SigningKeysResponse);
+const decodeSigningKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(SigningKeysResponse));
 
 /** The check's result (a closed type — the caller decides whether to return to the ceremony). */
 export type BackingVerdict =
@@ -142,13 +142,7 @@ export const checkSigningKeyBacking = Effect.fn("github-signing-keys.checkSignin
 const parseEntries = Effect.fn("github-signing-keys.parseEntries")(function* (
   text: string,
 ): Effect.fn.Return<readonly { readonly key: string }[] | null> {
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  return yield* decodeSigningKeys(json).pipe(
+  return yield* decodeSigningKeys(text).pipe(
     Effect.map((entries) => entries as readonly { readonly key: string }[]),
     Effect.orElseSucceed(() => null),
   );

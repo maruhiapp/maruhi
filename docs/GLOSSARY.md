@@ -2,7 +2,7 @@
 
 Authoritative vocabulary for translating Japanese comments/docs and for writing
 new text. When an established English identifier already exists in code
-(`ensureDeviceStanding`, `appendEntry`, `chainHead`), the comment's translation
+(`keyStandingIn`, `appendEntry`, `chainHead`), the comment's translation
 uses that identifier's wording rather than this table.
 
 ## Domain terms

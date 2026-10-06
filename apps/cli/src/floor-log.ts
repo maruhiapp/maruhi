@@ -31,7 +31,7 @@ import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { isProjectId } from "@maruhi/core";
-import { Data, Effect, FileSystem, type PlatformError, Predicate } from "effect";
+import { Data, Effect, FileSystem, type PlatformError, Predicate, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
@@ -52,7 +52,7 @@ import {
   type PullCommit,
   type PushCommit,
 } from "./floor.ts";
-import { isRecord } from "./json-record.ts";
+import { readJsonFile, writeJsonFileAtomic } from "./json-record.ts";
 
 /**
  * The compaction trigger: a threshold on the number of records
@@ -150,6 +150,18 @@ const mapErrorTo =
   (message: (projectId: string) => string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>, projectId: string): Effect.Effect<A, CliError, R> =>
     effect.pipe(Effect.mapError(() => cliError(message(projectId))));
+
+/**
+ * The attested-head file's shape (`{ v: 1, head }` is what is written).
+ * `v` is the format-version marker: writes always emit 1, and reads accept
+ * any or absent `v` — matching the pre-schema reader, which ignored the
+ * field entirely. `head` is decodable-checked by decodeChainHead, not the
+ * schema, so the accepted set is unchanged.
+ */
+const AttestedHeadFileSchema = Schema.Struct({
+  v: Schema.optionalKey(Schema.Unknown),
+  head: Schema.Unknown,
+});
 
 /** File-backed append-only floor store rooted at `dir` (production and tests share this). */
 export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions): FloorStoreShape {
@@ -448,7 +460,6 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     ),
     loadAttestedHead: Effect.fn("floor-log.loadAttestedHead")(
       function* (projectId) {
-        const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
           catch: () =>
@@ -456,27 +467,12 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
               `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
             ),
         });
-        const raw = yield* fs
-          .readFileString(path, "utf8")
-          .pipe(
-            Effect.catch((error) =>
-              isFileMissingError(error) ? Effect.succeed(null) : Effect.fail(error),
-            ),
-          );
-        if (raw === null) {
-          return null;
-        }
-        // Corruption becomes null (tracking the previous attestation
-        // is best-effort — the consequence of losing it is a
+        const read = yield* readJsonFile(path, AttestedHeadFileSchema);
+        // Missing and corrupt both become null (tracking the previous
+        // attestation is best-effort — the consequence of losing it is a
         // resubmission of the same seq, which the server's idempotent
         // 204 absorbs)
-        let value: unknown;
-        try {
-          value = JSON.parse(raw);
-        } catch {
-          return null;
-        }
-        return decodeChainHead(isRecord(value) ? value["head"] : undefined);
+        return read.state === "loaded" ? decodeChainHead(read.file.head) : null;
       },
       mapErrorTo(
         (projectId) =>
@@ -486,7 +482,6 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     ),
     saveAttestedHead: Effect.fn("floor-log.saveAttestedHead")(
       function* (projectId, head) {
-        const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
           catch: () =>
@@ -494,13 +489,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
               `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
             ),
         });
-        yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
         // tmp → rename substitution (never show a partial write to a
-        // reader). Tracking is a separate, overwritable class (not a
-        // verified observation — floor.ts's doc)
-        const tmp = `${path}.tmp`;
-        yield* fs.writeFileString(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });
-        yield* fs.rename(tmp, path);
+        // reader) — writeJsonFileAtomic does it. Tracking is a separate,
+        // overwritable class (not a verified observation — floor.ts's doc)
+        yield* writeJsonFileAtomic(path, AttestedHeadFileSchema, { v: 1, head });
       },
       mapErrorTo(
         (projectId) =>

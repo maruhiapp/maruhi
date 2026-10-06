@@ -44,10 +44,12 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireRecipientDek,
+  type WireStatementSchema,
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer } from "./support/server.ts";
+import { withTestClock } from "./support/test-clock.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
 
 const ENV_ID = "prod";
@@ -80,6 +82,8 @@ interface Seed {
   readonly name: string;
   /** Every version's plaintext, ascending. */
   readonly plaintexts: readonly string[];
+  /** The variable's declared schema (layout v3 when maxAgeDays is set). */
+  readonly schema?: WireStatementSchema;
 }
 
 /** One environment's stateful mock with the given variables. */
@@ -114,6 +118,7 @@ async function environmentServer(input: {
       name: seed.name,
       author: owner,
       head,
+      ...(seed.schema === undefined ? {} : { schema: seed.schema }),
     });
     const values: WireDistributedValue[] = [];
     for (const [index, plaintext] of seed.plaintexts.entries()) {
@@ -317,6 +322,33 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     expect(output).not.toContain("oldpassword");
     expect(output).not.toContain("adminpassword");
     expect(output).not.toContain(url.password);
+  });
+
+  it("dates the declared max-age due line off the Effect clock", async () => {
+    const { env, configPath } = await startEnv({
+      prod: [
+        {
+          variableId: "v-db",
+          name: "DATABASE_URL",
+          plaintexts: [OLD_URL],
+          schema: { varType: "string", required: true, description: "", maxAgeDays: 30 },
+        },
+      ],
+      ops: [{ variableId: "v-admin", name: "ADMIN_DATABASE_URL", plaintexts: [ADMIN_URL] }],
+      config: PG_CONFIG,
+    });
+    const sql = recordingSql();
+    env.setSqlRunner(sql.runner);
+    // The due date is computed off the command's Effect clock — pinned here
+    // so the whole report line can be asserted.
+    const { layer } = await withTestClock(env.layer, { at: Date.UTC(2026, 0, 15) });
+    expect(
+      await runCli(["var", "rotate", "DATABASE_URL", "--rotate-config", configPath], layer),
+    ).toBe(0);
+    const dueLine = env.logs.find((line) => line.startsWith("Max age "));
+    expect(dueLine).toBe(
+      "Max age 30d declared: the next rotation is due by 2026-02-14 (`maruhi rotation list` shows it when it comes close)",
+    );
   });
 
   it("--finalize reads the previous version as a verified ancestor and scrambles that role's password (asks without --yes)", async () => {
