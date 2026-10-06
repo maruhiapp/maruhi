@@ -101,9 +101,10 @@ jobs:
       #     selector parsing) via blume > @tailwindcss/typography, which pins
       #     6.0.10 — build-time CSS over the repository's own stylesheets
       #   GHSA-hp3w-g68c-fv3c: sprintf-js@1.0.3 (unbounded precision
-      #     specifiers) via blume > astro > js-yaml > argparse — build-time
-      #     argument parsing only. No published fix at the time of the ignore
-      #     (2026-10-06)
+      #     specifiers) via blume > gray-matter > js-yaml@3 > argparse and
+      #     blume > @asyncapi/converter > js-yaml@3 > argparse — build-time
+      #     front-matter / spec parsing only. No published fix at the time of
+      #     the ignore (2026-10-06)
       # Removed as stale (2026-10-06): the http-cache-semantics@4.2.0 ignore
       # (GHSA-ch52-4w7c-c8xp) — every copy is 4.3.0 since `bun audit fix`.
       # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
