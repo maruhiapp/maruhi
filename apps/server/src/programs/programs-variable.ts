@@ -5,7 +5,7 @@
 // 2026-09-15 ES K3) → environment/variable existence → CAS → signature
 // verification → quantity policy → atomic write + audit (AUDIT_SPEC §3.3).
 
-import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
+import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import type { AuditEventInput } from "../audit-store.ts";
@@ -209,6 +209,56 @@ const requireVariableWriteContext = Effect.fn("programs-variable.requireVariable
     return { ...context, variable };
   },
 );
+
+/**
+ * The shared acceptance core of rename / schema reissue and delete (§12-5):
+ * the meta acceptance pipeline under the signing device (verify-meta.ts's
+ * acceptMetaStatement) → the author's member permission → the composite
+ * acceptance of the manifest, with the accepted statement standing in for
+ * the variable's digest entry.
+ */
+const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")(function* (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly latestMetaVersion: number;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly statement: MetaStatementInput;
+  readonly manifest: EnvManifestInput;
+  /** The status the manifest digest takes for this variable after the operation. */
+  readonly digestStatus: "active" | "deleted" | "declared";
+}) {
+  const { projectId, environmentId, variableId, history, statement } = input;
+  const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
+    input.member,
+    (candidate) =>
+      acceptMetaStatement({
+        projectId,
+        environmentId,
+        target: { kind: "variable", variableId },
+        latestMetaVersion: input.latestMetaVersion,
+        history,
+        member: candidate,
+        statement,
+      }),
+  );
+  yield* ensureDevicePermission(author, "member", environmentId);
+  const acceptedManifest = yield* acceptManifestForMetaOp({
+    projectId,
+    environmentId,
+    history,
+    member: author,
+    manifest: input.manifest,
+    digestOverride: {
+      variableId,
+      status: input.digestStatus,
+      metaVersion: statement.metaVersion,
+      signedBytesHashHex,
+    },
+  });
+  return { author, signedBytesHashHex, acceptedManifest };
+});
 
 /**
  * Variable creation (§12-5): active (with the bundled version-1 value) or
@@ -632,34 +682,18 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "variable", variableId },
-          latestMetaVersion: variable.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-        }),
-    );
-    yield* ensureDevicePermission(author, "member", environmentId);
-    // Composite acceptance of the manifest (§12-5): recompute and cross-check
-    // on the set after the rename is applied
-    const acceptedManifest = yield* acceptManifestForMetaOp({
+    // The manifest is recomputed and cross-checked on the set after the
+    // rename is applied
+    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
+      variableId,
+      latestMetaVersion: variable.latestMetaVersion,
       history,
-      member: author,
+      member,
+      statement,
       manifest,
-      digestOverride: {
-        variableId,
-        status: statement.status,
-        metaVersion: statement.metaVersion,
-        signedBytesHashHex,
-      },
+      digestStatus: statement.status,
     });
     const audit = yield* AuditStore;
     const now = yield* Clock.currentTimeMillis;
@@ -718,35 +752,19 @@ export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariable
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "variable", variableId },
-          latestMetaVersion: variable.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-        }),
-    );
-    yield* ensureDevicePermission(author, "member", environmentId);
-    // Composite acceptance of the manifest (§12-5): recompute and cross-check
-    // on the set including the tombstone (a digest mismatch from hiding a
-    // tombstone is caught here — §4.3 (3))
-    const acceptedManifest = yield* acceptManifestForMetaOp({
+    // The manifest is recomputed and cross-checked on the set including the
+    // tombstone (a digest mismatch from hiding a tombstone is caught here —
+    // §4.3 (3))
+    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
+      variableId,
+      latestMetaVersion: variable.latestMetaVersion,
       history,
-      member: author,
+      member,
+      statement,
       manifest,
-      digestOverride: {
-        variableId,
-        status: "deleted",
-        metaVersion: statement.metaVersion,
-        signedBytesHashHex,
-      },
+      digestStatus: "deleted",
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
