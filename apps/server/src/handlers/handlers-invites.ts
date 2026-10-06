@@ -104,20 +104,22 @@ function toSummary(record: InvitationRecord) {
  * Schema-validated — a failure here is a bug-detection line and may be
  * a defect.
  */
-const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const encPub = decodeHex(encPubHex);
-    const sigPub = decodeHex(sigPubHex);
-    if (encPub === null || sigPub === null) {
-      return yield* Effect.die(new Error("schema-validated key hex failed to decode"));
-    }
-    // A wrapped crypto failure here stays a defect, like the throw the
-    // pre-bridge code raised on a failed fingerprint computation
-    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
-      Effect.orDie,
-    );
-    return encodeHex(fingerprint);
-  });
+const fingerprintOf = Effect.fn("handlers-invites.fingerprintOf")(function* (
+  encPubHex: string,
+  sigPubHex: string,
+): Effect.fn.Return<string> {
+  const encPub = decodeHex(encPubHex);
+  const sigPub = decodeHex(sigPubHex);
+  if (encPub === null || sigPub === null) {
+    return yield* Effect.die(new Error("schema-validated key hex failed to decode"));
+  }
+  // A wrapped crypto failure here stays a defect, like the throw the
+  // pre-bridge code raised on a failed fingerprint computation
+  const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
+    Effect.orDie,
+  );
+  return encodeHex(fingerprint);
+});
 
 /**
  * Verifies both accept signatures (CRYPTO_SPEC §6.5 v2). The
@@ -126,16 +128,16 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<stri
  * wire-declared values — §15-2). Order: link signature → accept
  * signature (the fixed check order).
  */
-function verifyAcceptanceSignatures(input: {
-  readonly record: InvitationRecord;
-  readonly issuance: InviteIssuance;
-  readonly inviteeUserId: string;
-  readonly encPubHex: string;
-  readonly sigPubHex: string;
-  readonly acceptSignatureHex: string;
-  readonly linkSignatureHex: string;
-}): Effect.Effect<void, InviteSignatureInvalidError> {
-  return Effect.gen(function* () {
+const verifyAcceptanceSignatures = Effect.fn("handlers-invites.verifyAcceptanceSignatures")(
+  function* (input: {
+    readonly record: InvitationRecord;
+    readonly issuance: InviteIssuance;
+    readonly inviteeUserId: string;
+    readonly encPubHex: string;
+    readonly sigPubHex: string;
+    readonly acceptSignatureHex: string;
+    readonly linkSignatureHex: string;
+  }): Effect.fn.Return<void, InviteSignatureInvalidError> {
     const context: InviteAcceptSignatureContext = {
       suite: SUITE_ID,
       projectId: input.record.projectId,
@@ -150,13 +152,14 @@ function verifyAcceptanceSignatures(input: {
     yield* cryptoEffect(() =>
       verifyInviteAcceptSignature({ context, signatureHex: input.acceptSignatureHex }),
     ).pipe(Effect.mapError(() => new InviteSignatureInvalidError({ which: "accept" })));
-  });
-}
+  },
+);
 
 export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers) =>
   handlers
-    .handle("issue", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "issue",
+      Effect.fn("handlers-invites.issue")(function* ({ params, payload, endpoint }) {
         const { principal, role } = yield* requireProjectChainAdmin(params.projectId, endpoint);
         // §15-2: issuing a role = admin invite is owner-only (same level as the add_member permission table)
         if (payload.role === "admin" && role !== "owner") {
@@ -200,8 +203,9 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         }
       }),
     )
-    .handle("accept", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "accept",
+      Effect.fn("handlers-invites.accept")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         // B1a ruling: acceptance is a key-declaration-class operation
         // (same-level token condition as §13-2)
@@ -268,16 +272,18 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         };
       }),
     )
-    .handle("list", ({ params, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "list",
+      Effect.fn("handlers-invites.list")(function* ({ params, endpoint }) {
         yield* requireProjectChainAdmin(params.projectId, endpoint);
         const invites = yield* InviteRepo;
         const records = yield* invites.listForProject(params.projectId);
         return { invitations: records.map(toSummary) };
       }),
     )
-    .handle("revoke", ({ params, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "revoke",
+      Effect.fn("handlers-invites.revoke")(function* ({ params, endpoint }) {
         const { principal } = yield* requireProjectChainAdmin(params.projectId, endpoint);
         const invites = yield* InviteRepo;
         const record = yield* invites.findById(params.projectId, params.id);

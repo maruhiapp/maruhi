@@ -65,27 +65,26 @@ import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
  * hash routing means already-initialized is returned only on a resubmission
  * of the same genesis = the actor always matches).
  */
-const repairOrConflict = (
+const repairOrConflict = Effect.fn("handlers-membership.repairOrConflict")(function* (
   projectId: string,
   orgId: string,
   principal: AuthenticatedPrincipal,
   outcome: Extract<InitOutcome, { kind: "already-initialized" }>,
-) =>
-  Effect.gen(function* () {
-    const projects = yield* ProjectRepo;
-    const exists = yield* projects.exists(projectId);
-    if (exists || outcome.genesisActorUserId !== principal.userId) {
-      return yield* Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
-    }
-    yield* projects.insertIfAbsent(
-      projectId,
-      orgId,
-      principal.userId,
-      yield* Clock.currentTimeMillis,
-      auditActorOf(principal),
-    );
-    return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
-  });
+) {
+  const projects = yield* ProjectRepo;
+  const exists = yield* projects.exists(projectId);
+  if (exists || outcome.genesisActorUserId !== principal.userId) {
+    return yield* Effect.fail(new ProjectAlreadyInitializedError({ projectId }));
+  }
+  yield* projects.insertIfAbsent(
+    projectId,
+    orgId,
+    principal.userId,
+    yield* Clock.currentTimeMillis,
+    auditActorOf(principal),
+  );
+  return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
+});
 
 const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
   endpoint: Endpoint,
@@ -135,8 +134,8 @@ const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
  * 5xx (the DO is the authority of the acceptance decision). On success,
  * return the project ID = genesis entry hash (§6.4).
  */
-const precheckAndComputeProjectId = (entry: ChainEntry) =>
-  Effect.gen(function* () {
+const precheckAndComputeProjectId = Effect.fn("handlers-membership.precheckAndComputeProjectId")(
+  function* (entry: ChainEntry) {
     const canonicalBytes = yield* Effect.try({
       try: () => canonicalChainEntryBytes(entry).length,
       catch: () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
@@ -151,12 +150,14 @@ const precheckAndComputeProjectId = (entry: ChainEntry) =>
         () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
       ),
     );
-  });
+  },
+);
 
 export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (handlers) =>
   handlers
-    .handle("init", ({ payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "init",
+      Effect.fn("handlers-membership.init")(function* ({ payload, endpoint }) {
         const principal = yield* (yield* RequestAuth).principal;
         // The size pre-check runs first (an oversized entry is dropped with
         // 413 before any semantic judgment — resource protection outranks
@@ -192,8 +193,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         return yield* mapInitOutcome(endpoint, projectId, payload.orgId, principal, outcome);
       }),
     )
-    .handle("list", ({ query }) =>
-      Effect.gen(function* () {
+    .handle(
+      "list",
+      Effect.fn("handlers-membership.list")(function* ({ query }) {
         const principal = yield* (yield* RequestAuth).principal;
         // The token-principal scope intersection happens at the **candidate
         // index stage** (out-of-scope = absent — the same information content
@@ -301,8 +303,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           : { projects: memberships, nextAfter };
       }),
     )
-    .handle("get", ({ params, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "get",
+      Effect.fn("handlers-membership.get")(function* ({ params, endpoint }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureTokenScopeForProject(principal, params.projectId, "read");
         const env = yield* WorkerEnv;
@@ -351,8 +354,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         invoke: (stub, actor) => stub.putHeadAttestation(actor.userId, payload),
       }).pipe(Effect.as(noContent)),
     )
-    .handle("append", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "append",
+      Effect.fn("handlers-membership.append")(function* ({ params, payload, endpoint }) {
         const principal = yield* (yield* RequestAuth).principal;
         // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
         // through the composite endpoint (atomic acceptance together with

@@ -119,55 +119,54 @@ function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
  * facts of the verified token. No chain-derived state is consulted —
  * everything from authorization onward is one DO RPC.
  */
-const authenticateWorkload = (
+const authenticateWorkload = Effect.fn("handlers-lease.authenticateWorkload")(function* (
   payload: { readonly oidcToken: string; readonly ephemeralPubHex: string },
   request: { readonly source: unknown },
-) =>
-  Effect.gen(function* () {
-    // 0. Request-level rate limiting on the source IP. Since a DO is
-    // implicitly created by naming it, anyone holding a valid OIDC
-    // token could mass-produce DOs under different project IDs (the
-    // constructor creates tables) — bound the creation rate before
-    // projectStub. This serves a different role than the per-project
-    // window inside the DO (post-authorization — placed after the
-    // 404s for §11-2's existence hiding), and this check is
-    // independent of project state (IP only), so it does not break
-    // existence hiding
-    const env = yield* WorkerEnv;
-    const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
-    if (!allowed) {
-      return yield* Effect.fail(
-        new LeaseRateLimitedError({
-          retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS,
-          scope: "source-address",
-        }),
-      );
-    }
-    // 1. The authentication stage (§14-1): verify the OIDC token.
-    //    No chain-derived state is consulted
-    const verifier = yield* OidcVerifier;
-    const token = yield* verifier.verify(payload.oidcToken, yield* Clock.currentTimeMillis);
-    const claimsDigestHex = yield* claimsDigestFor(token);
-    // The first-come-binding key (§14-1) is already computed by the
-    // verifier from the signed bytes (signing input) — not a hash of
-    // the raw token (see the doc of VerifiedOidcToken's
-    // signingInputHashHex). Only this hash, the verified claims, and
-    // the lifetime reach the DO — never the token itself. The
-    // lifetime is at least "the last time a time check could accept
-    // this token" (policy.ts's slack derives from clock skew — a
-    // binding retention shorter than the acceptance window becomes a
-    // replay window of exactly that difference)
-    const facts: LeaseTokenFacts = {
-      issuer: token.issuer,
-      subject: token.subject,
-      audiences: token.audiences,
-      claims: token.claims,
-      claimsDigestHex,
-      bindingKeyHex: token.signingInputHashHex,
-      bindingExpiresAtMs: token.expiresAtSec * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS,
-    };
-    return { env, facts };
-  });
+) {
+  // 0. Request-level rate limiting on the source IP. Since a DO is
+  // implicitly created by naming it, anyone holding a valid OIDC
+  // token could mass-produce DOs under different project IDs (the
+  // constructor creates tables) — bound the creation rate before
+  // projectStub. This serves a different role than the per-project
+  // window inside the DO (post-authorization — placed after the
+  // 404s for §11-2's existence hiding), and this check is
+  // independent of project state (IP only), so it does not break
+  // existence hiding
+  const env = yield* WorkerEnv;
+  const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
+  if (!allowed) {
+    return yield* Effect.fail(
+      new LeaseRateLimitedError({
+        retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS,
+        scope: "source-address",
+      }),
+    );
+  }
+  // 1. The authentication stage (§14-1): verify the OIDC token.
+  //    No chain-derived state is consulted
+  const verifier = yield* OidcVerifier;
+  const token = yield* verifier.verify(payload.oidcToken, yield* Clock.currentTimeMillis);
+  const claimsDigestHex = yield* claimsDigestFor(token);
+  // The first-come-binding key (§14-1) is already computed by the
+  // verifier from the signed bytes (signing input) — not a hash of
+  // the raw token (see the doc of VerifiedOidcToken's
+  // signingInputHashHex). Only this hash, the verified claims, and
+  // the lifetime reach the DO — never the token itself. The
+  // lifetime is at least "the last time a time check could accept
+  // this token" (policy.ts's slack derives from clock skew — a
+  // binding retention shorter than the acceptance window becomes a
+  // replay window of exactly that difference)
+  const facts: LeaseTokenFacts = {
+    issuer: token.issuer,
+    subject: token.subject,
+    audiences: token.audiences,
+    claims: token.claims,
+    claimsDigestHex,
+    bindingKeyHex: token.signingInputHashHex,
+    bindingExpiresAtMs: token.expiresAtSec * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS,
+  };
+  return { env, facts };
+});
 
 /** The mint's rejections → api-schema errors: the lease vocabulary as-is, plus the §14-5 acceptance reasons (422). */
 function proposalRejectionError(rejection: ProposalRejection, projectId: string) {
@@ -193,25 +192,24 @@ interface WorkloadParams {
  * credential — everything from authorization onward is that single RPC
  * (the audit is written under the same permit, in the same sync block).
  */
-function workloadRpc<T>(
+const workloadRpc = Effect.fn("handlers-lease.workloadRpc")(function* <T>(
   params: WorkloadParams,
   payload: Parameters<typeof authenticateWorkload>[0],
   request: Parameters<typeof authenticateWorkload>[1],
   call: (stub: ReturnType<typeof projectStub>, facts: LeaseTokenFacts) => Promise<T>,
 ) {
-  return Effect.gen(function* () {
-    const { env, facts } = yield* authenticateWorkload(payload, request);
-    // An RPC failure has no typed answer here: a defect (500), as before
-    return yield* rpcCall<T>(() => call(projectStub(env, params.projectId), facts)).pipe(
-      Effect.orDie,
-    );
-  });
-}
+  const { env, facts } = yield* authenticateWorkload(payload, request);
+  // An RPC failure has no typed answer here: a defect (500), as before
+  return yield* rpcCall<T>(() => call(projectStub(env, params.projectId), facts)).pipe(
+    Effect.orDie,
+  );
+});
 
 export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
   handlers
-    .handle("issue", ({ params, payload, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "issue",
+      Effect.fn("handlers-lease.issue")(function* ({ params, payload, request }) {
         const outcome = yield* workloadRpc<LeaseOutcome>(params, payload, request, (stub, facts) =>
           stub.issueLease(params.environmentId, payload.ephemeralPubHex, facts),
         );
@@ -247,8 +245,9 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
     // The mint's pre-flight (§14-5 — O-4): the same credential and
     // authorization, no wraps, nothing stored — a job learns before the
     // issuer is touched that its proposal would be refused or would stack
-    .handle("preflight", ({ params, payload, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "preflight",
+      Effect.fn("handlers-lease.preflight")(function* ({ params, payload, request }) {
         const outcome = yield* workloadRpc<PreflightOutcome>(
           params,
           payload,
@@ -271,8 +270,9 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
     // The sealed-proposal mint (§14-5 = CRYPTO_SPEC §5.3): the same
     // credential and the same DO-side authorization as the lease; the
     // server stores ciphertexts it cannot open and touches no key
-    .handle("propose", ({ params, payload, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "propose",
+      Effect.fn("handlers-lease.propose")(function* ({ params, payload, request }) {
         const outcome = yield* workloadRpc<ProposalOutcome>(
           params,
           payload,

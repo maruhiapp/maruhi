@@ -35,8 +35,9 @@ export const exportLive = HttpApiBuilder.group(maruhiApi, "export", (handlers) =
         })),
       ),
     )
-    .handle("identities", ({ params, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "identities",
+      Effect.fn("handlers-export.identities")(function* ({ params, endpoint }) {
         const principal = yield* (yield* RequestAuth).principal;
         const { members, chainHeadSeq, chainHeadHashHex } =
           yield* callProjectData<ExportMembersValue>()({

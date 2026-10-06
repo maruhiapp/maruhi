@@ -31,11 +31,12 @@ import type { EnvironmentChainResultValue } from "../programs/composite-programs
  * (same acceptance policy as §11-1's generic append; the signer match
  * is carried by the DO's signature verification — §12-6).
  */
-const ensureCompositeActor = (entry: ChainEntry) =>
-  Effect.gen(function* () {
-    const principal = yield* (yield* RequestAuth).principal;
-    yield* ensureActorMatches(principal, entry);
-  });
+const ensureCompositeActor = Effect.fn("handlers-environments.ensureCompositeActor")(function* (
+  entry: ChainEntry,
+) {
+  const principal = yield* (yield* RequestAuth).principal;
+  yield* ensureActorMatches(principal, entry);
+});
 
 /**
  * The composite's token-scope level (AUTH_SPEC §12-3 / §16-2): normally
@@ -51,8 +52,9 @@ function requiredCompositePermission(checkpoint: {
 
 export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", (handlers) =>
   handlers
-    .handle("create", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "create",
+      Effect.fn("handlers-environments.create")(function* ({ params, payload, endpoint }) {
         // §12-4: the actor of the chain entries (both create and the
         // boundary checkpoint) must strictly equal the caller
         // (2-entry composition)
@@ -89,8 +91,9 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         });
       }),
     )
-    .handle("rotate", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "rotate",
+      Effect.fn("handlers-environments.rotate")(function* ({ params, payload, endpoint }) {
         yield* ensureCompositeActor(payload.entry);
         yield* ensureCompositeActor(payload.checkpoint);
         yield* checkManifestCoordinates(payload.manifest, params.environmentId);
@@ -120,8 +123,9 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
         invoke: (stub, actor) => stub.listEnvironments(actor),
       }),
     )
-    .handle("rename", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "rename",
+      Effect.fn("handlers-environments.rename")(function* ({ params, payload, endpoint }) {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
@@ -138,13 +142,14 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               toManifestInput(payload.manifest),
             ),
         });
-      }).pipe(Effect.as(noContent)),
+      }, Effect.as(noContent)),
     )
-    .handle("remove", ({ params, payload, endpoint }) =>
-      // Environment deletion requires admin scope + chain role admin or
-      // above (§12-3). Deletion also requires a signed statement
-      // (status deleted) (§12-4)
-      Effect.gen(function* () {
+    .handle(
+      "remove",
+      Effect.fn("handlers-environments.remove")(function* ({ params, payload, endpoint }) {
+        // Environment deletion requires admin scope + chain role admin or
+        // above (§12-3). Deletion also requires a signed statement
+        // (status deleted) (§12-4)
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
         });
@@ -159,6 +164,6 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               toMetaStatementInput(payload.statement),
             ),
         });
-      }).pipe(Effect.as(noContent)),
+      }, Effect.as(noContent)),
     ),
 );

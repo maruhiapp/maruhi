@@ -52,18 +52,20 @@ import type {
  * by a third-party site stamping fake var.reads with the victim's session
  * (rationale in the JSDoc of statefulGetCsrfViolated).
  */
-const ensureStatefulGetCsrf = (headers: Parameters<typeof statefulGetCsrfViolated>[1]) =>
-  Effect.gen(function* () {
-    const principal = yield* (yield* RequestAuth).principal;
-    if (statefulGetCsrfViolated(principal, headers)) {
-      return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
-    }
-  });
+const ensureStatefulGetCsrf = Effect.fn("handlers-variables.ensureStatefulGetCsrf")(function* (
+  headers: Parameters<typeof statefulGetCsrfViolated>[1],
+) {
+  const principal = yield* (yield* RequestAuth).principal;
+  if (statefulGetCsrfViolated(principal, headers)) {
+    return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
+  }
+});
 
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
   handlers
-    .handle("create", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "create",
+      Effect.fn("handlers-variables.create")(function* ({ params, payload, endpoint }) {
         // Union of the 2 create forms (§12-5): active = value bundled
         // / declared = no value (the wire Schema fixes the coupling of
         // status and value presence). The value-bearing preliminary
@@ -99,8 +101,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }),
     )
-    .handle("push", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "push",
+      Effect.fn("handlers-variables.push")(function* ({ params, payload, endpoint }) {
         yield* checkValueSize(payload.value);
         yield* checkAadCoordinates(payload.value, {
           projectId: params.projectId,
@@ -134,8 +137,14 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           stub.variableHistory(actor, params.environmentId, params.variableId),
       }),
     )
-    .handle("versionValues", ({ params, query, endpoint, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "versionValues",
+      Effect.fn("handlers-variables.versionValues")(function* ({
+        params,
+        query,
+        endpoint,
+        request,
+      }) {
         // A GET that records var.read (§12-7 — VH)
         yield* ensureStatefulGetCsrf(request.headers);
         const range = yield* callProjectData<VariableVersionValuesValue>()({
@@ -159,11 +168,12 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         };
       }),
     )
-    .handle("activate", ({ params, payload, endpoint }) =>
-      // The activation composite (§12-5): preliminary checks identical
-      // to create (the value-bundled form), and the variableId is fixed
-      // by the URL
-      Effect.gen(function* () {
+    .handle(
+      "activate",
+      Effect.fn("handlers-variables.activate")(function* ({ params, payload, endpoint }) {
+        // The activation composite (§12-5): preliminary checks identical
+        // to create (the value-bundled form), and the variableId is fixed
+        // by the URL
         yield* checkValueSize(payload.value);
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
@@ -188,8 +198,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }),
     )
-    .handle("rename", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "rename",
+      Effect.fn("handlers-variables.rename")(function* ({ params, payload, endpoint }) {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
           variableId: params.variableId,
@@ -208,10 +219,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               toManifestInput(payload.manifest),
             ),
         });
-      }).pipe(Effect.as(noContent)),
+      }, Effect.as(noContent)),
     )
-    .handle("remove", ({ params, payload, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "remove",
+      Effect.fn("handlers-variables.remove")(function* ({ params, payload, endpoint }) {
         yield* checkStatementCoordinates(payload.statement, {
           environmentId: params.environmentId,
           variableId: params.variableId,
@@ -230,10 +242,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               toManifestInput(payload.manifest),
             ),
         });
-      }).pipe(Effect.as(noContent)),
+      }, Effect.as(noContent)),
     )
-    .handle("pull", ({ params, endpoint, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "pull",
+      Effect.fn("handlers-variables.pull")(function* ({ params, endpoint, request }) {
         // The metadata-only mode (pullMetadata) records no audit and is
         // out of scope
         yield* ensureStatefulGetCsrf(request.headers);

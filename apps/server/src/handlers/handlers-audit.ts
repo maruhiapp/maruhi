@@ -71,8 +71,9 @@ function toWireD1Event(row: D1StoredAuditEventRow): AuditEventValue {
 
 export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
   handlers
-    .handle("events", ({ params, query, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "events",
+      Effect.fn("handlers-audit.events")(function* ({ params, query, endpoint }) {
         // The scope half of class-2 visibility (min(scope, chain role)
         // — §12-3). The role half is decided by the DO (the
         // chain-derived authority)
@@ -102,8 +103,9 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         return { events };
       }),
     )
-    .handle("auditHead", ({ params, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "auditHead",
+      Effect.fn("handlers-audit.auditHead")(function* ({ params, endpoint }) {
         // Effective permission admin (AUTH_SPEC §16-2): the scope half
         // is permission: "admin" (out of scope 404 / insufficient level
         // 403); the chain-role half is the DO (auditHeadProgram —
@@ -116,8 +118,9 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         });
       }),
     )
-    .handle("invites", ({ params, query, endpoint }) =>
-      Effect.gen(function* () {
+    .handle(
+      "invites",
+      Effect.fn("handlers-audit.invites")(function* ({ params, query, endpoint }) {
         yield* requireProjectChainAdmin(params.projectId, endpoint);
         const audit = yield* D1AuditRepo;
         const rows = yield* audit.readProjectInviteEvents(params.projectId, {
@@ -127,8 +130,9 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
         return { events: rows.map(toWireD1Event) };
       }),
     )
-    .handle("self", ({ query }) =>
-      Effect.gen(function* () {
+    .handle(
+      "self",
+      Effect.fn("handlers-audit.self")(function* ({ query }) {
         const principal = yield* (yield* RequestAuth).principal;
         // The account-wide history (including watch-list events) is not
         // readable by scope-limited tokens (same level as §13-2 — see

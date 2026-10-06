@@ -46,29 +46,32 @@ const noContent = HttpServerResponse.empty({ status: 204 });
  * of SHA-256(enc ‖ sig)). Since the wire Schema guarantees fixed-length
  * hex, decode / computation failures are defects.
  */
-const fingerprintOf = (encPubHex: string, sigPubHex: string) =>
-  Effect.gen(function* () {
-    const enc = decodeHex(encPubHex);
-    const sig = decodeHex(sigPubHex);
-    if (enc === null || sig === null) {
-      return yield* Effect.die(new Error("device public keys are not valid hex"));
-    }
-    // A wrapped crypto failure stays a defect, like the die the
-    // pre-bridge code raised on a failed fingerprint computation
-    const digest = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
-      Effect.orDie,
-    );
-    return encodeHex(digest);
-  });
+const fingerprintOf = Effect.fn("handlers-devices.fingerprintOf")(function* (
+  encPubHex: string,
+  sigPubHex: string,
+) {
+  const enc = decodeHex(encPubHex);
+  const sig = decodeHex(sigPubHex);
+  if (enc === null || sig === null) {
+    return yield* Effect.die(new Error("device public keys are not valid hex"));
+  }
+  // A wrapped crypto failure stays a defect, like the die the
+  // pre-bridge code raised on a failed fingerprint computation
+  const digest = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(Effect.orDie);
+  return encodeHex(digest);
+});
 
 /** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */
-const ensureFingerprintMatches = (fp: string, encPubHex: string, sigPubHex: string) =>
-  Effect.gen(function* () {
-    const computed = yield* fingerprintOf(encPubHex, sigPubHex);
-    if (computed !== fp) {
-      return yield* Effect.fail(new DeviceFingerprintMismatchError());
-    }
-  });
+const ensureFingerprintMatches = Effect.fn("handlers-devices.ensureFingerprintMatches")(function* (
+  fp: string,
+  encPubHex: string,
+  sigPubHex: string,
+) {
+  const computed = yield* fingerprintOf(encPubHex, sigPubHex);
+  if (computed !== fp) {
+    return yield* Effect.fail(new DeviceFingerprintMismatchError());
+  }
+});
 
 function toSummary(record: DeviceRecord) {
   return {
@@ -93,8 +96,9 @@ function toRequestSummary(record: DeviceAddRequestRecord) {
 
 export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers) =>
   handlers
-    .handle("list", () =>
-      Effect.gen(function* () {
+    .handle(
+      "list",
+      Effect.fn("handlers-devices.list")(function* () {
         // Every authenticated principal (session principals have
         // already passed §5's allowed enumeration). The response is the
         // caller's own rows only (userId is server-derived — there is
@@ -105,8 +109,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return { devices: rows.map(toSummary) };
       }),
     )
-    .handle("register", ({ params, payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "register",
+      Effect.fn("handlers-devices.register")(function* ({ params, payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         yield* ensureFingerprintMatches(params.fp, payload.encPubHex, payload.sigPubHex);
@@ -132,8 +137,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return noContent;
       }),
     )
-    .handle("remove", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "remove",
+      Effect.fn("handlers-devices.remove")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
@@ -144,8 +150,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return noContent;
       }),
     )
-    .handle("requestCreate", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "requestCreate",
+      Effect.fn("handlers-devices.requestCreate")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const nowMs = yield* Clock.currentTimeMillis;
@@ -189,8 +196,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return { expiresAtMs: nowMs + DEVICE_ADD_REQUEST_TTL_MS };
       }),
     )
-    .handle("requestList", () =>
-      Effect.gen(function* () {
+    .handle(
+      "requestList",
+      Effect.fn("handlers-devices.requestList")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const nowMs = yield* Clock.currentTimeMillis;
@@ -200,8 +208,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return { requests: rows.map(toRequestSummary) };
       }),
     )
-    .handle("requestGet", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "requestGet",
+      Effect.fn("handlers-devices.requestGet")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
@@ -216,8 +225,9 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         return toRequestSummary(row);
       }),
     )
-    .handle("requestCancel", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "requestCancel",
+      Effect.fn("handlers-devices.requestCancel")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
