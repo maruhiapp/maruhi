@@ -670,6 +670,7 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
         wraps: [
           {
             epoch: 2,
+            recipientClass: "member",
             recipientUserId: READER,
             recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
           },
@@ -687,6 +688,7 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
         wraps: [
           {
             epoch: 1,
+            recipientClass: "member",
             recipientUserId: READER,
             recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
           },

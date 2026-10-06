@@ -214,6 +214,7 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
     const deks = Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
       suite: "maruhi/v1",
       epoch: 1,
+      recipientClass: "member" as const,
       recipientUserId: `u${index}`,
       recipientEncPubHex: "ab".repeat(32),
       encHex: "cd".repeat(32),
@@ -289,6 +290,7 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
     const removedOne = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({
         epoch: 1,
+        recipientClass: "member" as const,
         recipientUserId,
         recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
       })),

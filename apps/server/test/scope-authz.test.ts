@@ -336,7 +336,12 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
         wraps: [
-          { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+          {
+            epoch: 1,
+            recipientClass: "member",
+            recipientUserId: OWNER,
+            recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex,
+          },
         ],
       }),
     );

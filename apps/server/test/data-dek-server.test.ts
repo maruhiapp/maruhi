@@ -458,14 +458,21 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     expect(crossClass.status).toBe(404);
     expect(((await crossClass.json()) as Record<string, unknown>)["_tag"]).toBe("DekWrapNotFound");
 
-    // The reverse direction: deleting a server wrap by pointing at it as class member (the default when omitted) is also a 404
+    // The reverse direction: deleting a server wrap by pointing at it as class member is also a 404
     const fpHex = await grantServer([ENV]);
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
     });
     expect(registered.status).toBe(204);
     const reverse = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: fpHex, recipientEncPubHex: SERVER_ENC_PUB_HEX }],
+      wraps: [
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: fpHex,
+          recipientEncPubHex: SERVER_ENC_PUB_HEX,
+        },
+      ],
     });
     expect(reverse.status).toBe(404);
 
@@ -491,7 +498,12 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     // whole request
     const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: OWNER,
+          recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex,
+        },
         {
           epoch: 1,
           recipientClass: "server",

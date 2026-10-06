@@ -438,6 +438,7 @@ describe("DEK wrap registration (§12-6)", () => {
     const wrap = {
       suite: "maruhi/v1",
       epoch: 1,
+      recipientClass: "member",
       recipientUserId: OWNER,
       recipientEncPubHex: "ab".repeat(32),
       encHex: "cd".repeat(32),

@@ -65,7 +65,7 @@ export type DekRecipientClass = "member" | "server";
 export interface DekWrapInput {
   readonly suite: WireSuite;
   readonly epoch: number;
-  readonly recipientClass?: DekRecipientClass;
+  readonly recipientClass: DekRecipientClass;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
@@ -80,7 +80,7 @@ export interface DekWrapInput {
  */
 export interface DekWrapRefInput {
   readonly epoch: number;
-  readonly recipientClass?: DekRecipientClass;
+  readonly recipientClass: DekRecipientClass;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
 }

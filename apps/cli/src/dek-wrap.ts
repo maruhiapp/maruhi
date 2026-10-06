@@ -230,7 +230,7 @@ function wrapAndSignForEffect(input: {
     return {
       suite: SUITE_ID,
       epoch,
-      ...(recipient.kind === "server" ? { recipientClass: "server" as const } : {}),
+      recipientClass: recipient.kind === "server" ? ("server" as const) : ("member" as const),
       recipientUserId: id,
       recipientEncPubHex: encPubHex,
       encHex,

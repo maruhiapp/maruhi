@@ -247,7 +247,12 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     // The owner (admin scope × chain role owner ≥ admin) deletes the READER-directed wrap
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
@@ -299,7 +304,12 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     // A member's default PAT has admin scope but chain role member → 403
     const asMember = await requestJson("DELETE", `/environments/${ENV}/deks`, token(MEMBER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(asMember.status).toBe(403);
@@ -309,7 +319,12 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     const ownerWrite = await cliToken(9001, writeScope);
     const scoped = await requestJson("DELETE", `/environments/${ENV}/deks`, ownerWrite, {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(scoped.status).toBe(403);
@@ -317,7 +332,12 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     // The project itself is hidden from non-members (404 — §11-2)
     const concealed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(STRANGER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(concealed.status).toBe(404);
@@ -329,8 +349,18 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     // The first ref exists, the second does not → 404 (DekWrapNotFound), and nothing is deleted
     const partial = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
-        { epoch: 1, recipientUserId: "user-nobody-0404", recipientEncPubHex: "ab".repeat(32) },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: "user-nobody-0404",
+          recipientEncPubHex: "ab".repeat(32),
+        },
       ],
     });
     expect(partial.status).toBe(404);
@@ -353,8 +383,18 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     // Listing the same tuple twice is a 422 (duplicate-recipient)
     const duplicated = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(duplicated.status).toBe(422);
@@ -368,6 +408,7 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({
         epoch: 1,
+        recipientClass: "member" as const,
         recipientUserId,
         recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
       })),
@@ -429,6 +470,7 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     const oversized = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
         epoch: 1,
+        recipientClass: "member",
         recipientUserId: `u${index}`,
         recipientEncPubHex: "ab".repeat(32),
       })),
@@ -443,7 +485,12 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     expect(removedEnv.status).toBe(204);
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(gone.status).toBe(404);

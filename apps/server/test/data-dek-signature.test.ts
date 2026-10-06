@@ -60,6 +60,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({
         epoch: 1,
+        recipientClass: "member" as const,
         recipientUserId,
         recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
       })),
@@ -175,7 +176,12 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
@@ -210,7 +216,12 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     });
     const removedAgain = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removedAgain.status).toBe(204);
@@ -289,7 +300,12 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     if (readerWrap === undefined) throw new Error("missing reader wrap");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
@@ -383,7 +399,12 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     await createEnvironmentOk(fixture, ENV, "App");
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
@@ -395,6 +416,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     const poison = await signWrapAs(MEMBER, projectId, ENV, {
       suite: "maruhi/v1",
       epoch: 1,
+      recipientClass: "member",
       recipientUserId: READER,
       recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
       encHex: "cd".repeat(32),
@@ -420,7 +442,12 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     // The admin (owner) deletes the READER-directed wrap as the hypothetical poison wrap → MEMBER re-registers with a self-signature
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);

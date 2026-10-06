@@ -318,6 +318,7 @@ function backfillMemberDevice(input: {
               wraps: [
                 {
                   epoch: wrap.epoch,
+                  recipientClass: "member",
                   recipientUserId: input.target.userId,
                   recipientEncPubHex: storedRecipientEncPubHex,
                 },

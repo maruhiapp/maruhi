@@ -444,7 +444,7 @@ describe("maruhi server revoke", () => {
     expect(rotate.entry.payload.newEpoch).toBe(2);
     expect(rotate.entry.payload.reason).toBe("server-revoked");
     expect(rotate.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
-    expect(rotate.deks.every((wrap) => wrap.recipientClass === undefined)).toBe(true);
+    expect(rotate.deks.every((wrap) => wrap.recipientClass === "member")).toBe(true);
 
     const logs = env.logs.join("\n");
     expect(logs).toContain(`Appended revoke_server to the chain (FP=${serverFpA})`);

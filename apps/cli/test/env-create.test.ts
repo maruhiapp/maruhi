@@ -661,7 +661,7 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
     const body = server.bodies[0] as unknown as { deks: readonly { recipientClass?: string }[] };
     expect(body.deks).toHaveLength(1);
-    expect(body.deks.every((wrap) => wrap.recipientClass === undefined)).toBe(true);
+    expect(body.deks.every((wrap) => wrap.recipientClass === "member")).toBe(true);
   });
 
   it("a grant_server disclosing only another environment does not stop creating this one (a §6.2 scope is a subset)", async () => {
