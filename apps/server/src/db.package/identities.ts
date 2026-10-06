@@ -159,32 +159,30 @@ const SIGNUP_POLICY_KEY = "signup_policy";
  * Read the signupPolicy at acceptance time (AUTH_SPEC §3). No row =
  * 'open'; an unknown value = 'closed' (fail-closed).
  */
-function readSignupPolicy(
+const readSignupPolicy = Effect.fn("identities.readSignupPolicy")(function* (
   db: Db,
   warnedUnknownSignupPolicy: Ref.Ref<boolean>,
-): Effect.Effect<SignupPolicy, D1Error> {
-  return Effect.gen(function* () {
-    const row = yield* tryD1(() =>
-      db
-        .select({ value: deploymentSettings.value })
-        .from(deploymentSettings)
-        .where(eq(deploymentSettings.key, SIGNUP_POLICY_KEY))
-        .get(),
+): Effect.fn.Return<SignupPolicy, D1Error> {
+  const row = yield* tryD1(() =>
+    db
+      .select({ value: deploymentSettings.value })
+      .from(deploymentSettings)
+      .where(eq(deploymentSettings.key, SIGNUP_POLICY_KEY))
+      .get(),
+  );
+  if (row === undefined) {
+    return "open";
+  }
+  if (row.value === "open" || row.value === "invite" || row.value === "closed") {
+    return row.value;
+  }
+  if (!(yield* Ref.getAndSet(warnedUnknownSignupPolicy, true))) {
+    yield* Effect.logWarning(
+      "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
     );
-    if (row === undefined) {
-      return "open";
-    }
-    if (row.value === "open" || row.value === "invite" || row.value === "closed") {
-      return row.value;
-    }
-    if (!(yield* Ref.getAndSet(warnedUnknownSignupPolicy, true))) {
-      yield* Effect.logWarning(
-        "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
-      );
-    }
-    return "closed";
-  });
-}
+  }
+  return "closed";
+});
 
 /**
  * The signupPolicy condition evaluated inside the creation batch

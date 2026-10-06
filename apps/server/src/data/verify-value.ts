@@ -109,15 +109,15 @@ const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRe
  * All crypto awaits complete inside this Effect (before the
  * synchronous write phase).
  */
-export const ensureValueSignature = (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly variableId: string;
-  readonly history: ChainHistoryIndex;
-  readonly member: MemberWithDevice;
-  readonly value: ValueInput;
-}) =>
-  Effect.gen(function* () {
+export const ensureValueSignature = Effect.fn("verify-value.ensureValueSignature")(
+  function* (input: {
+    readonly projectId: string;
+    readonly environmentId: string;
+    readonly variableId: string;
+    readonly history: ChainHistoryIndex;
+    readonly member: MemberWithDevice;
+    readonly value: ValueInput;
+  }) {
     const store = yield* DataStore;
     // predecessor (version > 1): the stored N-1's signed_bytes hash.
     // Post-CAS, so it always exists (absence = a storage /
@@ -195,4 +195,5 @@ export const ensureValueSignature = (input: {
       },
     );
     return verified.signedBytesHashHex;
-  });
+  },
+);

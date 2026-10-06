@@ -111,21 +111,20 @@ export function ensureParentHead(
  * the entry" (the input for the composite wrap-decision reference state —
  * AUTH_SPEC §12-4 — and for the post-acceptance StateCache update).
  */
-export const verifyAcceptableEntry = (
+export const verifyAcceptableEntry = Effect.fn("chain-accept.verifyAcceptableEntry")(function* (
   chain: StoredChain,
   entry: ChainEntry,
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly canonicalBytes: number; readonly applied: VerifiedChainView },
   DataRejectedError
-> =>
-  Effect.gen(function* () {
-    const canonicalBytes = yield* checkEntrySize(entry);
-    yield* ensureChainCapacity(chain, canonicalBytes);
-    const applied = yield* verifyChainEffect([...chain.entries, entry]).pipe(
-      Effect.mapError(rejectChainInvalid),
-    );
-    return { canonicalBytes, applied };
-  });
+> {
+  const canonicalBytes = yield* checkEntrySize(entry);
+  yield* ensureChainCapacity(chain, canonicalBytes);
+  const applied = yield* verifyChainEffect([...chain.entries, entry]).pipe(
+    Effect.mapError(rejectChainInvalid),
+  );
+  return { canonicalBytes, applied };
+});
 
 /**
  * Acceptance check for the composite's 2 entries (AUTH_SPEC §12-4: H+1 =
@@ -138,19 +137,19 @@ export const verifyAcceptableEntry = (
  * (a history containing the boundary-checkpoint tuple = the input to the
  * checkpoint-binding verification of the bundled manifest — §4.3 (2)).
  */
-export const verifyAcceptableEntryPair = (
-  chain: StoredChain,
-  first: ChainEntry,
-  second: ChainEntry,
-): Effect.Effect<
-  {
-    readonly firstCanonicalBytes: number;
-    readonly secondCanonicalBytes: number;
-    readonly applied: VerifiedChainView;
-  },
-  DataRejectedError
-> =>
-  Effect.gen(function* () {
+export const verifyAcceptableEntryPair = Effect.fn("chain-accept.verifyAcceptableEntryPair")(
+  function* (
+    chain: StoredChain,
+    first: ChainEntry,
+    second: ChainEntry,
+  ): Effect.fn.Return<
+    {
+      readonly firstCanonicalBytes: number;
+      readonly secondCanonicalBytes: number;
+      readonly applied: VerifiedChainView;
+    },
+    DataRejectedError
+  > {
     const firstCanonicalBytes = yield* checkEntrySize(first);
     const secondCanonicalBytes = yield* checkEntrySize(second);
     if (
@@ -170,7 +169,8 @@ export const verifyAcceptableEntryPair = (
       Effect.mapError(rejectChainInvalid),
     );
     return { firstCanonicalBytes, secondCanonicalBytes, applied };
-  });
+  },
+);
 
 /** The store surface insertAcceptedEntrySync writes through (structural subtype). */
 export interface ChainAcceptStores {

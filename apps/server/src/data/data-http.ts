@@ -567,20 +567,18 @@ export const callProjectData =
  * is 403). On pass, returns the caller and the role (for owner-only
  * checks).
  */
-export const requireProjectChainAdmin = <Endpoint extends HttpApiEndpoint.Top>(
-  projectId: string,
-  endpoint: Endpoint,
-) =>
-  Effect.gen(function* () {
-    const principal = yield* (yield* RequestAuth).principal;
-    yield* ensureTokenScopeForProject(principal, projectId, "admin");
-    const env = yield* WorkerEnv;
-    const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
-      projectStub(env, projectId).memberRoleFor(principal.userId),
-    ).pipe(Effect.orDie);
-    const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
-    if (!roleAtLeast(role, "admin")) {
-      return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
-    }
-    return { principal, role };
-  });
+export const requireProjectChainAdmin = Effect.fn("data-http.requireProjectChainAdmin")(function* <
+  Endpoint extends HttpApiEndpoint.Top,
+>(projectId: string, endpoint: Endpoint) {
+  const principal = yield* (yield* RequestAuth).principal;
+  yield* ensureTokenScopeForProject(principal, projectId, "admin");
+  const env = yield* WorkerEnv;
+  const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
+    projectStub(env, projectId).memberRoleFor(principal.userId),
+  ).pipe(Effect.orDie);
+  const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
+  if (!roleAtLeast(role, "admin")) {
+    return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
+  }
+  return { principal, role };
+});

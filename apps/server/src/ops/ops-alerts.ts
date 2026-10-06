@@ -170,46 +170,41 @@ const makeSignal = (name: OpsSignalName, value: number, threshold: number): OpsS
 });
 
 /** Signal evaluation (does not notify — pure aggregation). */
-export function evaluateOpsSignals(
+export const evaluateOpsSignals = Effect.fn("ops-alerts.evaluateOpsSignals")(function* (
   nowMs: number,
-): Effect.Effect<readonly OpsSignal[], never, OpsRepo> {
-  return Effect.gen(function* () {
-    const ops = yield* OpsRepo;
-    yield* ops.pruneCounters(nowMs);
-    const twoWindowsAgo = nowMs - 2 * OPS_COUNTER_WINDOW_MS;
-    const lastHour = nowMs - OPS_COUNTER_WINDOW_MS;
-    const tokenRequests = maxWindow(
-      yield* ops.counterWindows("github_token_requests", twoWindowsAgo),
-    );
-    const capacity = sumWindows(yield* ops.counterWindows("cli_flow_capacity", twoWindowsAgo));
-    const signupDenied = yield* ops.auditEventCountSince("auth.signup_denied", lastHour);
-    const signupSuppressed = yield* ops.auditEventCountSince(
-      "auth.signup_denied_suppressed",
-      lastHour,
-    );
-    const loginSuppressed = yield* ops.auditEventCountSince(
-      "auth.login_failed_suppressed",
-      lastHour,
-    );
-    const backups = yield* ops.backupSummary(nowMs);
-    return [
-      makeSignal(
-        "github_token_requests_per_hour",
-        tokenRequests,
-        OPS_GITHUB_TOKEN_REQUESTS_PER_HOUR_THRESHOLD,
-      ),
-      makeSignal("cli_flow_capacity_reached", capacity, 1),
-      makeSignal("signup_denied_per_hour", signupDenied, OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD),
-      makeSignal("signup_denied_suppressed", signupSuppressed, 1),
-      makeSignal("login_failed_suppressed", loginSuppressed, 1),
-      makeSignal("storage_warn_projects", backups.storageWarnProjects, 1),
-      makeSignal("storage_reject_projects", backups.storageRejectProjects, 1),
-      makeSignal("backup_stale_projects", backups.staleProjects, 1),
-      makeSignal("backup_failing_projects", backups.failingProjects, 1),
-      makeSignal("backup_oversize_projects", backups.oversizeProjects, 1),
-    ];
-  });
-}
+): Effect.fn.Return<readonly OpsSignal[], never, OpsRepo> {
+  const ops = yield* OpsRepo;
+  yield* ops.pruneCounters(nowMs);
+  const twoWindowsAgo = nowMs - 2 * OPS_COUNTER_WINDOW_MS;
+  const lastHour = nowMs - OPS_COUNTER_WINDOW_MS;
+  const tokenRequests = maxWindow(
+    yield* ops.counterWindows("github_token_requests", twoWindowsAgo),
+  );
+  const capacity = sumWindows(yield* ops.counterWindows("cli_flow_capacity", twoWindowsAgo));
+  const signupDenied = yield* ops.auditEventCountSince("auth.signup_denied", lastHour);
+  const signupSuppressed = yield* ops.auditEventCountSince(
+    "auth.signup_denied_suppressed",
+    lastHour,
+  );
+  const loginSuppressed = yield* ops.auditEventCountSince("auth.login_failed_suppressed", lastHour);
+  const backups = yield* ops.backupSummary(nowMs);
+  return [
+    makeSignal(
+      "github_token_requests_per_hour",
+      tokenRequests,
+      OPS_GITHUB_TOKEN_REQUESTS_PER_HOUR_THRESHOLD,
+    ),
+    makeSignal("cli_flow_capacity_reached", capacity, 1),
+    makeSignal("signup_denied_per_hour", signupDenied, OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD),
+    makeSignal("signup_denied_suppressed", signupSuppressed, 1),
+    makeSignal("login_failed_suppressed", loginSuppressed, 1),
+    makeSignal("storage_warn_projects", backups.storageWarnProjects, 1),
+    makeSignal("storage_reject_projects", backups.storageRejectProjects, 1),
+    makeSignal("backup_stale_projects", backups.staleProjects, 1),
+    makeSignal("backup_failing_projects", backups.failingProjects, 1),
+    makeSignal("backup_oversize_projects", backups.oversizeProjects, 1),
+  ];
+});
 
 /** The stored state row's entry shape (decoded, not cast — a malformed value restarts from empty). */
 const AlertStateSchema = Schema.Struct({
@@ -289,28 +284,26 @@ function describe(events: readonly OpsAlertEvent[]): string {
  * notification fails, the state is not saved (the next evaluation
  * re-derives the same transition and re-sends).
  */
-export function runOpsAlerts(
+export const runOpsAlerts = Effect.fn("ops-alerts.runOpsAlerts")(function* (
   nowMs: number,
-): Effect.Effect<readonly OpsAlertEvent[], never, OpsRepo | OpsNotifier> {
-  return Effect.gen(function* () {
-    const ops = yield* OpsRepo;
-    const notifier = yield* OpsNotifier;
-    const signals = yield* evaluateOpsSignals(nowMs);
-    const states = yield* parseStates(yield* ops.getState(ALERT_STATE_KEY));
-    const { events, next } = deriveAlertEvents(signals, states, nowMs);
-    if (events.length === 0) {
-      return events;
-    }
-    const payload: OpsAlertPayload = {
-      service: "maruhi",
-      at: new Date(nowMs).toISOString(),
-      events,
-      text: `maruhi ops: ${describe(events)}`,
-    };
-    const delivered = yield* notifier.notify(payload);
-    if (delivered) {
-      yield* ops.setState(ALERT_STATE_KEY, JSON.stringify(next), nowMs);
-    }
+): Effect.fn.Return<readonly OpsAlertEvent[], never, OpsRepo | OpsNotifier> {
+  const ops = yield* OpsRepo;
+  const notifier = yield* OpsNotifier;
+  const signals = yield* evaluateOpsSignals(nowMs);
+  const states = yield* parseStates(yield* ops.getState(ALERT_STATE_KEY));
+  const { events, next } = deriveAlertEvents(signals, states, nowMs);
+  if (events.length === 0) {
     return events;
-  });
-}
+  }
+  const payload: OpsAlertPayload = {
+    service: "maruhi",
+    at: new Date(nowMs).toISOString(),
+    events,
+    text: `maruhi ops: ${describe(events)}`,
+  };
+  const delivered = yield* notifier.notify(payload);
+  if (delivered) {
+    yield* ops.setState(ALERT_STATE_KEY, JSON.stringify(next), nowMs);
+  }
+  return events;
+});

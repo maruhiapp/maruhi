@@ -143,42 +143,40 @@ export const mirrorStatusProgram = (
     statusOf(sql, member.role),
   );
 
-export const markMirrorProgram = (
+export const markMirrorProgram = Effect.fn("programs-mirror.markMirrorProgram")(function* (
   actor: DataActor,
   sourceOrigin: string,
   storage: DurableObjectStorage,
   cache: StateCache,
-): Effect.Effect<MirrorStatusValue, DataRejectedError, ChainStore> =>
-  Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "owner", cache);
-    const sql = storage.sql;
-    const current = readMirrorState(sql);
-    if (current === null) {
-      markMirror(sql, sourceOrigin, yield* Clock.currentTimeMillis);
-    } else if (current.sourceOrigin === sourceOrigin) {
-      return yield* rejectData({ kind: "mirror-state", reason: "already-mirror" });
-    } else {
-      // A mark naming another source re-points the mirror (ruling C
-      // revision, round 4): the project stays frozen throughout
-      remarkMirror(storage, PROJECT_DO_TABLES, sourceOrigin, yield* Clock.currentTimeMillis);
-    }
-    return statusOf(sql, "owner");
-  });
+): Effect.fn.Return<MirrorStatusValue, DataRejectedError, ChainStore> {
+  yield* requireMemberState(actor.userId, "owner", cache);
+  const sql = storage.sql;
+  const current = readMirrorState(sql);
+  if (current === null) {
+    markMirror(sql, sourceOrigin, yield* Clock.currentTimeMillis);
+  } else if (current.sourceOrigin === sourceOrigin) {
+    return yield* rejectData({ kind: "mirror-state", reason: "already-mirror" });
+  } else {
+    // A mark naming another source re-points the mirror (ruling C
+    // revision, round 4): the project stays frozen throughout
+    remarkMirror(storage, PROJECT_DO_TABLES, sourceOrigin, yield* Clock.currentTimeMillis);
+  }
+  return statusOf(sql, "owner");
+});
 
 /** The promotion (ruling C): the mark goes and the project accepts writes again. */
-export const unmarkMirrorProgram = (
+export const unmarkMirrorProgram = Effect.fn("programs-mirror.unmarkMirrorProgram")(function* (
   actor: DataActor,
   storage: DurableObjectStorage,
   cache: StateCache,
-): Effect.Effect<MirrorStatusValue, DataRejectedError, ChainStore> =>
-  Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "owner", cache);
-    if (readMirrorState(storage.sql) === null) {
-      return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
-    }
-    unmarkMirror(storage, PROJECT_DO_TABLES);
-    return statusOf(storage.sql, "owner");
-  });
+): Effect.fn.Return<MirrorStatusValue, DataRejectedError, ChainStore> {
+  yield* requireMemberState(actor.userId, "owner", cache);
+  if (readMirrorState(storage.sql) === null) {
+    return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
+  }
+  unmarkMirror(storage, PROJECT_DO_TABLES);
+  return statusOf(storage.sql, "owner");
+});
 
 /** A staging refusal as the data-plane rejection the worker maps to 422 MirrorSyncRejected. */
 const refuse = (refusal: MirrorPageRefusedError): DataRejectedError =>
@@ -214,98 +212,97 @@ function canonicalLength(entry: ChainEntry): number {
  * match the row's, and the whole chain verifies with the same verifier
  * the DO runs on load.
  */
-function verifyStagedChain(sql: SqlStorage): Effect.Effect<void, MirrorPageRefusedError> {
-  return Effect.gen(function* () {
-    const rows = yield* stagedChainRows(sql);
-    const invalid = new MirrorPageRefusedError({ reason: "chain-invalid" });
-    const entries: ChainEntry[] = [];
-    for (const row of rows) {
-      const entry = yield* decodeEntry(row.entryJson);
-      // A rejection is a platform defect, the same outcome the bare
-      // Promise's rejection propagated as before the bridge
-      const hash = yield* cryptoPromise("computeChainEntryHash", () =>
-        computeChainEntryHash(entry),
-      ).pipe(Effect.orDie);
-      if (
-        entry.seq !== row.seq ||
-        hash !== row.entryHashHex ||
-        canonicalLength(entry) !== row.canonicalBytes
-      ) {
-        return yield* invalid;
-      }
-      entries.push(entry);
+const verifyStagedChain = Effect.fn("programs-mirror.verifyStagedChain")(function* (
+  sql: SqlStorage,
+): Effect.fn.Return<void, MirrorPageRefusedError> {
+  const rows = yield* stagedChainRows(sql);
+  const invalid = new MirrorPageRefusedError({ reason: "chain-invalid" });
+  const entries: ChainEntry[] = [];
+  for (const row of rows) {
+    const entry = yield* decodeEntry(row.entryJson);
+    // A rejection is a platform defect, the same outcome the bare
+    // Promise's rejection propagated as before the bridge
+    const hash = yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(entry),
+    ).pipe(Effect.orDie);
+    if (
+      entry.seq !== row.seq ||
+      hash !== row.entryHashHex ||
+      canonicalLength(entry) !== row.canonicalBytes
+    ) {
+      return yield* invalid;
     }
-    yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(Effect.mapError(() => invalid));
-  });
-}
+    entries.push(entry);
+  }
+  yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(Effect.mapError(() => invalid));
+});
 
-export const mirrorPageProgram = (
+export const mirrorPageProgram = Effect.fn("programs-mirror.mirrorPageProgram")(function* (
   actor: DataActor,
   page: MirrorPageRequest,
   storage: DurableObjectStorage,
   cache: StateCache,
-): Effect.Effect<MirrorPageValue, DataRejectedError, ChainStore | AuditStore | StorageMeter> =>
-  Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "admin", cache);
-    const sql = storage.sql;
-    const state = readMirrorState(sql);
-    if (state === null) {
-      return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
-    }
-    yield* ensureStorageAdmitsGrowth;
-    // The mirror's own audit-head column must reach the replicated position
-    // before the trailer compares the replica's column with it (ruling J
-    // revision, round 8); a column that is current costs one read
-    const audit = yield* AuditStore;
-    while ((yield* audit.ensureHeadCurrent) === "more-remains") {
-      // Terminates: every call makes progress (the bounded contract of audit-store.ts)
-    }
-    const stagedPage = yield* stageMirrorPage({
-      storage,
-      tables: PROJECT_DO_TABLES,
-      schemaVersion: readProjectDoSchemaVersion(sql),
-      state,
-      sequence: page.sequence,
-      lines: page.lines,
-      nowMs: yield* Clock.currentTimeMillis,
-      maxRows: MAX_EXPORT_PAGE_ROWS,
-      maxBytes: MAX_EXPORT_PAGE_BYTES + MAX_MIRROR_PAGE_SLACK_BYTES,
-    }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
-    if (stagedPage.kind === "staged") {
-      return { nextSequence: stagedPage.nextSequence };
-    }
-    // The trailer page: the staged chain's content, then the swap (the
-    // permit is held across the verification's awaits — nothing else
-    // runs). These checks run outside the page's transaction, so a
-    // refusal discards the staging explicitly before it is mapped
-    const discardAndRefuse = (refusal: MirrorPageRefusedError) =>
-      Effect.andThen(
-        Effect.sync(() => discardMirrorStaging(storage, PROJECT_DO_TABLES)),
-        refuse(refusal),
-      );
-    yield* verifyStagedChain(sql).pipe(Effect.catchTag("MirrorPageRefused", discardAndRefuse));
-    // … and the staged audit log's heads, derived before anything live is
-    // touched (ruling J revision, round 10)
-    yield* verifyStagedAuditHeads(sql, state).pipe(
-      Effect.catchTag("MirrorPageRefused", discardAndRefuse),
+): Effect.fn.Return<MirrorPageValue, DataRejectedError, ChainStore | AuditStore | StorageMeter> {
+  yield* requireMemberState(actor.userId, "admin", cache);
+  const sql = storage.sql;
+  const state = readMirrorState(sql);
+  if (state === null) {
+    return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
+  }
+  yield* ensureStorageAdmitsGrowth;
+  // The mirror's own audit-head column must reach the replicated position
+  // before the trailer compares the replica's column with it (ruling J
+  // revision, round 8); a column that is current costs one read
+  const audit = yield* AuditStore;
+  while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+    // Terminates: every call makes progress (the bounded contract of audit-store.ts)
+  }
+  const stagedPage = yield* stageMirrorPage({
+    storage,
+    tables: PROJECT_DO_TABLES,
+    schemaVersion: readProjectDoSchemaVersion(sql),
+    state,
+    sequence: page.sequence,
+    lines: page.lines,
+    nowMs: yield* Clock.currentTimeMillis,
+    maxRows: MAX_EXPORT_PAGE_ROWS,
+    maxBytes: MAX_EXPORT_PAGE_BYTES + MAX_MIRROR_PAGE_SLACK_BYTES,
+  }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
+  if (stagedPage.kind === "staged") {
+    return { nextSequence: stagedPage.nextSequence };
+  }
+  // The trailer page: the staged chain's content, then the swap (the
+  // permit is held across the verification's awaits — nothing else
+  // runs). These checks run outside the page's transaction, so a
+  // refusal discards the staging explicitly before it is mapped
+  const discardAndRefuse = (refusal: MirrorPageRefusedError) =>
+    Effect.andThen(
+      Effect.sync(() => discardMirrorStaging(storage, PROJECT_DO_TABLES)),
+      refuse(refusal),
     );
-    const commit = yield* commitMirrorReplica({
-      storage,
-      tables: PROJECT_DO_TABLES,
-      state,
-      nowMs: yield* Clock.currentTimeMillis,
-      sourceMutationSeq: page.sourceMutationSeq ?? null,
-    }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
-    // The chain and the audit log were replaced: the derived memory is
-    // discarded and the audit-head column extended to the end (the same
-    // convergence as a restore — chain-do.ts opsRestore)
-    yield* Effect.sync(() => {
-      cache.chain = null;
-      cache.current = null;
-      audit.resetSeqCacheSync();
-    });
-    while ((yield* audit.ensureHeadCurrent) === "more-remains") {
-      // Terminates: every call makes progress (the bounded contract of audit-store.ts)
-    }
-    return { nextSequence: 0, committed: commit };
+  yield* verifyStagedChain(sql).pipe(Effect.catchTag("MirrorPageRefused", discardAndRefuse));
+  // … and the staged audit log's heads, derived before anything live is
+  // touched (ruling J revision, round 10)
+  yield* verifyStagedAuditHeads(sql, state).pipe(
+    Effect.catchTag("MirrorPageRefused", discardAndRefuse),
+  );
+  const commit = yield* commitMirrorReplica({
+    storage,
+    tables: PROJECT_DO_TABLES,
+    state,
+    nowMs: yield* Clock.currentTimeMillis,
+    sourceMutationSeq: page.sourceMutationSeq ?? null,
+  }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
+  // The chain and the audit log were replaced: the derived memory is
+  // discarded and the audit-head column extended to the end (the same
+  // convergence as a restore — chain-do.ts opsRestore)
+  yield* Effect.sync(() => {
+    cache.chain = null;
+    cache.current = null;
+    audit.resetSeqCacheSync();
   });
+  while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+    // Terminates: every call makes progress (the bounded contract of audit-store.ts)
+  }
+  return { nextSequence: 0, committed: commit };
+});

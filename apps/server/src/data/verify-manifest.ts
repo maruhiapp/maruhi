@@ -89,7 +89,7 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
  * no variable (environment rename, rotate, environment creation)
  * take no override.
  */
-export const manifestDigestEntries = (
+export const manifestDigestEntries = Effect.fn("verify-manifest.manifestDigestEntries")(function* (
   environmentId: string,
   override: {
     readonly variableId: string;
@@ -97,22 +97,21 @@ export const manifestDigestEntries = (
     readonly metaVersion: number;
     readonly signedBytesHashHex: string;
   } | null,
-) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const stored = yield* store.variableDigestEntries(environmentId);
-    if (override === null) {
-      return stored;
-    }
-    const entry: VariablesDigestEntry = {
-      variableId: override.variableId,
-      status: override.status,
-      metaVersion: override.metaVersion,
-      metaSigHashHex: override.signedBytesHashHex,
-    };
-    const rest = stored.filter((candidate) => candidate.variableId !== override.variableId);
-    return [...rest, entry];
-  });
+) {
+  const store = yield* DataStore;
+  const stored = yield* store.variableDigestEntries(environmentId);
+  if (override === null) {
+    return stored;
+  }
+  const entry: VariablesDigestEntry = {
+    variableId: override.variableId,
+    status: override.status,
+    metaVersion: override.metaVersion,
+    metaSigHashHex: override.signedBytesHashHex,
+  };
+  const rest = stored.filter((candidate) => candidate.variableId !== override.variableId);
+  return [...rest, entry];
+});
 
 /**
  * The latest shape of the stored environment meta statement
@@ -123,19 +122,20 @@ export const manifestDigestEntries = (
  * the statement are created atomically by composite acceptance) =
  * defect.
  */
-export const storedEnvMeta = (environmentId: string) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const environment = yield* store.findEnvironment(environmentId);
-    if (environment === null) {
-      return yield* Effect.die(new Error("environment row missing for manifest acceptance"));
-    }
-    const anchor = yield* store.environmentMetaAnchor(environmentId, environment.latestMetaVersion);
-    if (anchor === null) {
-      return yield* Effect.die(new Error("environment meta statement row missing"));
-    }
-    return { metaVersion: environment.latestMetaVersion, sigHashHex: anchor.signedBytesHashHex };
-  });
+export const storedEnvMeta = Effect.fn("verify-manifest.storedEnvMeta")(function* (
+  environmentId: string,
+) {
+  const store = yield* DataStore;
+  const environment = yield* store.findEnvironment(environmentId);
+  if (environment === null) {
+    return yield* Effect.die(new Error("environment row missing for manifest acceptance"));
+  }
+  const anchor = yield* store.environmentMetaAnchor(environmentId, environment.latestMetaVersion);
+  if (anchor === null) {
+    return yield* Effect.die(new Error("environment meta statement row missing"));
+  }
+  return { metaVersion: environment.latestMetaVersion, sigHashHex: anchor.signedBytesHashHex };
+});
 
 /**
  * The shared shape of the non-composite meta operations (variable
@@ -147,21 +147,21 @@ export const storedEnvMeta = (environmentId: string) =>
  * rename passes the post-apply value = the bundled statement
  * itself).
  */
-export const acceptManifestForMetaOp = (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly history: ChainHistoryIndex;
-  readonly member: MemberWithDevice;
-  readonly manifest: EnvManifestInput;
-  readonly digestOverride: {
-    readonly variableId: string;
-    readonly status: "active" | "deleted" | "declared";
-    readonly metaVersion: number;
-    readonly signedBytesHashHex: string;
-  } | null;
-  readonly envMeta?: EnvManifestEnvMeta;
-}) =>
-  Effect.gen(function* () {
+export const acceptManifestForMetaOp = Effect.fn("verify-manifest.acceptManifestForMetaOp")(
+  function* (input: {
+    readonly projectId: string;
+    readonly environmentId: string;
+    readonly history: ChainHistoryIndex;
+    readonly member: MemberWithDevice;
+    readonly manifest: EnvManifestInput;
+    readonly digestOverride: {
+      readonly variableId: string;
+      readonly status: "active" | "deleted" | "declared";
+      readonly metaVersion: number;
+      readonly signedBytesHashHex: string;
+    } | null;
+    readonly envMeta?: EnvManifestEnvMeta;
+  }) {
     // The head pinning for v1 bootstrap (a clarification of
     // AUTH_SPEC §12-5 (6)): when no manifest is stored, at v1
     // acceptance a rotation slipped in after the declared head still
@@ -210,7 +210,8 @@ export const acceptManifestForMetaOp = (input: {
         );
       },
     };
-  });
+  },
+);
 
 /**
  * The manifest acceptance column (§12-5's (1)–(7)): the
@@ -228,7 +229,7 @@ export const acceptManifestForMetaOp = (input: {
  * index for composites (environment creation, rotate) — §12-5
  * (4)'s judgment basis.
  */
-export const acceptEnvManifest = (input: {
+export const acceptEnvManifest = Effect.fn("verify-manifest.acceptEnvManifest")(function* (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly history: ChainHistoryIndex;
@@ -238,84 +239,83 @@ export const acceptEnvManifest = (input: {
   readonly entries: readonly VariablesDigestEntry[];
   /** The latest shape of the post-acceptance environment meta statement (metaVersion + the server-recomputed hash). */
   readonly envMeta: EnvManifestEnvMeta;
-}) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const anchor = yield* store.environmentManifestAnchor(input.environmentId);
-    // The CAS (§12-5 (6)): only declared == latest + 1. No row
-    // (environment creation) goes from latest 0 to v1
-    const latestVersion = anchor?.manifestVersion ?? 0;
-    if (input.manifest.manifestVersion !== latestVersion + 1) {
-      return yield* rejectData({
-        kind: "manifest-version-conflict",
-        currentManifestVersion: latestVersion,
-      });
-    }
-    const verified = yield* catchCryptoErrors(
-      cryptoEffect(() =>
-        verifyDistributedEnvManifest({
-          history: input.history,
-          context: {
-            suite: input.manifest.suite,
-            // The coordinates are reconstructed from server-side
-            // values (§12-5 — not assembled from wire-declared
-            // values)
-            projectId: input.projectId,
-            environmentId: input.environmentId,
-            epoch: input.manifest.epoch,
-            manifestVersion: input.manifest.manifestVersion,
-            variablesDigestHex: input.manifest.variablesDigestHex,
-            envMetaVersion: input.manifest.envMetaVersion,
-            envMetaSigHashHex: input.manifest.envMetaSigHashHex,
-            prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
-            // issuer = the caller (§12-5 (1)). The verification key
-            // and the bound-key match at head time are checked by
-            // verifyDistributedEnvManifest via the FP (the
-            // chain-derived member at acceptance time)
-            issuerUserId: input.member.userId,
-            chainHeadHashHex: input.manifest.chainHeadHashHex,
-            chainHeadSeq: input.manifest.chainHeadSeq,
-          },
-          issuerKeyFingerprintHex: input.member.keyFingerprintHex,
-          signatureHex: input.manifest.signatureHex,
-          entries: input.entries,
-          envMeta: input.envMeta,
-          predecessor:
-            anchor === null
-              ? undefined
-              : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
+}) {
+  const store = yield* DataStore;
+  const anchor = yield* store.environmentManifestAnchor(input.environmentId);
+  // The CAS (§12-5 (6)): only declared == latest + 1. No row
+  // (environment creation) goes from latest 0 to v1
+  const latestVersion = anchor?.manifestVersion ?? 0;
+  if (input.manifest.manifestVersion !== latestVersion + 1) {
+    return yield* rejectData({
+      kind: "manifest-version-conflict",
+      currentManifestVersion: latestVersion,
+    });
+  }
+  const verified = yield* catchCryptoErrors(
+    cryptoEffect(() =>
+      verifyDistributedEnvManifest({
+        history: input.history,
+        context: {
+          suite: input.manifest.suite,
+          // The coordinates are reconstructed from server-side
+          // values (§12-5 — not assembled from wire-declared
+          // values)
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          epoch: input.manifest.epoch,
+          manifestVersion: input.manifest.manifestVersion,
+          variablesDigestHex: input.manifest.variablesDigestHex,
+          envMetaVersion: input.manifest.envMetaVersion,
+          envMetaSigHashHex: input.manifest.envMetaSigHashHex,
+          prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
+          // issuer = the caller (§12-5 (1)). The verification key
+          // and the bound-key match at head time are checked by
+          // verifyDistributedEnvManifest via the FP (the
+          // chain-derived member at acceptance time)
+          issuerUserId: input.member.userId,
+          chainHeadHashHex: input.manifest.chainHeadHashHex,
+          chainHeadSeq: input.manifest.chainHeadSeq,
+        },
+        issuerKeyFingerprintHex: input.member.keyFingerprintHex,
+        signatureHex: input.manifest.signatureHex,
+        entries: input.entries,
+        envMeta: input.envMeta,
+        predecessor:
+          anchor === null
+            ? undefined
+            : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
+      }),
+    ),
+    {
+      CryptoEnvManifestInvalid: (error) =>
+        rejectData({
+          kind: "manifest-rejected",
+          reason: MANIFEST_REJECT_REASONS[error.reason],
         }),
-      ),
-      {
-        CryptoEnvManifestInvalid: (error) =>
-          rejectData({
-            kind: "manifest-rejected",
-            reason: MANIFEST_REJECT_REASONS[error.reason],
-          }),
-        // Every other kind is unreachable (InvalidInput / KeyImportFailed
-        // with a Schema-validated wire shape + keys derived from a
-        // verified chain; the rest are never returned by this
-        // operation): an implementation bug = defect; error values carry
-        // no secrets
-        CryptoInvalidInput: "die",
-        CryptoKeyImport: "die",
-        CryptoKeyExport: "die",
-        CryptoEncrypt: "die",
-        CryptoDecrypt: "die",
-        CryptoDekWrap: "die",
-        CryptoDekUnwrap: "die",
-        CryptoSign: "die",
-        CryptoDekWrapSignature: "die",
-        CryptoInviteAcceptSignature: "die",
-        CryptoInviteLinkSignature: "die",
-        CryptoInviteIssueSignature: "die",
-        CryptoDekCommitment: "die",
-        CryptoValueInvalid: "die",
-        CryptoMetaStatementInvalid: "die",
-        CryptoUnsupportedMetaLayout: "die",
-        CryptoHeadAttestationInvalid: "die",
-        ChainInvalid: "die",
-      },
-    );
-    return verified.signedBytesHashHex;
-  });
+      // Every other kind is unreachable (InvalidInput / KeyImportFailed
+      // with a Schema-validated wire shape + keys derived from a
+      // verified chain; the rest are never returned by this
+      // operation): an implementation bug = defect; error values carry
+      // no secrets
+      CryptoInvalidInput: "die",
+      CryptoKeyImport: "die",
+      CryptoKeyExport: "die",
+      CryptoEncrypt: "die",
+      CryptoDecrypt: "die",
+      CryptoDekWrap: "die",
+      CryptoDekUnwrap: "die",
+      CryptoSign: "die",
+      CryptoDekWrapSignature: "die",
+      CryptoInviteAcceptSignature: "die",
+      CryptoInviteLinkSignature: "die",
+      CryptoInviteIssueSignature: "die",
+      CryptoDekCommitment: "die",
+      CryptoValueInvalid: "die",
+      CryptoMetaStatementInvalid: "die",
+      CryptoUnsupportedMetaLayout: "die",
+      CryptoHeadAttestationInvalid: "die",
+      ChainInvalid: "die",
+    },
+  );
+  return verified.signedBytesHashHex;
+});

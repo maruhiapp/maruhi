@@ -134,35 +134,37 @@ export type LeaseOutcome =
  * server key. Only the reason code and claims_digest go on the payload;
  * external identifiers such as repository names are not written (§14-4).
  */
-export const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const decision = yield* store.checkLeaseWindow(
-      "denied",
-      MAX_LEASE_DENIED_ROWS_PER_WINDOW,
-      nowMs,
-    );
-    if (!decision.allowed) {
-      return;
-    }
-    const audit = yield* AuditStore;
-    yield* Effect.sync(() => {
-      store.recordLeaseWindowUse("denied", nowMs);
-      audit.appendSync({
-        event: "server.lease_denied",
-        serverTs: nowMs,
-        actorType: "system",
-        payload: { reason, claimsDigest: claimsDigestHex },
-      });
+export const recordDenied = Effect.fn("programs-lease.recordDenied")(function* (
+  reason: string,
+  claimsDigestHex: string,
+  nowMs: number,
+) {
+  const store = yield* DataStore;
+  const decision = yield* store.checkLeaseWindow("denied", MAX_LEASE_DENIED_ROWS_PER_WINDOW, nowMs);
+  if (!decision.allowed) {
+    return;
+  }
+  const audit = yield* AuditStore;
+  yield* Effect.sync(() => {
+    store.recordLeaseWindowUse("denied", nowMs);
+    audit.appendSync({
+      event: "server.lease_denied",
+      serverTs: nowMs,
+      actorType: "system",
+      payload: { reason, claimsDigest: claimsDigestHex },
     });
   });
+});
 
 /** Fold rejection + audit recording into one (leaves no path that forgets to record). */
-const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
-  Effect.gen(function* () {
-    yield* recordDenied(reason, facts.claimsDigestHex, nowMs);
-    return yield* Effect.fail<LeaseRejection>({ kind: "not-found" });
-  });
+const denyWithAudit = Effect.fn("programs-lease.denyWithAudit")(function* (
+  reason: string,
+  facts: LeaseTokenFacts,
+  nowMs: number,
+) {
+  yield* recordDenied(reason, facts.claimsDigestHex, nowMs);
+  return yield* Effect.fail<LeaseRejection>({ kind: "not-found" });
+});
 
 /**
  * The first-come-binding check stage (§14-1; 2026-08-15 ruling —
@@ -172,18 +174,21 @@ const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
  * pre-issuing issuers whose tokens cannot be reissued at runtime). The check
  * is read-only and does not consume the rate window.
  */
-const rejectReplayedToken = (facts: LeaseTokenFacts, ephemeralPubHex: string, nowMs: number) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const boundPubHex = yield* store.leaseBinding(facts.bindingKeyHex, nowMs);
-    if (boundPubHex !== null && boundPubHex !== ephemeralPubHex) {
-      yield* recordDenied("token-replayed", facts.claimsDigestHex, nowMs);
-      return yield* Effect.fail<LeaseRejection>({ kind: "replayed" });
-    }
-  });
+const rejectReplayedToken = Effect.fn("programs-lease.rejectReplayedToken")(function* (
+  facts: LeaseTokenFacts,
+  ephemeralPubHex: string,
+  nowMs: number,
+) {
+  const store = yield* DataStore;
+  const boundPubHex = yield* store.leaseBinding(facts.bindingKeyHex, nowMs);
+  if (boundPubHex !== null && boundPubHex !== ephemeralPubHex) {
+    yield* recordDenied("token-replayed", facts.claimsDigestHex, nowMs);
+    return yield* Effect.fail<LeaseRejection>({ kind: "replayed" });
+  }
+});
 
 /** What the shared authorization front stage hands the lease and the proposal programs. */
-export interface AuthorizedWorkload {
+interface AuthorizedWorkload {
   readonly serverKeyInfo: ServerKeyInfo;
   readonly chain: InitializedChain;
   readonly state: ChainState;
@@ -199,255 +204,248 @@ export interface AuthorizedWorkload {
  * binding (401 replayed), the environment's existence. Everything after
  * it (windows, material, writes) is per program.
  */
-export const authorizeWorkload = (
+export const authorizeWorkload = Effect.fn("programs-lease.authorizeWorkload")(function* (
   environmentId: string,
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
-): Effect.Effect<
+): Effect.fn.Return<
   AuthorizedWorkload,
   LeaseRejection,
   ChainStore | DataStore | AuditStore | ServerKey
-> =>
-  Effect.gen(function* () {
-    const serverKey = yield* ServerKey;
-    const serverKeyInfo = yield* serverKey.info;
-    const nowMs = yield* Clock.currentTimeMillis;
-    // 0. A deployment with no server key configured fails **before reading the
-    // project**. Order matters: if chain loading (uninitialized = 404) ran
-    // first, a keyless deployment would produce the "unknown = 404 / real =
-    // 503" split and leak the project's existence (§11-2). Failing first makes
-    // every request uniformly 503 and leaks nothing. The reason is not 404
-    // because missing configuration does not mean "this project does not
-    // exist" (without the private key the unwrap path itself does not exist)
-    if (serverKeyInfo === null) {
-      return yield* Effect.fail<LeaseRejection>({
-        kind: "unavailable",
-        reason: "server-key-unconfigured",
-      });
-    }
-    // An uninitialized project is 404 with no audit left behind: letting the
-    // unauthenticated path create DO rows for arbitrary project IDs would be
-    // an audit-log inflation DoS. The project ID is a genesis hash =
-    // effectively a capability and cannot be guessed. **Note the fixed window
-    // below bounds the number of audit rows, not the probe itself** (someone
-    // holding one valid token from an allowed issuer can repeat requests to a
-    // known project ID to impose chain-derivation cost, and after exhausting
-    // the 100 rows/hour can create a state where subsequent denials go
-    // unrecorded). Also, the DO constructor creates the empty tables on reach,
-    // so a probe to an arbitrary project ID consumes DO-instantiation storage
-    // even without leaving an audit row.
-    // A limit on the request rate itself is unimplemented and is deferred as a
-    // design decision separate from AUDIT_SPEC §3.5's recording bound
-    const chain = yield* loadInitializedChain.pipe(
-      Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
-    );
-    // Derivation cannot fail (verification failure of a stored chain is a
-    // defect — chain-store.ts)
-    const { state } = yield* deriveStoredState(chain, cache);
+> {
+  const serverKey = yield* ServerKey;
+  const serverKeyInfo = yield* serverKey.info;
+  const nowMs = yield* Clock.currentTimeMillis;
+  // 0. A deployment with no server key configured fails **before reading the
+  // project**. Order matters: if chain loading (uninitialized = 404) ran
+  // first, a keyless deployment would produce the "unknown = 404 / real =
+  // 503" split and leak the project's existence (§11-2). Failing first makes
+  // every request uniformly 503 and leaks nothing. The reason is not 404
+  // because missing configuration does not mean "this project does not
+  // exist" (without the private key the unwrap path itself does not exist)
+  if (serverKeyInfo === null) {
+    return yield* Effect.fail<LeaseRejection>({
+      kind: "unavailable",
+      reason: "server-key-unconfigured",
+    });
+  }
+  // An uninitialized project is 404 with no audit left behind: letting the
+  // unauthenticated path create DO rows for arbitrary project IDs would be
+  // an audit-log inflation DoS. The project ID is a genesis hash =
+  // effectively a capability and cannot be guessed. **Note the fixed window
+  // below bounds the number of audit rows, not the probe itself** (someone
+  // holding one valid token from an allowed issuer can repeat requests to a
+  // known project ID to impose chain-derivation cost, and after exhausting
+  // the 100 rows/hour can create a state where subsequent denials go
+  // unrecorded). Also, the DO constructor creates the empty tables on reach,
+  // so a probe to an arbitrary project ID consumes DO-instantiation storage
+  // even without leaving an audit row.
+  // A limit on the request rate itself is unimplemented and is deferred as a
+  // design decision separate from AUDIT_SPEC §3.5's recording bound
+  const chain = yield* loadInitializedChain.pipe(
+    Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
+  );
+  // Derivation cannot fail (verification failure of a stored chain is a
+  // defect — chain-store.ts)
+  const { state } = yield* deriveStoredState(chain, cache);
 
-    // 1. Authorization: a valid grant of our own server key × lease_policy
-    // (existential quantification) × disclosure scope. What matches is always
-    // "the grant of our own FP" — the server can only unwrap wraps addressed
-    // to itself, so grant identification has no nondeterminism
-    const grant = state.serverGrants.get(serverKeyInfo.serverKeyFingerprintHex);
-    if (grant === undefined) {
-      return yield* denyWithAudit("no-grant", facts, nowMs);
-    }
-    if (!leasePolicyAuthorizes(grant, facts)) {
-      return yield* denyWithAudit("policy-mismatch", facts, nowMs);
-    }
-    if (!grantCoversEnvironment(grant, environmentId)) {
-      return yield* denyWithAudit("scope-out-of-range", facts, nowMs);
-    }
+  // 1. Authorization: a valid grant of our own server key × lease_policy
+  // (existential quantification) × disclosure scope. What matches is always
+  // "the grant of our own FP" — the server can only unwrap wraps addressed
+  // to itself, so grant identification has no nondeterminism
+  const grant = state.serverGrants.get(serverKeyInfo.serverKeyFingerprintHex);
+  if (grant === undefined) {
+    return yield* denyWithAudit("no-grant", facts, nowMs);
+  }
+  if (!leasePolicyAuthorizes(grant, facts)) {
+    return yield* denyWithAudit("policy-mismatch", facts, nowMs);
+  }
+  if (!grantCoversEnvironment(grant, environmentId)) {
+    return yield* denyWithAudit("scope-out-of-range", facts, nowMs);
+  }
 
-    // 1.5 First-come binding (§14-1). Placed right after authorization and
-    // **before** the environment-existence check — a holder of a copy of a
-    // bound token gets a uniform 401 regardless of whether the target
-    // environment exists or is deleted, so no existence information is given
-    // (§14-3)
-    yield* rejectReplayedToken(facts, ephemeralPubHex, nowMs);
-    // 2. Environment existence (a deleted tombstone is 404)
-    yield* requireActiveEnvironment(environmentId).pipe(
-      Effect.matchEffect({
-        onFailure: () => denyWithAudit("environment-not-found", facts, nowMs),
-        onSuccess: () => Effect.void,
-      }),
-    );
+  // 1.5 First-come binding (§14-1). Placed right after authorization and
+  // **before** the environment-existence check — a holder of a copy of a
+  // bound token gets a uniform 401 regardless of whether the target
+  // environment exists or is deleted, so no existence information is given
+  // (§14-3)
+  yield* rejectReplayedToken(facts, ephemeralPubHex, nowMs);
+  // 2. Environment existence (a deleted tombstone is 404)
+  yield* requireActiveEnvironment(environmentId).pipe(
+    Effect.matchEffect({
+      onFailure: () => denyWithAudit("environment-not-found", facts, nowMs),
+      onSuccess: () => Effect.void,
+    }),
+  );
 
-    return { serverKeyInfo, chain, state, grant, nowMs };
-  });
+  return { serverKeyInfo, chain, state, grant, nowMs };
+});
 
-export const leaseProgram = (
+export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
   environmentId: string,
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
-): Effect.Effect<
+): Effect.fn.Return<
   LeaseValue,
   LeaseRejection,
   ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
-> =>
-  Effect.gen(function* () {
-    const serverKey = yield* ServerKey;
-    const { serverKeyInfo, chain, state, grant, nowMs } = yield* authorizeWorkload(
-      environmentId,
-      ephemeralPubHex,
-      facts,
-      cache,
-    );
-    const store = yield* DataStore;
+> {
+  const serverKey = yield* ServerKey;
+  const { serverKeyInfo, chain, state, grant, nowMs } = yield* authorizeWorkload(
+    environmentId,
+    ephemeralPubHex,
+    facts,
+    cache,
+  );
+  const store = yield* DataStore;
 
-    // 3. The rate limit **check** (after authorization — for existence
-    // concealment; errors/lease.ts). Consumption happens only "when a lease is
-    // actually issued" (step 6 below). Consuming here would make a project
-    // that 503s on missing server wraps (4) or unwrap failure (5) burn its
-    // window on every CI retry, and from the 300th retry onward the 503 — a
-    // "diagnosable, fixable" failure — turns into an unrelated 429, defeating
-    // the point of §14-3 deliberately providing a 503
-    const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
-    if (!window.allowed) {
-      yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
-      return yield* Effect.fail<LeaseRejection>({
-        kind: "rate-limited",
-        retryAfterSeconds: window.retryAfterSeconds,
-      });
-    }
-
-    // 4. Existence of wraps addressed to the server (missing = 503; do not
-    // let the "granted but re-wrap incomplete" state become an opaque failure
-    // — §14-3. Per the A1 ruling, this is the last line of defense against a
-    // missed backfill)
-    const serverWraps = yield* store.listServerWraps(
-      environmentId,
-      serverKeyInfo.serverKeyFingerprintHex,
-    );
-    const currentEpoch = currentEpochOf(state, environmentId);
-    const statement = yield* store.environmentStatement(environmentId);
-    if (statement === null) {
-      return yield* Effect.die(new Error("environment meta statement row missing"));
-    }
-    const variables = yield* store.latestVersions(environmentId);
-    const deletedVariables = yield* store.deletedVariableStatements(environmentId);
-    // Statements of declared variables (apply the §12-7 distribution rules to
-    // the lease response too — material for the workload's manifest-digest
-    // recomputation [§9.1 (5)])
-    const declaredVariables = yield* store.declaredVariableStatements(environmentId);
-    // The latest manifest (§14-2 — material for the workload's verification
-    // obligation §9.1 (5); the receiving side rejects any missing uniformly)
-    const manifest = yield* store.environmentManifest(environmentId);
-    // The value snapshot at the checkpoint (§14-2 — the same material as
-    // §12-7; null for an environment without a baseline = not included)
-    const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
-
-    // Every epoch used by the latest values in the response + the current
-    // epoch (§14-2). Require the full set with no gaps — if even one is
-    // missing, an undecryptable value would ride on the response
-    const neededEpochs = [
-      ...new Set([currentEpoch, ...variables.map((variable) => variable.epoch)]),
-    ].toSorted((a, b) => a - b);
-    const available = new Map(serverWraps.map((wrap) => [wrap.epoch, wrap]));
-    const usable = neededEpochs.map((epoch) => available.get(epoch));
-    if (usable.some((wrap) => wrap === undefined)) {
-      yield* recordDenied("server-wraps-missing", facts.claimsDigestHex, nowMs);
-      return yield* Effect.fail<LeaseRejection>({
-        kind: "unavailable",
-        reason: "server-wraps-missing",
-      });
-    }
-    const wraps = usable.filter((wrap) => wrap !== undefined);
-
-    // 5. Unwrap → re-wrap (no plaintext DEK escapes the ServerKey closure)
-    const leases = yield* serverKey
-      .reseal({
-        projectId: chain.genesisHashHex,
-        environmentId,
-        claimsDigestHex: facts.claimsDigestHex,
-        workloadPubHex: ephemeralPubHex,
-        wraps,
-      })
-      .pipe(
-        Effect.matchEffect({
-          onFailure: (failure) =>
-            Effect.gen(function* () {
-              // Unwrap failure = a poisoned wrap (the target of the §12-6
-              // repair path); re-wrap failure = the workload public key is
-              // invalid as a point. Both are "a grant exists but no usable
-              // material", so they fold into the same 503 as
-              // server-wraps-missing (the finer reason lives in the
-              // operator-facing audit row)
-              yield* recordDenied(`reseal-${failure}`, facts.claimsDigestHex, nowMs);
-              return yield* Effect.fail<LeaseRejection>({
-                kind: "unavailable",
-                reason: "server-wraps-missing",
-              });
-            }),
-          onSuccess: (value) => Effect.succeed(value),
-        }),
-      );
-
-    // Observation only for the DO storage total guard (AUTH_SPEC §12-8 — no
-    // rejection. A lease is one of the surfaces accepted even under rejection
-    // (e), but since it is a read that writes audit rows it carries a warning
-    // observation point — same reason as pull-with-values). After
-    // authorization = compatible with existence concealment (§11-2)
-    yield* observeStorageLevel;
-    // Audit (AUDIT_SPEC §3.5): one server.dek_unwrapped row per epoch + one
-    // server.lease_issued row per environment. The actor is `{ server, key FP
-    // }`. **No var.read is recorded** (that is the evidence of a human actor's
-    // read; disclosure to workloads is carried by the server.* family — §14-4)
-    const audit = yield* AuditStore;
-    yield* Effect.sync(() => {
-      // 6. Window consumption and the first-come-binding record happen in the
-      // same synchronous block as issuance (count only what was recorded /
-      // create neither intermediate state — "a binding left without an
-      // issuance" nor "issued but no binding left" — §14-1)
-      store.recordLeaseWindowUse("issued", nowMs);
-      store.recordLeaseBinding(
-        facts.bindingKeyHex,
-        ephemeralPubHex,
-        facts.bindingExpiresAtMs,
-        nowMs,
-      );
-      audit.appendManySync([
-        ...leases.map((lease) => ({
-          event: "server.dek_unwrapped",
-          serverTs: nowMs,
-          actorType: "server" as const,
-          actorKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
-          environmentId,
-          epoch: lease.epoch,
-        })),
-        {
-          event: "server.lease_issued",
-          serverTs: nowMs,
-          actorType: "server" as const,
-          actorKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
-          environmentId,
-          payload: {
-            // The matching policy element is held by the chain (the grant
-            // payload) and can be cross-checked via grant_chain_seq +
-            // claims_digest. No external identifiers (repository names etc.)
-            // are written (§14-4)
-            grantChainSeq: grant.grantSeq,
-            claimsDigest: facts.claimsDigestHex,
-            epochs: leases.map((lease) => lease.epoch),
-          },
-        },
-      ]);
+  // 3. The rate limit **check** (after authorization — for existence
+  // concealment; errors/lease.ts). Consumption happens only "when a lease is
+  // actually issued" (step 6 below). Consuming here would make a project
+  // that 503s on missing server wraps (4) or unwrap failure (5) burn its
+  // window on every CI retry, and from the 300th retry onward the 503 — a
+  // "diagnosable, fixable" failure — turns into an unrelated 429, defeating
+  // the point of §14-3 deliberately providing a 503
+  const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
+  if (!window.allowed) {
+    yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
+    return yield* Effect.fail<LeaseRejection>({
+      kind: "rate-limited",
+      retryAfterSeconds: window.retryAfterSeconds,
     });
+  }
 
-    return {
+  // 4. Existence of wraps addressed to the server (missing = 503; do not
+  // let the "granted but re-wrap incomplete" state become an opaque failure
+  // — §14-3. Per the A1 ruling, this is the last line of defense against a
+  // missed backfill)
+  const serverWraps = yield* store.listServerWraps(
+    environmentId,
+    serverKeyInfo.serverKeyFingerprintHex,
+  );
+  const currentEpoch = currentEpochOf(state, environmentId);
+  const statement = yield* store.environmentStatement(environmentId);
+  if (statement === null) {
+    return yield* Effect.die(new Error("environment meta statement row missing"));
+  }
+  const variables = yield* store.latestVersions(environmentId);
+  const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+  // Statements of declared variables (apply the §12-7 distribution rules to
+  // the lease response too — material for the workload's manifest-digest
+  // recomputation [§9.1 (5)])
+  const declaredVariables = yield* store.declaredVariableStatements(environmentId);
+  // The latest manifest (§14-2 — material for the workload's verification
+  // obligation §9.1 (5); the receiving side rejects any missing uniformly)
+  const manifest = yield* store.environmentManifest(environmentId);
+  // The value snapshot at the checkpoint (§14-2 — the same material as
+  // §12-7; null for an environment without a baseline = not included)
+  const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
+
+  // Every epoch used by the latest values in the response + the current
+  // epoch (§14-2). Require the full set with no gaps — if even one is
+  // missing, an undecryptable value would ride on the response
+  const neededEpochs = [
+    ...new Set([currentEpoch, ...variables.map((variable) => variable.epoch)]),
+  ].toSorted((a, b) => a - b);
+  const available = new Map(serverWraps.map((wrap) => [wrap.epoch, wrap]));
+  const usable = neededEpochs.map((epoch) => available.get(epoch));
+  if (usable.some((wrap) => wrap === undefined)) {
+    yield* recordDenied("server-wraps-missing", facts.claimsDigestHex, nowMs);
+    return yield* Effect.fail<LeaseRejection>({
+      kind: "unavailable",
+      reason: "server-wraps-missing",
+    });
+  }
+  const wraps = usable.filter((wrap) => wrap !== undefined);
+
+  // 5. Unwrap → re-wrap (no plaintext DEK escapes the ServerKey closure)
+  const leases = yield* serverKey
+    .reseal({
+      projectId: chain.genesisHashHex,
       environmentId,
-      currentEpoch,
-      chain: chain.entries,
-      headSeq: chain.headSeq,
-      headHashHex: chain.headHashHex,
-      statement,
-      variables,
-      deletedVariables,
-      ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
-      leases,
-      ...optionalDistributionFields(manifest, checkpointSnapshot),
-    } satisfies LeaseValue;
+      claimsDigestHex: facts.claimsDigestHex,
+      workloadPubHex: ephemeralPubHex,
+      wraps,
+    })
+    .pipe(
+      Effect.matchEffect({
+        onFailure: (failure) =>
+          Effect.gen(function* () {
+            // Unwrap failure = a poisoned wrap (the target of the §12-6
+            // repair path); re-wrap failure = the workload public key is
+            // invalid as a point. Both are "a grant exists but no usable
+            // material", so they fold into the same 503 as
+            // server-wraps-missing (the finer reason lives in the
+            // operator-facing audit row)
+            yield* recordDenied(`reseal-${failure}`, facts.claimsDigestHex, nowMs);
+            return yield* Effect.fail<LeaseRejection>({
+              kind: "unavailable",
+              reason: "server-wraps-missing",
+            });
+          }),
+        onSuccess: (value) => Effect.succeed(value),
+      }),
+    );
+
+  // Observation only for the DO storage total guard (AUTH_SPEC §12-8 — no
+  // rejection. A lease is one of the surfaces accepted even under rejection
+  // (e), but since it is a read that writes audit rows it carries a warning
+  // observation point — same reason as pull-with-values). After
+  // authorization = compatible with existence concealment (§11-2)
+  yield* observeStorageLevel;
+  // Audit (AUDIT_SPEC §3.5): one server.dek_unwrapped row per epoch + one
+  // server.lease_issued row per environment. The actor is `{ server, key FP
+  // }`. **No var.read is recorded** (that is the evidence of a human actor's
+  // read; disclosure to workloads is carried by the server.* family — §14-4)
+  const audit = yield* AuditStore;
+  yield* Effect.sync(() => {
+    // 6. Window consumption and the first-come-binding record happen in the
+    // same synchronous block as issuance (count only what was recorded /
+    // create neither intermediate state — "a binding left without an
+    // issuance" nor "issued but no binding left" — §14-1)
+    store.recordLeaseWindowUse("issued", nowMs);
+    store.recordLeaseBinding(facts.bindingKeyHex, ephemeralPubHex, facts.bindingExpiresAtMs, nowMs);
+    audit.appendManySync([
+      ...leases.map((lease) => ({
+        event: "server.dek_unwrapped",
+        serverTs: nowMs,
+        actorType: "server" as const,
+        actorKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
+        environmentId,
+        epoch: lease.epoch,
+      })),
+      {
+        event: "server.lease_issued",
+        serverTs: nowMs,
+        actorType: "server" as const,
+        actorKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
+        environmentId,
+        payload: {
+          // The matching policy element is held by the chain (the grant
+          // payload) and can be cross-checked via grant_chain_seq +
+          // claims_digest. No external identifiers (repository names etc.)
+          // are written (§14-4)
+          grantChainSeq: grant.grantSeq,
+          claimsDigest: facts.claimsDigestHex,
+          epochs: leases.map((lease) => lease.epoch),
+        },
+      },
+    ]);
   });
+
+  return {
+    environmentId,
+    currentEpoch,
+    chain: chain.entries,
+    headSeq: chain.headSeq,
+    headHashHex: chain.headHashHex,
+    statement,
+    variables,
+    deletedVariables,
+    ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
+    leases,
+    ...optionalDistributionFields(manifest, checkpointSnapshot),
+  } satisfies LeaseValue;
+});
