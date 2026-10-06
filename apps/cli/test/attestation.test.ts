@@ -491,8 +491,10 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     ]);
     const view = await verifiedViewOf(built, 2, []);
     await submissionProgram(env, server.origin, view, built.projectId);
-    expect(
-      env.errors.some((line) => line.includes("rejected this head attestation as a regression")),
-    ).toBe(true);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "Warning: the server rejected this head attestation as a regression (it stores a later attestation from this account). This can indicate local floor damage or a concurrent CLI on another machine that has seen a later chain — run `maruhi project verify` and compare with other members if you do not recognize this",
+      ]),
+    );
   });
 });

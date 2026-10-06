@@ -78,8 +78,6 @@ export function appendEntry(
     })
     .pipe(
       Effect.asVoid,
-      Effect.mapError((error) =>
-        error instanceof ChainHeadConflictError ? error : toCliError(error),
-      ),
+      Effect.catchTag("ChainHeadConflict", Effect.fail, (error) => Effect.fail(toCliError(error))),
     );
 }

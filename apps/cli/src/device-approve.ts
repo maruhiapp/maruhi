@@ -252,10 +252,9 @@ export function deviceApproveOp(input: {
       );
       return outcomes;
     }
-    yield* input.client.devices.requestCancel({ params: { fp: request.fingerprintHex } }).pipe(
-      Effect.asVoid,
-      Effect.catch(() => Effect.void),
-    );
+    yield* input.client.devices
+      .requestCancel({ params: { fp: request.fingerprintHex } })
+      .pipe(Effect.asVoid, Effect.ignore);
     return outcomes;
   });
 }

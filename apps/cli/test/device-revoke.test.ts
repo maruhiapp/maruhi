@@ -196,7 +196,11 @@ describe("maruhi device revoke", () => {
     expect(logs).toContain(`revoke  ${dev2.fingerprintHex} (cap owner/all)`);
     expect(logs).toContain(`${built.projectId}: revoked ${dev2.fingerprintHex}`);
     // If the token inventory cannot be read, just convey the fact (K4-13)
-    expect(env.errors.join("\n")).toContain("revoking a device does not revoke its API token");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "Note: revoking a device does not revoke its API token (AUTH_SPEC §6). This token cannot list tokens; revoke the lost device's token from the web dashboard or with an admin token (`maruhi token revoke <id>`)",
+      ]),
+    );
     expect(env.prompts).toEqual([]);
   });
 

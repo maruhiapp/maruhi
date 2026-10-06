@@ -321,7 +321,11 @@ describe("maruhi env rotate", () => {
     expect(second.checkpoint.payload.environments[0]?.valuesDigestHex).toBe(
       first.checkpoint.payload.environments[0]?.valuesDigestHex,
     );
-    expect(env.logs.join("\n")).toContain("re-pulling and retrying the rotation");
+    expect(env.logs).toEqual(
+      expect.arrayContaining([
+        `A concurrent push advanced environment ${ENV_ID}'s values — re-pulling and retrying the rotation (attempt 2 of 3)`,
+      ]),
+    );
     // The intent discipline (3-F) × bounded retries (F-2) cross-layer (PR-F4):
     // attempt 1's intent is closed by the 422 (definite rejection), attempt
     // 2's intent is closed by the acceptance check — the retry loop never leaves an unresolved intent behind
@@ -357,9 +361,11 @@ describe("maruhi env rotate", () => {
     ).toBe(1);
     // Abort after the bound (3 attempts) — never pulls forever
     expect(state.rotateBodies).toHaveLength(3);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("values-digest-mismatch");
-    expect(errors).toContain("Re-run `maruhi env rotate` to rebuild the checkpoint");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: A concurrent push advanced environment ${ENV_ID}'s values while the rotation was in flight (the server reports values-digest-mismatch). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
+      ]),
+    );
     // The intent discipline (3-F) × bounded retries cross-layer (PR-F4): 422
     // is a definite rejection (isServerRejection), so all 3 attempts' intents
     // close as rejected — no unresolved intent piles up and the floor never

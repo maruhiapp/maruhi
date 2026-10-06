@@ -849,7 +849,11 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       await rotate(fixture, "--reason", "scheduled", "--config", `${fixture.configPath}.missing`),
     ).toBe(1);
     expect(fixture.state.rotateBodies).toHaveLength(0);
-    expect(fixture.env.errors.join("\n")).toContain("Cannot read the sync config");
+    expect(fixture.env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: Cannot read the sync config ${fixture.configPath}.missing. Create it with \`maruhi sync init\` (see the Deploy targets page in the docs), or pass --config <file>`,
+      ]),
+    );
   });
 
   it("a check-only run (up-to-date) re-encrypted nothing, so it never touches the receipt", async () => {

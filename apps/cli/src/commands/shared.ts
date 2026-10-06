@@ -14,7 +14,7 @@ import {
   ANCHOR_STALE_AFTER_ROTATION,
   checkpointProposal,
 } from "../checkpoint.ts";
-import { ConfigStore, type IdentityBacking, identityBackingOf } from "../config.ts";
+import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
 import { type CliServices, type ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
@@ -110,8 +110,7 @@ export function parseGithubLoginFlag(
 /** The backing-source setting (CRYPTO_SPEC §6.5 — unset = github-signing-keys). */
 export const loadIdentityBacking: Effect.Effect<IdentityBacking, CliError, ConfigStore> =
   Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    return identityBackingOf(yield* store.load);
+    return identityBackingOf(yield* loadCliConfig);
   });
 
 /**
@@ -153,7 +152,7 @@ export function proposeCheckpointRefresh(
       return;
     }
     yield* logNote(options.includeAnchor ? `${proposal}. ${ANCHOR_REFRESH_PROPOSAL}` : proposal);
-  }).pipe(Effect.catch(() => Effect.void));
+  });
 }
 
 /** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */

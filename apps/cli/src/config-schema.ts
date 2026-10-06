@@ -13,12 +13,17 @@
 // is a complete reason. A reason never contains the offending value, and
 // never names an array entry's position (the wording never did).
 
-import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { isEnvironmentId } from "@maruhi/core";
-import { Effect, FileSystem, Result, Schema, SchemaIssue } from "effect";
+import { Effect, Result, Schema, SchemaIssue } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
-import { JsonRecord, parseConfigHeader, unknownKeys } from "./json-record.ts";
+import {
+  JsonRecord,
+  parseConfigHeader,
+  parseJsonRecord,
+  readNamedFile,
+  unknownKeys,
+} from "./json-record.ts";
 import { SAFE_ENV_NAME } from "./run.ts";
 
 /** A validation failure (the reason's string). Never includes the value itself. */
@@ -145,19 +150,16 @@ export function configHeader(
   return typeof header === "string" ? refuse(header) : Result.succeed(header);
 }
 
-const JSON_DOCUMENT = Schema.fromJsonString(Schema.Unknown);
-const TOP_LEVEL = objectLeaf("the top level must be an object");
-
 /** Interpreting a config's JSON text: a JSON object, then `parse` over it (the reason's string when invalid). */
 export function parseConfigDocument<A>(
   content: string,
   parse: (record: Record<string, unknown>) => Parsed<A>,
 ): A | Invalid {
-  const json = Schema.decodeUnknownResult(JSON_DOCUMENT)(content);
-  if (Result.isFailure(json)) {
-    return "not valid JSON";
+  const record = parseJsonRecord(content);
+  if (typeof record === "string") {
+    return record;
   }
-  return Result.match(Result.flatMap(decode(TOP_LEVEL, json.success), parse), {
+  return Result.match(parse(record), {
     onFailure: issueReason,
     onSuccess: (value) => value,
   });
@@ -167,9 +169,9 @@ export function parseConfigDocument<A>(
  * Reading and interpreting one user-edited config file. A read failure is
  * the same "cannot read" whichever way it failed (`what` and `hint` carry
  * the wording); a `string` from `parse` is the reason the file is
- * invalid. FileSystem stays inside this module — the argument layer is
- * given a dying FileSystem on purpose (cli-runner.ts), so the callers
- * never take the service into their environment.
+ * invalid. The read itself is json-record.ts's `readNamedFile` (its
+ * FileSystem is provided locally — the callers never take the service
+ * into their environment).
  */
 export function loadConfig<T>(
   path: string,
@@ -178,14 +180,14 @@ export function loadConfig<T>(
   parse: (content: string) => T | Invalid,
 ): Effect.Effect<{ readonly parsed: T; readonly content: string }, CliError> {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const content = yield* fs
-      .readFileString(path, "utf8")
-      .pipe(Effect.mapError(() => cliError(`Cannot read the ${what} ${path}. ${hint}`)));
+    const content = yield* readNamedFile(
+      path,
+      cliError(`Cannot read the ${what} ${path}. ${hint}`),
+    );
     const parsed = parse(content);
     if (typeof parsed === "string") {
       return yield* Effect.fail(cliError(`The ${what} ${path} is invalid: ${parsed}`));
     }
     return { parsed, content };
-  }).pipe(Effect.provide(BunFileSystem.layer));
+  });
 }

@@ -211,11 +211,22 @@ function signDeleteStatementV1(input: {
   });
 }
 
+/**
+ * One attempt's concrete failure channel: CliError (own failures and the
+ * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
+ * variables.remove endpoint's declared error union (the raw types —
+ * classifyDeletionConflict discriminates them on the retryOnConflict
+ * side).
+ */
+type DeletionAttemptError =
+  | CliError
+  | Effect.Error<ReturnType<VarRmInput["client"]["variables"]["remove"]>>;
+
 /** One attempt (sign, send). Conflict classification is retryOnConflict's classify's job. */
 function attemptDeletion(
   input: VarRmInput,
   state: SchemaSetState & { readonly target: VerifiedVariableStatement },
-): Effect.Effect<AcceptedDeletion, unknown> {
+): Effect.Effect<AcceptedDeletion, DeletionAttemptError> {
   return Effect.gen(function* () {
     const target = state.target;
     const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
@@ -302,7 +313,7 @@ function attemptDeletion(
 type DeletionConflict = { readonly kind: "re-resolve" };
 
 /** The retryable classification of a CAS conflict (§12-5). Anything else = null (a determinate error). */
-function classifyDeletionConflict(error: unknown): DeletionConflict | null {
+function classifyDeletionConflict(error: DeletionAttemptError): DeletionConflict | null {
   if (error instanceof MetaVersionConflictError || error instanceof ManifestVersionConflictError) {
     // A concurrent meta operation re-resolves from the name
     // (§12-5's retry = refetch → verify → re-sign both the

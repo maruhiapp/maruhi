@@ -166,6 +166,23 @@ export function readJsonFile<S extends Schema.ConstraintCodec<unknown>>(
 }
 
 /**
+ * Reading one user-named file's content: any read failure becomes the
+ * caller's `unreadable` error ("cannot read" is the same whichever way it
+ * failed). FileSystem stays inside this module — the caller's
+ * FileSystem-providing environment (dying on purpose, cli-runner.ts) is
+ * never touched, BunFileSystem is provided locally.
+ */
+export function readNamedFile(path: string, unreadable: CliError): Effect.Effect<string, CliError> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.readFileString(path, "utf8");
+  }).pipe(
+    Effect.mapError(() => unreadable),
+    Effect.provide(BunFileSystem.layer),
+  );
+}
+
+/**
  * Writes `value` to `path` encoded by `schema`, atomically: the directory is
  * created (mode 0o700), the JSON goes to a temp sibling (mode 0o600), and a
  * rename moves it over `path` — a partial file is never observable. Encoding

@@ -134,7 +134,14 @@ describe("syncProject (§6.3)", () => {
     ]);
     const exit = await runSync(server.origin, built.projectId);
     expect(Exit.isFailure(exit)).toBe(true);
-    expect(failureMessage(exit)).toContain("Chain verification failed");
+    const failure = JSON.parse(failureMessage(exit)) as {
+      readonly cause: {
+        readonly failures: readonly [{ readonly error: { readonly message: string } }];
+      };
+    };
+    expect(failure.cause.failures[0].error.message).toBe(
+      "Chain verification failed (seq=2, reason=bad-signature). The server may be distributing an invalid chain",
+    );
   });
 
   it("rejects a substitution whose genesis hash doesn't match the project ID (§6.4)", async () => {

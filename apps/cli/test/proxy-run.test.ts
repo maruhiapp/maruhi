@@ -557,7 +557,11 @@ describe("maruhi proxy run", () => {
         env.layer,
       ),
     ).toBe(1);
-    expect(env.errors.join("\n")).toContain("Cannot read the proxy config");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: Cannot read the proxy config ${join(configDir, "absent.json")}. Create it (see the Credential brokering page in the docs), or pass --config <file>`,
+      ]),
+    );
     env.errors.length = 0;
     await writeFile(configPath, JSON.stringify({ ...BROKER_CONFIG, project: "b".repeat(64) }));
     expect(

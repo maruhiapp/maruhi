@@ -52,9 +52,15 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "{ broken json");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("corrupt");
+    expect(env.errors).toEqual([
+      `maruhi: Cannot read the config file (it is corrupt): ${env.configPath}`,
+    ]);
     // set can discard and rebuild it (a non-sensitive-only file)
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
+    expect(env.errors).toEqual([
+      `maruhi: Cannot read the config file (it is corrupt): ${env.configPath}`,
+      `Warning: Cannot read the config file (it is corrupt): ${env.configPath} — discarding the existing config and recreating it with only this key`,
+    ]);
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
     expect(env.logs).toContain("https://maruhi.example");
   });
@@ -66,11 +72,16 @@ describe("maruhi config", () => {
     // that is not ENOENT)
     await mkdir(env.configPath, { recursive: true });
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("Cannot read the config file (");
-    expect(env.errors.join("\n")).not.toContain("corrupt");
+    expect(env.errors).toEqual([
+      `maruhi: Cannot read the config file (EISDIR). Fix the file's permissions or move it out of the way, then retry: ${env.configPath}`,
+    ]);
     // set likewise must not silently replace an existing (unreadable)
     // config — it fails for the same reason
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(1);
+    expect(env.errors).toEqual([
+      `maruhi: Cannot read the config file (EISDIR). Fix the file's permissions or move it out of the way, then retry: ${env.configPath}`,
+      `maruhi: Cannot read the config file (EISDIR). Fix the file's permissions or move it out of the way, then retry: ${env.configPath}`,
+    ]);
   });
 
   it("treats a JSON-array config file as corrupt", async () => {
@@ -80,7 +91,9 @@ describe("maruhi config", () => {
     await mkdir(dirname(env.configPath), { recursive: true });
     await writeFile(env.configPath, "[]");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("corrupt");
+    expect(env.errors).toEqual([
+      `maruhi: Cannot read the config file (it is corrupt): ${env.configPath}`,
+    ]);
   });
 
   it("with no subcommand shows usage (exit 0, output to stderr)", async () => {

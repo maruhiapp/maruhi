@@ -296,51 +296,49 @@ export function approveProposalOp<R>(input: {
     );
     const proposal = first.proposal;
     let mySeq: number | null = null;
-    const outcome = yield* retryOnConflict<ApproveState, ApproveState, "head-conflict">(
-      { verified: input.verified, closed: null },
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        attempt: (state) =>
-          state.closed !== null
-            ? Effect.succeed(state)
-            : Effect.gen(function* () {
-                const entry = yield* signEntryAtHead({
-                  verified: state.verified,
-                  signerUserId: input.signerUserId,
-                  operation: {
-                    op: "approve",
-                    payload: { proposalHashHex: proposal.proposalHashHex },
-                  },
-                  signingKeyPair: input.signingKeyPair,
-                  failureText: "Failed to sign the approve entry",
-                });
-                mySeq = entry.seq;
-                yield* appendEntry(input.client, state.verified, entry);
-                return state;
-              }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-        recover: (state) =>
-          Effect.gen(function* () {
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            const status = proposalStatusOf(resynced, proposal.proposalHashHex);
-            // Another owner completed / withdrew it first: re-signing and
-            // sending anyway would only be rejected as unknown-proposal, so
-            // stop here with a typed outcome (K6-B)
-            if (status.kind === "completed" || status.kind === "withdrawn") {
-              return { verified: resynced, closed: status };
-            }
-            yield* ensureApprovable(
-              resynced,
-              proposal.proposalHashHex,
-              input.signerUserId,
-              input.signerFingerprintHex,
-              input.nowMs,
-            );
-            return { verified: resynced, closed: null };
-          }),
-        exhaustedMessage: `approve's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-      },
-    );
+    const initial: ApproveState = { verified: input.verified, closed: null };
+    const outcome = yield* retryOnConflict(initial, {
+      maxAttempts: MAX_ATTEMPTS,
+      attempt: (state) =>
+        state.closed !== null
+          ? Effect.succeed(state)
+          : Effect.gen(function* () {
+              const entry = yield* signEntryAtHead({
+                verified: state.verified,
+                signerUserId: input.signerUserId,
+                operation: {
+                  op: "approve",
+                  payload: { proposalHashHex: proposal.proposalHashHex },
+                },
+                signingKeyPair: input.signingKeyPair,
+                failureText: "Failed to sign the approve entry",
+              });
+              mySeq = entry.seq;
+              yield* appendEntry(input.client, state.verified, entry);
+              return state;
+            }),
+      classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+      recover: (state) =>
+        Effect.gen(function* () {
+          const resynced = yield* resyncExtended(input.resync, state.verified);
+          const status = proposalStatusOf(resynced, proposal.proposalHashHex);
+          // Another owner completed / withdrew it first: re-signing and
+          // sending anyway would only be rejected as unknown-proposal, so
+          // stop here with a typed outcome (K6-B)
+          if (status.kind === "completed" || status.kind === "withdrawn") {
+            return { verified: resynced, closed: status };
+          }
+          yield* ensureApprovable(
+            resynced,
+            proposal.proposalHashHex,
+            input.signerUserId,
+            input.signerFingerprintHex,
+            input.nowMs,
+          );
+          return { verified: resynced, closed: null };
+        }),
+      exhaustedMessage: `approve's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+    });
     if (outcome.closed !== null) {
       return outcome.closed.kind === "completed"
         ? { kind: "completed-by-other", proposal, completedAtSeq: outcome.closed.completedAtSeq }

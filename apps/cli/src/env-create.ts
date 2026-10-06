@@ -189,7 +189,7 @@ export function envCreateOp(input: {
       signingKeyPair: input.signingKeyPair,
     });
 
-    const accepted = yield* retryOnConflict<CreateState, AcceptedCreation, "head-conflict">(
+    const accepted = yield* retryOnConflict(
       { verified: input.verified, member, deks },
       {
         maxAttempts: MAX_ATTEMPTS,

@@ -1489,6 +1489,10 @@ describe("maruhi invite list / revoke", () => {
     expect(env.logs.join("\n")).toContain("Revoked the invite");
 
     expect(await runCli(["invite", "revoke", "inv-0002"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("run `maruhi member remove`");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: This invite has completed through add_member. To undo the membership, run `maruhi member remove` (it rotates every environment — CRYPTO_SPEC §7)",
+      ]),
+    );
   });
 });

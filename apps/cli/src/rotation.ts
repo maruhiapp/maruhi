@@ -20,7 +20,6 @@
 // through this module.
 
 import type { RotationProposal } from "@maruhi/api-schema";
-import { RotationFlagNotFoundError } from "@maruhi/api-schema";
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -822,14 +821,15 @@ export function rotationDismissOp(input: {
     yield* input.client.rotation
       .dismiss({ params: { projectId: input.projectId }, payload: { targets: input.targets } })
       .pipe(
-        Effect.catch((error) =>
-          Effect.fail(
-            error instanceof RotationFlagNotFoundError
-              ? cliError(
-                  `No active flag for variable ${displayText(error.variableId)} in environment ${displayText(error.environmentId)} (the dismissal was aborted as a whole — check the current targets with \`maruhi rotation list\`)`,
-                )
-              : toCliError(error),
-          ),
+        Effect.catchTag(
+          "RotationFlagNotFound",
+          (error) =>
+            Effect.fail(
+              cliError(
+                `No active flag for variable ${displayText(error.variableId)} in environment ${displayText(error.environmentId)} (the dismissal was aborted as a whole — check the current targets with \`maruhi rotation list\`)`,
+              ),
+            ),
+          (error) => Effect.fail(toCliError(error)),
         ),
       );
     yield* io.log(

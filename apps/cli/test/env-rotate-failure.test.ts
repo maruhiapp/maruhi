@@ -316,7 +316,11 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "deleted"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     // §7's dedicated message comes out (never collapsed into the generic "environment not found")
-    expect(errors).toContain("may be selectively blocking rotation");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: Rotation for environment ${ENV_ID} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+      ]),
+    );
     expect(errors).not.toContain("safe to simply re-run");
     expect(errors).not.toContain("was accepted");
     // No chain re-fetch for the acceptance check (only the first sync's one)

@@ -602,9 +602,11 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     // Stops at the 10-attempt budget without reaching issuance
     expect(state.auditHeadCalls()).toBe(10);
     expect(state.appends.length).toBe(0);
-    const output = env.errors.join("\n");
-    expect(output).toContain("still materializing the audit-head hash column");
-    expect(output).toContain("re-run the command to continue where it left off");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The server is still materializing the audit-head hash column after 10 attempts (this happens once, on the first audit-head access of a project with a very large existing audit log). Progress is saved server-side and every attempt advances it — re-run the command to continue where it left off",
+      ]),
+    );
   });
 
   it("once retries are exhausted, issues against the subset of environments unchanged across the last 2 builds (§6.3 fallback)", async () => {

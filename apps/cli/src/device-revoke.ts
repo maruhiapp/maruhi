@@ -2,7 +2,6 @@
 // the kind-5 sweep -> the local record -> registry row deletion -> the
 // token-revocation proposal (the group's overview lives in device.ts).
 
-import { ForbiddenError, TokenNotFoundError } from "@maruhi/api-schema";
 import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -147,10 +146,7 @@ function finishOwnRevocation(input: {
       yield* Clock.currentTimeMillis,
     );
     for (const fp of input.revoked) {
-      yield* input.client.devices.remove({ params: { fp } }).pipe(
-        Effect.asVoid,
-        Effect.catch(() => Effect.void),
-      );
+      yield* input.client.devices.remove({ params: { fp } }).pipe(Effect.asVoid, Effect.ignore);
     }
   });
 }
@@ -574,8 +570,10 @@ function proposeTokenRevocation(input: {
     }
     const listed = yield* input.client.auth.listTokens({}).pipe(
       Effect.map((response) => response.tokens),
-      Effect.catch((error) =>
-        error instanceof ForbiddenError ? Effect.succeed(null) : Effect.fail(toCliError(error)),
+      Effect.catchTag(
+        "Forbidden",
+        () => Effect.succeed(null),
+        (error) => Effect.fail(toCliError(error)),
       ),
     );
     if (listed === null) {
@@ -616,8 +614,10 @@ function proposeTokenRevocation(input: {
     for (const token of candidates) {
       yield* input.client.auth.revokeTokenById({ params: { tokenId: token.id } }).pipe(
         Effect.asVoid,
-        Effect.catch((error) =>
-          error instanceof TokenNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
+        Effect.catchTag(
+          "TokenNotFound",
+          () => Effect.void,
+          (error) => Effect.fail(toCliError(error)),
         ),
       );
       yield* io.log(`Revoked token ${describe(token)}`);

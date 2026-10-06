@@ -832,9 +832,11 @@ describe("maruhi rotation dismiss", () => {
     });
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "dismiss", "va", "--env", ENV_ID], env.layer)).toBe(1);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("No active flag for variable");
-    expect(errors).toContain("maruhi rotation list");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: No active flag for variable va in environment ${ENV_ID} (the dismissal was aborted as a whole — check the current targets with \`maruhi rotation list\`)`,
+      ]),
+    );
   });
 
   it("no target specified (neither --all nor a pair) is guided to the usage", async () => {

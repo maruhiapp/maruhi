@@ -179,9 +179,7 @@ function approvalShowCommand(
     // A vote's eligibility is the signing device's effective role (DK
     // K4). On a keyless run (MARUHI_TOKEN) no device is determined, so
     // only that is stated (show stays a key-free command)
-    const localKeys = yield* loadMasterKeys(context.session).pipe(
-      Effect.catch(() => Effect.succeed(null)),
-    );
+    const localKeys = yield* loadMasterKeys(context.session).pipe(Effect.orElseSucceed(() => null));
     yield* io.log(
       eligibilityLine(
         context.verified,

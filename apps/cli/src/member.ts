@@ -170,7 +170,7 @@ function actorEffectiveScope(
       return { kind: "listed", environmentIds: [] };
     }
     const device = yield* ownDeviceBySigningKey(verified, actor, signingKeyPair).pipe(
-      Effect.catch(() => Effect.succeed<ChainDevice | null>(null)),
+      Effect.orElseSucceed((): ChainDevice | null => null),
     );
     if (device === null) {
       return { kind: "listed", environmentIds: [] };
@@ -253,15 +253,16 @@ export function appendWithCas(input: {
     verified: VerifiedProject,
   ) => Effect.Effect<{ readonly already: boolean }, CliError>;
 }): Effect.Effect<{ readonly verified: VerifiedProject; readonly appended: boolean }, CliError> {
-  return retryOnConflict<
-    { readonly verified: VerifiedProject; readonly already: boolean },
-    { readonly verified: VerifiedProject; readonly appended: boolean },
-    "head-conflict"
-  >(
+  return retryOnConflict(
     { verified: input.verified, already: false },
     {
       maxAttempts: MAX_ATTEMPTS,
-      attempt: (state) =>
+      attempt: (
+        state,
+      ): Effect.Effect<
+        { readonly verified: VerifiedProject; readonly appended: boolean },
+        CliError | ChainHeadConflictError
+      > =>
         state.already
           ? Effect.succeed({ verified: state.verified, appended: false })
           : Effect.gen(function* () {

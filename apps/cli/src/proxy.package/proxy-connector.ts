@@ -232,17 +232,14 @@ function mintGithubApp(
     // token JSON — unreadable, unparseable or the wrong shape — decodes to
     // {} and the status wording below carries the failure ("GitHub
     // answered 502 (no message)").
-    const record = yield* response
-      .pipe(HttpClientResponse.schemaBodyJson(TokenResponse))
-      .pipe(
-        Effect.catch((error) =>
-          Schema.isSchemaError(error) ||
-          (HttpClientError.isHttpClientError(error) &&
-            error.reason instanceof HttpClientError.DecodeError)
-            ? Effect.succeed<TokenResponse>({})
-            : Effect.fail(new ConnectorError({ message: transportReason(error) })),
-        ),
-      );
+    const record = yield* response.pipe(HttpClientResponse.schemaBodyJson(TokenResponse)).pipe(
+      Effect.catchReason("HttpClientError", "DecodeError", () => Effect.succeed<TokenResponse>({})),
+      Effect.catchTag(
+        "SchemaError",
+        () => Effect.succeed<TokenResponse>({}),
+        (error) => Effect.fail(new ConnectorError({ message: transportReason(error) })),
+      ),
+    );
     return yield* parseTokenResponse(response.status, record);
   });
 }

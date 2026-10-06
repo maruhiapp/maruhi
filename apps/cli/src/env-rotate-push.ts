@@ -3,11 +3,6 @@
 // §4.1) and the verified rescan that drives the completion judgment and
 // the §12-5 409 re-planning (the stage overview lives in env-rotate.ts).
 
-import {
-  EpochConflictError,
-  VariableNotFoundError,
-  VersionConflictError,
-} from "@maruhi/api-schema";
 import { Effect } from "effect";
 
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
@@ -100,28 +95,28 @@ export function pushReencrypted(input: {
       })
       .pipe(
         Effect.map(() => ({ kind: "pushed" }) as const),
-        Effect.catch((error): Effect.Effect<PushAttempt, CliError> => {
-          if (error instanceof VersionConflictError) {
+        Effect.catchTags(
+          {
             // There is a concurrent push's winner. Never decide on the
             // 409's claimed value — the caller re-fetches and re-verifies
             // the reality (whether the winner is already at the current
             // epoch)
-            return Effect.succeed({ kind: "conflict", currentVersion: error.currentVersion });
-          }
-          if (error instanceof VariableNotFoundError) {
+            VersionConflict: (error) =>
+              Effect.succeed({
+                kind: "conflict",
+                currentVersion: error.currentVersion,
+              } satisfies PushAttempt),
             // A concurrent deletion. A deletion is a tombstone + the
             // deletion of all versions (§12-5), so there is no current
             // value to re-encrypt — aligned with the rescan side's
             // handling of the same race (warn and drop from the targets);
             // the remaining variables' processing is not stopped
-            return Effect.succeed({ kind: "deleted" });
-          }
-          if (error instanceof EpochConflictError) {
+            VariableNotFound: () => Effect.succeed({ kind: "deleted" } satisfies PushAttempt),
             // Never make the claim the source of truth: the chain re-verification happens in the rescan
-            return Effect.succeed({ kind: "epoch-stale" });
-          }
-          return Effect.fail(toCliError(error));
-        }),
+            EpochConflict: () => Effect.succeed({ kind: "epoch-stale" } satisfies PushAttempt),
+          },
+          (error) => Effect.fail(toCliError(error)),
+        ),
       );
     if (outcome.kind !== "pushed") {
       return outcome;

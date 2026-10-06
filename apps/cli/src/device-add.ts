@@ -2,11 +2,7 @@
 // issue or resume the request -> print the FP -> the approval wait -> the
 // standing report (the group's overview lives in device.ts).
 
-import {
-  DEVICE_ADD_REQUEST_TTL_MS,
-  DeviceRegistryConflictError,
-  DeviceRegistryLimitError,
-} from "@maruhi/api-schema";
+import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
@@ -308,7 +304,7 @@ function unlistedFloorProjects(standings: KeyStandings): Effect.Effect<string, n
     const floor = yield* FloorStore;
     const ids = yield* floor
       .listProjectIds()
-      .pipe(Effect.catch(() => Effect.succeed<readonly string[]>([])));
+      .pipe(Effect.orElseSucceed((): readonly string[] => []));
     const listed = new Set(standings.projects.map((project) => project.projectId));
     const unlisted = ids.filter((id) => !listed.has(id));
     if (unlisted.length === 0) {
@@ -587,35 +583,33 @@ function createOrResumeRequest(
         kind: "pending",
         expiresAtMs: response.expiresAtMs,
       })),
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          if (error instanceof DeviceRegistryConflictError) {
-            const conflict: DeviceRegistryConflictError = error;
-            if (conflict.reason === "device-registered") {
-              // The registry already carrying my row = the signal is up (there is no request row)
-              return { kind: "already-registered" } satisfies RequestState;
-            }
-            // The same key's request being live = resuming the wait
-            // (K4-5 round 2). A lookup failure is reported, never
-            // swallowed (never falsely guide "it was revoked" — a 409 is
-            // proof of life)
-            const request = yield* input.client.devices
-              .requestGet({ params: { fp: keys.fingerprintHex } })
-              .pipe(Effect.mapError(toCliError));
-            return { kind: "pending", expiresAtMs: request.expiresAtMs } satisfies RequestState;
-          }
-          if (error instanceof DeviceRegistryLimitError) {
-            const limit: DeviceRegistryLimitError = error;
-            return yield* Effect.fail(
+      Effect.catchTags(
+        {
+          DeviceRegistryConflict: (conflict) =>
+            Effect.gen(function* () {
+              if (conflict.reason === "device-registered") {
+                // The registry already carrying my row = the signal is up (there is no request row)
+                return { kind: "already-registered" } satisfies RequestState;
+              }
+              // The same key's request being live = resuming the wait
+              // (K4-5 round 2). A lookup failure is reported, never
+              // swallowed (never falsely guide "it was revoked" — a 409 is
+              // proof of life)
+              const request = yield* input.client.devices
+                .requestGet({ params: { fp: keys.fingerprintHex } })
+                .pipe(Effect.mapError(toCliError));
+              return { kind: "pending", expiresAtMs: request.expiresAtMs } satisfies RequestState;
+            }),
+          DeviceRegistryLimit: (limit) =>
+            Effect.fail(
               cliError(
                 limit.reason === "add-requests"
                   ? `Too many device-add requests in the last hour (limit ${limit.limit}). Wait${limit.retryAfterSeconds === undefined ? "" : ` about ${Math.ceil(limit.retryAfterSeconds / 60)} minutes`} and re-run`
                   : `Your device registry is full (${limit.limit} rows). On a registered device, remove old rows with \`maruhi device list\` / \`maruhi device revoke\`, then re-run`,
               ),
-            );
-          }
-          return yield* Effect.fail(toCliError(error));
-        }),
+            ),
+        },
+        (error) => Effect.fail(toCliError(error)),
       ),
     );
 }

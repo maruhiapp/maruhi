@@ -13,7 +13,6 @@
 // export`); row content never reaches the output.
 
 import type { MirrorStatus, MirrorSyncRecord } from "@maruhi/api-schema";
-import { ExportChangedError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -106,10 +105,10 @@ function replicateOnce(input: MirrorSyncInput<unknown>): Effect.Effect<Attempt, 
       const exported = yield* input.source.export
         .page({ params, query: cursor === undefined ? {} : { cursor } })
         .pipe(
-          Effect.catch((error) =>
-            error instanceof ExportChangedError
-              ? Effect.succeed(null)
-              : Effect.fail(toCliError(error)),
+          Effect.catchTag(
+            "ExportChanged",
+            () => Effect.succeed(null),
+            (error) => Effect.fail(toCliError(error)),
           ),
         );
       if (exported === null) {

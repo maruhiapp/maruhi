@@ -5,7 +5,6 @@
 // server-side (`*` × admin token, or the session principal — §6 / §13-2).
 // Device revocation (`device revoke`) leads here.
 
-import { ForbiddenError, TokenNotFoundError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
@@ -21,17 +20,18 @@ export function tokenListOp(input: {
 }): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const { tokens } = yield* input.client.auth
-      .listTokens({})
-      .pipe(
-        Effect.mapError((error) =>
-          error instanceof ForbiddenError
-            ? cliError(
-                "Listing tokens needs an admin token (all projects × admin) or a browser session; this token cannot list them (AUTH_SPEC §6)",
-              )
-            : toCliError(error),
-        ),
-      );
+    const { tokens } = yield* input.client.auth.listTokens({}).pipe(
+      Effect.catchTag(
+        "Forbidden",
+        () =>
+          Effect.fail(
+            cliError(
+              "Listing tokens needs an admin token (all projects × admin) or a browser session; this token cannot list them (AUTH_SPEC §6)",
+            ),
+          ),
+        (error) => Effect.fail(toCliError(error)),
+      ),
+    );
     if (tokens.length === 0) {
       yield* io.log("No API tokens");
       return;
@@ -52,21 +52,25 @@ export function tokenRevokeOp(input: {
 }): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    yield* input.client.auth
-      .revokeTokenById({ params: { tokenId: input.tokenId } })
-      .pipe(
-        Effect.mapError((error) =>
-          error instanceof TokenNotFoundError
-            ? cliError(
+    yield* input.client.auth.revokeTokenById({ params: { tokenId: input.tokenId } }).pipe(
+      Effect.catchTags(
+        {
+          TokenNotFound: () =>
+            Effect.fail(
+              cliError(
                 `No token with id ${displayText(input.tokenId)} belongs to you (already revoked, or another account's — see \`maruhi token list\`)`,
-              )
-            : error instanceof ForbiddenError
-              ? cliError(
-                  "Revoking a token by id needs an admin token (all projects × admin) or a browser session (AUTH_SPEC §6)",
-                )
-              : toCliError(error),
-        ),
-      );
+              ),
+            ),
+          Forbidden: () =>
+            Effect.fail(
+              cliError(
+                "Revoking a token by id needs an admin token (all projects × admin) or a browser session (AUTH_SPEC §6)",
+              ),
+            ),
+        },
+        (error) => Effect.fail(toCliError(error)),
+      ),
+    );
     yield* io.log(`Revoked token ${displayText(input.tokenId)}`);
   });
 }

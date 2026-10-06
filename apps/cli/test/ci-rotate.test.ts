@@ -804,10 +804,16 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(nth(fixture.minted.bodies, 0).proposal.proposalId).not.toBe(
       nth(fixture.minted.bodies, 1).proposal.proposalId,
     );
-    expect(fixture.env.errors.join("\n")).toContain(
-      "leasing again and sealing the proposal to the current recipients (once)",
+    expect(fixture.env.errors).toEqual(
+      expect.arrayContaining([
+        "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
+      ]),
     );
-    expect(fixture.env.logs.join("\n")).toContain("The proposal was sealed a second time");
+    expect(fixture.env.logs).toEqual(
+      expect.arrayContaining([
+        "The proposal was sealed a second time: the members or devices changed after the lease, so the recipients were taken from the current chain",
+      ]),
+    );
     // A token within the reuse margin of its expiry is still presented
     // when no fresh one can be minted (O-17): the re-lease goes through
     const second = await realNowClock();
@@ -833,7 +839,11 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     };
     expect(await ciRotate(twice)).toBe(1);
     expect(twice.minted.bodies).toHaveLength(2);
-    expect(twice.env.errors.join("\n")).toContain("The issuer accepted the rotation");
+    expect(twice.env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The issuer accepted the rotation (./rotate.sh: new credential produced) but the server refused to store the proposal: the project's members or devices changed after this job leased it. Re-run the job. Recovery for the credential that now exists at the issuer: the new credential is held only by this process (it is not shown) — re-run the rotation (./rotate.sh runs again; make it idempotent, or retire the unused credential at the issuer by hand)",
+      ]),
+    );
     expectNoSecretLeak(fixture);
   });
 
@@ -987,10 +997,11 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
       json: { _tag: "RotationProposalRejected", reason: "base-version-stale" },
     };
     expect(await ciRotate(fixture)).toBe(1);
-    const errors = fixture.env.errors.join("\n");
-    expect(errors).toContain("The issuer accepted the rotation");
-    expect(errors).toContain("a member pushed the variable after this job leased it");
-    expect(errors).toContain("Recovery for the credential that now exists at the issuer");
+    expect(fixture.env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The issuer accepted the rotation (./rotate.sh: new credential produced) but the server refused to store the proposal: a member pushed the variable after this job leased it. Re-run the job once the members are done. Recovery for the credential that now exists at the issuer: the new credential is held only by this process (it is not shown) — re-run the rotation (./rotate.sh runs again; make it idempotent, or retire the unused credential at the issuer by hand)",
+      ]),
+    );
     expectNoSecretLeak(fixture);
   });
 

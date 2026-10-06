@@ -170,7 +170,7 @@ export function keyShowOp(input: {
     // "could not check" (usable offline and with an expired token)
     const status = yield* input.client.auth
       .recoveryStatus({})
-      .pipe(Effect.catch(() => Effect.succeed(null)));
+      .pipe(Effect.orElseSucceed(() => null));
     if (status === null) {
       yield* io.log("recovery:               could not be checked");
       yield* logNote(

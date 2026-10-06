@@ -4,6 +4,8 @@
 // allow the use, the substitution into the upstream request, and the
 // scrub patterns for the forms the proxy itself puts on the wire.
 
+import { Data } from "effect";
+
 import { type BytePattern, replaceBytes, scrubPatterns } from "../byte-replace.ts";
 import type { Surface } from "./proxy-config.ts";
 import { authorityOf, type BrokeredCredential, hostHeaderOf, type Target } from "./proxy-rules.ts";
@@ -213,9 +215,12 @@ function isHeaderSafe(value: string): boolean {
 }
 
 /** A brokered value that cannot travel in a header (a line break or a non-Latin-1 character). */
-export class UnsendableValueError extends Error {
-  constructor(readonly variable: string) {
-    super("unsendable value");
+export class UnsendableValueError extends Data.TaggedError("UnsendableValueError")<{
+  readonly variable: string;
+  readonly message: string;
+}> {
+  constructor(variable: string) {
+    super({ variable, message: "unsendable value" });
   }
 }
 

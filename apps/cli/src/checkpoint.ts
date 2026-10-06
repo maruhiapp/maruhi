@@ -332,10 +332,10 @@ export function fetchAuditHead(
     let notReady = 0;
     return yield* client.audit.auditHead({ params: { projectId } }).pipe(
       Effect.map((response) => response.auditHeadHashHex),
-      Effect.mapError((error) =>
-        error instanceof AuditHeadNotReadyError
-          ? error
-          : cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+      Effect.catchTag("AuditHeadNotReady", Effect.fail, (error) =>
+        Effect.fail(
+          cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+        ),
       ),
       Effect.retry({
         while: (error) => {
@@ -355,8 +355,10 @@ export function fetchAuditHead(
         },
         schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
       }),
-      Effect.mapError((error) =>
-        error instanceof AuditHeadNotReadyError ? cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED) : error,
+      Effect.catchTag(
+        "AuditHeadNotReady",
+        () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+        Effect.fail,
       ),
     );
   });
@@ -426,21 +428,18 @@ function appendCheckpoint(
     })
     .pipe(
       Effect.asVoid,
-      Effect.mapError((error) => {
-        if (
-          error instanceof ChainHeadConflictError ||
-          error instanceof CheckpointStateMismatchError ||
-          error instanceof AuditHeadNotReadyError
-        ) {
-          return error;
-        }
-        if (isServerRejection(error)) {
-          return toCliError(error);
-        }
-        return cliError(
-          `Sending the checkpoint failed (${toCliError(error).message}). The entry may or may not have landed — re-running \`maruhi project checkpoint\` is safe either way (a landed checkpoint simply becomes the baseline; a re-run notarizes the current view)`,
-        );
-      }),
+      Effect.catchTag(
+        ["ChainHeadConflict", "CheckpointStateMismatch", "AuditHeadNotReady"],
+        Effect.fail,
+        (error) =>
+          Effect.fail(
+            isServerRejection(error)
+              ? toCliError(error)
+              : cliError(
+                  `Sending the checkpoint failed (${toCliError(error).message}). The entry may or may not have landed — re-running \`maruhi project checkpoint\` is safe either way (a landed checkpoint simply becomes the baseline; a re-run notarizes the current view)`,
+                ),
+          ),
+      ),
     );
 }
 
@@ -564,17 +563,16 @@ export function issueCheckpoint(
           Effect.map((accepted) => ({ kind: "accepted" as const, accepted })),
           // The 503 re-fails before classification — it is retried by the
           // Effect.retry on the unit, not absorbed as an outcome
-          Effect.catch(
-            (
-              error,
-            ): Effect.Effect<
-              | { readonly kind: "head-conflict" }
-              | { readonly kind: "state-mismatch"; readonly reason: string },
-              AuditHeadNotReadyError | CliError
-            > =>
-              error instanceof AuditHeadNotReadyError
-                ? Effect.fail(error)
-                : classifySendFailure(error),
+          Effect.catchTags(
+            {
+              ChainHeadConflict: () => Effect.succeed({ kind: "head-conflict" as const }),
+              CheckpointStateMismatch: (error) =>
+                Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason }),
+            },
+            // The 503 (AuditHeadNotReady) and the rest re-fail here — the
+            // unit's Effect.retry handles the 503, toCliError is the CLI's
+            // final shape elsewhere
+            Effect.fail,
           ),
         );
         return { built, baseline, outcome };
@@ -598,10 +596,10 @@ export function issueCheckpoint(
           },
           schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
         }),
-        Effect.mapError((error) =>
-          error instanceof AuditHeadNotReadyError
-            ? cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)
-            : error,
+        Effect.catchTag(
+          "AuditHeadNotReady",
+          () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+          Effect.fail,
         ),
       );
       if (attempt.outcome.kind === "accepted") {
@@ -760,22 +758,6 @@ function stableSubsetOrFail(input: {
   return Effect.succeed(stableIds);
 }
 
-/** Classifying sendCheckpoint's failure (the retriable kinds are discriminated here; AuditHeadNotReady is re-failed for the unit's Effect.retry before reaching this; anything else is a definitive failure). */
-function classifySendFailure(
-  error: ChainHeadConflictError | CheckpointStateMismatchError | CliError,
-): Effect.Effect<
-  { readonly kind: "head-conflict" } | { readonly kind: "state-mismatch"; readonly reason: string },
-  CliError
-> {
-  if (error instanceof ChainHeadConflictError) {
-    return Effect.succeed({ kind: "head-conflict" as const });
-  }
-  if (error instanceof CheckpointStateMismatchError) {
-    return Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason });
-  }
-  return Effect.fail(error);
-}
-
 // ---------------------------------------------------------------------------
 // Issuance trigger (iii): the proposal on push / pull success (CRYPTO_SPEC
 // §6.3 — detecting a baseline older than 7 days or never issued). The
@@ -870,7 +852,7 @@ export function checkpointProposal(input: {
     // scope half) before deciding the proposal's wording. /auth/me is
     // fetched only when the proposal is about to hold
     const effectiveAdmin = yield* determineAuditAttestation(input).pipe(
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     );
     if (effectiveAdmin) {
       return ATTESTED_BASELINE_PROPOSAL;

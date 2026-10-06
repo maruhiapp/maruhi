@@ -157,13 +157,11 @@ export function offerGithubRegistration(input: {
       !io.agentProfile().isAgent &&
       (yield* stdio.stdinIsTerminal) &&
       (yield* stdio.stdoutIsTerminal);
-    const keys = yield* loadMasterKeys(input.session).pipe(
-      Effect.catch(() => Effect.succeed(null)),
-    );
+    const keys = yield* loadMasterKeys(input.session).pipe(Effect.orElseSucceed(() => null));
     if (keys === null) {
       return;
     }
-    const line = yield* openSshSigningKeyLine(keys).pipe(Effect.catch(() => Effect.succeed(null)));
+    const line = yield* openSshSigningKeyLine(keys).pipe(Effect.orElseSucceed(() => null));
     if (line === null) {
       return;
     }
@@ -181,7 +179,7 @@ export function offerGithubRegistration(input: {
         prompt:
           "Type yes to register it now through the gh CLI (requires `gh auth login`); anything else to skip: ",
       })
-      .pipe(Effect.catch(() => Effect.succeed("")));
+      .pipe(Effect.orElseSucceed(() => ""));
     if (answer.trim().toLowerCase() !== "yes") {
       yield* logNote("skipped. You can register it later with `maruhi key publish`");
       return;

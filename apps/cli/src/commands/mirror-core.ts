@@ -34,7 +34,7 @@ function deploymentFingerprint(origin: string): Effect.Effect<string | null, nev
     const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
     return yield* client.auth.authConfig({}).pipe(
       Effect.map((config) => config.serverKeyFingerprintHex ?? null),
-      Effect.catch(() => Effect.succeed(null)),
+      Effect.orElseSucceed(() => null),
     );
   });
 }

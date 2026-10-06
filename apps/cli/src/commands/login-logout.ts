@@ -11,7 +11,7 @@ import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
 import { ensureValueDisplayAllowed } from "../agent-gate.ts";
-import { ConfigStore } from "../config.ts";
+import { loadCliConfig } from "../config.ts";
 import { CliError, usageError } from "../errors.ts";
 import { loginOp, logoutOp } from "../login.ts";
 import { resolveServerOrigin } from "../session.ts";
@@ -90,8 +90,7 @@ export function makeLoginLogoutCommands() {
       if (values["show-token"]) {
         yield* ensureValueDisplayAllowed;
       }
-      const store = yield* ConfigStore;
-      const config = yield* store.load;
+      const config = yield* loadCliConfig;
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* loginOp({
         origin,
@@ -113,8 +112,7 @@ export function makeLoginLogoutCommands() {
 
   const logout = Command.make("logout", logoutConfig, (values) =>
     Effect.gen(function* () {
-      const store = yield* ConfigStore;
-      const config = yield* store.load;
+      const config = yield* loadCliConfig;
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });
     }),
