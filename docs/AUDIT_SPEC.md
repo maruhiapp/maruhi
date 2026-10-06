@@ -23,9 +23,7 @@ detection) and AUTH_SPEC (§2 data model).
    never be written to the audit log (CLAUDE.md. An append-only structure
    cannot be rewritten and must be independent of the authentication
    provider). The authentication means's **kind name** (`github_oauth` /
-   `cli_handoff` / the old `device_flow` [replaced by the 2026-08-31 AUTH_SPEC
-   §4 revision — remains valid as a historical value on existing rows] etc.;
-   the same vocabulary as AUTH_SPEC's auth_method) may be recorded
+   `cli_handoff`; the same vocabulary as AUTH_SPEC's auth_method) may be recorded
 3. **No secrets**: do not include plaintext values, ciphertexts, nonces, or key
    material in events. Variable names are plaintext metadata in v1 (CRYPTO_SPEC
    §4), so a snapshot may be included in the payload for UI convenience
@@ -74,7 +72,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 
 | Event | Main attributes | Notes |
 |---|---|---|
-| `auth.login_succeeded` | auth_method | Web OAuth / CLI login (handoff) approval completed (2026-08-31 AUTH_SPEC §4 revision: `device_flow` → `cli_handoff`. The old value on existing rows remains a historical value) |
+| `auth.login_succeeded` | auth_method | Web OAuth / CLI login (handoff) approval completed |
 | `auth.login_failed` | auth_method, reason kind | State mismatch, verification failure, etc. The presented external ID is **not recorded** |
 | `auth.signup_denied` | auth_method, reason kind (`policy-closed` / `invite-required` / `invite-invalid`) | signupPolicy-based rejection of new creation (AUTH_SPEC §3 — 2026-09-01 H1). GitHub auth succeeded, but the presented external ID is **not recorded** (§1-2 — no internal user_id exists at rejection time). The actor is type=user without user_id, same as `auth.login_failed` |
 | `auth.session_revoked` | target session id | Explicit logout / server-side revocation |
@@ -89,7 +87,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 | `auth.guardian_designated` / `auth.guardian_released` | groupId, mode, shareIndex | Designation / release of a guardian. actor = ward, **target = guardian** (also appears on the guardian's own axis). One row per segment |
 | `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id + key FP), target = ward |
 | `auth.key_handoff_requested` | requestId | Creation of a handoff request. actor = ward |
-| `auth.key_handoff_approved` | requestId, source (groupId — `device` was removed in 2026-09-19 DK. `device` on existing rows remains a valid historical value), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
+| `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
 | `auth.key_handoff_collected` | requestId, approvalCount | The requester obtained one or more approvals **for the first time** = the fact that a restoration happened (once per request; not recorded on each polling response — AUTH_SPEC §13-6 `collected_at`). actor = ward |
 | `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id` |
 
@@ -341,10 +339,8 @@ CRYPTO_SPEC §4 identifiers.
   DEK"
 - "New version push" is also the resolution condition of the rotation-needed
   flag (§4 — **judged by the value lineage** — below)
-- ~~**`var.version_pushed`'s re-encryption marker (2026-08-15 session 25 owner
-  ruling — Wave 2 B2)**: `{ reencryption: true }`~~ **`var.version_pushed`'s
-  value-lineage payload (2026-09-27 VH — docs/notes/vh-design.md ruling V1;
-  generalizes and replaces the 2026-08-15 re-encryption marker)**: the push
+- **`var.version_pushed`'s value-lineage payload (2026-09-27 VH —
+  docs/notes/vh-design.md ruling V1)**: the push
   request's `sameValueAs` declaration (AUTH_SPEC §12-5 — the writer's
   self-declaration "this version's plaintext is version k's"; the server
   cannot verify it) is copied into the payload as `{ sameValueAs: k }`
@@ -431,12 +427,6 @@ server's acceptance time are carried.
 - **Device addition / revocation (2026-09-19 DK)**: 1 row per entry (bijection
   unchanged). `chain.device_added` is not a detection trigger, but Q1 reads it
   as the start point of §4.1's device window
-- **Backfill (2026-08-02 session 07 ruling)**: mirror recording starts from
-  entries accepted after the audit-log implementation is introduced. No DO
-  holds a chain accepted before the introduction (unreleased), so v1 does not
-  implement backfill of existing chains. If it becomes needed for a future
-  schema migration etc., it is designed as a reconstruction process based on
-  §1-5 (the mirror is reconstructible from the chain)
 
 ### 3.5 Server access via grant_server ★ (2026-08-12 revision — adapting to workload leases)
 
@@ -592,12 +582,8 @@ member, so the membership interval is not closed (detection is on the "window
 cut at the trigger seq", same as the demotion variant). Revoking a device with
 empty scope (a vote-only device) yields empty candidates and writes no row
 
-~~If environment-scoped role (CRYPTO_SPEC open item #11) is introduced, step
-2's "all environments" narrows to "the environments M had access to". Because
-the chain mirror copies role / scope, this extension works by a query change
-alone (no schema change needed).~~ **Resolved 2026-09-14 (the per-environment
-access windows above)**. Because the chain mirror copies scope (§3.4), it
-works by a query change alone (no schema change needed — unchanged)
+Because the chain mirror copies scope (§3.4), the per-environment access
+windows above work by a query change alone (no schema change needed)
 
 ### 4.2 Query requirements the schema must satisfy
 
@@ -707,12 +693,12 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
   (fail-closed — checks and responses happen only on a call where the column
   reached MAX(seq)). Extension progress is persisted across calls, and every
   call including a failure response must advance and converge. The
-  introduction migration recomputes the cumulative hash from existing rows
-  (all rows survive, append-only) to initialize (in lazy-materialize form the
-  first read doubles as this initialization) — tampering done before
-  initialization is out of detection scope (the checkpoint's guarantee covers
-  "post-hoc tampering after the notarization point" — §6 — and initialization
-  only creates its starting point). **The D1 side (§5.2's user / org events)
+  first extension computes the cumulative hash from every existing row (all
+  rows survive, append-only), so no separate initialization step exists —
+  tampering done before that first materialization is out of detection scope
+  (the checkpoint's guarantee covers "post-hoc tampering after the
+  notarization point" — §6 — and the first materialization only creates its
+  starting point). **The D1 side (§5.2's user / org events)
   is out of scope**: a checkpoint lives on the project chain, and there is no
   place to put rows that belong to no project (D1-side tamper resistance stays
   on §6's conventional model)
@@ -997,22 +983,12 @@ The read API is not built per §6–§7 (Phase 2).
 
 ## 8. Open items
 
-1. ~~Details of the permission model for the audit-log viewing UI~~
-   **Resolved (2026-08-12 — §6's visibility classes. Settled by the merge of
-   this revision PR)**
-2. ~~Checkpointing the audit head onto the chain~~ **Resolved (2026-08-18
-   drafting — settled by the merge of this revision PR)**: integrated into
-   CRYPTO_SPEC §6.2 `checkpoint` op (§5.1's cumulative hash + §6's
-   "unverified-at-issuance notarization" semantics. Resolved together with the
-   old CRYPTO_SPEC open item #4). Implementation in a follow-up PR of Phase 2
-   Wave 3 (design comparison in docs/notes/session-27.md)
-3. Audit-log preservation after project deletion (when the hosted version's
-   compliance requirements emerge: e.g. evacuating a pre-deletion snapshot to
-   the org side)
-4. ~~`var.read`'s aggregation policy (after dogfooding measurements. §3.3 /
-   §5.3)~~ **Resolved (2026-09-02 owner decision — brought forward without
-   waiting for measurements. §3.3's aggregate form = 1 row per environment per
-   with-values bulk pull, payload enumerates the returned variables. Settled
-   by the merge of an implementation PR containing this revision)**
-5. Export (SIEM integration etc.). Separate from the telemetry prohibition
-   (CLAUDE.md), but designed as explicit-operation-only and pull-type only
+Resolved items are removed; the open ones keep their numbers (other text
+cites them by number).
+
+- **#3** Audit-log preservation after project deletion (when the hosted
+  version's compliance requirements emerge: e.g. evacuating a pre-deletion
+  snapshot to the org side)
+- **#5** Export (SIEM integration etc.). Separate from the telemetry
+  prohibition (CLAUDE.md), but designed as explicit-operation-only and
+  pull-type only
