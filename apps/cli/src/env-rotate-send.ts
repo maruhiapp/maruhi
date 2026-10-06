@@ -28,7 +28,7 @@ import { retryOnConflict } from "./retry.ts";
 const MAX_ATTEMPTS = 5;
 
 /** Signs a rotate_epoch entry right after the current head (seq = head + 1). */
-function signRotateEntry(input: {
+const signRotateEntry = Effect.fn("env-rotate-send.signRotateEntry")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly newEpoch: number;
@@ -36,31 +36,29 @@ function signRotateEntry(input: {
   readonly dekCommitmentHex: string;
   readonly member: ChainMember;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
-  return Effect.gen(function* () {
-    // Resolving the signing device and signing share one place (chain-append.ts — DK K13-12)
-    const signed = yield* signEntryAtHead({
-      verified: input.verified,
-      signerUserId: input.member.userId,
-      operation: {
-        op: "rotate_epoch",
-        payload: {
-          environmentId: input.environmentId,
-          newEpoch: input.newEpoch,
-          reason: input.reason,
-          dekCommitmentHex: input.dekCommitmentHex,
-        },
+}): Effect.fn.Return<ChainEntry & { readonly op: "rotate_epoch" }, CliError> {
+  // Resolving the signing device and signing share one place (chain-append.ts — DK K13-12)
+  const signed = yield* signEntryAtHead({
+    verified: input.verified,
+    signerUserId: input.member.userId,
+    operation: {
+      op: "rotate_epoch",
+      payload: {
+        environmentId: input.environmentId,
+        newEpoch: input.newEpoch,
+        reason: input.reason,
+        dekCommitmentHex: input.dekCommitmentHex,
       },
-      signingKeyPair: input.signingKeyPair,
-      failureText: "Failed to sign the rotate_epoch entry",
-    });
-    // Narrowing the op (signChainEntry persists the input's op)
-    if (signed.op !== "rotate_epoch") {
-      return yield* Effect.fail(cliError("Failed to sign the rotate_epoch entry"));
-    }
-    return signed;
+    },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "Failed to sign the rotate_epoch entry",
   });
-}
+  // Narrowing the op (signChainEntry persists the input's op)
+  if (signed.op !== "rotate_epoch") {
+    return yield* Effect.fail(cliError("Failed to sign the rotate_epoch entry"));
+  }
+  return signed;
+});
 
 /**
  * The discriminable outcomes of a send. Acceptance is confirmed by my own
@@ -100,7 +98,7 @@ type RotateSendOutcome =
  * the most dangerous state — "only the epoch advanced, zero
  * re-encryptions" — as "nothing happened".
  */
-function probeAmbiguousSend(input: {
+const probeAmbiguousSend = Effect.fn("env-rotate-send.probeAmbiguousSend")(function* (input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly baseline: VerifiedProject;
   readonly environmentId: string;
@@ -110,71 +108,69 @@ function probeAmbiguousSend(input: {
   /** The declared head of the attempt whose response vanished (= the composite's CAS parent). Material for judging landing-possibility. */
   readonly declaredHead: { readonly seq: number; readonly hashHex: string };
   readonly cause: string;
-}): Effect.Effect<{ readonly outcome: RotateSendOutcome; readonly error: CliError }, never> {
-  return Effect.gen(function* () {
-    const probe = yield* asOutcome(
-      Effect.gen(function* () {
-        const view = yield* resyncExtended(input.resync, input.baseline);
-        const environment = yield* requireChainEnvironment(view, input.environmentId);
-        return { view, environment };
-      }),
-    );
-    if (probe.kind === "failed") {
-      return {
-        outcome: { kind: "acceptance-unknown" } as const,
-        error: cliError(
-          `${input.cause}. This failure does not mean the request never arrived (the response may have been lost). Tried to confirm on the chain whether it was accepted, but that also failed (${probe.error.message}) — environment ${input.environmentId} may already have advanced to epoch ${input.newEpoch}. Restore connectivity and re-run \`maruhi env rotate ${input.environmentId}\` (if the epoch advanced, the run resumes re-encryption; if not, it restarts the rotation)`,
-        ),
-      };
-    }
-    // The judgment is a **commitment match** — never read off the current
-    // epoch's value. dekCommitments holds every epoch, so even when another
-    // member rotated further after acceptance and the current epoch has
-    // overtaken the target, seeing my share there settles it as accepted —
-    // conditioning on the current epoch matching would report "not
-    // accepted" in that case (the epoch advanced, zero re-encryptions)
-    if (probe.value.environment.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex) {
-      const superseded = probe.value.environment.currentEpoch > input.newEpoch;
-      return {
-        outcome: superseded
-          ? ({ kind: "accepted-but-superseded", view: probe.value.view } as const)
-          : ({ kind: "accepted-and-current", view: probe.value.view } as const),
-        error: cliError(
-          `${input.cause}. However, the chain shows this rotation itself was accepted (epoch ${input.newEpoch} of environment ${input.environmentId} carries the DEK generated by this run). No current values have been re-encrypted yet, so holders of older-epoch DEKs can still read them — re-run \`maruhi env rotate ${input.environmentId}\` to resume re-encryption without advancing the epoch`,
-        ),
-      };
-    }
-    if (probe.value.environment.currentEpoch >= input.newEpoch) {
-      return {
-        outcome: { kind: "not-accepted" } as const,
-        error: cliError(
-          `${input.cause}. Epoch ${input.newEpoch} on the chain is another member's rotation; this run's entry was not accepted (the generated DEK will not be used) — re-run \`maruhi env rotate ${input.environmentId}\` (if re-encryption is incomplete, it resumes without advancing the epoch)`,
-        ),
-      };
-    }
-    // The current epoch below the target: settleability splits on the
-    // declared-head position. If the chain has advanced past the declared
-    // head, this attempt's CAS can no longer hold (settled refusal). If it
-    // is still at the declared head (the slot is open), an in-transit
-    // request could still land — never settle to not-accepted (the intent
-    // stays unresolved and the reconciliation after the chain moves
-    // settles it)
-    if (probe.value.view.state.headSeq > input.declaredHead.seq) {
-      return {
-        outcome: { kind: "not-accepted" } as const,
-        error: cliError(
-          `${input.cause}. The chain shows it was not accepted (the chain advanced past this attempt's declared parent head, so it can no longer land; environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}). It is safe to simply re-run`,
-        ),
-      };
-    }
+}): Effect.fn.Return<{ readonly outcome: RotateSendOutcome; readonly error: CliError }, never> {
+  const probe = yield* asOutcome(
+    Effect.gen(function* () {
+      const view = yield* resyncExtended(input.resync, input.baseline);
+      const environment = yield* requireChainEnvironment(view, input.environmentId);
+      return { view, environment };
+    }),
+  );
+  if (probe.kind === "failed") {
     return {
-      outcome: { kind: "send-pending" } as const,
+      outcome: { kind: "acceptance-unknown" } as const,
       error: cliError(
-        `${input.cause}. The chain does not show it as accepted yet (environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}, and the request may still be in flight). It is safe to simply re-run — the re-run resumes re-encryption if it landed, or restarts the rotation if not`,
+        `${input.cause}. This failure does not mean the request never arrived (the response may have been lost). Tried to confirm on the chain whether it was accepted, but that also failed (${probe.error.message}) — environment ${input.environmentId} may already have advanced to epoch ${input.newEpoch}. Restore connectivity and re-run \`maruhi env rotate ${input.environmentId}\` (if the epoch advanced, the run resumes re-encryption; if not, it restarts the rotation)`,
       ),
     };
-  });
-}
+  }
+  // The judgment is a **commitment match** — never read off the current
+  // epoch's value. dekCommitments holds every epoch, so even when another
+  // member rotated further after acceptance and the current epoch has
+  // overtaken the target, seeing my share there settles it as accepted —
+  // conditioning on the current epoch matching would report "not
+  // accepted" in that case (the epoch advanced, zero re-encryptions)
+  if (probe.value.environment.dekCommitments.get(input.newEpoch) === input.dekCommitmentHex) {
+    const superseded = probe.value.environment.currentEpoch > input.newEpoch;
+    return {
+      outcome: superseded
+        ? ({ kind: "accepted-but-superseded", view: probe.value.view } as const)
+        : ({ kind: "accepted-and-current", view: probe.value.view } as const),
+      error: cliError(
+        `${input.cause}. However, the chain shows this rotation itself was accepted (epoch ${input.newEpoch} of environment ${input.environmentId} carries the DEK generated by this run). No current values have been re-encrypted yet, so holders of older-epoch DEKs can still read them — re-run \`maruhi env rotate ${input.environmentId}\` to resume re-encryption without advancing the epoch`,
+      ),
+    };
+  }
+  if (probe.value.environment.currentEpoch >= input.newEpoch) {
+    return {
+      outcome: { kind: "not-accepted" } as const,
+      error: cliError(
+        `${input.cause}. Epoch ${input.newEpoch} on the chain is another member's rotation; this run's entry was not accepted (the generated DEK will not be used) — re-run \`maruhi env rotate ${input.environmentId}\` (if re-encryption is incomplete, it resumes without advancing the epoch)`,
+      ),
+    };
+  }
+  // The current epoch below the target: settleability splits on the
+  // declared-head position. If the chain has advanced past the declared
+  // head, this attempt's CAS can no longer hold (settled refusal). If it
+  // is still at the declared head (the slot is open), an in-transit
+  // request could still land — never settle to not-accepted (the intent
+  // stays unresolved and the reconciliation after the chain moves
+  // settles it)
+  if (probe.value.view.state.headSeq > input.declaredHead.seq) {
+    return {
+      outcome: { kind: "not-accepted" } as const,
+      error: cliError(
+        `${input.cause}. The chain shows it was not accepted (the chain advanced past this attempt's declared parent head, so it can no longer land; environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}). It is safe to simply re-run`,
+      ),
+    };
+  }
+  return {
+    outcome: { kind: "send-pending" } as const,
+    error: cliError(
+      `${input.cause}. The chain does not show it as accepted yet (environment ${input.environmentId} is still at epoch ${probe.value.environment.currentEpoch}, and the request may still be in flight). It is safe to simply re-run — the re-run resumes re-encryption if it landed, or restarts the rotation if not`,
+    ),
+  };
+});
 
 /** The CAS-retry state: the verification view, my member row, and the new epoch's wrap set. */
 interface RotateState {
@@ -223,7 +219,7 @@ export class RotateValuesConflictError extends Data.TaggedError("RotateValuesCon
  * self-generated DEK the discipline of never using a DEK before the
  * match).
  */
-export function appendRotation(
+export const appendRotation = Effect.fn("env-rotate-send.appendRotation")(function* (
   input: RotateInput & {
     readonly baseline: VerifiedProject;
     readonly member: ChainMember;
@@ -254,7 +250,7 @@ export function appendRotation(
      */
     readonly checkpointValues: readonly EnvValuesDigestEntry[];
   },
-): Effect.Effect<
+): Effect.fn.Return<
   {
     readonly view: VerifiedProject;
     readonly memberCount: number;
@@ -270,255 +266,253 @@ export function appendRotation(
   },
   CliError | RotateValuesConflictError
 > {
-  return Effect.gen(function* () {
-    const buildWraps = (verified: VerifiedProject) =>
-      buildWrapCompleteSet({
-        verified,
-        environmentId: input.environmentId,
-        epoch: input.newEpoch,
-        dek: input.dek,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      });
+  const buildWraps = (verified: VerifiedProject) =>
+    buildWrapCompleteSet({
+      verified,
+      environmentId: input.environmentId,
+      epoch: input.newEpoch,
+      dek: input.dek,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    });
 
-    // Whether the send was "arrival unknown" (= whether an
-    // acceptance-confirmation probe is needed). **Set only when a send was
-    // attempted**: probing on a pre-send failure like a signing failure
-    // would attach "it may have arrived" to a local failure and re-fetch
-    // the chain. When it did send, only "refused with the server's own
-    // error body" goes to the settled side (a CAS conflict is also settled
-    // — we know it was not accepted, so the recover's interruption
-    // (concurrent-rotation detection) after it needs no probe either)
-    let ambiguousSend = false;
-    // The latest send attempt's intent and manifest (self-computed). When
-    // the probe confirms the acceptance of an attempt whose response
-    // vanished, they become the floor-advance material and the resolution
-    // target
-    let lastSent: AcceptedRotation | null = null;
-    const attempted = yield* asOutcome(
-      retryOnConflict(
-        { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
-        {
-          maxAttempts: MAX_ATTEMPTS,
-          attempt: (state) =>
-            Effect.gen(function* () {
-              const entry = yield* signRotateEntry({
-                verified: state.verified,
-                environmentId: input.environmentId,
-                newEpoch: input.newEpoch,
-                reason: input.reason,
-                dekCommitmentHex: input.dekCommitmentHex,
-                member: state.member,
-                signingKeyPair: input.signingKeyPair,
-              });
-              // The manifest with the new epoch baked in (§12-4 / §4.3 —
-              // re-issued reflecting the epoch advance even though the meta
-              // set is unchanged). The declared head is the current head
-              // before the append. Under CAS retry both the entry and the
-              // manifest are re-signed
-              const manifest = yield* signNextManifest({
-                verified: state.verified,
-                environmentId: input.environmentId,
-                epoch: input.newEpoch,
-                previous: input.manifestBase.previous,
-                entries: input.manifestBase.entries,
-                envMeta: input.manifestBase.envMeta,
-                issuerUserId: input.signerUserId,
-                signingKey: input.signingKeyPair.privateKey,
-                chainHead: {
-                  seq: state.verified.state.headSeq,
-                  hashHex: state.verified.state.headHashHex,
-                },
-              });
-              // journal-before-send (3-F): the intent is appended before
-              // sending a security-critical mutation (never send when
-              // persisting failed — fail-closed). What a crash / vanished
-              // response loses is not "the belief it succeeded" but "the
-              // record of the confirmation duty", which the next run's
-              // reconciliation (a chain sync) resolves
-              const intentId = yield* input.floor.appendIntent({
-                op: "rotate_epoch",
-                environmentId: input.environmentId,
-                epoch: input.newEpoch,
-                dekCommitmentHex: input.dekCommitmentHex,
-                variableId: null,
+  // Whether the send was "arrival unknown" (= whether an
+  // acceptance-confirmation probe is needed). **Set only when a send was
+  // attempted**: probing on a pre-send failure like a signing failure
+  // would attach "it may have arrived" to a local failure and re-fetch
+  // the chain. When it did send, only "refused with the server's own
+  // error body" goes to the settled side (a CAS conflict is also settled
+  // — we know it was not accepted, so the recover's interruption
+  // (concurrent-rotation detection) after it needs no probe either)
+  let ambiguousSend = false;
+  // The latest send attempt's intent and manifest (self-computed). When
+  // the probe confirms the acceptance of an attempt whose response
+  // vanished, they become the floor-advance material and the resolution
+  // target
+  let lastSent: AcceptedRotation | null = null;
+  const attempted = yield* asOutcome(
+    retryOnConflict(
+      { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
+      {
+        maxAttempts: MAX_ATTEMPTS,
+        attempt: (state) =>
+          Effect.gen(function* () {
+            const entry = yield* signRotateEntry({
+              verified: state.verified,
+              environmentId: input.environmentId,
+              newEpoch: input.newEpoch,
+              reason: input.reason,
+              dekCommitmentHex: input.dekCommitmentHex,
+              member: state.member,
+              signingKeyPair: input.signingKeyPair,
+            });
+            // The manifest with the new epoch baked in (§12-4 / §4.3 —
+            // re-issued reflecting the epoch advance even though the meta
+            // set is unchanged). The declared head is the current head
+            // before the append. Under CAS retry both the entry and the
+            // manifest are re-signed
+            const manifest = yield* signNextManifest({
+              verified: state.verified,
+              environmentId: input.environmentId,
+              epoch: input.newEpoch,
+              previous: input.manifestBase.previous,
+              entries: input.manifestBase.entries,
+              envMeta: input.manifestBase.envMeta,
+              issuerUserId: input.signerUserId,
+              signingKey: input.signingKeyPair.privateKey,
+              chainHead: {
+                seq: state.verified.state.headSeq,
+                hashHex: state.verified.state.headHashHex,
+              },
+            });
+            // journal-before-send (3-F): the intent is appended before
+            // sending a security-critical mutation (never send when
+            // persisting failed — fail-closed). What a crash / vanished
+            // response loses is not "the belief it succeeded" but "the
+            // record of the confirmation duty", which the next run's
+            // reconciliation (a chain sync) resolves
+            const intentId = yield* input.floor.appendIntent({
+              op: "rotate_epoch",
+              environmentId: input.environmentId,
+              epoch: input.newEpoch,
+              dekCommitmentHex: input.dekCommitmentHex,
+              variableId: null,
+              manifestVersion: manifest.manifestVersion,
+              manifestSigHashHex: manifest.manifestSigHashHex,
+              declaredHead: {
+                seq: state.verified.state.headSeq,
+                hashHex: state.verified.state.headHashHex,
+              },
+            });
+            // The boundary checkpoint (H+2 — §12-4): the one tuple of
+            // this environment (new_epoch, the bundled manifest's
+            // version and hash, and the values_digest of the
+            // actually-read current values). Under CAS retry it is
+            // re-signed together with the entry and the manifest
+            const checkpoint = yield* signBoundaryCheckpoint({
+              compositeEntry: entry,
+              environmentId: input.environmentId,
+              epoch: input.newEpoch,
+              manifestVersion: manifest.manifestVersion,
+              manifestSigHashHex: manifest.manifestSigHashHex,
+              values: input.checkpointValues,
+              verified: state.verified,
+              member: state.member,
+              deviceFingerprintHex: entry.actor.keyFingerprintHex,
+              signingKey: input.signingKeyPair.privateKey,
+            });
+            const sent: AcceptedRotation = {
+              state,
+              manifest: {
                 manifestVersion: manifest.manifestVersion,
+                epoch: manifest.epoch,
                 manifestSigHashHex: manifest.manifestSigHashHex,
-                declaredHead: {
-                  seq: state.verified.state.headSeq,
-                  hashHex: state.verified.state.headHashHex,
+              },
+              intentId,
+              declaredHead: {
+                seq: state.verified.state.headSeq,
+                hashHex: state.verified.state.headHashHex,
+              },
+            };
+            lastSent = sent;
+            yield* input.client.environments
+              .rotate({
+                params: {
+                  projectId: state.verified.projectId,
+                  environmentId: input.environmentId,
                 },
-              });
-              // The boundary checkpoint (H+2 — §12-4): the one tuple of
-              // this environment (new_epoch, the bundled manifest's
-              // version and hash, and the values_digest of the
-              // actually-read current values). Under CAS retry it is
-              // re-signed together with the entry and the manifest
-              const checkpoint = yield* signBoundaryCheckpoint({
-                compositeEntry: entry,
-                environmentId: input.environmentId,
-                epoch: input.newEpoch,
-                manifestVersion: manifest.manifestVersion,
-                manifestSigHashHex: manifest.manifestSigHashHex,
-                values: input.checkpointValues,
-                verified: state.verified,
-                member: state.member,
-                deviceFingerprintHex: entry.actor.keyFingerprintHex,
-                signingKey: input.signingKeyPair.privateKey,
-              });
-              const sent: AcceptedRotation = {
-                state,
-                manifest: {
-                  manifestVersion: manifest.manifestVersion,
-                  epoch: manifest.epoch,
-                  manifestSigHashHex: manifest.manifestSigHashHex,
+                payload: {
+                  parentHeadHashHex: state.verified.state.headHashHex,
+                  entry,
+                  deks: state.deks,
+                  manifest: manifest.manifest,
+                  checkpoint,
                 },
-                intentId,
-                declaredHead: {
-                  seq: state.verified.state.headSeq,
-                  hashHex: state.verified.state.headHashHex,
-                },
-              };
-              lastSent = sent;
-              yield* input.client.environments
-                .rotate({
-                  params: {
-                    projectId: state.verified.projectId,
-                    environmentId: input.environmentId,
+              })
+              .pipe(
+                Effect.tapError((error) => {
+                  ambiguousSend = !isServerRejection(error);
+                  // A refusal with the server's own error body (a CAS
+                  // 409 included) = no effect has occurred (settled) —
+                  // close the intent. A resolution-append failure may be
+                  // swallowed: the direction where the intent stays open
+                  // is the safe side
+                  return isServerRejection(error)
+                    ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
+                    : Effect.void;
+                }),
+                Effect.catchTags(
+                  {
+                    // A rotate into a deleted (tombstone) environment is a
+                    // 404 (§12-4). The shape is "the chain asserts the
+                    // environment exists but the server returned 404", so
+                    // per §7's discipline "never skip silently — interrupt
+                    // and warn" — never collapse it into the generic
+                    // "environment not found"
+                    EnvironmentNotFound: () =>
+                      Effect.fail(
+                        cliError(
+                          `Rotation for environment ${input.environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+                        ),
+                      ),
+                    // A CAS conflict on the bundled manifest (§12-5 (6))
+                    // = another meta operation (a variable create /
+                    // rename / delete / an environment rename) was
+                    // interposed between issuance and acceptance. Since
+                    // the meta set may have changed, re-signing within
+                    // this run cannot resolve it — a re-run re-fetches
+                    // the meta state (unlike a chain CAS 409, the
+                    // material must be re-fetched)
+                    ManifestVersionConflict: (error) =>
+                      Effect.fail(
+                        cliError(
+                          `A concurrent meta operation advanced environment ${input.environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run \`maruhi env rotate\` to rebuild the manifest from the refreshed state`,
+                        ),
+                      ),
+                    // The 422 of the boundary checkpoint's values_digest
+                    // cross-check (§12-4). envRotateOp picks it up via a
+                    // bounded retry from a verified pull (on exhaustion
+                    // this wording surfaces as-is)
+                    CheckpointStateMismatch: (error) =>
+                      Effect.fail(
+                        new RotateValuesConflictError({
+                          message: `A concurrent push advanced environment ${input.environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
+                        }),
+                      ),
                   },
-                  payload: {
-                    parentHeadHashHex: state.verified.state.headHashHex,
-                    entry,
-                    deks: state.deks,
-                    manifest: manifest.manifest,
-                    checkpoint,
-                  },
-                })
-                .pipe(
-                  Effect.tapError((error) => {
-                    ambiguousSend = !isServerRejection(error);
-                    // A refusal with the server's own error body (a CAS
-                    // 409 included) = no effect has occurred (settled) —
-                    // close the intent. A resolution-append failure may be
-                    // swallowed: the direction where the intent stays open
-                    // is the safe side
-                    return isServerRejection(error)
-                      ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
-                      : Effect.void;
-                  }),
-                  Effect.catchTags(
-                    {
-                      // A rotate into a deleted (tombstone) environment is a
-                      // 404 (§12-4). The shape is "the chain asserts the
-                      // environment exists but the server returned 404", so
-                      // per §7's discipline "never skip silently — interrupt
-                      // and warn" — never collapse it into the generic
-                      // "environment not found"
-                      EnvironmentNotFound: () =>
-                        Effect.fail(
-                          cliError(
-                            `Rotation for environment ${input.environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
-                          ),
-                        ),
-                      // A CAS conflict on the bundled manifest (§12-5 (6))
-                      // = another meta operation (a variable create /
-                      // rename / delete / an environment rename) was
-                      // interposed between issuance and acceptance. Since
-                      // the meta set may have changed, re-signing within
-                      // this run cannot resolve it — a re-run re-fetches
-                      // the meta state (unlike a chain CAS 409, the
-                      // material must be re-fetched)
-                      ManifestVersionConflict: (error) =>
-                        Effect.fail(
-                          cliError(
-                            `A concurrent meta operation advanced environment ${input.environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run \`maruhi env rotate\` to rebuild the manifest from the refreshed state`,
-                          ),
-                        ),
-                      // The 422 of the boundary checkpoint's values_digest
-                      // cross-check (§12-4). envRotateOp picks it up via a
-                      // bounded retry from a verified pull (on exhaustion
-                      // this wording surfaces as-is)
-                      CheckpointStateMismatch: (error) =>
-                        Effect.fail(
-                          new RotateValuesConflictError({
-                            message: `A concurrent push advanced environment ${input.environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
-                          }),
-                        ),
-                    },
-                    // Classification targets like ChainHeadConflict pass
-                    // through as-is (retryOnConflict's classify)
-                    Effect.fail,
-                  ),
-                );
-              return sent;
-            }),
-          // RotateValuesConflictError bypasses classification: it is the
-          // outer bounded retry's signal (env-rotate.ts catches it by
-          // tag), and the unclassified path's toCliError mapping would
-          // erase the distinction
-          passthrough: "RotateValuesConflictError",
-          // AuditHeadNotReady (503) advances with the same recovery as a
-          // CAS conflict (resync + re-sign + re-send) — the reason and the
-          // defensive classification's intent are the same as
-          // env-create.ts's
-          classify: (error) =>
-            error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
-              ? "head-conflict"
-              : null,
-          recover: (state) =>
-            Effect.gen(function* () {
-              const resynced = yield* resyncExtended(input.resync, state.verified);
-              const member = yield* ensureRotatable(
-                resynced,
-                input.environmentId,
-                input.signerUserId,
-                input.signingKeyPair,
+                  // Classification targets like ChainHeadConflict pass
+                  // through as-is (retryOnConflict's classify)
+                  Effect.fail,
+                ),
               );
-              const environment = yield* requireChainEnvironment(resynced, input.environmentId);
-              if (environment.currentEpoch + 1 !== input.newEpoch) {
-                // Another member rotated concurrently. The generated new
-                // DEK, commitment, and wrap set are dedicated to that epoch
-                // (§5's info / §5.2's preimage carry the epoch), so abort
-                // without reusing them. A re-run resumes without advancing
-                // the epoch if an unfinished re-encryption exists
-                return yield* Effect.fail(
-                  cliError(
-                    `Detected a concurrent rotation by another member (environment ${input.environmentId} is now at epoch ${environment.currentEpoch}). The newly generated DEK will not be used; aborting — please re-run`,
-                  ),
-                );
-              }
-              const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
-                ? state.deks
-                : yield* buildWraps(resynced);
-              return { verified: resynced, member, deks };
-            }),
-          // AuditHeadNotReady also cycles under the same classification,
-          // so the wording stays faithful to both causes (prevents a wrong
-          // guidance if it ever becomes reachable)
-          exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
-        },
-      ),
-    );
-    if (attempted.kind === "failed") {
-      // A settled refusal (the server's own error body) or an abort
-      // decided by recover (concurrent-rotation detection — the chain was
-      // already resynced and observed) know whether acceptance happened,
-      // so they need no extra probe or guidance. It is also the branch
-      // that keeps "you can re-run as-is" off the §7 interruption message
-      if (!ambiguousSend || lastSent === null) {
-        return yield* Effect.fail(attempted.error);
-      }
-      // Never let a send failure read as "nothing happened": probe the
-      // chain, drop to a discriminable outcome, and always return a
-      // failure
-      return yield* settleAmbiguousRotation(input, lastSent, attempted.error.message);
+            return sent;
+          }),
+        // RotateValuesConflictError bypasses classification: it is the
+        // outer bounded retry's signal (env-rotate.ts catches it by
+        // tag), and the unclassified path's toCliError mapping would
+        // erase the distinction
+        passthrough: "RotateValuesConflictError",
+        // AuditHeadNotReady (503) advances with the same recovery as a
+        // CAS conflict (resync + re-sign + re-send) — the reason and the
+        // defensive classification's intent are the same as
+        // env-create.ts's
+        classify: (error) =>
+          error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
+            ? "head-conflict"
+            : null,
+        recover: (state) =>
+          Effect.gen(function* () {
+            const resynced = yield* resyncExtended(input.resync, state.verified);
+            const member = yield* ensureRotatable(
+              resynced,
+              input.environmentId,
+              input.signerUserId,
+              input.signingKeyPair,
+            );
+            const environment = yield* requireChainEnvironment(resynced, input.environmentId);
+            if (environment.currentEpoch + 1 !== input.newEpoch) {
+              // Another member rotated concurrently. The generated new
+              // DEK, commitment, and wrap set are dedicated to that epoch
+              // (§5's info / §5.2's preimage carry the epoch), so abort
+              // without reusing them. A re-run resumes without advancing
+              // the epoch if an unfinished re-encryption exists
+              return yield* Effect.fail(
+                cliError(
+                  `Detected a concurrent rotation by another member (environment ${input.environmentId} is now at epoch ${environment.currentEpoch}). The newly generated DEK will not be used; aborting — please re-run`,
+                ),
+              );
+            }
+            const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
+              ? state.deks
+              : yield* buildWraps(resynced);
+            return { verified: resynced, member, deks };
+          }),
+        // AuditHeadNotReady also cycles under the same classification,
+        // so the wording stays faithful to both causes (prevents a wrong
+        // guidance if it ever becomes reachable)
+        exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
+      },
+    ),
+  );
+  if (attempted.kind === "failed") {
+    // A settled refusal (the server's own error body) or an abort
+    // decided by recover (concurrent-rotation detection — the chain was
+    // already resynced and observed) know whether acceptance happened,
+    // so they need no extra probe or guidance. It is also the branch
+    // that keeps "you can re-run as-is" off the §7 interruption message
+    if (!ambiguousSend || lastSent === null) {
+      return yield* Effect.fail(attempted.error);
     }
-    // The post-acceptance confirmation uses chain re-verification, not
-    // the server's claim (the response's currentEpoch) (§12-10 (3) — a
-    // composite's effect confirmation is a chain sync)
-    return yield* confirmAcceptedRotation(input, attempted.value);
-  });
-}
+    // Never let a send failure read as "nothing happened": probe the
+    // chain, drop to a discriminable outcome, and always return a
+    // failure
+    return yield* settleAmbiguousRotation(input, lastSent, attempted.error.message);
+  }
+  // The post-acceptance confirmation uses chain re-verification, not
+  // the server's claim (the response's currentEpoch) (§12-10 (3) — a
+  // composite's effect confirmation is a chain sync)
+  return yield* confirmAcceptedRotation(input, attempted.value);
+});
 
 /** The shared input of a discriminable outcome (used by appendRotation's confirmation and the probe path). */
 interface RotationConfirmInput {
@@ -579,45 +573,43 @@ function resolveRotationIntent(
  * (never write an unconfirmed acceptance into the floor — the next run's
  * reconciliation [a chain sync] resolves it).
  */
-function settleAmbiguousRotation(
+const settleAmbiguousRotation = Effect.fn("env-rotate-send.settleAmbiguousRotation")(function* (
   input: RotationConfirmInput,
   sent: AcceptedRotation,
   cause: string,
-): Effect.Effect<never, CliError> {
-  return Effect.gen(function* () {
-    const probed = yield* probeAmbiguousSend({
-      resync: input.resync,
-      baseline: input.baseline,
-      environmentId: input.environmentId,
-      newEpoch: input.newEpoch,
-      dekCommitmentHex: input.dekCommitmentHex,
-      declaredHead: sent.declaredHead,
-      cause,
-    });
-    const outcome = probed.outcome;
-    if (outcome.kind === "accepted-and-current" || outcome.kind === "accepted-but-superseded") {
-      // Acceptance confirmed on the chain = the floor advances even when
-      // the command exits with an error (closes the window that would roll
-      // it back to the pre-acceptance manifest / epoch baseline)
-      const floorWarning = yield* promoteAcceptedManifest(input.floor, sent, outcome.view);
-      yield* resolveRotationIntent(
-        input.floor,
-        sent,
-        outcome.kind === "accepted-and-current" ? "accepted" : "accepted-superseded",
-      );
-      return yield* Effect.fail(
-        floorWarning === null ? probed.error : cliError(`${probed.error.message}. ${floorWarning}`),
-      );
-    }
-    if (outcome.kind === "not-accepted") {
-      yield* resolveRotationIntent(input.floor, sent, "not-accepted");
-    }
-    // send-pending / acceptance-unknown are never settled: the intent
-    // (3-F) stays unresolved and the next run's reconciliation (a chain
-    // sync) settles accepted / rejected
-    return yield* Effect.fail(probed.error);
+): Effect.fn.Return<never, CliError> {
+  const probed = yield* probeAmbiguousSend({
+    resync: input.resync,
+    baseline: input.baseline,
+    environmentId: input.environmentId,
+    newEpoch: input.newEpoch,
+    dekCommitmentHex: input.dekCommitmentHex,
+    declaredHead: sent.declaredHead,
+    cause,
   });
-}
+  const outcome = probed.outcome;
+  if (outcome.kind === "accepted-and-current" || outcome.kind === "accepted-but-superseded") {
+    // Acceptance confirmed on the chain = the floor advances even when
+    // the command exits with an error (closes the window that would roll
+    // it back to the pre-acceptance manifest / epoch baseline)
+    const floorWarning = yield* promoteAcceptedManifest(input.floor, sent, outcome.view);
+    yield* resolveRotationIntent(
+      input.floor,
+      sent,
+      outcome.kind === "accepted-and-current" ? "accepted" : "accepted-superseded",
+    );
+    return yield* Effect.fail(
+      floorWarning === null ? probed.error : cliError(`${probed.error.message}. ${floorWarning}`),
+    );
+  }
+  if (outcome.kind === "not-accepted") {
+    yield* resolveRotationIntent(input.floor, sent, "not-accepted");
+  }
+  // send-pending / acceptance-unknown are never settled: the intent
+  // (3-F) stays unresolved and the next run's reconciliation (a chain
+  // sync) settles accepted / rejected
+  return yield* Effect.fail(probed.error);
+});
 
 /**
  * The post-acceptance confirmation of a composite that got a 200 (§12-10
@@ -625,10 +617,10 @@ function settleAmbiguousRotation(
  * epoch already advanced**, so it surfaces only the cause without losing
  * the operational state "the epoch moved, re-encryption is not done".
  */
-function confirmAcceptedRotation(
+const confirmAcceptedRotation = Effect.fn("env-rotate-send.confirmAcceptedRotation")(function* (
   input: RotationConfirmInput,
   accepted: AcceptedRotation,
-): Effect.Effect<
+): Effect.fn.Return<
   {
     readonly view: VerifiedProject;
     readonly memberCount: number;
@@ -637,62 +629,60 @@ function confirmAcceptedRotation(
   },
   CliError
 > {
-  return Effect.gen(function* () {
-    const postCheckError = (message: string): CliError =>
-      cliError(
-        `The rotation (epoch=${input.newEpoch}) was accepted, but the post-acceptance check failed: ${message}. Environment ${input.environmentId}'s epoch has advanced and no current values have been re-encrypted — resolve the cause and re-run to resume re-encryption without advancing the epoch`,
-      );
-    const resynced = yield* asOutcome(
-      Effect.gen(function* () {
-        const view = yield* resyncExtended(input.resync, accepted.state.verified);
-        const environment = yield* requireChainEnvironment(view, input.environmentId);
-        return { view, environment };
-      }),
+  const postCheckError = (message: string): CliError =>
+    cliError(
+      `The rotation (epoch=${input.newEpoch}) was accepted, but the post-acceptance check failed: ${message}. Environment ${input.environmentId}'s epoch has advanced and no current values have been re-encrypted — resolve the cause and re-run to resume re-encryption without advancing the epoch`,
     );
-    if (resynced.kind === "failed") {
-      // Equivalent to acceptance-unknown (a 2xx is only a transport-layer
-      // fact — §12-10 (3)). Since the effect could not be confirmed on the
-      // distribution, the floor is not advanced and the intent stays
-      // unresolved (the next run's reconciliation resolves it)
-      return yield* Effect.fail(postCheckError(resynced.error.message));
-    }
-    const { view, environment } = resynced.value;
-    if (environment.dekCommitments.get(input.newEpoch) !== input.dekCommitmentHex) {
-      // §5.2: never use a DEK in any cryptographic operation until the
-      // commitment match succeeds. The same discipline applies to a
-      // self-generated DEK (confirming the accepted entry is mine = never
-      // start re-encryption on someone else's DEK). A 2xx without my
-      // commitment on the chain = not accepted (settled)
-      yield* resolveRotationIntent(input.floor, accepted, "not-accepted");
-      return yield* Effect.fail(
-        postCheckError(
-          `The accepted epoch=${input.newEpoch} commitment does not match the generated DEK's (CRYPTO_SPEC §5.2). This DEK will not be used`,
-        ),
-      );
-    }
-    if (environment.currentEpoch !== input.newEpoch) {
-      // accepted-but-superseded: my rotate was accepted (commitment
-      // match), but an immediately-following different rotate overtook
-      // the current epoch. Keep the self-issued manifest as a minimum
-      // floor (pinned test: "200 + another rotate right after")
-      const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
-      yield* resolveRotationIntent(input.floor, accepted, "accepted-superseded");
-      return yield* Effect.fail(
-        postCheckError(
-          `The resynced chain is now at epoch ${environment.currentEpoch} (possibly a concurrent rotation right after acceptance). This rotation itself was accepted and its manifest was recorded in the local floor${floorWarning === null ? "" : ` (with a caveat: ${floorWarning})`}`,
-        ),
-      );
-    }
-    // accepted-and-current: floor promotion → intent resolution → success
-    // (§12-10 (3) — recording into the floor and reporting success only
-    // after the effect confirmation passes)
+  const resynced = yield* asOutcome(
+    Effect.gen(function* () {
+      const view = yield* resyncExtended(input.resync, accepted.state.verified);
+      const environment = yield* requireChainEnvironment(view, input.environmentId);
+      return { view, environment };
+    }),
+  );
+  if (resynced.kind === "failed") {
+    // Equivalent to acceptance-unknown (a 2xx is only a transport-layer
+    // fact — §12-10 (3)). Since the effect could not be confirmed on the
+    // distribution, the floor is not advanced and the intent stays
+    // unresolved (the next run's reconciliation resolves it)
+    return yield* Effect.fail(postCheckError(resynced.error.message));
+  }
+  const { view, environment } = resynced.value;
+  if (environment.dekCommitments.get(input.newEpoch) !== input.dekCommitmentHex) {
+    // §5.2: never use a DEK in any cryptographic operation until the
+    // commitment match succeeds. The same discipline applies to a
+    // self-generated DEK (confirming the accepted entry is mine = never
+    // start re-encryption on someone else's DEK). A 2xx without my
+    // commitment on the chain = not accepted (settled)
+    yield* resolveRotationIntent(input.floor, accepted, "not-accepted");
+    return yield* Effect.fail(
+      postCheckError(
+        `The accepted epoch=${input.newEpoch} commitment does not match the generated DEK's (CRYPTO_SPEC §5.2). This DEK will not be used`,
+      ),
+    );
+  }
+  if (environment.currentEpoch !== input.newEpoch) {
+    // accepted-but-superseded: my rotate was accepted (commitment
+    // match), but an immediately-following different rotate overtook
+    // the current epoch. Keep the self-issued manifest as a minimum
+    // floor (pinned test: "200 + another rotate right after")
     const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
-    yield* resolveRotationIntent(input.floor, accepted, "accepted");
-    return {
-      view,
-      memberCount: accepted.state.deks.length,
-      member: accepted.state.member,
-      floorWarning,
-    };
-  });
-}
+    yield* resolveRotationIntent(input.floor, accepted, "accepted-superseded");
+    return yield* Effect.fail(
+      postCheckError(
+        `The resynced chain is now at epoch ${environment.currentEpoch} (possibly a concurrent rotation right after acceptance). This rotation itself was accepted and its manifest was recorded in the local floor${floorWarning === null ? "" : ` (with a caveat: ${floorWarning})`}`,
+      ),
+    );
+  }
+  // accepted-and-current: floor promotion → intent resolution → success
+  // (§12-10 (3) — recording into the floor and reporting success only
+  // after the effect confirmation passes)
+  const floorWarning = yield* promoteAcceptedManifest(input.floor, accepted, view);
+  yield* resolveRotationIntent(input.floor, accepted, "accepted");
+  return {
+    view,
+    memberCount: accepted.state.deks.length,
+    member: accepted.state.member,
+    floorWarning,
+  };
+});

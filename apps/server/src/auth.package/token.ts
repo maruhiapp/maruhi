@@ -72,40 +72,39 @@ function resolveByHash(tokens: TokenRepoShape, tokenHash: string): Effect.Effect
 
 export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
-    issueToken: (userId, name, scopes, ttlMs) =>
-      Effect.gen(function* () {
-        const rawToken = TOKEN_PREFIX + randomBase62();
-        const tokenHash = yield* hashOf(rawToken);
-        const tokenId = ulid();
-        const createdAtMs = yield* Clock.currentTimeMillis;
-        // expires_at is fixed at issuance (AUTH_SPEC §6 — deliberately
-        // asymmetric to the session §5 sliding renewal: tokens are forced
-        // through periodic re-authentication)
-        const expiresAtMs = createdAtMs + ttlMs;
-        // Same (user, name) = reissuance = rotation (the old row's
-        // revocation and the new row's insertion happen in one atomic
-        // batch). Fresh issuance under a different name is folded into the
-        // same statement as the user cap via the repo's conditional INSERT:
-        // a service-side count → insert could let concurrent differently
-        // named issuances observe the same under-limit state and exceed it
-        const admitted = yield* tokens.issueForUserWithinLimit(
-          {
-            id: tokenId,
-            userId,
-            name,
-            tokenHash,
-            tokenPrefix: displayPrefix(rawToken),
-            scopes,
-            expiresAtMs,
-            createdAtMs,
-          },
-          MAX_TOKENS_PER_USER,
-        );
-        if (!admitted) {
-          return yield* Effect.fail(new TokenLimitReachedError({ limit: MAX_TOKENS_PER_USER }));
-        }
-        return { rawToken, tokenId, expiresAtMs };
-      }),
+    issueToken: Effect.fn("token.issueToken")(function* (userId, name, scopes, ttlMs) {
+      const rawToken = TOKEN_PREFIX + randomBase62();
+      const tokenHash = yield* hashOf(rawToken);
+      const tokenId = ulid();
+      const createdAtMs = yield* Clock.currentTimeMillis;
+      // expires_at is fixed at issuance (AUTH_SPEC §6 — deliberately
+      // asymmetric to the session §5 sliding renewal: tokens are forced
+      // through periodic re-authentication)
+      const expiresAtMs = createdAtMs + ttlMs;
+      // Same (user, name) = reissuance = rotation (the old row's
+      // revocation and the new row's insertion happen in one atomic
+      // batch). Fresh issuance under a different name is folded into the
+      // same statement as the user cap via the repo's conditional INSERT:
+      // a service-side count → insert could let concurrent differently
+      // named issuances observe the same under-limit state and exceed it
+      const admitted = yield* tokens.issueForUserWithinLimit(
+        {
+          id: tokenId,
+          userId,
+          name,
+          tokenHash,
+          tokenPrefix: displayPrefix(rawToken),
+          scopes,
+          expiresAtMs,
+          createdAtMs,
+        },
+        MAX_TOKENS_PER_USER,
+      );
+      if (!admitted) {
+        return yield* Effect.fail(new TokenLimitReachedError({ limit: MAX_TOKENS_PER_USER }));
+      }
+      return { rawToken, tokenId, expiresAtMs };
+    }),
     resolveApiToken: (rawToken) => {
       if (!rawToken.startsWith(TOKEN_PREFIX)) {
         return Effect.succeed(anonymousPrincipal);

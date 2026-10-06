@@ -40,14 +40,14 @@ import type { StateCache } from "../do/chain-store.ts";
 import { requireActiveEnvironment } from "../quotas.ts";
 import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";
 
-export const renameEnvironmentProgram = (
-  actor: DataActor,
-  environmentId: string,
-  statement: MetaStatementInput,
-  manifest: EnvManifestInput,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEnvironmentProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    statement: MetaStatementInput,
+    manifest: EnvManifestInput,
+    cache: StateCache,
+  ) {
     const { history, member, projectId } = yield* requireEnvironmentAccess(
       actor.userId,
       "member",
@@ -124,15 +124,16 @@ export const renameEnvironmentProgram = (
         }),
       );
     });
-  });
+  },
+);
 
-export const deleteEnvironmentProgram = (
-  actor: DataActor,
-  environmentId: string,
-  statement: MetaStatementInput,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const deleteEnvironmentProgram = Effect.fn("programs-environment.deleteEnvironmentProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    statement: MetaStatementInput,
+    cache: StateCache,
+  ) {
     // Admin × environment ∈ scope at acceptance time (§12-3). The
     // admin / scope check at declared-head time is covered by
     // signature verification (§12-3's dual check — the required role
@@ -202,10 +203,11 @@ export const deleteEnvironmentProgram = (
         }),
       ]);
     });
-  });
+  },
+);
 
-export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
-  Effect.gen(function* () {
+export const listEnvironmentsProgram = Effect.fn("programs-environment.listEnvironmentsProgram")(
+  function* (actor: DataActor, cache: StateCache) {
     const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
     const environments = yield* store.listEnvironmentStatements;
@@ -222,7 +224,8 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
       // an input to the verification rules)
       schemaPolicy: yield* store.schemaPolicy,
     } satisfies EnvironmentListValue;
-  });
+  },
+);
 
 /**
  * The shared front half of the pull family (with-values and
@@ -235,36 +238,31 @@ export const listEnvironmentsProgram = (actor: DataActor, cache: StateCache) =>
  * (composite acceptance), so its absence is an invariant violation
  * = defect.
  */
-const requirePullContext = (
+const requirePullContext = Effect.fn("programs-environment.requirePullContext")(function* (
   actor: DataActor,
   environmentId: string,
   mode: "values" | "metadata-only",
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const { state } =
-      mode === "values"
-        ? yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache)
-        : yield* requireMemberState(actor.userId, "reader", cache);
-    yield* requireActiveEnvironment(environmentId);
-    const store = yield* DataStore;
-    const statement = yield* store.environmentStatement(environmentId);
-    if (statement === null) {
-      return yield* Effect.die(new Error("environment meta statement row missing"));
-    }
-    // The latest manifest (the material bundled per §12-7). Since
-    // environment creation, every meta operation, and rotate upsert
-    // it atomically, it always exists for a created environment
-    const manifest = yield* store.environmentManifest(environmentId);
-    return { state, store, statement, manifest };
-  });
+) {
+  const { state } =
+    mode === "values"
+      ? yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache)
+      : yield* requireMemberState(actor.userId, "reader", cache);
+  yield* requireActiveEnvironment(environmentId);
+  const store = yield* DataStore;
+  const statement = yield* store.environmentStatement(environmentId);
+  if (statement === null) {
+    return yield* Effect.die(new Error("environment meta statement row missing"));
+  }
+  // The latest manifest (the material bundled per §12-7). Since
+  // environment creation, every meta operation, and rotate upsert
+  // it atomically, it always exists for a created environment
+  const manifest = yield* store.environmentManifest(environmentId);
+  return { state, store, statement, manifest };
+});
 
-export const pullEnvironmentProgram = (
-  actor: DataActor,
-  environmentId: string,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const pullEnvironmentProgram = Effect.fn("programs-environment.pullEnvironmentProgram")(
+  function* (actor: DataActor, environmentId: string, cache: StateCache) {
     const { state, store, statement, manifest } = yield* requirePullContext(
       actor,
       environmentId,
@@ -334,7 +332,8 @@ export const pullEnvironmentProgram = (
       schemaPolicy: yield* store.schemaPolicy,
       ...optionalDistributionFields(manifest, checkpointSnapshot),
     } satisfies EnvironmentPullValue;
-  });
+  },
+);
 
 /**
  * The metadata-only mode (§12-7): returns neither values
@@ -344,30 +343,27 @@ export const pullEnvironmentProgram = (
  * distribution of ciphertext, and what was not read is not
  * recorded as read (AUDIT_SPEC §3.3).
  */
-export const pullEnvironmentMetadataProgram = (
-  actor: DataActor,
-  environmentId: string,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const { state, store, statement, manifest } = yield* requirePullContext(
-      actor,
-      environmentId,
-      "metadata-only",
-      cache,
-    );
-    // declared variables' statements also ride on variables (the
-    // latest shape of every non-deleted variable — §12-7; status
-    // does the discrimination)
-    const variables = yield* store.activeVariableStatements(environmentId);
-    const deletedVariables = yield* store.deletedVariableStatements(environmentId);
-    return {
-      environmentId,
-      currentEpoch: currentEpochOf(state, environmentId),
-      statement,
-      variables,
-      deletedVariables,
-      schemaPolicy: yield* store.schemaPolicy,
-      ...(manifest === null ? {} : { manifest }),
-    } satisfies EnvironmentMetadataPullValue;
-  });
+export const pullEnvironmentMetadataProgram = Effect.fn(
+  "programs-environment.pullEnvironmentMetadataProgram",
+)(function* (actor: DataActor, environmentId: string, cache: StateCache) {
+  const { state, store, statement, manifest } = yield* requirePullContext(
+    actor,
+    environmentId,
+    "metadata-only",
+    cache,
+  );
+  // declared variables' statements also ride on variables (the
+  // latest shape of every non-deleted variable — §12-7; status
+  // does the discrimination)
+  const variables = yield* store.activeVariableStatements(environmentId);
+  const deletedVariables = yield* store.deletedVariableStatements(environmentId);
+  return {
+    environmentId,
+    currentEpoch: currentEpochOf(state, environmentId),
+    statement,
+    variables,
+    deletedVariables,
+    schemaPolicy: yield* store.schemaPolicy,
+    ...(manifest === null ? {} : { manifest }),
+  } satisfies EnvironmentMetadataPullValue;
+});

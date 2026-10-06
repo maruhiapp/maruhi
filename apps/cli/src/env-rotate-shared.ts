@@ -82,27 +82,25 @@ export function dedupeWarnings(warnings: readonly string[]): readonly string[] {
  * the complete wrap set includes a server-key wrap (buildWrapCompleteSet —
  * §12-4 / §7's re-wrap duty).
  */
-export function ensureRotatable(
+export const ensureRotatable = Effect.fn("env-rotate-shared.ensureRotatable")(function* (
   verified: VerifiedProject,
   environmentId: string,
   signerUserId: string,
   signingKeyPair: SigningKeyPair,
-): Effect.Effect<ChainMember, CliError> {
-  return Effect.gen(function* () {
-    // Membership + the device's effective role (member or above) / scope are shared with env create
-    const { member } = yield* requireWritingMember({
-      verified,
-      environmentId,
-      signerUserId,
-      signingKeyPair,
-      operation: "rotate the epoch",
-      forbidden:
-        "A reader cannot rotate the epoch (rotate_epoch and value pushes require the member role or above — CRYPTO_SPEC §6.2)",
-    });
-    yield* requireChainEnvironment(verified, environmentId);
-    return member;
+): Effect.fn.Return<ChainMember, CliError> {
+  // Membership + the device's effective role (member or above) / scope are shared with env create
+  const { member } = yield* requireWritingMember({
+    verified,
+    environmentId,
+    signerUserId,
+    signingKeyPair,
+    operation: "rotate the epoch",
+    forbidden:
+      "A reader cannot rotate the epoch (rotate_epoch and value pushes require the member role or above — CRYPTO_SPEC §6.2)",
   });
-}
+  yield* requireChainEnvironment(verified, environmentId);
+  return member;
+});
 
 /**
  * The context the 3 re-encryption functions share (one variable's push,

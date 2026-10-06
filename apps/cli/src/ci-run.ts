@@ -25,7 +25,7 @@ import type { CliIo } from "./io.ts";
 import { enforceDeclaredPresence, ProcessRunner, runOp, typeAdvisoryWarnings } from "./run.ts";
 
 /** Input of `maruhi ci run` (all from explicit flags — session-25 §2). */
-export interface CiRunInput extends CiLeaseInput {
+interface CiRunInput extends CiLeaseInput {
   readonly environmentId: EnvironmentId;
   readonly command: readonly string[];
 }
@@ -35,27 +35,23 @@ export interface CiRunInput extends CiLeaseInput {
  * (CRYPTO_SPEC §9.1 / AUTH_SPEC §14), then injects the decrypted values
  * into the child process environment (memory only).
  */
-export function ciRunOp(
+export const ciRunOp = Effect.fn("ci-run.ciRunOp")(function* (
   input: CiRunInput,
-): Effect.Effect<number, CliError, CliIo | ProcessRunner | HttpClient.HttpClient | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const materials = yield* leaseEnvironments({
-      ...input,
-      environmentIds: [input.environmentId],
-    });
-    const material = materials.get(input.environmentId);
-    if (material === undefined) {
-      return yield* Effect.fail(
-        cliError("The lease returned no material (internal inconsistency)"),
-      );
-    }
-    // presence fail-fast (design doc §1-4 — the same rule as run): judged
-    // against the verification material bundled in the lease response
-    // (statements + manifest — §14-2). If a required = true declared
-    // exists, the child process is not started
-    yield* enforceDeclaredPresence(material.declared);
-    // type is advisory (§14.3-7) — a mismatch only warns; execution continues
-    yield* logWarnings(typeAdvisoryWarnings(material.variables));
-    return yield* runOp({ command: input.command, variables: material.variables });
+): Effect.fn.Return<number, CliError, CliIo | ProcessRunner | HttpClient.HttpClient | Stdio.Stdio> {
+  const materials = yield* leaseEnvironments({
+    ...input,
+    environmentIds: [input.environmentId],
   });
-}
+  const material = materials.get(input.environmentId);
+  if (material === undefined) {
+    return yield* Effect.fail(cliError("The lease returned no material (internal inconsistency)"));
+  }
+  // presence fail-fast (design doc §1-4 — the same rule as run): judged
+  // against the verification material bundled in the lease response
+  // (statements + manifest — §14-2). If a required = true declared
+  // exists, the child process is not started
+  yield* enforceDeclaredPresence(material.declared);
+  // type is advisory (§14.3-7) — a mismatch only warns; execution continues
+  yield* logWarnings(typeAdvisoryWarnings(material.variables));
+  return yield* runOp({ command: input.command, variables: material.variables });
+});

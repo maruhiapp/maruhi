@@ -104,7 +104,7 @@ export function fingerprintBookPathOf(configPath: string): string {
 }
 
 /** The result of the pre-ceremony consultation (the caller's branching material). */
-export interface FingerprintBookConsult {
+interface FingerprintBookConsult {
   /**
    * The matching ledger entry (null = no hit / mismatch / corrupt =
    * needs the usual ceremony or a flag). A hit goes to
@@ -143,12 +143,12 @@ export interface FingerprintBookConsult {
  * failure** — a legitimate key update via `maruhi key generate` is
  * possible); corrupt = warn and treat as no records.
  */
-export function consultFingerprintBook(input: {
-  readonly origin: string;
-  readonly userId: string;
-  readonly fingerprintHex: string;
-}): Effect.Effect<FingerprintBookConsult, CliError, FingerprintBook | CliIo> {
-  return Effect.gen(function* () {
+export const consultFingerprintBook = Effect.fn("known-fingerprints.consultFingerprintBook")(
+  function* (input: {
+    readonly origin: string;
+    readonly userId: string;
+    readonly fingerprintHex: string;
+  }): Effect.fn.Return<FingerprintBookConsult, CliError, FingerprintBook | CliIo> {
     const book = yield* FingerprintBook;
     const looked = yield* book.lookup(input.origin, input.userId);
     if (looked.state === "corrupt") {
@@ -180,8 +180,8 @@ export function consultFingerprintBook(input: {
     );
     const hit = matched ?? null;
     return { hit, filePath: book.filePath, warnIfChanged, record };
-  });
-}
+  },
+);
 
 /**
  * Judges whether a ledger hit may actually be used (no flag + non-agent
@@ -197,28 +197,26 @@ export function consultFingerprintBook(input: {
  * flag-only (fail-closed — a non-terminal returns to behaving as if the
  * ledger did not exist).
  */
-export function usableBookHit(input: {
+export const usableBookHit = Effect.fn("known-fingerprints.usableBookHit")(function* (input: {
   readonly book: FingerprintBookConsult;
   readonly flagProvided: boolean;
   readonly isAgent: boolean;
-}): Effect.Effect<KnownFingerprint | null, never, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    if (input.book.hit === null || input.flagProvided || input.isAgent) {
-      return null;
-    }
-    const stdio = yield* Stdio.Stdio;
-    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (!stdinIsTerminal || !stdoutIsTerminal) {
-      // Name the side that failed (the DP5 supplement G discipline — describeNonTerminal)
-      yield* logNote(
-        `the verified-fingerprint book was not used: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} — the full 12-word read-out is required here`,
-      );
-      return null;
-    }
-    return input.book.hit;
-  });
-}
+}): Effect.fn.Return<KnownFingerprint | null, never, CliIo | Stdio.Stdio> {
+  if (input.book.hit === null || input.flagProvided || input.isAgent) {
+    return null;
+  }
+  const stdio = yield* Stdio.Stdio;
+  const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+  const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+  if (!stdinIsTerminal || !stdoutIsTerminal) {
+    // Name the side that failed (the DP5 supplement G discipline — describeNonTerminal)
+    yield* logNote(
+      `the verified-fingerprint book was not used: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })} — the full 12-word read-out is required here`,
+    );
+    return null;
+  }
+  return input.book.hit;
+});
 
 /**
  * The per-acceptance explicit confirmation on a ledger hit: re-running
@@ -230,15 +228,15 @@ export function usableBookHit(input: {
  * answer but yes aborts and shows the way back to the full ceremony
  * (deleting the entry).
  */
-export function confirmKnownFingerprint(input: {
-  readonly entry: KnownFingerprint;
-  readonly filePath: string;
-  /** The prompt body up to just before `: ` (e.g. "Type yes to add … as …"). */
-  readonly prompt: string;
-  /** The leading sentence on abort (e.g. "add_member was cancelled."). */
-  readonly cancelText: string;
-}): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
+export const confirmKnownFingerprint = Effect.fn("known-fingerprints.confirmKnownFingerprint")(
+  function* (input: {
+    readonly entry: KnownFingerprint;
+    readonly filePath: string;
+    /** The prompt body up to just before `: ` (e.g. "Type yes to add … as …"). */
+    readonly prompt: string;
+    /** The leading sentence on abort (e.g. "add_member was cancelled."). */
+    readonly cancelText: string;
+  }): Effect.fn.Return<void, CliError, CliIo> {
     const io = yield* CliIo;
     yield* io.log(
       `This fingerprint was verified out of band on this machine on ${formatUtcMinutes(input.entry.verifiedAtMs)} (the verified-fingerprint book), so the 12-word read-out is not required again`,
@@ -251,8 +249,8 @@ export function confirmKnownFingerprint(input: {
         ),
       );
     }
-  });
-}
+  },
+);
 
 const HEX_32 = /^[0-9a-f]{32}$/;
 
@@ -293,23 +291,25 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
 
   return {
     filePath: path,
-    lookup: (origin, userId) =>
-      Effect.gen(function* (): Effect.fn.Return<FingerprintLookup, CliError> {
-        const loaded = yield* load();
-        if (loaded.state === "missing") {
-          return { state: "miss" };
-        }
-        if (loaded.state === "corrupt") {
-          return { state: "corrupt" };
-        }
-        // own-property lookup (floor.ts's discipline — never pick up a value via the prototype)
-        const users = floorRecordGet(loaded.file.known, origin);
-        const user = users === undefined ? undefined : floorRecordGet(users, userId);
-        const entries = user === undefined ? [] : entriesOf(user);
-        return entries.length === 0 ? { state: "miss" } : { state: "hit", entries };
-      }),
-    record: (origin, userId, fingerprintHex) =>
-      Effect.gen(function* () {
+    lookup: Effect.fn("known-fingerprints.lookup")(function* (origin, userId): Effect.fn.Return<
+      FingerprintLookup,
+      CliError
+    > {
+      const loaded = yield* load();
+      if (loaded.state === "missing") {
+        return { state: "miss" };
+      }
+      if (loaded.state === "corrupt") {
+        return { state: "corrupt" };
+      }
+      // own-property lookup (floor.ts's discipline — never pick up a value via the prototype)
+      const users = floorRecordGet(loaded.file.known, origin);
+      const user = users === undefined ? undefined : floorRecordGet(users, userId);
+      const entries = user === undefined ? [] : entriesOf(user);
+      return entries.length === 0 ? { state: "miss" } : { state: "hit", entries };
+    }),
+    record: Effect.fn("known-fingerprints.record")(
+      function* (origin, userId, fingerprintHex) {
         // Writing an off-form key would make the next load wholly
         // corrupt (strict decode), so refuse beforehand (the caller
         // degrades to a warning — fail-open)
@@ -343,6 +343,9 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
             },
           },
         });
-      }).pipe(Effect.mapError(writeError), Effect.provide(BunFileSystem.layer)),
+      },
+      Effect.mapError(writeError),
+      Effect.provide(BunFileSystem.layer),
+    ),
   };
 }

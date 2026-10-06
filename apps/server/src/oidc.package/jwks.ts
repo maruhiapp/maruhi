@@ -207,67 +207,70 @@ const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
  * the pre-Effect reader loop gave. The FETCH_TIMEOUT_MS timeout covers the
  * request **and** the body read, matching the old `AbortSignal.timeout`.
  */
-const fetchJson = <S extends Schema.Constraint>(
+const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constraint>(
   url: string,
   schema: S,
-): Effect.Effect<S["Type"], JwksUnavailableError, HttpClient.HttpClient | S["DecodingServices"]> =>
-  Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    // Inside this region every error is foreign — transport, a hung issuer,
-    // schema decode — so the pipeline below normalizes them wholesale. Our
-    // own verdicts stay in the success channel as strings and become typed
-    // errors only outside it (no instanceof discrimination needed).
-    const outcome = yield* Effect.gen(function* () {
-      const response = yield* client.execute(
-        HttpClientRequest.get(url, { headers: { accept: "application/json" } }),
-      );
-      if (response.status < 200 || response.status >= 300) {
-        return "status" as const;
-      }
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      yield* Stream.runForEachWhile(response.stream, (chunk) =>
-        Effect.sync(() => {
-          chunks.push(chunk);
-          total += chunk.length;
-          return total <= MAX_DOCUMENT_BYTES;
-        }),
-      );
-      if (total > MAX_DOCUMENT_BYTES) {
-        return "too-large" as const;
-      }
-      const merged = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
-      }
-      // Reject invalid UTF-8 before re-wrapping — see utf8FatalDecoder
-      yield* Effect.try({
-        try: () => utf8FatalDecoder.decode(merged),
-        catch: () => new JwksUnavailableError({ reason: "decode" }),
-      });
-      const bounded = HttpClientResponse.fromWeb(
-        response.request,
-        new Response(merged, { status: response.status, headers: response.headers }),
-      );
-      return { document: yield* HttpClientResponse.schemaBodyJson(schema)(bounded) } as const;
-    }).pipe(
-      Effect.timeout(FETCH_TIMEOUT_MS),
-      // Normalize each foreign error to its own reason — no flattening:
-      // an error type the pipeline grows later surfaces as a type error
-      // here instead of being silently remapped
-      Effect.catchTags({
-        TimeoutError: () => Effect.fail(new JwksUnavailableError({ reason: "timeout" })),
-        SchemaError: () => Effect.fail(new JwksUnavailableError({ reason: "decode" })),
-        HttpClientError: () => Effect.fail(new JwksUnavailableError({ reason: "fetch" })),
+): Effect.fn.Return<
+  S["Type"],
+  JwksUnavailableError,
+  HttpClient.HttpClient | S["DecodingServices"]
+> {
+  const client = yield* HttpClient.HttpClient;
+  // Inside this region every error is foreign — transport, a hung issuer,
+  // schema decode — so the pipeline below normalizes them wholesale. Our
+  // own verdicts stay in the success channel as strings and become typed
+  // errors only outside it (no instanceof discrimination needed).
+  const outcome = yield* Effect.gen(function* () {
+    const response = yield* client.execute(
+      HttpClientRequest.get(url, { headers: { accept: "application/json" } }),
+    );
+    if (response.status < 200 || response.status >= 300) {
+      return "status" as const;
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    yield* Stream.runForEachWhile(response.stream, (chunk) =>
+      Effect.sync(() => {
+        chunks.push(chunk);
+        total += chunk.length;
+        return total <= MAX_DOCUMENT_BYTES;
       }),
     );
-    if (typeof outcome === "string") {
-      return yield* Effect.fail(new JwksUnavailableError({ reason: outcome }));
+    if (total > MAX_DOCUMENT_BYTES) {
+      return "too-large" as const;
     }
-    return outcome.document;
-  });
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    // Reject invalid UTF-8 before re-wrapping — see utf8FatalDecoder
+    yield* Effect.try({
+      try: () => utf8FatalDecoder.decode(merged),
+      catch: () => new JwksUnavailableError({ reason: "decode" }),
+    });
+    const bounded = HttpClientResponse.fromWeb(
+      response.request,
+      new Response(merged, { status: response.status, headers: response.headers }),
+    );
+    return { document: yield* HttpClientResponse.schemaBodyJson(schema)(bounded) } as const;
+  }).pipe(
+    Effect.timeout(FETCH_TIMEOUT_MS),
+    // Normalize each foreign error to its own reason — no flattening:
+    // an error type the pipeline grows later surfaces as a type error
+    // here instead of being silently remapped
+    Effect.catchTags({
+      TimeoutError: () => Effect.fail(new JwksUnavailableError({ reason: "timeout" })),
+      SchemaError: () => Effect.fail(new JwksUnavailableError({ reason: "decode" })),
+      HttpClientError: () => Effect.fail(new JwksUnavailableError({ reason: "fetch" })),
+    }),
+  );
+  if (typeof outcome === "string") {
+    return yield* Effect.fail(new JwksUnavailableError({ reason: outcome }));
+  }
+  return outcome.document;
+});
 
 /**
  * Extract `jwks_uri` from a decoded discovery document. **Verify the
@@ -304,20 +307,19 @@ function selectJwk(keys: readonly Jwk[], kid: string | null): Jwk | null {
   return usable.length === 1 ? (usable[0] ?? null) : null;
 }
 
-const loadDiscovery = (
+const loadDiscovery = Effect.fn("jwks.loadDiscovery")(function* (
   issuer: string,
-): Effect.Effect<CachedDiscovery, JwksUnavailableError, HttpClient.HttpClient> =>
-  Effect.gen(function* () {
-    const document = yield* fetchJson(
-      `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
-      DiscoveryDocument,
-    );
-    const jwksUri = jwksUriOf(document, issuer);
-    if (jwksUri === null) {
-      return yield* Effect.fail(new JwksUnavailableError({ reason: "decode" }));
-    }
-    return { jwksUri, fetchedAtMs: yield* Clock.currentTimeMillis };
-  });
+): Effect.fn.Return<CachedDiscovery, JwksUnavailableError, HttpClient.HttpClient> {
+  const document = yield* fetchJson(
+    `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
+    DiscoveryDocument,
+  );
+  const jwksUri = jwksUriOf(document, issuer);
+  if (jwksUri === null) {
+    return yield* Effect.fail(new JwksUnavailableError({ reason: "decode" }));
+  }
+  return { jwksUri, fetchedAtMs: yield* Clock.currentTimeMillis };
+});
 
 /**
  * Whether the cached JWKS can be used as-is. Even inside the TTL, an unknown
@@ -598,19 +600,18 @@ export function makeJwksCache(): JwksCacheShape {
     });
 
   return {
-    resolveKey: (issuer, kid) =>
-      Effect.gen(function* () {
-        const document = yield* jwksFor(issuer, kid);
-        const jwk = selectJwk(document.keys, kid);
-        if (jwk === null) {
-          return null;
-        }
-        const binding = algorithmForJwk(jwk);
-        if (binding === null) {
-          return null;
-        }
-        const key = yield* Effect.promise(() => importJwk(jwk, binding));
-        return key === null ? null : { key, binding };
-      }).pipe(Effect.provide(defaultHttpClientLayer)),
+    resolveKey: Effect.fn("jwks.resolveKey")(function* (issuer, kid) {
+      const document = yield* jwksFor(issuer, kid);
+      const jwk = selectJwk(document.keys, kid);
+      if (jwk === null) {
+        return null;
+      }
+      const binding = algorithmForJwk(jwk);
+      if (binding === null) {
+        return null;
+      }
+      const key = yield* Effect.promise(() => importJwk(jwk, binding));
+      return key === null ? null : { key, binding };
+    }, Effect.provide(defaultHttpClientLayer)),
   };
 }

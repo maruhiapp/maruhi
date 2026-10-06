@@ -63,78 +63,65 @@ function keyTitleOf(keys: MasterKeys): string {
  * output contains only the public key, so it is formatted and
  * attached).
  */
-function registerViaGh(input: {
+const registerViaGh = Effect.fn("key-publish.registerViaGh")(function* (input: {
   readonly line: string;
   readonly keys: MasterKeys;
-}): Effect.Effect<void, CliError, ProcessRunner> {
-  return Effect.gen(function* () {
-    const runner = yield* ProcessRunner;
-    const outcome = yield* runner.exec({
-      command: [
-        "gh",
-        "ssh-key",
-        "add",
-        "-",
-        "--type",
-        "signing",
-        "--title",
-        keyTitleOf(input.keys),
-      ],
-      cwd: ".",
-      extraEnv: GH_ENV,
-      // A public key is not secret, but exec's stdin contract takes Redacted (run.ts)
-      stdin: Redacted.make(new TextEncoder().encode(`${input.line}\n`), {
-        label: "openssh-public-key",
-      }),
-    });
-    if (outcome.exitCode !== 0) {
-      const detail = outcome.output.trim().split("\n").slice(-3).join(" ").trim();
-      return yield* Effect.fail(
-        cliError(
-          `gh could not add the signing key (exit ${outcome.exitCode}${detail.length > 0 ? `: ${detail}` : ""}). Sign in with \`gh auth login\` (the token needs the admin:ssh_signing_key scope — run \`gh auth refresh -s admin:ssh_signing_key\`), or add the key by hand at ${GITHUB_SSH_SETTINGS_URL}`,
-        ),
-      );
-    }
+}): Effect.fn.Return<void, CliError, ProcessRunner> {
+  const runner = yield* ProcessRunner;
+  const outcome = yield* runner.exec({
+    command: ["gh", "ssh-key", "add", "-", "--type", "signing", "--title", keyTitleOf(input.keys)],
+    cwd: ".",
+    extraEnv: GH_ENV,
+    // A public key is not secret, but exec's stdin contract takes Redacted (run.ts)
+    stdin: Redacted.make(new TextEncoder().encode(`${input.line}\n`), {
+      label: "openssh-public-key",
+    }),
   });
-}
+  if (outcome.exitCode !== 0) {
+    const detail = outcome.output.trim().split("\n").slice(-3).join(" ").trim();
+    return yield* Effect.fail(
+      cliError(
+        `gh could not add the signing key (exit ${outcome.exitCode}${detail.length > 0 ? `: ${detail}` : ""}). Sign in with \`gh auth login\` (the token needs the admin:ssh_signing_key scope — run \`gh auth refresh -s admin:ssh_signing_key\`), or add the key by hand at ${GITHUB_SSH_SETTINGS_URL}`,
+      ),
+    );
+  }
+});
 
 /** The manual registration procedure (stderr). */
-function manualInstructions(keys: MasterKeys): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* io.logError(
-      `Add the line above at ${GITHUB_SSH_SETTINGS_URL} with Key type = Signing Key (title e.g. "${keyTitleOf(keys)}"), or run \`maruhi key publish --gh\` to add it through the gh CLI`,
-    );
-    yield* io.logError(
-      "Once registered, inviters who named your GitHub login can add you without the 12-word call (CRYPTO_SPEC §6.5). If an older key of yours from maruhi is registered there, remove it",
-    );
-  });
-}
+const manualInstructions = Effect.fn("key-publish.manualInstructions")(function* (
+  keys: MasterKeys,
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  yield* io.logError(
+    `Add the line above at ${GITHUB_SSH_SETTINGS_URL} with Key type = Signing Key (title e.g. "${keyTitleOf(keys)}"), or run \`maruhi key publish --gh\` to add it through the gh CLI`,
+  );
+  yield* io.logError(
+    "Once registered, inviters who named your GitHub login can add you without the 12-word call (CRYPTO_SPEC §6.5). If an older key of yours from maruhi is registered there, remove it",
+  );
+});
 
 /** `maruhi key publish [--gh]`. */
-export function keyPublishOp(input: {
+export const keyPublishOp = Effect.fn("key-publish.keyPublishOp")(function* (input: {
   readonly session: CliSession;
   readonly viaGh: boolean;
-}): Effect.Effect<void, CliError, Keychain | CliIo | ProcessRunner | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const keys = yield* loadMasterKeys(input.session);
-    const line = yield* openSshSigningKeyLine(keys);
-    if (!input.viaGh) {
-      // stdout carries only the key line (usable via `maruhi key publish > key.pub` / `| pbcopy`)
-      yield* io.log(line);
-      yield* manualInstructions(keys);
-      return;
-    }
-    yield* registerViaGh({ line, keys });
-    yield* io.log(
-      `Registered your signing key on GitHub as "${keyTitleOf(keys)}" (fingerprint ${keys.fingerprintHex})`,
-    );
-    yield* io.log(
-      "Inviters who name your GitHub login can now add you without the 12-word call (CRYPTO_SPEC §6.5)",
-    );
-  });
-}
+}): Effect.fn.Return<void, CliError, Keychain | CliIo | ProcessRunner | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const keys = yield* loadMasterKeys(input.session);
+  const line = yield* openSshSigningKeyLine(keys);
+  if (!input.viaGh) {
+    // stdout carries only the key line (usable via `maruhi key publish > key.pub` / `| pbcopy`)
+    yield* io.log(line);
+    yield* manualInstructions(keys);
+    return;
+  }
+  yield* registerViaGh({ line, keys });
+  yield* io.log(
+    `Registered your signing key on GitHub as "${keyTitleOf(keys)}" (fingerprint ${keys.fingerprintHex})`,
+  );
+  yield* io.log(
+    "Inviters who name your GitHub login can now add you without the 12-word call (CRYPTO_SPEC §6.5)",
+  );
+});
 
 /**
  * The registration route right after key generation (ruling G ⑥
@@ -143,14 +130,14 @@ export function keyPublishOp(input: {
  * EOF, no) only shows guidance. A failure here must not affect the
  * key generation's success (registration can be done later).
  */
-export function offerGithubRegistration(input: {
-  readonly session: CliSession;
-}): Effect.Effect<
-  void,
-  never,
-  Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
-> {
-  return Effect.gen(function* () {
+export const offerGithubRegistration = Effect.fn("key-publish.offerGithubRegistration")(
+  function* (input: {
+    readonly session: CliSession;
+  }): Effect.fn.Return<
+    void,
+    never,
+    Keychain | CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient
+  > {
     const io = yield* CliIo;
     const stdio = yield* Stdio.Stdio;
     const interactive =
@@ -192,5 +179,5 @@ export function offerGithubRegistration(input: {
         logNote(`${error.message} (you can register it later with \`maruhi key publish\`)`),
       ),
     );
-  });
-}
+  },
+);

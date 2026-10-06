@@ -56,22 +56,20 @@ import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
  * since a composite does not change values). A mismatch is 422 (the
  * issuer's view is stale / a concurrent push).
  */
-export const ensureCheckpointValuesDigest = (
-  tuple: CheckpointEnvironmentEntry,
-  values: readonly CheckpointValueEntryRow[],
-) =>
-  Effect.gen(function* () {
-    const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, values)).pipe(
-      // Malformed input derived from stored rows is an implementation bug (no secrets in error values)
-      Effect.orDie,
-    );
-    if (digest !== tuple.valuesDigestHex) {
-      return yield* rejectData({
-        kind: "checkpoint-state-mismatch",
-        reason: "values-digest-mismatch",
-      });
-    }
-  });
+export const ensureCheckpointValuesDigest = Effect.fn(
+  "checkpoint-accept.ensureCheckpointValuesDigest",
+)(function* (tuple: CheckpointEnvironmentEntry, values: readonly CheckpointValueEntryRow[]) {
+  const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, values)).pipe(
+    // Malformed input derived from stored rows is an implementation bug (no secrets in error values)
+    Effect.orDie,
+  );
+  if (digest !== tuple.valuesDigestHex) {
+    return yield* rejectData({
+      kind: "checkpoint-state-mismatch",
+      reason: "values-digest-mismatch",
+    });
+  }
+});
 
 /**
  * Existence/position check of a non-empty audit_head_hash (CRYPTO_SPEC
@@ -98,8 +96,8 @@ export const ensureCheckpointValuesDigest = (
  *   conflict is type-rejected here rather than surfacing as a tamper
  *   accusation)
  */
-export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
-  Effect.gen(function* () {
+export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAuditHeadAcceptable")(
+  function* (auditHeadHashHex: string) {
     if (auditHeadHashHex === "") {
       return;
     }
@@ -121,7 +119,8 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
     if (floor !== null && position < floor) {
       return yield* rejectData({ kind: "checkpoint-state-mismatch", reason: "audit-head-stale" });
     }
-  });
+  },
+);
 
 /**
  * Acceptance-time match of one environment tuple (§6.4): tombstone
@@ -134,33 +133,32 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
  * rows is a violation of composite-acceptance atomicity (storage
  * corruption), so it dies.
  */
-const ensureCheckpointTupleState = (tuple: CheckpointEnvironmentEntry) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const environment = yield* store.findEnvironment(tuple.environmentId);
-    if (environment === null) {
-      return yield* Effect.die(
-        new Error("environment on the verified chain has no data row (composite atomicity)"),
-      );
-    }
-    if (environment.deletedAtMs !== null) {
-      return yield* rejectData({
-        kind: "checkpoint-state-mismatch",
-        reason: "environment-deleted",
-      });
-    }
-    const anchor = yield* store.environmentManifestAnchor(tuple.environmentId);
-    if (
-      anchor === null ||
-      anchor.manifestVersion !== tuple.manifestVersion ||
-      anchor.signedBytesHashHex !== tuple.manifestSigHashHex
-    ) {
-      return yield* rejectData({ kind: "checkpoint-state-mismatch", reason: "manifest-mismatch" });
-    }
-    const values = yield* store.checkpointValueEntries(tuple.environmentId);
-    yield* ensureCheckpointValuesDigest(tuple, values);
-    return values;
-  });
+const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: CheckpointEnvironmentEntry) {
+  const store = yield* DataStore;
+  const environment = yield* store.findEnvironment(tuple.environmentId);
+  if (environment === null) {
+    return yield* Effect.die(
+      new Error("environment on the verified chain has no data row (composite atomicity)"),
+    );
+  }
+  if (environment.deletedAtMs !== null) {
+    return yield* rejectData({
+      kind: "checkpoint-state-mismatch",
+      reason: "environment-deleted",
+    });
+  }
+  const anchor = yield* store.environmentManifestAnchor(tuple.environmentId);
+  if (
+    anchor === null ||
+    anchor.manifestVersion !== tuple.manifestVersion ||
+    anchor.signedBytesHashHex !== tuple.manifestSigHashHex
+  ) {
+    return yield* rejectData({ kind: "checkpoint-state-mismatch", reason: "manifest-mismatch" });
+  }
+  const values = yield* store.checkpointValueEntries(tuple.environmentId);
+  yield* ensureCheckpointValuesDigest(tuple, values);
+  return values;
+});
 
 /**
  * Acceptance of a standalone checkpoint (the checkpoint branch of the
@@ -170,91 +168,88 @@ const ensureCheckpointTupleState = (tuple: CheckpointEnvironmentEntry) =>
  * existing snapshots of environments absent from the payload are left
  * unchanged).
  */
-export function standaloneCheckpointProgram(
+export const standaloneCheckpointProgram = Effect.fn(
+  "checkpoint-accept.standaloneCheckpointProgram",
+)(function* (
   parentHeadHashHex: string,
   entry: ChainEntry & { readonly op: "checkpoint" },
   callerUserId: string,
   cache: StateCache,
 ) {
-  return Effect.gen(function* () {
-    const chain = yield* loadInitializedChain;
-    const { state } = yield* deriveStoredState(chain, cache);
-    // §11-2: non-members get nothing back (the worker maps to 404). The
-    // checkpoint's own role floor (member) is rejected with 422 by the
-    // consensus rules (verifyChain)
-    const person = yield* requireRole(state, callerUserId, "reader");
-    // §16-2: a non-empty audit_head_hash requires chain role admin or
-    // higher (insufficient → 403. The scope half [admin scope] was
-    // pre-checked by the worker)
-    if (entry.payload.auditHeadHashHex !== "") {
-      yield* requireRole(state, callerUserId, "admin");
-    }
-    // §12-3: every tuple's environment ∈ the caller's scope (403
-    // insufficient-scope — right after the role axis, before CAS /
-    // verifyChain. The consensus rule `environment-out-of-scope`'s 422
-    // remains as defense in depth — design record es-design.md §9 K3-G)
-    for (const tuple of entry.payload.environments) {
-      yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
-    }
-    // Stage 2 (design record §8 K3-1): repeat the same check with the
-    // effective permission of the device the entry's actor FP names (an FP
-    // that is not one of the caller's valid devices is
-    // actor-key-mismatch)
-    const device = deviceOf(person, entry.actor.keyFingerprintHex);
-    if (device === undefined) {
-      return yield* rejectData({
-        kind: "chain-entry-invalid",
-        seq: entry.seq,
-        reason: "actor-key-mismatch",
-      });
-    }
-    yield* ensureDevicePermission(
-      device,
-      entry.payload.auditHeadHashHex === "" ? "reader" : "admin",
-    );
-    for (const tuple of entry.payload.environments) {
-      yield* ensureDevicePermission(device, "reader", tuple.environmentId);
-    }
-    yield* ensureParentHead(chain, parentHeadHashHex);
-    // The 4 acceptance steps (size → capacity → verifyChain = §6.2's
-    // consensus rules) are shared with the other paths
-    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    // Content match against the stored state at acceptance time (before
-    // applying) (§6.4). Enumeration order = payload order
-    const snapshots: {
-      readonly tuple: CheckpointEnvironmentEntry;
-      readonly values: readonly CheckpointValueEntryRow[];
-    }[] = [];
-    for (const tuple of entry.payload.environments) {
-      snapshots.push({ tuple, values: yield* ensureCheckpointTupleState(tuple) });
-    }
-    yield* ensureAuditHeadAcceptable(entry.payload.auditHeadHashHex);
-    const dataStore = yield* DataStore;
-    // The snapshot store (§6.4) commits atomically in the same synchronous
-    // block as the chain insert and mirror (commitAcceptedEntry's extraSync)
-    yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes, (nowMs) => {
-      for (const { tuple, values } of snapshots) {
-        dataStore.write.upsertCheckpointSnapshot(
-          tuple.environmentId,
-          {
-            chainSeq: entry.seq,
-            entryHashHex: applied.state.headHashHex,
-            epoch: tuple.epoch,
-            manifestVersion: tuple.manifestVersion,
-            manifestSigHashHex: tuple.manifestSigHashHex,
-            valuesDigestHex: tuple.valuesDigestHex,
-          },
-          values,
-          nowMs,
-        );
-      }
+  const chain = yield* loadInitializedChain;
+  const { state } = yield* deriveStoredState(chain, cache);
+  // §11-2: non-members get nothing back (the worker maps to 404). The
+  // checkpoint's own role floor (member) is rejected with 422 by the
+  // consensus rules (verifyChain)
+  const person = yield* requireRole(state, callerUserId, "reader");
+  // §16-2: a non-empty audit_head_hash requires chain role admin or
+  // higher (insufficient → 403. The scope half [admin scope] was
+  // pre-checked by the worker)
+  if (entry.payload.auditHeadHashHex !== "") {
+    yield* requireRole(state, callerUserId, "admin");
+  }
+  // §12-3: every tuple's environment ∈ the caller's scope (403
+  // insufficient-scope — right after the role axis, before CAS /
+  // verifyChain. The consensus rule `environment-out-of-scope`'s 422
+  // remains as defense in depth — design record es-design.md §9 K3-G)
+  for (const tuple of entry.payload.environments) {
+    yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
+  }
+  // Stage 2 (design record §8 K3-1): repeat the same check with the
+  // effective permission of the device the entry's actor FP names (an FP
+  // that is not one of the caller's valid devices is
+  // actor-key-mismatch)
+  const device = deviceOf(person, entry.actor.keyFingerprintHex);
+  if (device === undefined) {
+    return yield* rejectData({
+      kind: "chain-entry-invalid",
+      seq: entry.seq,
+      reason: "actor-key-mismatch",
     });
-    updateStateCache(cache, applied);
-    // checkpoint is a non-proposable op (CRYPTO_SPEC §6.2) — no proposal was applied
-    return {
-      headSeq: applied.state.headSeq,
-      headHashHex: applied.state.headHashHex,
-      appliedProposal: null,
-    };
+  }
+  yield* ensureDevicePermission(device, entry.payload.auditHeadHashHex === "" ? "reader" : "admin");
+  for (const tuple of entry.payload.environments) {
+    yield* ensureDevicePermission(device, "reader", tuple.environmentId);
+  }
+  yield* ensureParentHead(chain, parentHeadHashHex);
+  // The 4 acceptance steps (size → capacity → verifyChain = §6.2's
+  // consensus rules) are shared with the other paths
+  const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
+  // Content match against the stored state at acceptance time (before
+  // applying) (§6.4). Enumeration order = payload order
+  const snapshots: {
+    readonly tuple: CheckpointEnvironmentEntry;
+    readonly values: readonly CheckpointValueEntryRow[];
+  }[] = [];
+  for (const tuple of entry.payload.environments) {
+    snapshots.push({ tuple, values: yield* ensureCheckpointTupleState(tuple) });
+  }
+  yield* ensureAuditHeadAcceptable(entry.payload.auditHeadHashHex);
+  const dataStore = yield* DataStore;
+  // The snapshot store (§6.4) commits atomically in the same synchronous
+  // block as the chain insert and mirror (commitAcceptedEntry's extraSync)
+  yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes, (nowMs) => {
+    for (const { tuple, values } of snapshots) {
+      dataStore.write.upsertCheckpointSnapshot(
+        tuple.environmentId,
+        {
+          chainSeq: entry.seq,
+          entryHashHex: applied.state.headHashHex,
+          epoch: tuple.epoch,
+          manifestVersion: tuple.manifestVersion,
+          manifestSigHashHex: tuple.manifestSigHashHex,
+          valuesDigestHex: tuple.valuesDigestHex,
+        },
+        values,
+        nowMs,
+      );
+    }
   });
-}
+  updateStateCache(cache, applied);
+  // checkpoint is a non-proposable op (CRYPTO_SPEC §6.2) — no proposal was applied
+  return {
+    headSeq: applied.state.headSeq,
+    headHashHex: applied.state.headHashHex,
+    appliedProposal: null,
+  };
+});
