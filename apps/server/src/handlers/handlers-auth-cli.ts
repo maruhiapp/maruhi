@@ -192,64 +192,62 @@ function restoreFlowBinding(
  * JSON.stringify'd from Schema-validated scopes and is
  * vsig-verified — a decode failure is a defect.
  */
-function admitAndRenderApproval(
+const admitAndRenderApproval = Effect.fn("handlers-auth-cli.admitAndRenderApproval")(function* (
   params: CliVerifyParams,
   userId: string,
   identityLabel: string,
-): Effect.Effect<HttpServerResponse.HttpServerResponse, never, CliFlowRepo | OpsRepo> {
-  return Effect.gen(function* () {
-    const ticket = randomHex(32);
-    const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
-    const scopes = parseTokenScopes(params.scopesJson);
-    if (scopes === null) {
-      // The only signer is the server (cliStart JSON.stringify's
-      // Schema-validated scopes). A value that does not decode = an
-      // implementation bug / signing-key compromise = defect
-      return yield* Effect.die(new Error("verified CLI flow scopes are not a valid scope array"));
-    }
-    const flows = yield* CliFlowRepo;
-    const admission = yield* flows.createOrMatch(
-      {
-        flowId: params.flowId,
-        userId,
-        tokenName: params.tokenName,
-        scopes,
-        expiresInDays: params.expiresInDays,
-        userCode: params.userCode,
-        ticketHash,
-        expiresAtMs: params.expiresAtMs,
-      },
-      yield* Clock.currentTimeMillis,
-    );
-    // rejected (different user_id, expired, terminal state) and
-    // capacity (overall cap) both get the uniform error page
-    // (§4-1 (4) (iii) / §4-2 — the ticket is not rotated)
-    if (admission === "capacity") {
-      // Reaching the cap is an event that does not occur in normal
-      // operation = the H3 tripwire (hosted-ops.md §3 row 4). Counted
-      // only; the response is unchanged
-      yield* noteOpsCounter("cli_flow_capacity");
-    }
-    if (admission === "rejected" || admission === "capacity") {
-      return uniformErrorPage();
-    }
-    // (iv): the approval page (scriptless). Shows the authenticated
-    // identity + what is being granted. The raw ticket value is
-    // embedded only on this page (always the latest one)
-    return htmlResponse(
-      renderApprovalPage({
-        userCode: params.userCode,
-        identityLabel,
-        tokenName: params.tokenName,
-        scopes,
-        expiresInDays: params.expiresInDays,
-        flowId: params.flowId,
-        ticket,
-      }),
-      200,
-    );
-  });
-}
+): Effect.fn.Return<HttpServerResponse.HttpServerResponse, never, CliFlowRepo | OpsRepo> {
+  const ticket = randomHex(32);
+  const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
+  const scopes = parseTokenScopes(params.scopesJson);
+  if (scopes === null) {
+    // The only signer is the server (cliStart JSON.stringify's
+    // Schema-validated scopes). A value that does not decode = an
+    // implementation bug / signing-key compromise = defect
+    return yield* Effect.die(new Error("verified CLI flow scopes are not a valid scope array"));
+  }
+  const flows = yield* CliFlowRepo;
+  const admission = yield* flows.createOrMatch(
+    {
+      flowId: params.flowId,
+      userId,
+      tokenName: params.tokenName,
+      scopes,
+      expiresInDays: params.expiresInDays,
+      userCode: params.userCode,
+      ticketHash,
+      expiresAtMs: params.expiresAtMs,
+    },
+    yield* Clock.currentTimeMillis,
+  );
+  // rejected (different user_id, expired, terminal state) and
+  // capacity (overall cap) both get the uniform error page
+  // (§4-1 (4) (iii) / §4-2 — the ticket is not rotated)
+  if (admission === "capacity") {
+    // Reaching the cap is an event that does not occur in normal
+    // operation = the H3 tripwire (hosted-ops.md §3 row 4). Counted
+    // only; the response is unchanged
+    yield* noteOpsCounter("cli_flow_capacity");
+  }
+  if (admission === "rejected" || admission === "capacity") {
+    return uniformErrorPage();
+  }
+  // (iv): the approval page (scriptless). Shows the authenticated
+  // identity + what is being granted. The raw ticket value is
+  // embedded only on this page (always the latest one)
+  return htmlResponse(
+    renderApprovalPage({
+      userCode: params.userCode,
+      identityLabel,
+      tokenName: params.tokenName,
+      scopes,
+      expiresInDays: params.expiresInDays,
+      flowId: params.flowId,
+      ticket,
+    }),
+    200,
+  );
+});
 
 /**
  * The callback's CLI flow branch (AUTH_SPEC §4-1 (4) — the
@@ -264,74 +262,69 @@ function admitAndRenderApproval(
  * The caller (githubCallback) has already passed per-IP rate
  * limiting.
  */
-export function handleCliCallback(
+export const handleCliCallback = Effect.fn("handlers-auth-cli.handleCliCallback")(function* (
   request: HttpServerRequest.HttpServerRequest,
   query: { readonly code: string; readonly state: string },
-): Effect.Effect<
+): Effect.fn.Return<
   HttpServerResponse.HttpServerResponse,
   never,
   WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo | OpsRepo
 > {
-  return Effect.gen(function* () {
-    // (i)-a: restore the flow-binding cookie (state match + vsig
-    //    re-verification)
-    const key = yield* flowSigningKey;
-    const binding = yield* restoreFlowBinding(request, query.state, key);
-    if (binding === "state-mismatch") {
-      yield* recordLoginFailed("cli_handoff", "state-mismatch");
-      return yield* withCliCookieExpired(uniformErrorPage());
-    }
-    if (binding === "invalid") {
-      return yield* withCliCookieExpired(uniformErrorPage());
-    }
-    const { params, vsig } = binding;
-    // (i)-b: code exchange + user-info fetch (§3's second stage). On
-    //    failure none of the later processing happens (the flow row is
-    //    created only after OAuth completes — §4-1 (4))
-    const origin = requestOrigin(request);
-    const github = yield* GitHubApi;
-    const exchanged = yield* github
-      .exchangeCode(query.code, callbackUri(origin))
-      .pipe(Effect.option);
-    if (Option.isNone(exchanged)) {
-      yield* recordLoginFailed("cli_handoff", "code-exchange-failed");
-      return yield* withCliCookieExpired(uniformErrorPage());
-    }
-    const fetched = yield* github.fetchIdentity(exchanged.value).pipe(Effect.option);
-    if (Option.isNone(fetched)) {
-      yield* recordLoginFailed("cli_handoff", "github-token-invalid");
-      return yield* withCliCookieExpired(uniformErrorPage());
-    }
-    const identity = fetched.value;
-    // (ii): account lookup only (no creation — ruling DH). Absence
-    //    ends with signup guidance and triggers no irreversible side
-    //    effects at all. The resume link is verificationUrl (restored
-    //    from the vsig-signed parameters) — this page itself cannot
-    //    resume the flow on reload
-    const identities = yield* IdentityRepo;
-    const userId = yield* identities.lookupUser(identity);
-    if (userId === null) {
-      const verificationUrl = `${origin}/auth/cli/verify?${verificationQuery(params, vsig).toString()}`;
-      // Only the guidance wording follows signupPolicy (AUTH_SPEC §3)
-      // — under invite-only mode, showing a plain signup link would
-      // just lead to the refusal page. The source of truth for
-      // acceptance stays the server gate (§3 — the Web signup side)
-      const signupPolicy = yield* identities.signupPolicy;
-      return yield* withCliCookieExpired(
-        htmlResponse(renderSignupGuidancePage(origin, verificationUrl, signupPolicy), 200),
-      );
-    }
-    const identityLabel = identity.providerLogin ?? `GitHub account #${identity.providerUserId}`;
+  // (i)-a: restore the flow-binding cookie (state match + vsig
+  //    re-verification)
+  const key = yield* flowSigningKey;
+  const binding = yield* restoreFlowBinding(request, query.state, key);
+  if (binding === "state-mismatch") {
+    yield* recordLoginFailed("cli_handoff", "state-mismatch");
+    return yield* withCliCookieExpired(uniformErrorPage());
+  }
+  if (binding === "invalid") {
+    return yield* withCliCookieExpired(uniformErrorPage());
+  }
+  const { params, vsig } = binding;
+  // (i)-b: code exchange + user-info fetch (§3's second stage). On
+  //    failure none of the later processing happens (the flow row is
+  //    created only after OAuth completes — §4-1 (4))
+  const origin = requestOrigin(request);
+  const github = yield* GitHubApi;
+  const exchanged = yield* github.exchangeCode(query.code, callbackUri(origin)).pipe(Effect.option);
+  if (Option.isNone(exchanged)) {
+    yield* recordLoginFailed("cli_handoff", "code-exchange-failed");
+    return yield* withCliCookieExpired(uniformErrorPage());
+  }
+  const fetched = yield* github.fetchIdentity(exchanged.value).pipe(Effect.option);
+  if (Option.isNone(fetched)) {
+    yield* recordLoginFailed("cli_handoff", "github-token-invalid");
+    return yield* withCliCookieExpired(uniformErrorPage());
+  }
+  const identity = fetched.value;
+  // (ii): account lookup only (no creation — ruling DH). Absence
+  //    ends with signup guidance and triggers no irreversible side
+  //    effects at all. The resume link is verificationUrl (restored
+  //    from the vsig-signed parameters) — this page itself cannot
+  //    resume the flow on reload
+  const identities = yield* IdentityRepo;
+  const userId = yield* identities.lookupUser(identity);
+  if (userId === null) {
+    const verificationUrl = `${origin}/auth/cli/verify?${verificationQuery(params, vsig).toString()}`;
+    // Only the guidance wording follows signupPolicy (AUTH_SPEC §3)
+    // — under invite-only mode, showing a plain signup link would
+    // just lead to the refusal page. The source of truth for
+    // acceptance stays the server gate (§3 — the Web signup side)
+    const signupPolicy = yield* identities.signupPolicy;
     return yield* withCliCookieExpired(
-      yield* admitAndRenderApproval(params, userId, identityLabel),
+      htmlResponse(renderSignupGuidancePage(origin, verificationUrl, signupPolicy), 200),
     );
-  });
-}
+  }
+  const identityLabel = identity.providerLogin ?? `GitHub account #${identity.providerUserId}`;
+  return yield* withCliCookieExpired(yield* admitAndRenderApproval(params, userId, identityLabel));
+});
 
 export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers) =>
   handlers
-    .handle("cliStart", ({ payload, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "cliStart",
+      Effect.fn("handlers-auth-cli.cliStart")(function* ({ payload, request }) {
         const env = yield* WorkerEnv;
         // per-IP rate limiting placed first in the handler (§4-1 (1)
         // — being record-free, this protects CPU rather than the DB;
@@ -374,8 +367,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         };
       }),
     )
-    .handle("cliVerify", ({ request, query }) =>
-      Effect.gen(function* () {
+    .handle(
+      "cliVerify",
+      Effect.fn("handlers-auth-cli.cliVerify")(function* ({ request, query }) {
         const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
         // Stateless verification of vsig and expiry (§4-1 (3)).
@@ -410,8 +404,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         });
       }),
     )
-    .handle("cliApprove", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "cliApprove",
+      Effect.fn("handlers-auth-cli.cliApprove")(function* ({ payload }) {
         // The credential is the approval ticket alone (§4-1 (4) — not
         // a session). A missing or unknown decision gets the uniform
         // error page (§4-2 — not differentiated from ticket
@@ -450,8 +445,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         return htmlResponse(renderApprovedPage(row === null ? "" : row.userCode), 200);
       }),
     )
-    .handle("cliPoll", ({ payload, request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "cliPoll",
+      Effect.fn("handlers-auth-cli.cliPoll")(function* ({ payload, request }) {
         const env = yield* WorkerEnv;
         const allowed = yield* ipRateLimitAllowed(env.CLI_POLL_RATE_LIMIT, request);
         if (!allowed) {

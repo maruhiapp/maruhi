@@ -263,24 +263,22 @@ function noContentOrNotFound(deleted: boolean) {
 }
 
 /** Resolves a request visible only to the ward themselves or a ward's guardian (anything else is a uniform 404). */
-function visibleRequest(
+const visibleRequest = Effect.fn("handlers-key-wraps.visibleRequest")(function* (
   repo: KeyWrapRepoShape,
   requestId: string,
   principalUserId: string,
   nowMs: number,
 ) {
-  return Effect.gen(function* () {
-    const request = yield* repo.handoffFind(requestId, nowMs);
-    if (request === null) {
-      return yield* Effect.fail(new HandoffNotFoundError());
-    }
-    const roles = yield* rolesFor(repo, request, principalUserId);
-    if (roles === null) {
-      return yield* Effect.fail(new HandoffNotFoundError());
-    }
-    return { request, roles };
-  });
-}
+  const request = yield* repo.handoffFind(requestId, nowMs);
+  if (request === null) {
+    return yield* Effect.fail(new HandoffNotFoundError());
+  }
+  const roles = yield* rolesFor(repo, request, principalUserId);
+  if (roles === null) {
+    return yield* Effect.fail(new HandoffNotFoundError());
+  }
+  return { request, roles };
+});
 
 function toGroupSummary(group: GuardianGroupRecord) {
   return {
@@ -297,8 +295,9 @@ function toGroupSummary(group: GuardianGroupRecord) {
 
 export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handlers) =>
   handlers
-    .handle("status", () =>
-      Effect.gen(function* () {
+    .handle(
+      "status",
+      Effect.fn("handlers-key-wraps.status")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         const repo = yield* KeyWrapRepo;
         const recovery = yield* (yield* RecoveryRepo).find(principal.userId);
@@ -325,8 +324,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("passkeyRegister", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "passkeyRegister",
+      Effect.fn("handlers-key-wraps.passkeyRegister")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -357,8 +357,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         return { wrapId };
       }),
     )
-    .handle("passkeyGet", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "passkeyGet",
+      Effect.fn("handlers-key-wraps.passkeyGet")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -400,8 +401,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("passkeyDelete", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "passkeyDelete",
+      Effect.fn("handlers-key-wraps.passkeyDelete")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -415,8 +417,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         );
       }),
     )
-    .handle("guardianCreate", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "guardianCreate",
+      Effect.fn("handlers-key-wraps.guardianCreate")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -454,8 +457,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         return { groupId };
       }),
     )
-    .handle("guardianGet", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "guardianGet",
+      Effect.fn("handlers-key-wraps.guardianGet")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -492,8 +496,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("guardianDelete", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "guardianDelete",
+      Effect.fn("handlers-key-wraps.guardianDelete")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -507,8 +512,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         );
       }),
     )
-    .handle("wards", () =>
-      Effect.gen(function* () {
+    .handle(
+      "wards",
+      Effect.fn("handlers-key-wraps.wards")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -537,8 +543,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("myShare", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "myShare",
+      Effect.fn("handlers-key-wraps.myShare")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -583,8 +590,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("handoffCreate", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "handoffCreate",
+      Effect.fn("handlers-key-wraps.handoffCreate")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -617,8 +625,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         return { expiresAtMs: nowMs + HANDOFF_REQUEST_TTL_MS };
       }),
     )
-    .handle("handoffLookup", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "handoffLookup",
+      Effect.fn("handlers-key-wraps.handoffLookup")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -637,8 +646,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("handoffApprove", ({ params, payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "handoffApprove",
+      Effect.fn("handlers-key-wraps.handoffApprove")(function* ({ params, payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -690,8 +700,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         }
       }),
     )
-    .handle("handoffApprovals", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "handoffApprovals",
+      Effect.fn("handlers-key-wraps.handoffApprovals")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
@@ -724,8 +735,9 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         };
       }),
     )
-    .handle("handoffCancel", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "handoffCancel",
+      Effect.fn("handlers-key-wraps.handoffCancel")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;

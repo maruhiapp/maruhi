@@ -117,8 +117,9 @@ function expireSignupCookieIfPresent(
 
 export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
   handlers
-    .handle("authConfig", () =>
-      Effect.gen(function* () {
+    .handle(
+      "authConfig",
+      Effect.fn("handlers-auth.authConfig")(function* () {
         const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
         // Public config (AUTH_SPEC §4): only public information — client_id
@@ -153,8 +154,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         };
       }),
     )
-    .handle("githubStart", ({ request, query }) =>
-      Effect.gen(function* () {
+    .handle(
+      "githubStart",
+      Effect.fn("handlers-auth.githubStart")(function* ({ request, query }) {
         const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
@@ -210,8 +212,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         ).pipe(Effect.orDie);
       }),
     )
-    .handle("githubCallback", ({ request, query }) =>
-      Effect.gen(function* () {
+    .handle(
+      "githubCallback",
+      Effect.fn("handlers-auth.githubCallback")(function* ({ request, query }) {
         const env = yield* WorkerEnv;
         // The source-IP rate limit sits first in the handler: the callback
         // is reachable unauthenticated, and each hit triggers an exchange
@@ -319,8 +322,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return yield* expireSignupCookieIfPresent(request, withStateExpired);
       }),
     )
-    .handle("me", () =>
-      Effect.gen(function* () {
+    .handle(
+      "me",
+      Effect.fn("handlers-auth.me")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         const identities = yield* IdentityRepo;
         const orgs = yield* identities.listUserOrgs(principal.userId);
@@ -346,8 +350,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         };
       }),
     )
-    .handle("logout", ({ request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "logout",
+      Effect.fn("handlers-auth.logout")(function* ({ request }) {
         // Already through AuthMiddleware (401 / CSRF 403 are the
         // middleware's job)
         const principal = yield* (yield* RequestAuth).principal;
@@ -371,8 +376,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         ).pipe(Effect.orDie);
       }),
     )
-    .handle("revokeToken", ({ request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "revokeToken",
+      Effect.fn("handlers-auth.revokeToken")(function* ({ request }) {
         const principal = yield* (yield* RequestAuth).principal;
         const rawToken = parseBearerToken(request.headers["authorization"] ?? "");
         // The revocation target is only "the presented token itself" (the
@@ -385,8 +391,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return HttpServerResponse.empty({ status: 204 });
       }),
     )
-    .handle("listTokens", () =>
-      Effect.gen(function* () {
+    .handle(
+      "listTokens",
+      Effect.fn("handlers-auth.listTokens")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         // A token principal must be `*` × admin (ruling CH). A session
         // principal already passed the §5 permission enumeration. The 403 is
@@ -402,8 +409,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return { tokens: summaries };
       }),
     )
-    .handle("revokeTokenById", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "revokeTokenById",
+      Effect.fn("handlers-auth.revokeTokenById")(function* ({ params }) {
         const principal = yield* (yield* RequestAuth).principal;
         // Check order (ruling CG): 401 (middleware) → 403 (principal
         // condition — computed from calling credentials alone) → uniform
@@ -429,8 +437,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return HttpServerResponse.empty({ status: 204 });
       }),
     )
-    .handle("recoveryPut", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "recoveryPut",
+      Effect.fn("handlers-auth.recoveryPut")(function* ({ payload }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const recovery = yield* RecoveryRepo;
@@ -451,8 +460,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         return HttpServerResponse.empty({ status: 204 });
       }),
     )
-    .handle("recoveryGet", ({ request }) =>
-      Effect.gen(function* () {
+    .handle(
+      "recoveryGet",
+      Effect.fn("handlers-auth.recoveryGet")(function* ({ request }) {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         // A GET, but it carries state: the fetch count (an explicit §13-2
@@ -500,8 +510,9 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         };
       }),
     )
-    .handle("recoveryStatus", () =>
-      Effect.gen(function* () {
+    .handle(
+      "recoveryStatus",
+      Effect.fn("handlers-auth.recoveryStatus")(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         const recovery = yield* RecoveryRepo;
         const wrap = yield* recovery.find(principal.userId);
