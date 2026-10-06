@@ -272,60 +272,58 @@ export function decodeValueText(value: Uint8Array): string | null {
 }
 
 /** The terminal display of values (pull --show). agent-gate.ts refuses whether display is allowed. */
-export function showValues(
+export const showValues = Effect.fn("display.showValues")(function* (
   variables: readonly DisplayableVariable[],
-): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // The check at the command entry (before decryption) is the mainline.
-    // This post-decryption check is a defensive line so a future path
-    // calling showValues directly cannot reach display without the entry
-    // check. **Both** are aligned to the new gate (the TTY primary
-    // boundary) — leaving one on the deny-list would let an unknown agent
-    // slip through on the defensive-line side
-    yield* ensureValueDisplayAllowed;
-    // Decoding of every value completes before any output
-    // (all-or-nothing). If even one value is invalid UTF-8, nothing is
-    // shown and it fails — no partial output (only the first values left
-    // on screen) is produced
-    const lines: string[] = [];
-    // Variables whose display was altered by neutralization (only names are collected; the value is not carried)
-    const altered: string[] = [];
-    for (const variable of variables) {
-      // Reason for unwrapping: displaying the value is this command's
-      // very function. Unwrap **only after passing
-      // ensureValueDisplayAllowed above (the TTY primary boundary + the
-      // agent secondary layer)** — unwrapping before the gate would
-      // assemble the plaintext as an in-memory string even in an
-      // environment that refuses
-      const text = decodeValueText(Redacted.value(variable.value));
-      if (text === null) {
-        return yield* Effect.fail(
-          cliError(
-            `The value of variable ${displayText(variable.name)} is not valid UTF-8 and cannot be displayed (binary values are outside the scope of --show)`,
-          ),
-        );
-      }
-      const shown = displayValue(text);
-      if (shown !== text) {
-        altered.push(displayText(variable.name));
-      }
-      lines.push(...renderValue(displayText(variable.name), shown));
+): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
+  const io = yield* CliIo;
+  // The check at the command entry (before decryption) is the mainline.
+  // This post-decryption check is a defensive line so a future path
+  // calling showValues directly cannot reach display without the entry
+  // check. **Both** are aligned to the new gate (the TTY primary
+  // boundary) — leaving one on the deny-list would let an unknown agent
+  // slip through on the defensive-line side
+  yield* ensureValueDisplayAllowed;
+  // Decoding of every value completes before any output
+  // (all-or-nothing). If even one value is invalid UTF-8, nothing is
+  // shown and it fails — no partial output (only the first values left
+  // on screen) is produced
+  const lines: string[] = [];
+  // Variables whose display was altered by neutralization (only names are collected; the value is not carried)
+  const altered: string[] = [];
+  for (const variable of variables) {
+    // Reason for unwrapping: displaying the value is this command's
+    // very function. Unwrap **only after passing
+    // ensureValueDisplayAllowed above (the TTY primary boundary + the
+    // agent secondary layer)** — unwrapping before the gate would
+    // assemble the plaintext as an in-memory string even in an
+    // environment that refuses
+    const text = decodeValueText(Redacted.value(variable.value));
+    if (text === null) {
+      return yield* Effect.fail(
+        cliError(
+          `The value of variable ${displayText(variable.name)} is not valid UTF-8 and cannot be displayed (binary values are outside the scope of --show)`,
+        ),
+      );
     }
-    for (const line of lines) {
-      yield* io.log(line);
+    const shown = displayValue(text);
+    if (shown !== text) {
+      altered.push(displayText(variable.name));
     }
-    // Neutralization is needed to prevent terminal injection, but done
-    // **silently** the user cannot notice that "the on-screen string = the
-    // actual value" broke (copying it pastes a corrupted value). Only when
-    // neutralization happened, stderr names that the original is a
-    // different thing and the means to pass the actual value (run's
-    // env-var injection)
-    if (altered.length > 0) {
-      yield* logWarning(warnAlteredDisplay(altered));
-    }
-  });
-}
+    lines.push(...renderValue(displayText(variable.name), shown));
+  }
+  for (const line of lines) {
+    yield* io.log(line);
+  }
+  // Neutralization is needed to prevent terminal injection, but done
+  // **silently** the user cannot notice that "the on-screen string = the
+  // actual value" broke (copying it pastes a corrupted value). Only when
+  // neutralization happened, stderr names that the original is a
+  // different thing and the means to pass the actual value (run's
+  // env-var injection)
+  if (altered.length > 0) {
+    yield* logWarning(warnAlteredDisplay(altered));
+  }
+});
 
 /** The marker put on each line of a multi-line value (a shape distinguishable from a `NAME=` line). */
 const CONTINUATION = "| ";

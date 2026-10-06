@@ -101,30 +101,28 @@ export interface KeyStandings {
  * reported — discovery only). Never fails: a list failure and each sync failure
  * are carried as facts.
  */
-export function keyStandingsOf(input: {
+export const keyStandingsOf = Effect.fn("device-standing.keyStandingsOf")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
-}): Effect.Effect<KeyStandings, never, CliServices> {
-  return Effect.gen(function* () {
-    const listed = yield* Effect.result(fetchProjectMemberships(input.client));
-    if (Result.isFailure(listed)) {
-      return { projects: [], listFailure: listed.failure.message };
-    }
-    const projectIds = listed.success.map((row) => row.projectId).toSorted(compareCodePoints);
-    const projects: KeyStandings["projects"][number][] = [];
-    for (const projectId of projectIds) {
-      const synced = yield* Effect.result(
-        openMetadataProject({ server: input.session.origin, project: projectId }),
-      );
-      projects.push({
-        projectId,
-        standing: standingFrom(synced, input.session, input.fingerprintHex),
-      });
-    }
-    return { projects, listFailure: null };
-  });
-}
+}): Effect.fn.Return<KeyStandings, never, CliServices> {
+  const listed = yield* Effect.result(fetchProjectMemberships(input.client));
+  if (Result.isFailure(listed)) {
+    return { projects: [], listFailure: listed.failure.message };
+  }
+  const projectIds = listed.success.map((row) => row.projectId).toSorted(compareCodePoints);
+  const projects: KeyStandings["projects"][number][] = [];
+  for (const projectId of projectIds) {
+    const synced = yield* Effect.result(
+      openMetadataProject({ server: input.session.origin, project: projectId }),
+    );
+    projects.push({
+      projectId,
+      standing: standingFrom(synced, input.session, input.fingerprintHex),
+    });
+  }
+  return { projects, listFailure: null };
+});
 
 /** From one sync's result (success / failure), produces one key's standing (when unsyncable, that fact). */
 function standingFrom(

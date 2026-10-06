@@ -73,7 +73,7 @@ export interface AuditListFilters {
 }
 
 /** list's display options. */
-export interface AuditListOptions {
+interface AuditListOptions {
   /**
    * Expand the aggregated `var.read` form (AUDIT_SPEC §3.3 — one row per
    * environment per value pull) into one line per variable. The default is a
@@ -573,70 +573,66 @@ function renderListEvent(
   };
 }
 
-export function auditListOp(
+export const auditListOp = Effect.fn("audit.auditListOp")(function* (
   context: ProjectContextBase,
   page: AuditPageOptions,
   filters: AuditListFilters,
   options: AuditListOptions,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const events = yield* fetchProjectEvents(context.client, context.projectId, page, filters);
-    if (events.length === 0) {
-      yield* io.log("No audit events (no rows match the filter / cursor)");
-      return 0;
-    }
-    const names = yield* resolveNames(
-      context,
-      environmentIdsForNames(events, options, filters.variableId),
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  const events = yield* fetchProjectEvents(context.client, context.projectId, page, filters);
+  if (events.length === 0) {
+    yield* io.log("No audit events (no rows match the filter / cursor)");
+    return 0;
+  }
+  const names = yield* resolveNames(
+    context,
+    environmentIdsForNames(events, options, filters.variableId),
+  );
+  const entries = entryIndexOf(context.verified.entries);
+  const index = proposalIndexOf(context.verified);
+  const integrityFailures = yield* logListEvents(events, (event) =>
+    renderListEvent(
+      event,
+      names,
+      entries,
+      context.verified.state.headSeq,
+      index,
+      options,
+      filters.variableId,
+    ),
+  );
+  if (!options.expandReads && events.some((event) => aggregatedReadOf(event) !== null)) {
+    yield* logNote(
+      "var.read rows are recorded per value pull and list the variables read (AUDIT_SPEC §3.3). Re-run with --expand-reads to print one line per variable",
     );
-    const entries = entryIndexOf(context.verified.entries);
-    const index = proposalIndexOf(context.verified);
-    const integrityFailures = yield* logListEvents(events, (event) =>
-      renderListEvent(
-        event,
-        names,
-        entries,
-        context.verified.state.headSeq,
-        index,
-        options,
-        filters.variableId,
-      ),
-    );
-    if (!options.expandReads && events.some((event) => aggregatedReadOf(event) !== null)) {
-      yield* logNote(
-        "var.read rows are recorded per value pull and list the variables read (AUDIT_SPEC §3.3). Re-run with --expand-reads to print one line per variable",
-      );
-    }
-    const hint = continuationHint(events, page.limit, "maruhi audit");
-    if (hint !== null) {
-      yield* io.log(hint);
-    }
-    return integrityFailures > 0 ? 1 : 0;
-  });
-}
+  }
+  const hint = continuationHint(events, page.limit, "maruhi audit");
+  if (hint !== null) {
+    yield* io.log(hint);
+  }
+  return integrityFailures > 0 ? 1 : 0;
+});
 
 /** Prints each row's body and expanded lines to stdout, the mirror warnings to stderr, and returns the warning count. */
-function logListEvents(
+const logListEvents = Effect.fn("audit.logListEvents")(function* (
   events: readonly WireAuditEvent[],
   render: (event: WireAuditEvent) => ReturnType<typeof renderListEvent>,
-): Effect.Effect<number, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    let integrityFailures = 0;
-    for (const event of events) {
-      const rendered = render(event);
-      for (const line of rendered.lines) {
-        yield* io.log(line);
-      }
-      integrityFailures += rendered.warnings.length;
-      for (const warning of rendered.warnings) {
-        yield* logWarning(warning);
-      }
+): Effect.fn.Return<number, never, CliIo> {
+  const io = yield* CliIo;
+  let integrityFailures = 0;
+  for (const event of events) {
+    const rendered = render(event);
+    for (const line of rendered.lines) {
+      yield* io.log(line);
     }
-    return integrityFailures;
-  });
-}
+    integrityFailures += rendered.warnings.length;
+    for (const warning of rendered.warnings) {
+      yield* logWarning(warning);
+    }
+  }
+  return integrityFailures;
+});
 
 // ---------------------------------------------------------------------------
 // invites / self
@@ -656,42 +652,40 @@ interface D1AuditRenderResult {
 }
 
 /** The common path for a D1-side page (invites / self): fetch → render the list → continuation hint. */
-function fetchAndRenderD1Events<E>(input: {
+const fetchAndRenderD1Events = Effect.fn("audit.fetchAndRenderD1Events")(function* <E>(input: {
   readonly request: Effect.Effect<{ readonly events: readonly WireAuditEvent[] }, E>;
   readonly page: AuditPageOptions;
   readonly emptyMessage: string;
   readonly command: string;
-}): Effect.Effect<D1AuditRenderResult, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const events = yield* input.request.pipe(
-      Effect.mapError(toCliError),
-      Effect.map((response) => response.events),
-    );
-    if (events.length === 0) {
-      yield* io.log(input.emptyMessage);
-      return { events, integrityFailures: 0 };
+}): Effect.fn.Return<D1AuditRenderResult, CliError, CliIo> {
+  const io = yield* CliIo;
+  const events = yield* input.request.pipe(
+    Effect.mapError(toCliError),
+    Effect.map((response) => response.events),
+  );
+  if (events.length === 0) {
+    yield* io.log(input.emptyMessage);
+    return { events, integrityFailures: 0 };
+  }
+  let integrityFailures = 0;
+  for (const event of events) {
+    // A D1 row has no chain provenance. Even if a malicious response slips
+    // chain_seq in, it is not displayed as a bare coordinate — warn +
+    // non-zero exit (S1)
+    const trust = d1MirrorTrustOf(event);
+    const warnings = mirrorWarnings(event, trust);
+    yield* io.log(formatEventLine(event, null, trust));
+    integrityFailures += warnings.length;
+    for (const warning of warnings) {
+      yield* logWarning(warning);
     }
-    let integrityFailures = 0;
-    for (const event of events) {
-      // A D1 row has no chain provenance. Even if a malicious response slips
-      // chain_seq in, it is not displayed as a bare coordinate — warn +
-      // non-zero exit (S1)
-      const trust = d1MirrorTrustOf(event);
-      const warnings = mirrorWarnings(event, trust);
-      yield* io.log(formatEventLine(event, null, trust));
-      integrityFailures += warnings.length;
-      for (const warning of warnings) {
-        yield* logWarning(warning);
-      }
-    }
-    const hint = continuationHint(events, input.page.limit, input.command);
-    if (hint !== null) {
-      yield* io.log(hint);
-    }
-    return { events, integrityFailures };
-  });
-}
+  }
+  const hint = continuationHint(events, input.page.limit, input.command);
+  if (hint !== null) {
+    yield* io.log(hint);
+  }
+  return { events, integrityFailures };
+});
 
 /** `maruhi audit invites`: the audit rows of invite.* (chain role admin — server-enforced). */
 export function auditInvitesOp(
@@ -710,27 +704,25 @@ export function auditInvitesOp(
 }
 
 /** `maruhi audit self`: one's own account events (§3.1 — monitoring the to-be-monitored events). */
-export function auditSelfOp(
+export const auditSelfOp = Effect.fn("audit.auditSelfOp")(function* (
   context: SessionContext,
   page: AuditPageOptions,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const rendered = yield* fetchAndRenderD1Events({
-      request: context.client.audit.self({ query: pageQueryOf(page) }),
-      page,
-      emptyMessage: "No account audit events",
-      command: "maruhi audit self",
-    });
-    const events = rendered.events;
-    // The implication of a to-be-monitored event (AUDIT_SPEC §3.1) is attached here once
-    if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
-      yield* logNote(
-        "auth.recovery_blob_fetched (a fetch of the sealed reserve key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
-      );
-    }
-    return rendered.integrityFailures > 0 ? 1 : 0;
+): Effect.fn.Return<number, CliError, CliServices> {
+  const rendered = yield* fetchAndRenderD1Events({
+    request: context.client.audit.self({ query: pageQueryOf(page) }),
+    page,
+    emptyMessage: "No account audit events",
+    command: "maruhi audit self",
   });
-}
+  const events = rendered.events;
+  // The implication of a to-be-monitored event (AUDIT_SPEC §3.1) is attached here once
+  if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
+    yield* logNote(
+      "auth.recovery_blob_fetched (a fetch of the sealed reserve key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
+    );
+  }
+  return rendered.integrityFailures > 0 ? 1 : 0;
+});
 
 // ---------------------------------------------------------------------------
 // verify (mirror bijection verification)
@@ -759,30 +751,28 @@ type MirrorRowSelector = "chain-namespace" | "chain-seq-present";
  * caller's row check (reconcile bounds the total row count via the
  * strictly-decreasing admin-visible `seq`).
  */
-export function paginateAuditEvents(input: {
+export const paginateAuditEvents = Effect.fn("audit.paginateAuditEvents")(function* (input: {
   readonly pageLimit: number;
   readonly fetchPage: (before: string | null) => Effect.Effect<readonly WireAuditEvent[], CliError>;
   readonly onRow: (row: WireAuditEvent) => Effect.Effect<void, CliError>;
   readonly bound: { readonly maxPages: number; readonly exceededMessage: string } | null;
-}): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    let before: string | null = null;
-    for (let page = 0; input.bound === null || page < input.bound.maxPages; page += 1) {
-      // The annotation breaks self-referential inference inside the generator (before → rows → before)
-      const cursor: string | null = before;
-      const rows: readonly WireAuditEvent[] = yield* input.fetchPage(cursor);
-      for (const row of rows) {
-        yield* input.onRow(row);
-      }
-      if (rows.length < input.pageLimit) {
-        return;
-      }
-      before = rows[rows.length - 1]?.id ?? null;
+}): Effect.fn.Return<void, CliError> {
+  let before: string | null = null;
+  for (let page = 0; input.bound === null || page < input.bound.maxPages; page += 1) {
+    // The annotation breaks self-referential inference inside the generator (before → rows → before)
+    const cursor: string | null = before;
+    const rows: readonly WireAuditEvent[] = yield* input.fetchPage(cursor);
+    for (const row of rows) {
+      yield* input.onRow(row);
     }
-    // Leaving the loop = bound was non-null and maxPages was reached
-    return yield* Effect.fail(cliError(input.bound?.exceededMessage ?? "unreachable"));
-  });
-}
+    if (rows.length < input.pageLimit) {
+      return;
+    }
+    before = rows[rows.length - 1]?.id ?? null;
+  }
+  // Leaving the loop = bound was non-null and maxPages was reached
+  return yield* Effect.fail(cliError(input.bound?.exceededMessage ?? "unreachable"));
+});
 
 /**
  * Fetch all pages of one mirror-candidate filter (newest-first; cursor is a
@@ -791,53 +781,51 @@ export function paginateAuditEvents(input: {
  * opaque and cannot be ordinally compared, so progress is checked as set
  * non-duplication.
  */
-function fetchMirrorRowsForSelector(
+const fetchMirrorRowsForSelector = Effect.fn("audit.fetchMirrorRowsForSelector")(function* (
   client: MaruhiClient,
   projectId: string,
   selector: MirrorRowSelector,
-): Effect.Effect<readonly WireAuditEvent[], CliError> {
-  return Effect.gen(function* () {
-    const rows: WireAuditEvent[] = [];
-    const seen = new Set<string>();
-    yield* paginateAuditEvents({
-      pageLimit: VERIFY_PAGE_LIMIT,
-      bound: {
-        maxPages: VERIFY_MAX_PAGES,
-        exceededMessage:
-          "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
-      },
-      fetchPage: (before) =>
-        client.audit
-          .events({
-            params: { projectId },
-            query: {
-              limit: VERIFY_PAGE_LIMIT,
-              ...(selector === "chain-namespace"
-                ? { eventPrefix: CHAIN_MIRROR_EVENT_PREFIX }
-                : { chainSeqPresent: "true" as const }),
-              ...(before === null ? {} : { before }),
-            },
-          })
-          .pipe(
-            Effect.mapError(toCliError),
-            Effect.map((response) => response.events as readonly WireAuditEvent[]),
+): Effect.fn.Return<readonly WireAuditEvent[], CliError> {
+  const rows: WireAuditEvent[] = [];
+  const seen = new Set<string>();
+  yield* paginateAuditEvents({
+    pageLimit: VERIFY_PAGE_LIMIT,
+    bound: {
+      maxPages: VERIFY_MAX_PAGES,
+      exceededMessage:
+        "The audit log exceeded the theoretical page-count limit — the server response contradicts itself",
+    },
+    fetchPage: (before) =>
+      client.audit
+        .events({
+          params: { projectId },
+          query: {
+            limit: VERIFY_PAGE_LIMIT,
+            ...(selector === "chain-namespace"
+              ? { eventPrefix: CHAIN_MIRROR_EVENT_PREFIX }
+              : { chainSeqPresent: "true" as const }),
+            ...(before === null ? {} : { before }),
+          },
+        })
+        .pipe(
+          Effect.mapError(toCliError),
+          Effect.map((response) => response.events as readonly WireAuditEvent[]),
+        ),
+    onRow: (row) => {
+      if (seen.has(row.id)) {
+        return Effect.fail(
+          cliError(
+            `Audit-log paging is not advancing (${selector}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
           ),
-      onRow: (row) => {
-        if (seen.has(row.id)) {
-          return Effect.fail(
-            cliError(
-              `Audit-log paging is not advancing (${selector}, row ${displayText(row.id)} was returned twice) — the server response contradicts itself. Aborting the mirror verification`,
-            ),
-          );
-        }
-        seen.add(row.id);
-        rows.push(row);
-        return Effect.void;
-      },
-    });
-    return rows;
+        );
+      }
+      seen.add(row.id);
+      rows.push(row);
+      return Effect.void;
+    },
   });
-}
+  return rows;
+});
 
 /**
  * verify's full mirror candidate set. The union of two sets:
@@ -851,29 +839,27 @@ function fetchMirrorRowsForSelector(
  * content changed between the filters, the server response contradicts
  * itself and verification cannot proceed.
  */
-function fetchAllMirrorRows(
+const fetchAllMirrorRows = Effect.fn("audit.fetchAllMirrorRows")(function* (
   client: MaruhiClient,
   projectId: string,
-): Effect.Effect<readonly WireAuditEvent[], CliError> {
-  return Effect.gen(function* () {
-    const byId = new Map<string, WireAuditEvent>();
-    for (const selector of ["chain-namespace", "chain-seq-present"] as const) {
-      const rows = yield* fetchMirrorRowsForSelector(client, projectId, selector);
-      for (const row of rows) {
-        const existing = byId.get(row.id);
-        if (existing !== undefined && !jsonEqual(existing, row)) {
-          return yield* Effect.fail(
-            cliError(
-              `Audit row ${displayText(row.id)} changed between mirror-verification queries — the server response contradicts itself`,
-            ),
-          );
-        }
-        byId.set(row.id, row);
+): Effect.fn.Return<readonly WireAuditEvent[], CliError> {
+  const byId = new Map<string, WireAuditEvent>();
+  for (const selector of ["chain-namespace", "chain-seq-present"] as const) {
+    const rows = yield* fetchMirrorRowsForSelector(client, projectId, selector);
+    for (const row of rows) {
+      const existing = byId.get(row.id);
+      if (existing !== undefined && !jsonEqual(existing, row)) {
+        return yield* Effect.fail(
+          cliError(
+            `Audit row ${displayText(row.id)} changed between mirror-verification queries — the server response contradicts itself`,
+          ),
+        );
       }
+      byId.set(row.id, row);
     }
-    return [...byId.values()];
-  });
-}
+  }
+  return [...byId.values()];
+});
 
 /** The result of indexing mirror rows (bundled by chain_seq, with unverifiable rows sorted out). */
 interface MirrorBuckets {
@@ -1036,43 +1022,41 @@ function entryMirrorProblems(
  * reconciliation (list's labels) cannot see in principle, which is this
  * command's added value. It reads only class 1, so every member can run it.
  */
-export function auditVerifyOp(
+export const auditVerifyOp = Effect.fn("audit.auditVerifyOp")(function* (
   context: ProjectContextBase,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const rows = yield* fetchAllMirrorRows(context.client, context.projectId);
-    const headSeq = context.verified.state.headSeq;
-    const buckets = bucketMirrorRows(rows, headSeq);
-    const index = proposalIndexOf(context.verified);
-    const problems = [
-      ...buckets.problems,
-      ...context.verified.entries.flatMap((entry) =>
-        entryMirrorProblems(entry, buckets.byChainSeq.get(entry.seq) ?? [], index),
-      ),
-    ];
-    if (problems.length === 0 && buckets.aheadRows === 0) {
-      yield* io.log(
-        `Mirror bijection verification OK: chain entries 1..${headSeq} \u2194 chain.* mirror rows match the mapping (one row per entry, plus the applied inner-op row of each completed approve — AUDIT_SPEC §3.4)`,
-      );
-      return 0;
-    }
-    if (buckets.aheadRows > 0) {
-      // Never say "OK" while unverified rows remain (do not paper over, with
-      // a successful exit, the shape where forged rows permanently sit inside
-      // the unverified allowance)
-      yield* io.logError(
-        `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run \`maruhi audit verify\` — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
-      );
-    }
-    for (const problem of problems) {
-      yield* io.logError(`Mirror verification failure: ${problem}`);
-    }
-    if (problems.length > 0) {
-      yield* io.logError(
-        `Mirror verification found ${countNoun(problems.length, "problem")}. The audit log is server-managed data (AUDIT_SPEC §6) and these mismatches are evidence of server-side tampering or corruption — the distributed chain (signed and verified) is the truth; do not trust the audit log`,
-      );
-    }
-    return 1;
-  });
-}
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  const rows = yield* fetchAllMirrorRows(context.client, context.projectId);
+  const headSeq = context.verified.state.headSeq;
+  const buckets = bucketMirrorRows(rows, headSeq);
+  const index = proposalIndexOf(context.verified);
+  const problems = [
+    ...buckets.problems,
+    ...context.verified.entries.flatMap((entry) =>
+      entryMirrorProblems(entry, buckets.byChainSeq.get(entry.seq) ?? [], index),
+    ),
+  ];
+  if (problems.length === 0 && buckets.aheadRows === 0) {
+    yield* io.log(
+      `Mirror bijection verification OK: chain entries 1..${headSeq} \u2194 chain.* mirror rows match the mapping (one row per entry, plus the applied inner-op row of each completed approve — AUDIT_SPEC §3.4)`,
+    );
+    return 0;
+  }
+  if (buckets.aheadRows > 0) {
+    // Never say "OK" while unverified rows remain (do not paper over, with
+    // a successful exit, the shape where forged rows permanently sit inside
+    // the unverified allowance)
+    yield* io.logError(
+      `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run \`maruhi audit verify\` — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
+    );
+  }
+  for (const problem of problems) {
+    yield* io.logError(`Mirror verification failure: ${problem}`);
+  }
+  if (problems.length > 0) {
+    yield* io.logError(
+      `Mirror verification found ${countNoun(problems.length, "problem")}. The audit log is server-managed data (AUDIT_SPEC §6) and these mismatches are evidence of server-side tampering or corruption — the distributed chain (signed and verified) is the truth; do not trust the audit log`,
+    );
+  }
+  return 1;
+});

@@ -44,76 +44,72 @@ import { retryOnConflict } from "./retry.ts";
 
 const MAX_ATTEMPTS = 5;
 
-function ensureCreatable(
+const ensureCreatable = Effect.fn("env-create.ensureCreatable")(function* (
   verified: VerifiedProject,
   environmentId: string,
   signerUserId: string,
   signingKeyPair: SigningKeyPair,
-): Effect.Effect<ChainMember, CliError> {
-  return Effect.gen(function* () {
-    // Membership + the device's effective role / scope are shared with env
-    // rotate. Unless role is dropped here, a reader would finish DEK
-    // generation, HPKE wraps for every recipient, and signing, send the
-    // composite, and only then receive the server's generic 403
-    const { member } = yield* requireWritingMember({
-      verified,
-      environmentId,
-      signerUserId,
-      signingKeyPair,
-      operation: "create an environment",
-      forbidden:
-        "A reader cannot create environments (create_environment requires the member role or above — CRYPTO_SPEC §6.2)",
-      // Environment creation is only for a scope = all principal (§6.2 — a
-      // `listed` scope cannot contain an environment that does not exist
-      // yet; design record rulings E / K4). The server returns 403
-      // `insufficient-scope`
-      outOfScope:
-        "Only members whose environment scope is `all` can create environments (a listed scope cannot contain an environment that does not exist yet — CRYPTO_SPEC §6.2). Ask an owner or an all-scope admin to create it, or to widen your scope to all",
-    });
-    // environment_id is unique across the whole chain history (consensus
-    // rule duplicate-environment — CRYPTO_SPEC §6.2). The client detects it
-    // early too, rather than waiting for the server's 422
-    if (verified.state.environments.has(environmentId)) {
-      return yield* Effect.fail(
-        cliError(
-          `Environment ID ${environmentId} is already used on the chain (a create_environment entry was observed — IDs of deleted environments cannot be reused either). Use a different ID`,
-        ),
-      );
-    }
-    return member;
+): Effect.fn.Return<ChainMember, CliError> {
+  // Membership + the device's effective role / scope are shared with env
+  // rotate. Unless role is dropped here, a reader would finish DEK
+  // generation, HPKE wraps for every recipient, and signing, send the
+  // composite, and only then receive the server's generic 403
+  const { member } = yield* requireWritingMember({
+    verified,
+    environmentId,
+    signerUserId,
+    signingKeyPair,
+    operation: "create an environment",
+    forbidden:
+      "A reader cannot create environments (create_environment requires the member role or above — CRYPTO_SPEC §6.2)",
+    // Environment creation is only for a scope = all principal (§6.2 — a
+    // `listed` scope cannot contain an environment that does not exist
+    // yet; design record rulings E / K4). The server returns 403
+    // `insufficient-scope`
+    outOfScope:
+      "Only members whose environment scope is `all` can create environments (a listed scope cannot contain an environment that does not exist yet — CRYPTO_SPEC §6.2). Ask an owner or an all-scope admin to create it, or to widen your scope to all",
   });
-}
+  // environment_id is unique across the whole chain history (consensus
+  // rule duplicate-environment — CRYPTO_SPEC §6.2). The client detects it
+  // early too, rather than waiting for the server's 422
+  if (verified.state.environments.has(environmentId)) {
+    return yield* Effect.fail(
+      cliError(
+        `Environment ID ${environmentId} is already used on the chain (a create_environment entry was observed — IDs of deleted environments cannot be reused either). Use a different ID`,
+      ),
+    );
+  }
+  return member;
+});
 
 /** Signs a create_environment entry right after the current head (seq = head + 1). */
-function signCreateEntry(input: {
+const signCreateEntry = Effect.fn("env-create.signCreateEntry")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly dekCommitmentHex: string;
   readonly member: ChainMember;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<ChainEntry & { readonly op: "create_environment" }, CliError> {
-  return Effect.gen(function* () {
-    // Resolving the signing device and the signing itself live in one shared place (chain-append.ts — DK K13-12)
-    const signed = yield* signEntryAtHead({
-      verified: input.verified,
-      signerUserId: input.member.userId,
-      operation: {
-        op: "create_environment",
-        payload: {
-          environmentId: input.environmentId,
-          dekCommitmentHex: input.dekCommitmentHex,
-        },
+}): Effect.fn.Return<ChainEntry & { readonly op: "create_environment" }, CliError> {
+  // Resolving the signing device and the signing itself live in one shared place (chain-append.ts — DK K13-12)
+  const signed = yield* signEntryAtHead({
+    verified: input.verified,
+    signerUserId: input.member.userId,
+    operation: {
+      op: "create_environment",
+      payload: {
+        environmentId: input.environmentId,
+        dekCommitmentHex: input.dekCommitmentHex,
       },
-      signingKeyPair: input.signingKeyPair,
-      failureText: "Failed to sign the create_environment entry",
-    });
-    // Narrowing the op (signChainEntry preserves the input's op)
-    if (signed.op !== "create_environment") {
-      return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
-    }
-    return signed;
+    },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "Failed to sign the create_environment entry",
   });
-}
+  // Narrowing the op (signChainEntry preserves the input's op)
+  if (signed.op !== "create_environment") {
+    return yield* Effect.fail(cliError("Failed to sign the create_environment entry"));
+  }
+  return signed;
+});
 
 /** The CAS retry state: the verified view, own member row, and the epoch-1 wrap set. */
 interface CreateState {
@@ -144,7 +140,7 @@ interface AcceptedCreation {
  * generated); only after the confirmation passes is the v1 floor (empty
  * variable set + self-issued manifest) established and success reported.
  */
-export function envCreateOp(input: {
+export const envCreateOp = Effect.fn("env-create.envCreateOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -155,115 +151,113 @@ export function envCreateOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** The local floor (§6.3 — appending the intent and, after acceptance is confirmed, establishing the v1 floor). */
   readonly floor: FloorHandle;
-}): Effect.Effect<{ readonly currentEpoch: number; readonly memberCount: number }, CliError> {
-  return Effect.gen(function* () {
-    const member = yield* ensureCreatable(
-      input.verified,
-      input.environmentId,
-      input.signerUserId,
-      input.signingKeyPair,
-    );
-    // Normalization is performed by the client before signing (§4.2 / §12-1)
-    const name = input.name.normalize("NFC");
-    // Wrapped right after generation (from here on the DEK only flows as a Redacted)
-    const dek = Redacted.make(generateDek(), { label: "dek" });
-    const commitment = yield* cryptoEffect(() =>
-      computeDekCommitment({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          epoch: 1,
-        },
-        // Reason for unwrapping: the input to the commitment
-        // computation (a crypto boundary). The product is a hash
-        dek: Redacted.value(dek),
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to compute the DEK commitment")));
-    const deks = yield* buildWrapCompleteSet({
-      verified: input.verified,
-      environmentId: input.environmentId,
-      epoch: 1,
-      dek,
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-    });
-
-    const accepted = yield* retryOnConflict(
-      { verified: input.verified, member, deks },
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        // A CAS retry re-signs **both** the entry (prev changes) and the
-        // statement (declared head changes) (§12-4). The wrap set is
-        // rebuilt only when the member set changed
-        attempt: (state) => attemptCreate(input, state, { name, commitmentHex: commitment }),
-        // AuditHeadNotReady (503 — the bounded extension of the audit-head
-        // derived column is incomplete; AUDIT_SPEC §5.1) also advances via
-        // the same recovery (resync + re-sign + resend): even on a failure
-        // response the server's extension is saved, and the re-extension
-        // on resend only covers the remainder. The CLI's boundary
-        // checkpoint is not notarized (empty — ruling M-b), so this is
-        // unreachable from the current server, but it is classified
-        // retryable defensively as a contract-declared error
-        classify: (error) =>
-          error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
-            ? "head-conflict"
-            : null,
-        // Parent-head CAS failure (concurrent append): resync and re-sign
-        // the entry on the new head (§12-4). The wrap set is rebuilt only
-        // when the current member set changed. A definitive error
-        // surfacing in the resync (e.g. duplicate-environment from a
-        // concurrent creation) still surfaces after the final attempt,
-        // per retryOnConflict's convention
-        recover: (state) =>
-          Effect.gen(function* () {
-            // The resync is **extension-checked** (§6.3-2b): it closes the
-            // path where a server that returned ChainHeadConflict serves a
-            // signature-valid shortened or forked chain, and we re-sign
-            // the entry and rebuild the wrap set on a rolled-back member /
-            // grant state (the same discipline as env-rotate's CAS retry)
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            const rebuiltMember = yield* ensureCreatable(
-              resynced,
-              input.environmentId,
-              input.signerUserId,
-              input.signingKeyPair,
-            );
-            const rebuiltDeks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
-              ? state.deks
-              : yield* buildWrapCompleteSet({
-                  verified: resynced,
-                  environmentId: input.environmentId,
-                  epoch: 1,
-                  dek,
-                  signerUserId: input.signerUserId,
-                  signingKeyPair: input.signingKeyPair,
-                });
-            return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
-          }),
-        // AuditHeadNotReady circulates under the same classification, so
-        // the wording stays faithful to both causes (prevents mis-guidance
-        // if it ever becomes reachable)
-        exhaustedMessage: `The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
+}): Effect.fn.Return<{ readonly currentEpoch: number; readonly memberCount: number }, CliError> {
+  const member = yield* ensureCreatable(
+    input.verified,
+    input.environmentId,
+    input.signerUserId,
+    input.signingKeyPair,
+  );
+  // Normalization is performed by the client before signing (§4.2 / §12-1)
+  const name = input.name.normalize("NFC");
+  // Wrapped right after generation (from here on the DEK only flows as a Redacted)
+  const dek = Redacted.make(generateDek(), { label: "dek" });
+  const commitment = yield* cryptoEffect(() =>
+    computeDekCommitment({
+      context: {
+        suite: SUITE_ID,
+        projectId: input.verified.projectId,
+        environmentId: input.environmentId,
+        epoch: 1,
       },
-    );
-    // The floor is established and success is reported only after the effect confirmation (§12-10 (3)) passes
-    yield* confirmCreation(input, accepted, commitment);
-    // The current epoch right after creation is **structurally 1**
-    // (§12-4 — the bundled entry is create_environment, and the
-    // confirmation above backed it with the chain-derived value). The
-    // member count is the size of **the wrap set actually registered**
-    // (when rebuilt across a CAS retry, it can differ from the caller's
-    // stale view's member count)
-    return { currentEpoch: 1, memberCount: accepted.state.deks.length };
+      // Reason for unwrapping: the input to the commitment
+      // computation (a crypto boundary). The product is a hash
+      dek: Redacted.value(dek),
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to compute the DEK commitment")));
+  const deks = yield* buildWrapCompleteSet({
+    verified: input.verified,
+    environmentId: input.environmentId,
+    epoch: 1,
+    dek,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
   });
-}
+
+  const accepted = yield* retryOnConflict(
+    { verified: input.verified, member, deks },
+    {
+      maxAttempts: MAX_ATTEMPTS,
+      // A CAS retry re-signs **both** the entry (prev changes) and the
+      // statement (declared head changes) (§12-4). The wrap set is
+      // rebuilt only when the member set changed
+      attempt: (state) => attemptCreate(input, state, { name, commitmentHex: commitment }),
+      // AuditHeadNotReady (503 — the bounded extension of the audit-head
+      // derived column is incomplete; AUDIT_SPEC §5.1) also advances via
+      // the same recovery (resync + re-sign + resend): even on a failure
+      // response the server's extension is saved, and the re-extension
+      // on resend only covers the remainder. The CLI's boundary
+      // checkpoint is not notarized (empty — ruling M-b), so this is
+      // unreachable from the current server, but it is classified
+      // retryable defensively as a contract-declared error
+      classify: (error) =>
+        error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
+          ? "head-conflict"
+          : null,
+      // Parent-head CAS failure (concurrent append): resync and re-sign
+      // the entry on the new head (§12-4). The wrap set is rebuilt only
+      // when the current member set changed. A definitive error
+      // surfacing in the resync (e.g. duplicate-environment from a
+      // concurrent creation) still surfaces after the final attempt,
+      // per retryOnConflict's convention
+      recover: (state) =>
+        Effect.gen(function* () {
+          // The resync is **extension-checked** (§6.3-2b): it closes the
+          // path where a server that returned ChainHeadConflict serves a
+          // signature-valid shortened or forked chain, and we re-sign
+          // the entry and rebuild the wrap set on a rolled-back member /
+          // grant state (the same discipline as env-rotate's CAS retry)
+          const resynced = yield* resyncExtended(input.resync, state.verified);
+          const rebuiltMember = yield* ensureCreatable(
+            resynced,
+            input.environmentId,
+            input.signerUserId,
+            input.signingKeyPair,
+          );
+          const rebuiltDeks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
+            ? state.deks
+            : yield* buildWrapCompleteSet({
+                verified: resynced,
+                environmentId: input.environmentId,
+                epoch: 1,
+                dek,
+                signerUserId: input.signerUserId,
+                signingKeyPair: input.signingKeyPair,
+              });
+          return { verified: resynced, member: rebuiltMember, deks: rebuiltDeks };
+        }),
+      // AuditHeadNotReady circulates under the same classification, so
+      // the wording stays faithful to both causes (prevents mis-guidance
+      // if it ever becomes reachable)
+      exhaustedMessage: `The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
+    },
+  );
+  // The floor is established and success is reported only after the effect confirmation (§12-10 (3)) passes
+  yield* confirmCreation(input, accepted, commitment);
+  // The current epoch right after creation is **structurally 1**
+  // (§12-4 — the bundled entry is create_environment, and the
+  // confirmation above backed it with the chain-derived value). The
+  // member count is the size of **the wrap set actually registered**
+  // (when rebuilt across a CAS retry, it can differ from the caller's
+  // stale view's member count)
+  return { currentEpoch: 1, memberCount: accepted.state.deks.length };
+});
 
 /** The typed environments.create call's error union (endpoint errors | HttpClientError | SchemaError). */
 type EnvironmentsCreateError = Effect.Error<ReturnType<MaruhiClient["environments"]["create"]>>;
 
 /** One attempt's worth of signing (entry, statement, manifest) + intent + sending. */
-function attemptCreate(
+const attemptCreate = Effect.fn("env-create.attemptCreate")(function* (
   input: {
     readonly client: MaruhiClient;
     readonly environmentId: EnvironmentId;
@@ -273,122 +267,120 @@ function attemptCreate(
   },
   state: CreateState,
   material: { readonly name: string; readonly commitmentHex: string },
-): Effect.Effect<AcceptedCreation, CliError | EnvironmentsCreateError> {
-  return Effect.gen(function* () {
-    const entry = yield* signCreateEntry({
-      verified: state.verified,
-      environmentId: input.environmentId,
-      dekCommitmentHex: material.commitmentHex,
-      member: state.member,
-      signingKeyPair: input.signingKeyPair,
-    });
-    // The declared head is the current head before appending (= the
-    // bundled entry's prev — §12-4). Shared implementation
-    // (meta-statement.ts) — the only difference from push.ts is the target
-    const { statement, metaSigHashHex } = yield* signCreateStatement({
-      verified: state.verified,
-      environmentId: input.environmentId,
-      target: { kind: "environment" },
-      name: material.name,
-      authorUserId: input.signerUserId,
-      signingKey: input.signingKeyPair.privateKey,
-    });
-    // The bundled manifest (§12-4): manifestVersion 1, empty variable
-    // set, epoch 1. envMeta is the bundled statement itself. A CAS retry
-    // re-signs all of the entry, statement, and manifest
-    const signedManifest = yield* signNextManifest({
-      verified: state.verified,
-      environmentId: input.environmentId,
-      epoch: 1,
-      previous: null,
-      entries: [],
-      envMeta: { metaVersion: 1, sigHashHex: metaSigHashHex },
-      issuerUserId: input.signerUserId,
-      signingKey: input.signingKeyPair.privateKey,
-      chainHead: {
-        seq: state.verified.state.headSeq,
-        hashHex: state.verified.state.headHashHex,
-      },
-    });
-    // Narrowing to the creation composite's wire shape (manifestVersion 1, empty prev)
-    const manifest = signedManifest.manifest;
-    if (manifest.manifestVersion !== 1 || manifest.prevManifestSigHashHex !== "") {
-      return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
-    }
-    // The boundary checkpoint (§12-4): a single tuple of this environment
-    // (epoch 1, manifestVersion 1, the bundled manifest's hash, the empty
-    // variable set's values_digest). A CAS retry re-signs it along with
-    // the other bundled items
-    const checkpoint = yield* signBoundaryCheckpoint({
-      compositeEntry: entry,
-      environmentId: input.environmentId,
-      epoch: 1,
-      manifestVersion: 1,
-      manifestSigHashHex: signedManifest.manifestSigHashHex,
-      values: [],
-      verified: state.verified,
-      member: state.member,
-      deviceFingerprintHex: entry.actor.keyFingerprintHex,
-      signingKey: input.signingKeyPair.privateKey,
-    });
-    // journal-before-send (3-F): append the intent before sending (if
-    // persisting fails, do not send — fail-closed). What a lost response
-    // or a crash can lose is not "the belief that it succeeded" but "the
-    // record of the confirmation duty"
-    const intentId = yield* input.floor.appendIntent({
-      op: "create_environment",
-      environmentId: input.environmentId,
-      epoch: 1,
-      dekCommitmentHex: material.commitmentHex,
-      variableId: null,
-      manifestVersion: 1,
-      manifestSigHashHex: signedManifest.manifestSigHashHex,
-      declaredHead: {
-        seq: state.verified.state.headSeq,
-        hashHex: state.verified.state.headHashHex,
-      },
-    });
-    yield* input.client.environments
-      .create({
-        params: { projectId: state.verified.projectId },
-        payload: {
-          parentHeadHashHex: state.verified.state.headHashHex,
-          entry,
-          statement,
-          deks: state.deks,
-          manifest: {
-            ...manifest,
-            manifestVersion: 1,
-            prevManifestSigHashHex: "",
-          },
-          checkpoint,
-        },
-      })
-      .pipe(
-        // A refusal with the server's own error body (including CAS 409)
-        // = the effect did not occur (settled) — close the intent
-        // (floor-check.ts's shared callback)
-        Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
-      );
-    return {
-      state,
-      manifest: {
-        manifestVersion: 1,
-        epoch: 1,
-        manifestSigHashHex: signedManifest.manifestSigHashHex,
-      },
-      metaSigHashHex,
-      intentId,
-    };
+): Effect.fn.Return<AcceptedCreation, CliError | EnvironmentsCreateError> {
+  const entry = yield* signCreateEntry({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    dekCommitmentHex: material.commitmentHex,
+    member: state.member,
+    signingKeyPair: input.signingKeyPair,
   });
-}
+  // The declared head is the current head before appending (= the
+  // bundled entry's prev — §12-4). Shared implementation
+  // (meta-statement.ts) — the only difference from push.ts is the target
+  const { statement, metaSigHashHex } = yield* signCreateStatement({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    target: { kind: "environment" },
+    name: material.name,
+    authorUserId: input.signerUserId,
+    signingKey: input.signingKeyPair.privateKey,
+  });
+  // The bundled manifest (§12-4): manifestVersion 1, empty variable
+  // set, epoch 1. envMeta is the bundled statement itself. A CAS retry
+  // re-signs all of the entry, statement, and manifest
+  const signedManifest = yield* signNextManifest({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    epoch: 1,
+    previous: null,
+    entries: [],
+    envMeta: { metaVersion: 1, sigHashHex: metaSigHashHex },
+    issuerUserId: input.signerUserId,
+    signingKey: input.signingKeyPair.privateKey,
+    chainHead: {
+      seq: state.verified.state.headSeq,
+      hashHex: state.verified.state.headHashHex,
+    },
+  });
+  // Narrowing to the creation composite's wire shape (manifestVersion 1, empty prev)
+  const manifest = signedManifest.manifest;
+  if (manifest.manifestVersion !== 1 || manifest.prevManifestSigHashHex !== "") {
+    return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
+  }
+  // The boundary checkpoint (§12-4): a single tuple of this environment
+  // (epoch 1, manifestVersion 1, the bundled manifest's hash, the empty
+  // variable set's values_digest). A CAS retry re-signs it along with
+  // the other bundled items
+  const checkpoint = yield* signBoundaryCheckpoint({
+    compositeEntry: entry,
+    environmentId: input.environmentId,
+    epoch: 1,
+    manifestVersion: 1,
+    manifestSigHashHex: signedManifest.manifestSigHashHex,
+    values: [],
+    verified: state.verified,
+    member: state.member,
+    deviceFingerprintHex: entry.actor.keyFingerprintHex,
+    signingKey: input.signingKeyPair.privateKey,
+  });
+  // journal-before-send (3-F): append the intent before sending (if
+  // persisting fails, do not send — fail-closed). What a lost response
+  // or a crash can lose is not "the belief that it succeeded" but "the
+  // record of the confirmation duty"
+  const intentId = yield* input.floor.appendIntent({
+    op: "create_environment",
+    environmentId: input.environmentId,
+    epoch: 1,
+    dekCommitmentHex: material.commitmentHex,
+    variableId: null,
+    manifestVersion: 1,
+    manifestSigHashHex: signedManifest.manifestSigHashHex,
+    declaredHead: {
+      seq: state.verified.state.headSeq,
+      hashHex: state.verified.state.headHashHex,
+    },
+  });
+  yield* input.client.environments
+    .create({
+      params: { projectId: state.verified.projectId },
+      payload: {
+        parentHeadHashHex: state.verified.state.headHashHex,
+        entry,
+        statement,
+        deks: state.deks,
+        manifest: {
+          ...manifest,
+          manifestVersion: 1,
+          prevManifestSigHashHex: "",
+        },
+        checkpoint,
+      },
+    })
+    .pipe(
+      // A refusal with the server's own error body (including CAS 409)
+      // = the effect did not occur (settled) — close the intent
+      // (floor-check.ts's shared callback)
+      Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
+    );
+  return {
+    state,
+    manifest: {
+      manifestVersion: 1,
+      epoch: 1,
+      manifestSigHashHex: signedManifest.manifestSigHashHex,
+    },
+    metaSigHashHex,
+    intentId,
+  };
+});
 
 /**
  * Post-acceptance effect confirmation (§12-10 (3) — chain sync) and
  * establishing the v1 floor. Until the confirmation passes, the floor is
  * not advanced and success is not reported.
  */
-function confirmCreation(
+const confirmCreation = Effect.fn("env-create.confirmCreation")(function* (
   input: {
     readonly environmentId: EnvironmentId;
     readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -396,53 +388,51 @@ function confirmCreation(
   },
   accepted: AcceptedCreation,
   commitmentHex: string,
-): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const view = yield* resyncExtended(input.resync, accepted.state.verified).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `The environment creation was accepted (2xx), but the chain sync for the post-acceptance confirmation failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}. Environment ${input.environmentId} may already exist — re-run any command against this project after restoring connectivity; the recorded intent will be reconciled against the chain`,
-        ),
+): Effect.fn.Return<void, CliError> {
+  const view = yield* resyncExtended(input.resync, accepted.state.verified).pipe(
+    Effect.mapError((error) =>
+      cliError(
+        `The environment creation was accepted (2xx), but the chain sync for the post-acceptance confirmation failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}. Environment ${input.environmentId} may already exist — re-run any command against this project after restoring connectivity; the recorded intent will be reconciled against the chain`,
+      ),
+    ),
+  );
+  const environment = view.state.environments.get(input.environmentId);
+  if (environment === undefined || environment.dekCommitments.get(1) !== commitmentHex) {
+    // A 2xx yet the verified chain lacks own entry / carries a creation
+    // for a different DEK = the server's response contradicts the chain
+    // (the effect is unconfirmable)
+    return yield* Effect.fail(
+      cliError(
+        `The environment creation was accepted (2xx), but the verified chain does not show this run's create_environment entry for ${input.environmentId} (the epoch-1 DEK commitment does not match the generated DEK's). The server response contradicts the chain — treating the creation as unconfirmed (AUTH_SPEC §12-10 (3))`,
       ),
     );
-    const environment = view.state.environments.get(input.environmentId);
-    if (environment === undefined || environment.dekCommitments.get(1) !== commitmentHex) {
-      // A 2xx yet the verified chain lacks own entry / carries a creation
-      // for a different DEK = the server's response contradicts the chain
-      // (the effect is unconfirmable)
-      return yield* Effect.fail(
-        cliError(
-          `The environment creation was accepted (2xx), but the verified chain does not show this run's create_environment entry for ${input.environmentId} (the epoch-1 DEK commitment does not match the generated DEK's). The server response contradicts the chain — treating the creation as unconfirmed (AUTH_SPEC §12-10 (3))`,
-        ),
-      );
-    }
-    // Confirmed — establishing the v1 floor: the environment floor of the
-    // empty variable set. The creation composite establishes the empty
-    // variable set at epoch 1 (a variable cannot exist before its
-    // environment), so the rule-(c) pull baseline can be established at 1
-    // atomically with the value-floor coverage (empty).
-    // journal-before-release: persisting the floor precedes reporting
-    // success
-    yield* input.floor
-      .commitPull(
-        {
-          pullEpoch: 1,
-          observedEpoch: 1,
-          metaVersion: 1,
-          metaSigHashHex: accepted.metaSigHashHex,
-          manifest: accepted.manifest,
-          variables: {},
-        },
-        { seq: view.state.headSeq, hashHex: view.state.headHashHex },
-      )
-      .pipe(
-        Effect.mapError((error) =>
-          cliError(`The environment was created and confirmed on the chain, but ${error.message}`),
-        ),
-      );
-    // A failure to append the resolution may be swallowed: an intent left
-    // open is the safe direction (the next run's reconciliation just
-    // redoes the same decision)
-    yield* Effect.ignore(input.floor.resolveIntent(accepted.intentId, "accepted"));
-  });
-}
+  }
+  // Confirmed — establishing the v1 floor: the environment floor of the
+  // empty variable set. The creation composite establishes the empty
+  // variable set at epoch 1 (a variable cannot exist before its
+  // environment), so the rule-(c) pull baseline can be established at 1
+  // atomically with the value-floor coverage (empty).
+  // journal-before-release: persisting the floor precedes reporting
+  // success
+  yield* input.floor
+    .commitPull(
+      {
+        pullEpoch: 1,
+        observedEpoch: 1,
+        metaVersion: 1,
+        metaSigHashHex: accepted.metaSigHashHex,
+        manifest: accepted.manifest,
+        variables: {},
+      },
+      { seq: view.state.headSeq, hashHex: view.state.headHashHex },
+    )
+    .pipe(
+      Effect.mapError((error) =>
+        cliError(`The environment was created and confirmed on the chain, but ${error.message}`),
+      ),
+    );
+  // A failure to append the resolution may be swallowed: an intent left
+  // open is the safe direction (the next run's reconciliation just
+  // redoes the same decision)
+  yield* Effect.ignore(input.floor.resolveIntent(accepted.intentId, "accepted"));
+});

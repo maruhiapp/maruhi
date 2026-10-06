@@ -87,30 +87,28 @@ function isOpenableUrl(raw: string): boolean {
  * complete via display + polling — this one fallback path covers every
  * environment.
  */
-function maybeOpenBrowser(
+const maybeOpenBrowser = Effect.fn("login.maybeOpenBrowser")(function* (
   io: CliIoShape,
   verificationUrl: string,
-): Effect.Effect<void, never, Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const agent = yield* AgentProfileRef;
-    const stdio = yield* Stdio.Stdio;
-    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (agent.isAgent || !stdinIsTerminal || !stdoutIsTerminal || !isOpenableUrl(verificationUrl)) {
-      return;
-    }
-    const opened = yield* io.openBrowser(verificationUrl);
-    // The guidance goes to stderr (ruling D-2: interactive guidance takes
-    // the same path as prompts. stdout carries only the login's result).
-    // Not silent when the open fails either — steer to the URL already
-    // displayed
-    yield* io.logError(
-      opened
-        ? "Opened your browser. If nothing appeared, open the URL above manually"
-        : "Could not open a browser automatically. Open the URL above manually",
-    );
-  });
-}
+): Effect.fn.Return<void, never, Stdio.Stdio> {
+  const agent = yield* AgentProfileRef;
+  const stdio = yield* Stdio.Stdio;
+  const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+  const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+  if (agent.isAgent || !stdinIsTerminal || !stdoutIsTerminal || !isOpenableUrl(verificationUrl)) {
+    return;
+  }
+  const opened = yield* io.openBrowser(verificationUrl);
+  // The guidance goes to stderr (ruling D-2: interactive guidance takes
+  // the same path as prompts. stdout carries only the login's result).
+  // Not silent when the open fails either — steer to the URL already
+  // displayed
+  yield* io.logError(
+    opened
+      ? "Opened your browser. If nothing appeared, open the URL above manually"
+      : "Could not open a browser automatically. Open the URL above manually",
+  );
+});
 
 /** Clamps expiresInSeconds into (0, max] (non-numeric / non-finite / non-positive → the default). */
 function clampExpires(seconds: number): number {
@@ -158,31 +156,29 @@ function flowExpiredMessage(window: string): string {
  *   process.* directly). A non-interactive environment proceeds with
  *   just the displayed guidance (no prompt suspends a CI / agent login)
  */
-function signupPolicyPreflight(
+const signupPolicyPreflight = Effect.fn("login.signupPolicyPreflight")(function* (
   client: MaruhiClient,
   io: CliIoShape,
-): Effect.Effect<void, CliError, Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const config = yield* client.auth.authConfig({}).pipe(Effect.option);
-    const policy = Option.isNone(config) ? undefined : config.value.signupPolicy;
-    if (policy !== "invite" && policy !== "closed") {
-      return;
-    }
-    // The guidance goes to stderr (ruling D-2)
-    yield* io.logError(
-      policy === "invite"
-        ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
-        : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
-    );
-    // On a non-interactive environment proceed without the confirmation
-    // (the guard's purpose is blocking a well-meaning waste and the
-    // guidance UX — it is not authorization. Without an account the
-    // server-side guidance page stops them)
-    if (yield* interactiveHumanTerminal) {
-      yield* confirmExistingAccount(io);
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, Stdio.Stdio> {
+  const config = yield* client.auth.authConfig({}).pipe(Effect.option);
+  const policy = Option.isNone(config) ? undefined : config.value.signupPolicy;
+  if (policy !== "invite" && policy !== "closed") {
+    return;
+  }
+  // The guidance goes to stderr (ruling D-2)
+  yield* io.logError(
+    policy === "invite"
+      ? "This server is invite-only: CLI sign-in works only for existing accounts. If you don't have a maruhi account yet, sign up in your browser first using your sign-up invite link, then run `maruhi login` again"
+      : "This server is not accepting new sign-ups: CLI sign-in works only for existing accounts",
+  );
+  // On a non-interactive environment proceed without the confirmation
+  // (the guard's purpose is blocking a well-meaning waste and the
+  // guidance UX — it is not authorization. Without an account the
+  // server-side guidance page stops them)
+  if (yield* interactiveHumanTerminal) {
+    yield* confirmExistingAccount(io);
+  }
+});
 
 /** Whether interactive terminal × non-agent (reusing ADR-0016 decision 7's existing services). */
 const interactiveHumanTerminal: Effect.Effect<boolean, never, Stdio.Stdio> = Effect.gen(
@@ -196,21 +192,21 @@ const interactiveHumanTerminal: Effect.Effect<boolean, never, Stdio.Stdio> = Eff
 );
 
 /** The self-report confirmation of holding an existing account (no is the default — stops a would-be new user before start). */
-function confirmExistingAccount(io: CliIoShape): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const answer = yield* io.promptLine({
-      prompt: "Do you already have a maruhi account on this server? [y/N] ",
-    });
-    const normalized = answer.trim().toLowerCase();
-    if (normalized !== "y" && normalized !== "yes") {
-      return yield* Effect.fail(
-        cliError(
-          "Aborted before starting the sign-in. Sign up in the browser first, then run `maruhi login` again",
-        ),
-      );
-    }
+const confirmExistingAccount = Effect.fn("login.confirmExistingAccount")(function* (
+  io: CliIoShape,
+): Effect.fn.Return<void, CliError> {
+  const answer = yield* io.promptLine({
+    prompt: "Do you already have a maruhi account on this server? [y/N] ",
   });
-}
+  const normalized = answer.trim().toLowerCase();
+  if (normalized !== "y" && normalized !== "yes") {
+    return yield* Effect.fail(
+      cliError(
+        "Aborted before starting the sign-in. Sign up in the browser first, then run `maruhi login` again",
+      ),
+    );
+  }
+});
 
 /** One poll's outcome (a rate limit is not a failure — it adjusts the next interval). */
 type PollOutcome =
@@ -260,7 +256,7 @@ function pollOnce(
 }
 
 /** `maruhi login`: start → browser approval → poll → keychain (AUTH_SPEC §4). */
-export function loginOp(input: {
+export const loginOp = Effect.fn("login.loginOp")(function* (input: {
   readonly origin: string;
   readonly tokenName: string;
   /**
@@ -282,179 +278,174 @@ export function loginOp(input: {
   readonly tokenNameIsDefault: boolean;
   /** The explicit TTL (days. AUTH_SPEC §6 — W3a. Omitted = the server default of 90 days). */
   readonly expiresInDays?: number;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const keychain = yield* Keychain;
-    const client = yield* makeApiClient({ baseUrl: input.origin });
+}): Effect.fn.Return<void, CliError, Keychain | CliIo | HttpClient.HttpClient | Stdio.Stdio> {
+  const io = yield* CliIo;
+  const keychain = yield* Keychain;
+  const client = yield* makeApiClient({ baseUrl: input.origin });
 
-    // The pre-flight fail-fast (AUTH_SPEC §3 — the signupPolicy advisory check. Before start)
-    yield* signupPolicyPreflight(client, io);
+  // The pre-flight fail-fast (AUTH_SPEC §3 — the signupPolicy advisory check. Before start)
+  yield* signupPolicyPreflight(client, io);
 
-    // Starting (§4-1 (1) — the server records nothing. The flow's credentials are only the two identifiers obtained here)
-    const started = yield* client.authCli
-      .cliStart({
-        payload: {
-          tokenName: input.tokenName,
-          ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
-        },
-      })
-      .pipe(Effect.mapError(toCliError));
+  // Starting (§4-1 (1) — the server records nothing. The flow's credentials are only the two identifiers obtained here)
+  const started = yield* client.authCli
+    .cliStart({
+      payload: {
+        tokenName: input.tokenName,
+        ...(input.expiresInDays === undefined ? {} : { expiresInDays: input.expiresInDays }),
+      },
+    })
+    .pipe(Effect.mapError(toCliError));
 
-    // The validity window is derived from the server's response (ruling D-1 — the same clamped value the deadline judgment uses)
-    const expiresInSeconds = clampExpires(started.expiresInSeconds);
-    const window = describeWindow(expiresInSeconds);
-    // Interactive guidance goes to stderr (ruling D-2: the same path as
-    // prompts. Visible even under `maruhi login > file`). Only the
-    // login's **result** goes to stdout. verificationUrl / userCode are
-    // server-sourced external strings — no control characters / ANSI are
-    // streamed raw to the terminal (neutralized via displayText). The
-    // vocabulary matches the approval page (DP4) (cli-pages.ts):
-    // "Confirmation code" / "approve only on a match"
-    yield* io.logError("Open this URL in your browser to approve the sign-in:");
-    yield* io.logError("");
-    yield* io.logError(`    ${displayText(started.verificationUrl)}`);
-    yield* io.logError("");
-    yield* io.logError(`Confirmation code: ${displayText(started.userCode)}`);
-    yield* io.logError(
-      "Approve only if the browser shows this exact code (it protects you against phishing)",
-    );
-    yield* io.logError(`This request expires in ${window}`);
-    yield* io.logError("");
+  // The validity window is derived from the server's response (ruling D-1 — the same clamped value the deadline judgment uses)
+  const expiresInSeconds = clampExpires(started.expiresInSeconds);
+  const window = describeWindow(expiresInSeconds);
+  // Interactive guidance goes to stderr (ruling D-2: the same path as
+  // prompts. Visible even under `maruhi login > file`). Only the
+  // login's **result** goes to stdout. verificationUrl / userCode are
+  // server-sourced external strings — no control characters / ANSI are
+  // streamed raw to the terminal (neutralized via displayText). The
+  // vocabulary matches the approval page (DP4) (cli-pages.ts):
+  // "Confirmation code" / "approve only on a match"
+  yield* io.logError("Open this URL in your browser to approve the sign-in:");
+  yield* io.logError("");
+  yield* io.logError(`    ${displayText(started.verificationUrl)}`);
+  yield* io.logError("");
+  yield* io.logError(`Confirmation code: ${displayText(started.userCode)}`);
+  yield* io.logError(
+    "Approve only if the browser shows this exact code (it protects you against phishing)",
+  );
+  yield* io.logError(`This request expires in ${window}`);
+  yield* io.logError("");
 
-    yield* maybeOpenBrowser(io, started.verificationUrl);
-    yield* io.logError("Waiting for approval\u2026");
+  yield* maybeOpenBrowser(io, started.verificationUrl);
+  yield* io.logError("Waiting for approval\u2026");
 
-    // Acquisition (§4-1 (5)). The deadline is checked **before** each
-    // wait (when the next polling time passes it the flow expires
-    // during the wait — in the step's metadata `now`, the same Clock
-    // the sleep runs on). The server may raise the interval per
-    // response (slow_down / 429), so the wait is computed in the
-    // schedule's own state from the last poll's outcome — `scheduleFrom`
-    // runs the step once before the first poll, which is exactly this
-    // flow's leading sleep
-    const deadlineMs = (yield* Clock.currentTimeMillis) + expiresInSeconds * 1000;
-    const initialInterval = clampInterval(
-      started.pollIntervalSeconds,
-      MIN_CLI_POLL_INTERVAL_SECONDS,
-    );
-    // The step's first input — a synthetic pre-poll state for the leading
-    // wait (a real poll's outcome feeds the next step from then on)
-    const pendingOutcome: PollOutcome = { kind: "pending" };
-    const awaitingApproval: Schedule.Schedule<PollOutcome, PollOutcome> = Schedule.while(
-      Schedule.fromStepWithMetadata(
-        Effect.sync(() => {
-          let intervalSeconds = initialInterval;
-          return ({
-            input: lastOutcome,
-            now,
-          }: Schedule.InputMetadata<PollOutcome>): Pull.Pull<
-            [PollOutcome, Duration.Duration],
-            Cause.Done<PollOutcome>,
-            PollOutcome
-          > => {
-            if (lastOutcome.kind === "backoff") {
-              intervalSeconds = clampInterval(lastOutcome.retryAfterSeconds, intervalSeconds);
-            }
-            return now + intervalSeconds * 1000 > deadlineMs
-              ? Cause.done(lastOutcome)
-              : Effect.succeed<[PollOutcome, Duration.Duration]>([
-                  lastOutcome,
-                  Duration.seconds(intervalSeconds),
-                ]);
-          };
-        }),
-      ),
-      ({ input: polled }) => polled.kind !== "approved",
-    );
-    const outcome = yield* pollOnce(client, started.flowId, started.flowToken, window).pipe(
-      Effect.scheduleFrom<PollOutcome, PollOutcome, never, never>(pendingOutcome, awaitingApproval),
-    );
-    if (outcome.kind !== "approved") {
-      return yield* Effect.fail(cliError(flowExpiredMessage(window)));
-    }
-    const approved = outcome;
+  // Acquisition (§4-1 (5)). The deadline is checked **before** each
+  // wait (when the next polling time passes it the flow expires
+  // during the wait — in the step's metadata `now`, the same Clock
+  // the sleep runs on). The server may raise the interval per
+  // response (slow_down / 429), so the wait is computed in the
+  // schedule's own state from the last poll's outcome — `scheduleFrom`
+  // runs the step once before the first poll, which is exactly this
+  // flow's leading sleep
+  const deadlineMs = (yield* Clock.currentTimeMillis) + expiresInSeconds * 1000;
+  const initialInterval = clampInterval(started.pollIntervalSeconds, MIN_CLI_POLL_INTERVAL_SECONDS);
+  // The step's first input — a synthetic pre-poll state for the leading
+  // wait (a real poll's outcome feeds the next step from then on)
+  const pendingOutcome: PollOutcome = { kind: "pending" };
+  const awaitingApproval: Schedule.Schedule<PollOutcome, PollOutcome> = Schedule.while(
+    Schedule.fromStepWithMetadata(
+      Effect.sync(() => {
+        let intervalSeconds = initialInterval;
+        return ({
+          input: lastOutcome,
+          now,
+        }: Schedule.InputMetadata<PollOutcome>): Pull.Pull<
+          [PollOutcome, Duration.Duration],
+          Cause.Done<PollOutcome>,
+          PollOutcome
+        > => {
+          if (lastOutcome.kind === "backoff") {
+            intervalSeconds = clampInterval(lastOutcome.retryAfterSeconds, intervalSeconds);
+          }
+          return now + intervalSeconds * 1000 > deadlineMs
+            ? Cause.done(lastOutcome)
+            : Effect.succeed<[PollOutcome, Duration.Duration]>([
+                lastOutcome,
+                Duration.seconds(intervalSeconds),
+              ]);
+        };
+      }),
+    ),
+    ({ input: polled }) => polled.kind !== "approved",
+  );
+  const outcome = yield* pollOnce(client, started.flowId, started.flowToken, window).pipe(
+    Effect.scheduleFrom<PollOutcome, PollOutcome, never, never>(pendingOutcome, awaitingApproval),
+  );
+  if (outcome.kind !== "approved") {
+    return yield* Effect.fail(cliError(flowExpiredMessage(window)));
+  }
+  const approved = outcome;
 
-    const issuedToken = Redacted.make(approved.token, { label: "maruhi-token" });
-    const record: StoredToken = {
-      token: issuedToken,
-      userId: approved.userId,
-      tokenId: approved.tokenId,
-      // The local judgment material for the approaching-expiry advance warning (ruling CL)
-      expiresAtMs: approved.expiresAtMs,
-    };
-    // Never use JSON.stringify(record) — Redacted.toJSON() returns a
-    // redaction and "<redacted>" would be written to the keychain
-    // (keychain.ts's note)
-    yield* keychain.set(tokenEntryName(input.origin), serializeStoredToken(record)).pipe(
-      // If it cannot be saved, do not orphan the issued token: attempt
-      // the server-side revocation before failing (the original error =
-      // the keychain's failure takes precedence, while the revocation's
-      // success or failure is reported accurately — never unconditionally
-      // claim a successful revocation)
-      Effect.catch((setError) =>
-        Effect.gen(function* () {
-          const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
-          const revoked = yield* authed.auth.revokeToken({}).pipe(
-            Effect.map(() => true),
-            Effect.orElseSucceed(() => false),
-          );
-          return yield* Effect.fail(
-            cliError(
-              revoked
-                ? `${setError.message} (the token just issued has been revoked on the server)`
-                : `${setError.message} (revoking the issued token also failed; a successful re-login with the same token name (${input.tokenName}) will revoke it automatically by rotation)`,
-            ),
-          );
-        }),
-      ),
-    );
+  const issuedToken = Redacted.make(approved.token, { label: "maruhi-token" });
+  const record: StoredToken = {
+    token: issuedToken,
+    userId: approved.userId,
+    tokenId: approved.tokenId,
+    // The local judgment material for the approaching-expiry advance warning (ruling CL)
+    expiresAtMs: approved.expiresAtMs,
+  };
+  // Never use JSON.stringify(record) — Redacted.toJSON() returns a
+  // redaction and "<redacted>" would be written to the keychain
+  // (keychain.ts's note)
+  yield* keychain.set(tokenEntryName(input.origin), serializeStoredToken(record)).pipe(
+    // If it cannot be saved, do not orphan the issued token: attempt
+    // the server-side revocation before failing (the original error =
+    // the keychain's failure takes precedence, while the revocation's
+    // success or failure is reported accurately — never unconditionally
+    // claim a successful revocation)
+    Effect.catch((setError) =>
+      Effect.gen(function* () {
+        const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
+        const revoked = yield* authed.auth.revokeToken({}).pipe(
+          Effect.map(() => true),
+          Effect.orElseSucceed(() => false),
+        );
+        return yield* Effect.fail(
+          cliError(
+            revoked
+              ? `${setError.message} (the token just issued has been revoked on the server)`
+              : `${setError.message} (revoking the issued token also failed; a successful re-login with the same token name (${input.tokenName}) will revoke it automatically by rotation)`,
+          ),
+        );
+      }),
+    ),
+  );
+  yield* io.log(
+    `Signed in as ${displayText(approved.userId)}. The token is stored in ${describeStore(keychain.kind)}`,
+  );
+  if (input.showToken) {
+    // The raw value's only display point (AUTH_SPEC §6 "one terminal
+    // display at issuance" — ruling CK). It is unwrapped only for this
+    // display, and the value flows nowhere besides the save above (the
+    // keychain). It presumes the caller's value-display gate (the
+    // fail-closed two layers) passed; on anything but an interactive
+    // terminal (pipes / CI / agents) this point is never reached.
+    // token is an unconstrained Schema.String on the wire (the server
+    // may choose every byte), so emit it neutralized — but since the
+    // value is copied, use escapeText (an allow-list — an honest Base62
+    // value passes through, an injection becomes a visible escape
+    // sequence), not displayText (a destructive replacement to U+FFFD)
+    yield* io.log("");
+    yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
+    yield* io.log("");
     yield* io.log(
-      `Signed in as ${displayText(approved.userId)}. The token is stored in ${describeStore(keychain.kind)}`,
+      "This value is not shown again (signing in again rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
     );
-    if (input.showToken) {
-      // The raw value's only display point (AUTH_SPEC §6 "one terminal
-      // display at issuance" — ruling CK). It is unwrapped only for this
-      // display, and the value flows nowhere besides the save above (the
-      // keychain). It presumes the caller's value-display gate (the
-      // fail-closed two layers) passed; on anything but an interactive
-      // terminal (pipes / CI / agents) this point is never reached.
-      // token is an unconstrained Schema.String on the wire (the server
-      // may choose every byte), so emit it neutralized — but since the
-      // value is copied, use escapeText (an allow-list — an honest Base62
-      // value passes through, an injection becomes a visible escape
-      // sequence), not displayText (a destructive replacement to U+FFFD)
-      yield* io.log("");
-      yield* io.log(`    ${escapeText(Redacted.value(issuedToken))}`);
-      yield* io.log("");
-      yield* io.log(
-        "This value is not shown again (signing in again rotates it). To use it on a runtime without lease support, set MARUHI_TOKEN to this value and MARUHI_TOKEN_ORIGIN to the server origin, and clear your terminal scrollback afterwards",
-      );
-      // Surfacing the provisioned login's identity swap (ruling CM):
-      // since the keychain's slot is per origin, this issuance also
-      // replaced this machine's active token. The recovery instruction
-      // branches on the issuance name: under the default name,
-      // recommending "a plain re-login" makes the same-name rotation
-      // **revoke the very token just displayed** and cut off the pasted
-      // environment. Under the default name, "issue again under a
-      // distinct name" is the right recovery
-      yield* logNote(
-        input.tokenNameIsDefault
-          ? "this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
-          : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
-      );
-    }
-    // The expiry is fixed at issuance (AUTH_SPEC §6's default TTL —
-    // W3a). Since it becomes a 401 on expiry, make when re-login is
-    // needed visible at issuance time. The display goes through
-    // display.ts's total formatter (the server's declared unbounded
-    // number is never passed to Date#toISOString directly)
-    yield* io.log(
-      `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Signing in again with the same token name (${input.tokenName}) rotates it and revokes the old one`,
+    // Surfacing the provisioned login's identity swap (ruling CM):
+    // since the keychain's slot is per origin, this issuance also
+    // replaced this machine's active token. The recovery instruction
+    // branches on the issuance name: under the default name,
+    // recommending "a plain re-login" makes the same-name rotation
+    // **revoke the very token just displayed** and cut off the pasted
+    // environment. Under the default name, "issue again under a
+    // distinct name" is the right recovery
+    yield* logNote(
+      input.tokenNameIsDefault
+        ? "this token was issued under this machine's default token name and is now the active keychain token. If it is destined for another environment, issue it under a distinct name instead (`maruhi login --token-name <name> --show-token`) — a later plain `maruhi login` on this machine rotates the default-name token and would cut that environment off"
+        : "this token is now also this machine's active keychain token. If it is destined for another environment, run a plain `maruhi login` afterwards so this machine keeps a token of its own (the provisioned token is untouched — it has a different name) — sharing one token across environments muddles audit attribution, and revoking it cuts off both",
     );
-    yield* nextStepHint(input.origin, approved.userId, issuedToken);
-  });
-}
+  }
+  // The expiry is fixed at issuance (AUTH_SPEC §6's default TTL —
+  // W3a). Since it becomes a 401 on expiry, make when re-login is
+  // needed visible at issuance time. The display goes through
+  // display.ts's total formatter (the server's declared unbounded
+  // number is never passed to Date#toISOString directly)
+  yield* io.log(
+    `The token expires on ${formatUtcDate(approved.expiresAtMs)} (UTC). Signing in again with the same token name (${input.tokenName}) rotates it and revokes the old one`,
+  );
+  yield* nextStepHint(input.origin, approved.userId, issuedToken);
+});
 
 /**
  * The guidance for the next step after login (device addition / storage
@@ -463,12 +454,14 @@ export function loginOp(input: {
  * never swallow it silently (CLAUDE.md): on failure, state the skip in
  * one line.
  */
-function nextStepHint(
+const nextStepHint: (
   origin: string,
   userId: string,
   token: Redacted.Redacted<string>,
-): Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+) => Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> = Effect.fn(
+  "login.nextStepHint",
+)(
+  function* (origin: string, userId: string, token: Redacted.Redacted<string>) {
     const keychain = yield* Keychain;
     const master = yield* keychain.get(masterKeyEntryName(origin, userId));
     const client = yield* makeApiClient({ baseUrl: origin, token });
@@ -484,14 +477,13 @@ function nextStepHint(
         "no recovery code is registered. If you lose the key it cannot be restored — issue one with `maruhi key recovery`",
       );
     }
-  }).pipe(
-    Effect.catch(() =>
-      logNote(
-        "skipped the next-step hint because the recovery registration status could not be checked (login itself is unaffected; check the status with `maruhi key show`)",
-      ),
+  },
+  Effect.catch(() =>
+    logNote(
+      "skipped the next-step hint because the recovery registration status could not be checked (login itself is unaffected; check the status with `maruhi key show`)",
     ),
-  );
-}
+  ),
+);
 
 /**
  * The guidance for MARUHI_TOKEN being left set after logout (null when
@@ -520,60 +512,58 @@ function envTokenNotice(status: EnvTokenStatus): string | null {
 }
 
 /** `maruhi logout`: revoke the presented token, then remove it from the keychain. */
-export function logoutOp(input: {
+export const logoutOp = Effect.fn("login.logoutOp")(function* (input: {
   readonly origin: string;
-}): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const keychain = yield* Keychain;
-    const entryName = tokenEntryName(input.origin);
-    const stored = yield* keychain.get(entryName);
-    if (stored === null) {
-      return yield* Effect.fail(
-        cliError(
-          "No token for this server in the keychain (MARUHI_TOKEN is managed on the environment side)",
-        ),
-      );
-    }
-    const record = parseStoredToken(stored);
-    if (record === null) {
-      // A corrupt record cannot call the revocation, but leaving it is unusable either — delete it
-      const redacted = hasRedactedPlaceholder(stored);
-      yield* keychain.remove(entryName);
-      return yield* Effect.fail(
-        cliError(
-          redacted
-            ? `${redactedPlaceholderTokenMessage(keychain.kind)} (the unusable record has been deleted; the server-side revocation could not be performed)`
-            : `${tokenRecordNoun(keychain.kind)} was corrupt, so it has been deleted (the server-side revocation could not be performed)`,
-        ),
-      );
-    }
-    const client = yield* makeApiClient({ baseUrl: input.origin, token: record.token });
-    // The keychain removal happens **before** the revocation: if removal
-    // failed after revoking, the keychain would keep a token the server
-    // already invalidated and every later command would 401 on that dead
-    // token (recoverable only manually). With removal first, at worst a
-    // live token remains server-side, collectable by re-login
+}): Effect.fn.Return<void, CliError, Keychain | CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const keychain = yield* Keychain;
+  const entryName = tokenEntryName(input.origin);
+  const stored = yield* keychain.get(entryName);
+  if (stored === null) {
+    return yield* Effect.fail(
+      cliError(
+        "No token for this server in the keychain (MARUHI_TOKEN is managed on the environment side)",
+      ),
+    );
+  }
+  const record = parseStoredToken(stored);
+  if (record === null) {
+    // A corrupt record cannot call the revocation, but leaving it is unusable either — delete it
+    const redacted = hasRedactedPlaceholder(stored);
     yield* keychain.remove(entryName);
-    yield* client.auth.revokeToken({}).pipe(
-      // An already-revoked (401) counts as success. Anything else (the
-      // network etc.) fails and tells the user a live token may remain
-      // server-side
-      Effect.catchTag("Unauthorized", () => Effect.void),
-      Effect.mapError(toCliError),
+    return yield* Effect.fail(
+      cliError(
+        redacted
+          ? `${redactedPlaceholderTokenMessage(keychain.kind)} (the unusable record has been deleted; the server-side revocation could not be performed)`
+          : `${tokenRecordNoun(keychain.kind)} was corrupt, so it has been deleted (the server-side revocation could not be performed)`,
+      ),
     );
-    yield* io.log(
-      `Signed out. The token was revoked and removed from ${describeStore(keychain.kind)}`,
-    );
-    // resolveSession prefers MARUHI_TOKEN over the keychain
-    // (session.ts). A leftover env var means "logged out yet the CLI
-    // keeps working", so surface it. The judgment is delegated to
-    // envTokenStatus: a bespoke check here would reach a different
-    // conclusion from session resolution ("you are authenticated" even
-    // on a whitespace-only value or an origin mismatch)
-    const notice = envTokenNotice(yield* envTokenStatus(input.origin));
-    if (notice !== null) {
-      yield* logNote(notice);
-    }
-  });
-}
+  }
+  const client = yield* makeApiClient({ baseUrl: input.origin, token: record.token });
+  // The keychain removal happens **before** the revocation: if removal
+  // failed after revoking, the keychain would keep a token the server
+  // already invalidated and every later command would 401 on that dead
+  // token (recoverable only manually). With removal first, at worst a
+  // live token remains server-side, collectable by re-login
+  yield* keychain.remove(entryName);
+  yield* client.auth.revokeToken({}).pipe(
+    // An already-revoked (401) counts as success. Anything else (the
+    // network etc.) fails and tells the user a live token may remain
+    // server-side
+    Effect.catchTag("Unauthorized", () => Effect.void),
+    Effect.mapError(toCliError),
+  );
+  yield* io.log(
+    `Signed out. The token was revoked and removed from ${describeStore(keychain.kind)}`,
+  );
+  // resolveSession prefers MARUHI_TOKEN over the keychain
+  // (session.ts). A leftover env var means "logged out yet the CLI
+  // keeps working", so surface it. The judgment is delegated to
+  // envTokenStatus: a bespoke check here would reach a different
+  // conclusion from session resolution ("you are authenticated" even
+  // on a whitespace-only value or an origin mismatch)
+  const notice = envTokenNotice(yield* envTokenStatus(input.origin));
+  if (notice !== null) {
+    yield* logNote(notice);
+  }
+});

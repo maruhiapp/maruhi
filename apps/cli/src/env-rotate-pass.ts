@@ -176,91 +176,89 @@ interface PushPassResult {
  * aggregated as a count and a cause; the actual remainder is decided by
  * the end-of-pass rescan (the verified reality).
  */
-function runPushPass(input: {
+const runPushPass = Effect.fn("env-rotate-pass.runPushPass")(function* (input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly pending: readonly ReencryptTarget[];
   /** The starting number of the progress display's running count (the number re-encrypted so far). */
   readonly doneBefore: number;
-}): Effect.Effect<PushPassResult, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const conflicted: ConflictedTarget[] = [];
-    const written: VerifiedPulledValue[] = [];
-    const unfinishedIds = new Set<string>();
-    const warnings: string[] = [];
-    // The progress display's denominator is "the total known on this pass" (a rescan can grow the targets)
-    const total = input.doneBefore + input.pending.length;
-    let reencrypted = 0;
-    const epochStaleIds = new Set<string>();
-    let firstFailure: { readonly variableId: string; readonly message: string } | null = null;
-    for (const target of input.pending) {
-      const attempt = yield* asOutcome(
-        pushReencrypted({ context: input.context, view: input.view, target }),
-      );
-      if (attempt.kind === "failed") {
-        // The pass does not stop (never strand the remaining variables on
-        // the old epoch). **Every variable's failure mode is kept**: only
-        // one can be listed as the cause, so without a warning, a
-        // permanently-failing variable (a too-large value, etc.) would
-        // never surface its reason on any run and stay stranded on the old
-        // epoch forever
-        const message = `Failed to re-encrypt variable ${displayText(target.value.name)}: ${attempt.error.message}`;
-        warnings.push(message);
-        firstFailure ??= { variableId: target.value.variableId, message };
-        unfinishedIds.add(target.value.variableId);
-        continue;
-      }
-      if (attempt.value.kind === "conflict") {
-        conflicted.push({
-          variableId: target.value.variableId,
-          known: target.value,
-          currentVersion: attempt.value.currentVersion,
-        });
-        unfinishedIds.add(target.value.variableId);
-        continue;
-      }
-      if (attempt.value.kind === "deleted") {
-        warnings.push(
-          `Re-encryption of variable ${displayText(target.value.name)} was rejected with 404 (possibly deleted concurrently by another member). If it is gone from the re-fetched active set it is dropped from the targets; if it is still being served it is counted as incomplete`,
-        );
-        firstFailure ??= {
-          variableId: target.value.variableId,
-          message: `Re-encryption of variable ${displayText(target.value.name)} was rejected with 404 (possible concurrent deletion)`,
-        };
-        unfinishedIds.add(target.value.variableId);
-        continue;
-      }
-      if (attempt.value.kind === "epoch-stale") {
-        // The rescan judges reality by the chain-derived epoch. This
-        // variable stays at the old epoch, so if the epoch did not move it
-        // appears again as the next pass's target
-        epochStaleIds.add(target.value.variableId);
-        unfinishedIds.add(target.value.variableId);
-        continue;
-      }
-      if (attempt.value.floorWarning !== null) {
-        warnings.push(attempt.value.floorWarning);
-      }
-      // Promoting my accepted write into the ledger's baseline: lets later
-      // rescans detect a rollback of my own writes (regression)
-      written.push(attempt.value.written);
-      reencrypted += 1;
-      yield* io.log(
-        `  Re-encrypted (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)} (version=${target.value.version + 1})`,
-      );
+}): Effect.fn.Return<PushPassResult, never, CliIo> {
+  const io = yield* CliIo;
+  const conflicted: ConflictedTarget[] = [];
+  const written: VerifiedPulledValue[] = [];
+  const unfinishedIds = new Set<string>();
+  const warnings: string[] = [];
+  // The progress display's denominator is "the total known on this pass" (a rescan can grow the targets)
+  const total = input.doneBefore + input.pending.length;
+  let reencrypted = 0;
+  const epochStaleIds = new Set<string>();
+  let firstFailure: { readonly variableId: string; readonly message: string } | null = null;
+  for (const target of input.pending) {
+    const attempt = yield* asOutcome(
+      pushReencrypted({ context: input.context, view: input.view, target }),
+    );
+    if (attempt.kind === "failed") {
+      // The pass does not stop (never strand the remaining variables on
+      // the old epoch). **Every variable's failure mode is kept**: only
+      // one can be listed as the cause, so without a warning, a
+      // permanently-failing variable (a too-large value, etc.) would
+      // never surface its reason on any run and stay stranded on the old
+      // epoch forever
+      const message = `Failed to re-encrypt variable ${displayText(target.value.name)}: ${attempt.error.message}`;
+      warnings.push(message);
+      firstFailure ??= { variableId: target.value.variableId, message };
+      unfinishedIds.add(target.value.variableId);
+      continue;
     }
-    return {
-      reencrypted,
-      conflicted,
-      epochStaleIds,
-      unfinishedIds,
-      written,
-      firstFailure,
-      warnings,
-    };
-  });
-}
+    if (attempt.value.kind === "conflict") {
+      conflicted.push({
+        variableId: target.value.variableId,
+        known: target.value,
+        currentVersion: attempt.value.currentVersion,
+      });
+      unfinishedIds.add(target.value.variableId);
+      continue;
+    }
+    if (attempt.value.kind === "deleted") {
+      warnings.push(
+        `Re-encryption of variable ${displayText(target.value.name)} was rejected with 404 (possibly deleted concurrently by another member). If it is gone from the re-fetched active set it is dropped from the targets; if it is still being served it is counted as incomplete`,
+      );
+      firstFailure ??= {
+        variableId: target.value.variableId,
+        message: `Re-encryption of variable ${displayText(target.value.name)} was rejected with 404 (possible concurrent deletion)`,
+      };
+      unfinishedIds.add(target.value.variableId);
+      continue;
+    }
+    if (attempt.value.kind === "epoch-stale") {
+      // The rescan judges reality by the chain-derived epoch. This
+      // variable stays at the old epoch, so if the epoch did not move it
+      // appears again as the next pass's target
+      epochStaleIds.add(target.value.variableId);
+      unfinishedIds.add(target.value.variableId);
+      continue;
+    }
+    if (attempt.value.floorWarning !== null) {
+      warnings.push(attempt.value.floorWarning);
+    }
+    // Promoting my accepted write into the ledger's baseline: lets later
+    // rescans detect a rollback of my own writes (regression)
+    written.push(attempt.value.written);
+    reencrypted += 1;
+    yield* io.log(
+      `  Re-encrypted (${input.doneBefore + reencrypted}/${total}): ${displayText(target.value.name)} (version=${target.value.version + 1})`,
+    );
+  }
+  return {
+    reencrypted,
+    conflicted,
+    epochStaleIds,
+    unfinishedIds,
+    written,
+    firstFailure,
+    warnings,
+  };
+});
 
 /**
  * Recording into the known-values ledger a value that passed §6.3
@@ -340,7 +338,7 @@ type PassVerdict =
  * "evidence > contradiction > continue" — evidence is resolved by no
  * re-run, so it is never folded into another reason.
  */
-function settlePass(input: {
+const settlePass = Effect.fn("env-rotate-pass.settlePass")(function* (input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly known: ReadonlyMap<string, ConflictedTarget>;
@@ -348,116 +346,114 @@ function settlePass(input: {
   readonly reencrypted: number;
   /** Whether a next pass exists (= whether decrypting the remaining targets has a point). */
   readonly hasNextPass: boolean;
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly verdict: PassVerdict; readonly warnings: readonly string[] },
   never,
   never
 > {
-  return Effect.gen(function* () {
-    const { environmentId, epoch } = input.context;
-    // The collected warnings are not lost even when the rescan fails (the error channel cannot carry them)
-    const warnings: string[] = [];
-    const rescan = yield* asOutcome(
-      rescanEnvironment({
-        context: input.context,
-        view: input.view,
-        known: input.known,
-        unfinishedIds: input.pass.unfinishedIds,
-        collectWarning: (warning) => warnings.push(warning),
-        // A pass where an epoch conflict was claimed re-fetches the chain before judging
-        forceResync: input.pass.epochStaleIds.size > 0,
-        decryptRemaining: input.hasNextPass,
-      }),
-    );
-    const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
-    if (rescan.kind === "failed") {
-      if (rescan.error.evidence === true) {
-        // The rescan's pull was refused with evidence (a floor violation,
-        // checkpoint-integrity rule 2). An immediate abort, same as the
-        // decryption stage's evidence (rescan.value.evidence) — never
-        // downgraded to "a re-run-fixable partial completion"
-        return {
-          warnings,
-          verdict: {
-            kind: "abort",
-            message: `${rescan.error.message}\n${context}. This is evidence that re-running will not resolve — investigate the server's responses`,
-          },
-        } as const;
-      }
-      // **The rescan's failure takes priority**: a concurrent rotation's
-      // detection and transient failures surface here, so they must not be
-      // covered up by a single variable's transient failure (that would
-      // disguise it as "a re-run fixes it" guidance)
-      const pushFailure =
-        input.pass.firstFailure === null
-          ? ""
-          : ` (there were also failures during re-encryption: ${input.pass.firstFailure.message})`;
-      return {
-        warnings,
-        verdict: {
-          kind: "unverified",
-          remaining: input.pass.unfinishedIds.size,
-          failure: `${rescan.error.message}${pushFailure}`,
-        },
-      } as const;
-    }
-    if (rescan.value.evidence !== null) {
-      // Cryptographic evidence is the top-priority immediate abort (no
-      // re-run resolves it). The epoch-advanced context is conveyed
-      // together — emitting only the evidence would lose the operational
-      // state
+  const { environmentId, epoch } = input.context;
+  // The collected warnings are not lost even when the rescan fails (the error channel cannot carry them)
+  const warnings: string[] = [];
+  const rescan = yield* asOutcome(
+    rescanEnvironment({
+      context: input.context,
+      view: input.view,
+      known: input.known,
+      unfinishedIds: input.pass.unfinishedIds,
+      collectWarning: (warning) => warnings.push(warning),
+      // A pass where an epoch conflict was claimed re-fetches the chain before judging
+      forceResync: input.pass.epochStaleIds.size > 0,
+      decryptRemaining: input.hasNextPass,
+    }),
+  );
+  const context = `Environment ${environmentId} has advanced to epoch ${epoch}, and re-encryption stopped after ${countNoun(input.reencrypted, "variable")}`;
+  if (rescan.kind === "failed") {
+    if (rescan.error.evidence === true) {
+      // The rescan's pull was refused with evidence (a floor violation,
+      // checkpoint-integrity rule 2). An immediate abort, same as the
+      // decryption stage's evidence (rescan.value.evidence) — never
+      // downgraded to "a re-run-fixable partial completion"
       return {
         warnings,
         verdict: {
           kind: "abort",
-          message: `${rescan.value.evidence}\n${context}. This is evidence that re-running will not resolve — investigate the server's responses`,
+          message: `${rescan.error.message}\n${context}. This is evidence that re-running will not resolve — investigate the server's responses`,
         },
       } as const;
     }
-    if (input.pass.epochStaleIds.size > 0) {
-      // Even on the force-resynced chain the epoch did not move (if it
-      // had, rescanEnvironment would have failed). The server's
-      // EpochConflict claim contradicts the chain, and re-pushing that
-      // variable cannot resolve it (same judgment as push-state.ts). But an
-      // abort is allowed **only when the very claimed variable still
-      // remains**: if it resolved — say another member finished writing it
-      // at the same epoch — the rest remains for other reasons (a
-      // transient failure, a conflict) and a re-run cleans up. Declaring
-      // "a re-run won't resolve this" would keep both the resume guidance
-      // and the remaining-count report from arriving. Whether
-      // re-encryption is complete is decided by the verified reality, not
-      // the server's self-claim. The judgment uses stale (always
-      // populated) — targets is empty on the final pass
-      const unresolved = rescan.value.stale.filter((value) =>
-        input.pass.epochStaleIds.has(value.variableId),
-      );
-      if (unresolved.length > 0) {
-        return {
-          warnings,
-          verdict: {
-            kind: "abort",
-            message: `The server reported an epoch conflict, but the chain is still at epoch ${epoch} (the server's response contradicts the chain). ${context} — re-running will not resolve this`,
-          },
-        } as const;
-      }
-      warnings.push(
-        `The server reported an epoch conflict for a re-encryption push, but the chain was still at epoch ${epoch} (the server's response contradicts the chain). The reported variable is not in the rescanned incomplete set (it was rewritten at the current epoch, or deleted), so processing continues — but the contradictory response itself warrants investigation`,
-      );
-    }
+    // **The rescan's failure takes priority**: a concurrent rotation's
+    // detection and transient failures surface here, so they must not be
+    // covered up by a single variable's transient failure (that would
+    // disguise it as "a re-run fixes it" guidance)
+    const pushFailure =
+      input.pass.firstFailure === null
+        ? ""
+        : ` (there were also failures during re-encryption: ${input.pass.firstFailure.message})`;
     return {
       warnings,
       verdict: {
-        kind: "settled",
-        view: rescan.value.view,
-        remaining: rescan.value.stale.length,
-        targets: rescan.value.targets,
-        undecryptable: rescan.value.undecryptable,
-        staleIds: new Set(rescan.value.stale.map((value) => value.variableId)),
-        alreadyCurrent: rescan.value.alreadyCurrent,
+        kind: "unverified",
+        remaining: input.pass.unfinishedIds.size,
+        failure: `${rescan.error.message}${pushFailure}`,
       },
     } as const;
-  });
-}
+  }
+  if (rescan.value.evidence !== null) {
+    // Cryptographic evidence is the top-priority immediate abort (no
+    // re-run resolves it). The epoch-advanced context is conveyed
+    // together — emitting only the evidence would lose the operational
+    // state
+    return {
+      warnings,
+      verdict: {
+        kind: "abort",
+        message: `${rescan.value.evidence}\n${context}. This is evidence that re-running will not resolve — investigate the server's responses`,
+      },
+    } as const;
+  }
+  if (input.pass.epochStaleIds.size > 0) {
+    // Even on the force-resynced chain the epoch did not move (if it
+    // had, rescanEnvironment would have failed). The server's
+    // EpochConflict claim contradicts the chain, and re-pushing that
+    // variable cannot resolve it (same judgment as push-state.ts). But an
+    // abort is allowed **only when the very claimed variable still
+    // remains**: if it resolved — say another member finished writing it
+    // at the same epoch — the rest remains for other reasons (a
+    // transient failure, a conflict) and a re-run cleans up. Declaring
+    // "a re-run won't resolve this" would keep both the resume guidance
+    // and the remaining-count report from arriving. Whether
+    // re-encryption is complete is decided by the verified reality, not
+    // the server's self-claim. The judgment uses stale (always
+    // populated) — targets is empty on the final pass
+    const unresolved = rescan.value.stale.filter((value) =>
+      input.pass.epochStaleIds.has(value.variableId),
+    );
+    if (unresolved.length > 0) {
+      return {
+        warnings,
+        verdict: {
+          kind: "abort",
+          message: `The server reported an epoch conflict, but the chain is still at epoch ${epoch} (the server's response contradicts the chain). ${context} — re-running will not resolve this`,
+        },
+      } as const;
+    }
+    warnings.push(
+      `The server reported an epoch conflict for a re-encryption push, but the chain was still at epoch ${epoch} (the server's response contradicts the chain). The reported variable is not in the rescanned incomplete set (it was rewritten at the current epoch, or deleted), so processing continues — but the contradictory response itself warrants investigation`,
+    );
+  }
+  return {
+    warnings,
+    verdict: {
+      kind: "settled",
+      view: rescan.value.view,
+      remaining: rescan.value.stale.length,
+      targets: rescan.value.targets,
+      undecryptable: rescan.value.undecryptable,
+      staleIds: new Set(rescan.value.stale.map((value) => value.variableId)),
+      alreadyCurrent: rescan.value.alreadyCurrent,
+    },
+  } as const;
+});
 
 /**
  * The record of "a failure that happened but is no longer the cause".
@@ -493,20 +489,20 @@ function noteResolvedFailure(warnings: string[], failure: string | null, resolut
  * failure, so it must not blend into partial-completion + resume guidance
  * (aligned with the push path's handling).
  */
-export function reencryptCurrentValues(input: {
-  readonly context: ReencryptContext;
-  readonly view: VerifiedProject;
-  readonly targets: readonly ReencryptTarget[];
-  /**
-   * The warnings' receptacle (an array shared with the caller). Since an
-   * abort escapes as an exception, returning them would lose the warnings
-   * **only on failure** — an abort is exactly where a floor-update failure
-   * or a concurrent-deletion notice matters most, so the destination is
-   * shared and never lost.
-   */
-  readonly sink: string[];
-}): Effect.Effect<ReencryptOutcome, CliError, CliIo> {
-  return Effect.gen(function* () {
+export const reencryptCurrentValues = Effect.fn("env-rotate-pass.reencryptCurrentValues")(
+  function* (input: {
+    readonly context: ReencryptContext;
+    readonly view: VerifiedProject;
+    readonly targets: readonly ReencryptTarget[];
+    /**
+     * The warnings' receptacle (an array shared with the caller). Since an
+     * abort escapes as an exception, returning them would lose the warnings
+     * **only on failure** — an abort is exactly where a floor-update failure
+     * or a concurrent-deletion notice matters most, so the destination is
+     * shared and never lost.
+     */
+    readonly sink: string[];
+  }): Effect.fn.Return<ReencryptOutcome, CliError, CliIo> {
     const warnings = input.sink;
     let view = input.view;
     let pending = input.targets;
@@ -616,5 +612,5 @@ export function reencryptCurrentValues(input: {
     noteStaleFailures(warnings, blockingFailure, seenFailure);
     // The passes ran out (not an abort): the remaining count is a **measurement** through the final pass's rescan
     return outcome(staleCount, blockingFailure, true);
-  });
-}
+  },
+);

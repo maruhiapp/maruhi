@@ -193,54 +193,52 @@ function leaseEpochProblem(
  * commitment), applied to lease wraps that carry no §5.1
  * registration signature.
  */
-function unwrapLeases(input: {
+const unwrapLeases = Effect.fn("lease-client.unwrapLeases")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly workloadKeyPair: EncryptionKeyPair;
   readonly claims: LeaseClaims;
   readonly leases: readonly LeasedDek[];
-}): Effect.Effect<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
-  return Effect.gen(function* () {
-    const { verified, environmentId } = input;
-    const environment = yield* requireChainEnvironment(verified, environmentId);
-    const chainEpoch = environment.currentEpoch;
-    // Only the verified entry point (computeLeaseClaimsDigest) is
-    // used for the claims digest — using the builder directly bypasses
-    // the empty-field guards
-    const digest = yield* cryptoEffect(() => computeLeaseClaimsDigest(input.claims)).pipe(
-      Effect.mapError(() =>
-        cliError("Failed to compute the lease claims digest (the OIDC claims are unusable)"),
-      ),
-    );
-    const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
-    for (const lease of input.leases) {
-      const problem = leaseEpochProblem(chainEpoch, new Set(byEpoch.keys()), lease);
-      if (problem !== null) {
-        return yield* Effect.fail(cliError(problem));
-      }
-      const expectedCommitmentHex = environment.dekCommitments.get(lease.epoch);
-      if (expectedCommitmentHex === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `No commitment for epoch ${lease.epoch} exists on the chain (a chain-derivation inconsistency)`,
-          ),
-        );
-      }
-      const dek = yield* unwrapOneLease({
-        verified,
-        environmentId,
-        workloadKeyPair: input.workloadKeyPair,
-        claimsDigestHex: digest,
-        lease,
-        expectedCommitmentHex,
-      });
-      // The opened DEK is wrapped here (after passing the §5.2 check
-      // — a pre-check DEK never leaves unwrapOneLease's inside)
-      byEpoch.set(lease.epoch, Redacted.make(dek, { label: "dek" }));
+}): Effect.fn.Return<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
+  const { verified, environmentId } = input;
+  const environment = yield* requireChainEnvironment(verified, environmentId);
+  const chainEpoch = environment.currentEpoch;
+  // Only the verified entry point (computeLeaseClaimsDigest) is
+  // used for the claims digest — using the builder directly bypasses
+  // the empty-field guards
+  const digest = yield* cryptoEffect(() => computeLeaseClaimsDigest(input.claims)).pipe(
+    Effect.mapError(() =>
+      cliError("Failed to compute the lease claims digest (the OIDC claims are unusable)"),
+    ),
+  );
+  const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
+  for (const lease of input.leases) {
+    const problem = leaseEpochProblem(chainEpoch, new Set(byEpoch.keys()), lease);
+    if (problem !== null) {
+      return yield* Effect.fail(cliError(problem));
     }
-    return byEpoch;
-  });
-}
+    const expectedCommitmentHex = environment.dekCommitments.get(lease.epoch);
+    if (expectedCommitmentHex === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `No commitment for epoch ${lease.epoch} exists on the chain (a chain-derivation inconsistency)`,
+        ),
+      );
+    }
+    const dek = yield* unwrapOneLease({
+      verified,
+      environmentId,
+      workloadKeyPair: input.workloadKeyPair,
+      claimsDigestHex: digest,
+      lease,
+      expectedCommitmentHex,
+    });
+    // The opened DEK is wrapped here (after passing the §5.2 check
+    // — a pre-check DEK never leaves unwrapOneLease's inside)
+    byEpoch.set(lease.epoch, Redacted.make(dek, { label: "dek" }));
+  }
+  return byEpoch;
+});
 
 /**
  * Verifies a lease response end to end (CRYPTO_SPEC §9.1 duties (1)–(4)) and
@@ -250,7 +248,7 @@ function unwrapLeases(input: {
  * value signature is verified, and every DEK must match its chain-published
  * commitment before use.
  */
-export function verifyLeaseResponse(input: {
+export const verifyLeaseResponse = Effect.fn("lease-client.verifyLeaseResponse")(function* (input: {
   /** The genesis pre-pinned in the CI config (= `--project` — §9.1 verification obligation (1)). */
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
@@ -259,86 +257,84 @@ export function verifyLeaseResponse(input: {
   readonly workloadKeyPair: EncryptionKeyPair;
   /** The repository anchor (§6.3 (b) — SHOULD. Only when --anchor is given). */
   readonly anchor: RepositoryAnchor | null;
-}): Effect.Effect<VerifiedLeaseMaterial, CliError> {
-  return Effect.gen(function* () {
-    const response = input.response;
-    // Consistency of the declared coordinates (same posture as
-    // §6.3-5): a response whose declared coordinates differ from the
-    // requested ones would be dropped by later verification anyway,
-    // but what differed is surfaced first
-    if (response.projectId !== input.projectId || response.environmentId !== input.environmentId) {
-      return yield* Effect.fail(
-        cliError(
-          "The lease response declares coordinates that do not match the requested project / environment (an inconsistent server response)",
-        ),
-      );
-    }
-    // (1) Chain verification: full re-verification of the bundled
-    // chain + genesis hash = the pre-pinned projectId + consistency
-    // of declared head vs derived head (the same implementation as
-    // chain-sync.ts)
-    const verified = yield* verifyChainSnapshot({
-      projectId: input.projectId,
-      entries: response.chain,
-      claimedHeadSeq: response.headSeq,
-      claimedHeadHashHex: response.headHashHex,
-    });
-    // (2) Repository anchor (SHOULD): containment of the pinned head
-    // + non-regression of the environment epoch (detection of rewind
-    // distribution — CI has no floor, so this substitutes)
-    if (input.anchor !== null) {
-      yield* checkRepositoryAnchor({ anchor: input.anchor, verified });
-    }
-    // Only the chain-derived value is used for the current epoch
-    // (§6.2). The declared currentEpoch is checked only for agreement
-    // with the derived value (declared values are not trusted)
-    const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
-    if (response.currentEpoch !== chainEpoch) {
-      return yield* Effect.fail(
-        cliError(
-          `The lease response declares epoch ${response.currentEpoch}, but the chain derives epoch ${chainEpoch} (the response contradicts the chain)`,
-        ),
-      );
-    }
-    // (4) Value-signature / meta-statement verification (a future head is refused outright)
-    const distribution = yield* verifyLeaseDistribution({
-      verified,
-      environmentId: input.environmentId,
-      wire: {
-        statement: response.statement,
-        variables: response.variables,
-        deletedVariables: response.deletedVariables,
-        declaredVariables: response.declaredVariables,
-        manifest: response.manifest,
-        checkpointSnapshot: response.checkpointSnapshot,
-      },
-    });
-    // (3) Opening the lease wraps + DEK commitment check
-    const deksByEpoch = yield* unwrapLeases({
-      verified,
-      environmentId: input.environmentId,
-      workloadKeyPair: input.workloadKeyPair,
-      claims: input.claims,
-      leases: response.leases,
-    });
-    // Decryption (the same decryptVerifiedValue as run / rotate — the
-    // decryption context is built from verified coordinates; a
-    // missing wrap for a value's epoch is a strict failure)
-    const variables = yield* decryptDistributed({
-      verified,
-      environmentId: input.environmentId,
-      variables: distribution.variables,
-      deksByEpoch,
-      chainEpoch,
-    });
-    return {
-      verified,
-      variables,
-      declared: toDeclaredVariables(distribution.declared),
-      warnings: distribution.warnings,
-    };
+}): Effect.fn.Return<VerifiedLeaseMaterial, CliError> {
+  const response = input.response;
+  // Consistency of the declared coordinates (same posture as
+  // §6.3-5): a response whose declared coordinates differ from the
+  // requested ones would be dropped by later verification anyway,
+  // but what differed is surfaced first
+  if (response.projectId !== input.projectId || response.environmentId !== input.environmentId) {
+    return yield* Effect.fail(
+      cliError(
+        "The lease response declares coordinates that do not match the requested project / environment (an inconsistent server response)",
+      ),
+    );
+  }
+  // (1) Chain verification: full re-verification of the bundled
+  // chain + genesis hash = the pre-pinned projectId + consistency
+  // of declared head vs derived head (the same implementation as
+  // chain-sync.ts)
+  const verified = yield* verifyChainSnapshot({
+    projectId: input.projectId,
+    entries: response.chain,
+    claimedHeadSeq: response.headSeq,
+    claimedHeadHashHex: response.headHashHex,
   });
-}
+  // (2) Repository anchor (SHOULD): containment of the pinned head
+  // + non-regression of the environment epoch (detection of rewind
+  // distribution — CI has no floor, so this substitutes)
+  if (input.anchor !== null) {
+    yield* checkRepositoryAnchor({ anchor: input.anchor, verified });
+  }
+  // Only the chain-derived value is used for the current epoch
+  // (§6.2). The declared currentEpoch is checked only for agreement
+  // with the derived value (declared values are not trusted)
+  const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+  if (response.currentEpoch !== chainEpoch) {
+    return yield* Effect.fail(
+      cliError(
+        `The lease response declares epoch ${response.currentEpoch}, but the chain derives epoch ${chainEpoch} (the response contradicts the chain)`,
+      ),
+    );
+  }
+  // (4) Value-signature / meta-statement verification (a future head is refused outright)
+  const distribution = yield* verifyLeaseDistribution({
+    verified,
+    environmentId: input.environmentId,
+    wire: {
+      statement: response.statement,
+      variables: response.variables,
+      deletedVariables: response.deletedVariables,
+      declaredVariables: response.declaredVariables,
+      manifest: response.manifest,
+      checkpointSnapshot: response.checkpointSnapshot,
+    },
+  });
+  // (3) Opening the lease wraps + DEK commitment check
+  const deksByEpoch = yield* unwrapLeases({
+    verified,
+    environmentId: input.environmentId,
+    workloadKeyPair: input.workloadKeyPair,
+    claims: input.claims,
+    leases: response.leases,
+  });
+  // Decryption (the same decryptVerifiedValue as run / rotate — the
+  // decryption context is built from verified coordinates; a
+  // missing wrap for a value's epoch is a strict failure)
+  const variables = yield* decryptDistributed({
+    verified,
+    environmentId: input.environmentId,
+    variables: distribution.variables,
+    deksByEpoch,
+    chainEpoch,
+  });
+  return {
+    verified,
+    variables,
+    declared: toDeclaredVariables(distribution.declared),
+    warnings: distribution.warnings,
+  };
+});
 
 /** Decrypts every verified distributed value (into the same material shape as pull.ts's pullVariables). */
 function decryptDistributed(input: {

@@ -23,20 +23,18 @@ import { CliIo } from "./io.ts";
 const CONFIRM_ATTEMPTS = 3;
 
 /** FP hex (16 bytes) to BIP39 12 words (§3). `invalidMessage` is the wording for malformed input. */
-export function fingerprintWords(
+export const fingerprintWords = Effect.fnUntraced(function* (
   fingerprintHex: string,
   invalidMessage: string,
-): Effect.Effect<readonly string[], CliError> {
-  return Effect.gen(function* () {
-    const bytes = decodeHex(fingerprintHex);
-    if (bytes === null) {
-      return yield* Effect.fail(cliError(invalidMessage));
-    }
-    return yield* cryptoEffect(() => fingerprintToWords(bytes)).pipe(
-      Effect.mapError(() => cliError("Failed to compute the fingerprint word list")),
-    );
-  });
-}
+): Effect.fn.Return<readonly string[], CliError> {
+  const bytes = decodeHex(fingerprintHex);
+  if (bytes === null) {
+    return yield* Effect.fail(cliError(invalidMessage));
+  }
+  return yield* cryptoEffect(() => fingerprintToWords(bytes)).pipe(
+    Effect.mapError(() => cliError("Failed to compute the fingerprint word list")),
+  );
+});
 
 /** One-line numbered display of the 12 words (shared from server-grant's display format). */
 export function formatWordList(words: readonly string[]): string {
@@ -50,28 +48,26 @@ export function formatWordList(words: readonly string[]): string {
  * are supplied per operation (the caller passes server-grant's
  * existing wording verbatim — behavior and wording stay compatible).
  */
-export function confirmByLastWord(input: {
+export const confirmByLastWord = Effect.fn("fp-words.confirmByLastWord")(function* (input: {
   readonly words: readonly string[];
   /** The prompt body up to just before `(n/3): `. */
   readonly promptText: string;
   readonly mismatchText: string;
   readonly exhaustedText: string;
-}): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const lastWord = input.words[input.words.length - 1];
-    if (lastWord === undefined) {
-      return yield* Effect.fail(cliError("Failed to compute the fingerprint word list"));
+}): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const lastWord = input.words[input.words.length - 1];
+  if (lastWord === undefined) {
+    return yield* Effect.fail(cliError("Failed to compute the fingerprint word list"));
+  }
+  for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
+    const answer = yield* io.promptLine({
+      prompt: `${input.promptText} (${attempt}/${CONFIRM_ATTEMPTS}): `,
+    });
+    if (answer.trim() === lastWord) {
+      return;
     }
-    for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
-      const answer = yield* io.promptLine({
-        prompt: `${input.promptText} (${attempt}/${CONFIRM_ATTEMPTS}): `,
-      });
-      if (answer.trim() === lastWord) {
-        return;
-      }
-      yield* io.logError(input.mismatchText);
-    }
-    return yield* Effect.fail(cliError(input.exhaustedText));
-  });
-}
+    yield* io.logError(input.mismatchText);
+  }
+  return yield* Effect.fail(cliError(input.exhaustedText));
+});

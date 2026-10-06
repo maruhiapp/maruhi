@@ -57,24 +57,22 @@ export interface CiLeaseInput {
 type LeaseIssueError = Effect.Error<ReturnType<MaruhiClient["lease"]["issue"]>>;
 
 /** One lease issuance (the wire boundary). Errors are returned typed, for classification. */
-function issueLease(input: {
+const issueLease = Effect.fn("ci-lease.issueLease")(function* (input: {
   readonly client: MaruhiClient;
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
   readonly token: Redacted.Redacted<string>;
   readonly ephemeralPubHex: string;
-}): Effect.Effect<LeaseResponseWire, LeaseIssueError> {
-  return Effect.gen(function* () {
-    // Why it is unwrapped: the wire boundary of the lease request (the
-    // payload's oidcToken field). The plaintext token rides only in the
-    // request body and never appears in logs or errors
-    const oidcToken = Redacted.value(input.token);
-    return yield* input.client.lease.issue({
-      params: { projectId: input.projectId, environmentId: input.environmentId },
-      payload: { oidcToken, ephemeralPubHex: input.ephemeralPubHex },
-    });
+}): Effect.fn.Return<LeaseResponseWire, LeaseIssueError> {
+  // Why it is unwrapped: the wire boundary of the lease request (the
+  // payload's oidcToken field). The plaintext token rides only in the
+  // request body and never appears in logs or errors
+  const oidcToken = Redacted.value(input.token);
+  return yield* input.client.lease.issue({
+    params: { projectId: input.projectId, environmentId: input.environmentId },
+    payload: { oidcToken, ephemeralPubHex: input.ephemeralPubHex },
   });
-}
+});
 
 type IssueOutcome =
   | { readonly kind: "ok"; readonly response: LeaseResponseWire }
@@ -165,94 +163,92 @@ export interface LeasedEnvironments {
  * then needs no issuance endpoint, which is the one that may have stopped
  * answering (ruling O revision, round 4); a fresh token and key otherwise.
  */
-export function leaseEnvironmentsWithCredential(
+export const leaseEnvironmentsWithCredential = Effect.fn(
+  "ci-lease.leaseEnvironmentsWithCredential",
+)(function* (
   input: CiLeaseInput & {
     readonly environmentIds: readonly EnvironmentId[];
     readonly credential?: WorkloadCredential;
   },
-): Effect.Effect<LeasedEnvironments, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // The anchor is read before the network and key generation (do not put
-    // detecting a broken file behind a round trip)
-    const anchor =
-      input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
-    const client = yield* makeApiClient({ baseUrl: input.origin });
-    const nowMs = yield* Clock.currentTimeMillis;
-    const credential =
-      reusableCredential(input.credential, nowMs) ??
-      (yield* freshCredential(
-        input.audience,
-        input.credential === undefined
-          ? undefined
-          : issuanceBoundFor(input.credential.token, nowMs),
-      ).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            // No fresh token, but an unexpired one in hand (within the reuse
-            // margin): present it — the same fallback shape as the mint's
-            // (ruling O revision, round 6)
-            const inHand = input.credential;
-            if (inHand === undefined || !unexpired(inHand, yield* Clock.currentTimeMillis)) {
-              return yield* Effect.fail(error);
-            }
-            return yield* Effect.as(
-              io.logError(
-                `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
-              ),
-              inHand,
-            );
-          }),
-        ),
-      ));
-    const { keyPair: workloadKeyPair, ephemeralPubHex } = credential;
-    let { token } = credential;
-    let claims: LeaseClaims = yield* readLeaseClaims(token);
-    // GitHub is a runtime-minting issuer, so one automatic retry with a
-    // fresh token is allowed (session-24 §8 MAY — cap of 1, total 1 even
-    // across multiple environments)
-    let retried = false;
-    const materials = new Map<EnvironmentId, VerifiedLeaseMaterial>();
-    for (const environmentId of input.environmentIds) {
-      const common = { client, projectId: input.projectId, environmentId, ephemeralPubHex };
-      let outcome = yield* attemptLease({ ...common, token });
-      if (outcome.kind === "replayed") {
-        if (retried) {
-          return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
-        }
-        // Present the same ephemeral key (the fresh token is unbound and binds to this key)
-        yield* io.logError(
-          "The lease was rejected as token-replayed (the token was already bound to a different ephemeral key). Minting a fresh token and retrying once",
-        );
-        retried = true;
-        token = yield* fetchGitHubOidcToken(input.audience);
-        claims = yield* readLeaseClaims(token);
-        outcome = yield* attemptLease({ ...common, token });
-        if (outcome.kind === "replayed") {
-          return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
-        }
+): Effect.fn.Return<LeasedEnvironments, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  // The anchor is read before the network and key generation (do not put
+  // detecting a broken file behind a round trip)
+  const anchor =
+    input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
+  const client = yield* makeApiClient({ baseUrl: input.origin });
+  const nowMs = yield* Clock.currentTimeMillis;
+  const credential =
+    reusableCredential(input.credential, nowMs) ??
+    (yield* freshCredential(
+      input.audience,
+      input.credential === undefined ? undefined : issuanceBoundFor(input.credential.token, nowMs),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          // No fresh token, but an unexpired one in hand (within the reuse
+          // margin): present it — the same fallback shape as the mint's
+          // (ruling O revision, round 6)
+          const inHand = input.credential;
+          if (inHand === undefined || !unexpired(inHand, yield* Clock.currentTimeMillis)) {
+            return yield* Effect.fail(error);
+          }
+          return yield* Effect.as(
+            io.logError(
+              `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
+            ),
+            inHand,
+          );
+        }),
+      ),
+    ));
+  const { keyPair: workloadKeyPair, ephemeralPubHex } = credential;
+  let { token } = credential;
+  let claims: LeaseClaims = yield* readLeaseClaims(token);
+  // GitHub is a runtime-minting issuer, so one automatic retry with a
+  // fresh token is allowed (session-24 §8 MAY — cap of 1, total 1 even
+  // across multiple environments)
+  let retried = false;
+  const materials = new Map<EnvironmentId, VerifiedLeaseMaterial>();
+  for (const environmentId of input.environmentIds) {
+    const common = { client, projectId: input.projectId, environmentId, ephemeralPubHex };
+    let outcome = yield* attemptLease({ ...common, token });
+    if (outcome.kind === "replayed") {
+      if (retried) {
+        return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
       }
-      // §9.1 verification obligations (1)–(4). No value is decrypted until all of them pass
-      const material = yield* verifyLeaseResponse({
-        projectId: input.projectId,
-        environmentId,
-        response: outcome.response,
-        claims,
-        workloadKeyPair,
-        anchor,
-      });
-      yield* logWarnings(material.warnings);
-      // Leave the verification success in the CI log (keep stdout free for
-      // the child process's output — decision 9; stderr is the destination
-      // for diagnostics and info)
+      // Present the same ephemeral key (the fresh token is unbound and binds to this key)
       yield* io.logError(
-        `Lease verified (chain, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${environmentId})`,
+        "The lease was rejected as token-replayed (the token was already bound to a different ephemeral key). Minting a fresh token and retrying once",
       );
-      materials.set(environmentId, material);
+      retried = true;
+      token = yield* fetchGitHubOidcToken(input.audience);
+      claims = yield* readLeaseClaims(token);
+      outcome = yield* attemptLease({ ...common, token });
+      if (outcome.kind === "replayed") {
+        return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
+      }
     }
-    return { materials, credential: { token, ephemeralPubHex, keyPair: workloadKeyPair }, client };
-  });
-}
+    // §9.1 verification obligations (1)–(4). No value is decrypted until all of them pass
+    const material = yield* verifyLeaseResponse({
+      projectId: input.projectId,
+      environmentId,
+      response: outcome.response,
+      claims,
+      workloadKeyPair,
+      anchor,
+    });
+    yield* logWarnings(material.warnings);
+    // Leave the verification success in the CI log (keep stdout free for
+    // the child process's output — decision 9; stderr is the destination
+    // for diagnostics and info)
+    yield* io.logError(
+      `Lease verified (chain, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${environmentId})`,
+    );
+    materials.set(environmentId, material);
+  }
+  return { materials, credential: { token, ephemeralPubHex, keyPair: workloadKeyPair }, client };
+});
 
 /**
  * A fresh credential: the ephemeral X25519 key pair is generated in memory
@@ -262,28 +258,26 @@ export function leaseEnvironmentsWithCredential(
  * token = one key (session-25 §3 — §14-1's "the same key for all requests
  * under one token" is satisfied by construction).
  */
-function freshCredential(
+const freshCredential = Effect.fn("ci-lease.freshCredential")(function* (
   audience: string,
   /** The fetch's bound (the life of a token in hand — O-18); undefined = the default. */
   timeoutMs?: number,
-): Effect.Effect<WorkloadCredential, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const keyPair = yield* cryptoPromise("generateEncryptionKeyPair", () =>
-      generateEncryptionKeyPair(),
+): Effect.fn.Return<WorkloadCredential, CliError, CliIo> {
+  const keyPair = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+    generateEncryptionKeyPair(),
+  ).pipe(
+    Effect.mapError(() => cliError("Failed to generate the ephemeral key pair (crypto error)")),
+  );
+  const ephemeralPubHex = encodeHex(
+    yield* cryptoPromise("exportEncryptionPublicKey", () =>
+      exportEncryptionPublicKey(keyPair.publicKey),
     ).pipe(
-      Effect.mapError(() => cliError("Failed to generate the ephemeral key pair (crypto error)")),
-    );
-    const ephemeralPubHex = encodeHex(
-      yield* cryptoPromise("exportEncryptionPublicKey", () =>
-        exportEncryptionPublicKey(keyPair.publicKey),
-      ).pipe(
-        Effect.mapError(() => cliError("Failed to export the ephemeral public key (crypto error)")),
-      ),
-    );
-    const token = yield* fetchGitHubOidcToken(audience, timeoutMs);
-    return { token, ephemeralPubHex, keyPair };
-  });
-}
+      Effect.mapError(() => cliError("Failed to export the ephemeral public key (crypto error)")),
+    ),
+  );
+  const token = yield* fetchGitHubOidcToken(audience, timeoutMs);
+  return { token, ephemeralPubHex, keyPair };
+});
 
 /** The earlier credential when its token is still presentable (its `exp` is known and not within the margin), else null. */
 function reusableCredential(

@@ -74,7 +74,7 @@ const MAX_FACTS = 16;
 const MAX_FACT_LENGTH = 256;
 
 /** Input of `maruhi ci rotate` (all from explicit flags — the same discipline as ci run). */
-export interface CiRotateInput extends CiLeaseInput {
+interface CiRotateInput extends CiLeaseInput {
   readonly environmentId: EnvironmentId;
   /** The variable named on the command line (the rule's variable, or an AWS rule's key id companion). */
   readonly name: string;
@@ -160,59 +160,55 @@ function missingValue(name: string, where: string, primary: string): CliError {
 }
 
 /** The rule's credential as leased: the primary and every companion. */
-function currentCredential(
+const currentCredential = Effect.fn("ci-rotate.currentCredential")(function* (
   primary: string,
   rule: RotateRule,
   local: ByName,
-): Effect.Effect<CredentialValues, CliError> {
-  return Effect.gen(function* () {
-    const own = local.get(primary);
-    if (own === undefined) {
-      return yield* Effect.fail(missingValue(primary, "this environment", primary));
+): Effect.fn.Return<CredentialValues, CliError> {
+  const own = local.get(primary);
+  if (own === undefined) {
+    return yield* Effect.fail(missingValue(primary, "this environment", primary));
+  }
+  const companions: Record<string, Uint8Array> = {};
+  for (const [companion, variable] of Object.entries(companionsOf(rule))) {
+    const value = local.get(variable);
+    if (value === undefined) {
+      return yield* Effect.fail(missingValue(variable, "this environment", primary));
     }
-    const companions: Record<string, Uint8Array> = {};
-    for (const [companion, variable] of Object.entries(companionsOf(rule))) {
-      const value = local.get(variable);
-      if (value === undefined) {
-        return yield* Effect.fail(missingValue(variable, "this environment", primary));
-      }
-      companions[companion] = Redacted.value(value.value);
-    }
-    // Why it is unwrapped: the connector consumes the credential in memory
-    // to authenticate the rotation at the issuer (the same as var rotate)
-    return { primary: Redacted.value(own.value), companions };
-  });
-}
+    companions[companion] = Redacted.value(value.value);
+  }
+  // Why it is unwrapped: the connector consumes the credential in memory
+  // to authenticate the rotation at the issuer (the same as var rotate)
+  return { primary: Redacted.value(own.value), companions };
+});
 
 /** The admin inputs the rule names, from the leased environments (a missing one stops before anything is sent). */
-function leasedInputs(
+const leasedInputs = Effect.fn("ci-rotate.leasedInputs")(function* (
   primary: string,
   rule: RotateRule,
   environmentId: string,
   materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>,
-): Effect.Effect<RotateInputs, CliError> {
-  return Effect.gen(function* () {
-    const inputs: Record<string, Uint8Array> = {};
-    for (const [inputName, ref] of Object.entries(rule.inputs)) {
-      const sourceEnvironment = ref.environment ?? environmentId;
-      const material = materials.get(sourceEnvironment as EnvironmentId);
-      const value = material === undefined ? undefined : byNameOf(material).get(ref.name);
-      if (value === undefined) {
-        const where =
-          sourceEnvironment === environmentId
-            ? "this environment"
-            : `environment ${displayText(sourceEnvironment)}`;
-        return yield* Effect.fail(
-          cliError(
-            `The rotation rule for ${displayText(primary)} names variable ${displayText(ref.name)} in ${where} as its ${inputName}, but it has no value there. Set it with \`maruhi push\`, or fix the rule. Nothing was sent to the issuer`,
-          ),
-        );
-      }
-      inputs[inputName] = Redacted.value(value.value);
+): Effect.fn.Return<RotateInputs, CliError> {
+  const inputs: Record<string, Uint8Array> = {};
+  for (const [inputName, ref] of Object.entries(rule.inputs)) {
+    const sourceEnvironment = ref.environment ?? environmentId;
+    const material = materials.get(sourceEnvironment as EnvironmentId);
+    const value = material === undefined ? undefined : byNameOf(material).get(ref.name);
+    if (value === undefined) {
+      const where =
+        sourceEnvironment === environmentId
+          ? "this environment"
+          : `environment ${displayText(sourceEnvironment)}`;
+      return yield* Effect.fail(
+        cliError(
+          `The rotation rule for ${displayText(primary)} names variable ${displayText(ref.name)} in ${where} as its ${inputName}, but it has no value there. Set it with \`maruhi push\`, or fix the rule. Nothing was sent to the issuer`,
+        ),
+      );
     }
-    return inputs;
-  });
-}
+    inputs[inputName] = Redacted.value(value.value);
+  }
+  return inputs;
+});
 
 /** The facts the server accepts (AUTH_SPEC §14-5): at most 16, each neutralized and at most 256 characters. */
 function acceptableFacts(facts: readonly string[]): readonly string[] {
@@ -230,37 +226,35 @@ interface PlannedValue {
 }
 
 /** The values to propose, companions first (the same order as var rotate's pushes), each with the version it replaces. */
-function plannedValues(
+const plannedValues = Effect.fn("ci-rotate.plannedValues")(function* (
   primary: string,
   rule: RotateRule,
   local: ByName,
   outcome: RotationOutcome,
-): Effect.Effect<readonly PlannedValue[], CliError> {
-  return Effect.gen(function* () {
-    const planned: PlannedValue[] = [];
-    const push = (name: string, bytes: Uint8Array) =>
-      Effect.gen(function* () {
-        const variable = local.get(name);
-        if (variable === undefined) {
-          return yield* Effect.fail(missingValue(name, "this environment", primary));
-        }
-        planned.push({
-          name,
-          variableId: variable.variableId,
-          baseVersion: variable.version,
-          bytes,
-        });
-      });
-    for (const [companion, variable] of Object.entries(companionsOf(rule))) {
-      const bytes = outcome.values.companions[companion];
-      if (bytes !== undefined) {
-        yield* push(variable, bytes);
+): Effect.fn.Return<readonly PlannedValue[], CliError> {
+  const planned: PlannedValue[] = [];
+  const push = (name: string, bytes: Uint8Array) =>
+    Effect.gen(function* () {
+      const variable = local.get(name);
+      if (variable === undefined) {
+        return yield* Effect.fail(missingValue(name, "this environment", primary));
       }
+      planned.push({
+        name,
+        variableId: variable.variableId,
+        baseVersion: variable.version,
+        bytes,
+      });
+    });
+  for (const [companion, variable] of Object.entries(companionsOf(rule))) {
+    const bytes = outcome.values.companions[companion];
+    if (bytes !== undefined) {
+      yield* push(variable, bytes);
     }
-    yield* push(primary, outcome.values.primary);
-    return planned;
-  });
-}
+  }
+  yield* push(primary, outcome.values.primary);
+  return planned;
+});
 
 interface SealedWrap {
   readonly recipientUserId: string;
@@ -328,23 +322,21 @@ function sealToRecipients(input: {
 
 /** Why the server refused the mint, with the job's next step (the issuer already accepted the rotation). */
 /** The variables the mint will name, with the versions the lease holds (the pre-flight's input — O-4). */
-function preflightVariables(
+const preflightVariables = Effect.fn("ci-rotate.preflightVariables")(function* (
   primary: string,
   rule: RotateRule,
   local: ByName,
-): Effect.Effect<readonly { variableId: string; baseVersion: number }[], CliError> {
-  return Effect.gen(function* () {
-    const variables: { variableId: string; baseVersion: number }[] = [];
-    for (const name of [...Object.values(companionsOf(rule)), primary]) {
-      const variable = local.get(name);
-      if (variable === undefined) {
-        return yield* Effect.fail(missingValue(name, "this environment", primary));
-      }
-      variables.push({ variableId: variable.variableId, baseVersion: variable.version });
+): Effect.fn.Return<readonly { variableId: string; baseVersion: number }[], CliError> {
+  const variables: { variableId: string; baseVersion: number }[] = [];
+  for (const name of [...Object.values(companionsOf(rule)), primary]) {
+    const variable = local.get(name);
+    if (variable === undefined) {
+      return yield* Effect.fail(missingValue(name, "this environment", primary));
     }
-    return variables;
-  });
-}
+    variables.push({ variableId: variable.variableId, baseVersion: variable.version });
+  }
+  return variables;
+});
 
 /** The pre-flight's refusal (before the issuer is touched — nothing exists to recover). */
 function preflightRefusal(error: unknown, primary: string): CliError {
@@ -416,159 +408,155 @@ function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
  * live in), runs the connector, seals the new values to W(E), and stores
  * the proposal under the lease's credential. Values are never displayed.
  */
-export function ciRotateOp(
+export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
   input: CiRotateInput,
-): Effect.Effect<
+): Effect.fn.Return<
   CiRotateResult,
   CliError,
   CliIo | HttpClient.HttpClient | SqlRunner | ProcessRunner
 > {
-  return Effect.gen(function* () {
-    const target = ruleFor(input.config, input.name.normalize("NFC"));
-    if (target === null) {
-      return yield* Effect.fail(
-        cliError(
-          `No rotation rule for ${displayText(input.name)} in ${displayText(input.configPath)}. Add one (see the Rotation page in the docs). Nothing was leased`,
-        ),
-      );
-    }
-    if (!isProposalId(encodeHex(new Uint8Array(16)))) {
-      // Unreachable (a fixed-size hex); keeps the id form pinned to the crypto package's definition
-      return yield* Effect.fail(cliError("internal: the proposal id form is inconsistent"));
-    }
-    const { rule, primary } = target;
-    const leased = yield* leaseEnvironmentsWithCredential({
-      ...input,
-      environmentIds: [input.environmentId, ...inputEnvironments(rule, input.environmentId)],
-    });
-    const material = leased.materials.get(input.environmentId);
-    if (material === undefined) {
-      return yield* Effect.fail(
-        cliError("The lease returned no material (internal inconsistency)"),
-      );
-    }
-    const local = byNameOf(material);
-    const current = yield* currentCredential(primary, rule, local);
-    const inputs = yield* leasedInputs(primary, rule, input.environmentId, leased.materials);
-    const plan = yield* planRotation(rule, current).pipe(
-      Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
-    );
-    if (plan.immediate) {
-      return yield* Effect.fail(
-        cliError(
-          `Refusing to propose a rotation of ${displayText(primary)} from CI: this rule's rotation invalidates the current credential at once (${plan.description}). A sealed proposal keeps the current credential in use until a member accepts it, so it needs a rule with a grace period (a finalize step). Run \`maruhi var rotate ${displayText(primary)}\` from a member's machine instead. Nothing was sent to the issuer`,
-        ),
-      );
-    }
-    const recipients = proposalRecipients(material.verified, input.environmentId);
-    if (recipients.length === 0) {
-      return yield* Effect.fail(
-        cliError(
-          `No member device can accept a proposal for environment ${displayText(input.environmentId)} (nobody with role member or above has it in scope). Nothing was sent to the issuer`,
-        ),
-      );
-    }
-    // The pre-flight (O-4): the mint's checks that the issuer cannot undo
-    // once a credential exists (a stale base, a pending proposal for the
-    // same variable, the pending cap) are asked first, under the lease's
-    // credential; a refusal here strands nothing
-    const params = { projectId: input.projectId, environmentId: input.environmentId };
-    yield* leased.client.lease
-      .preflight({
-        params,
-        payload: {
-          oidcToken: Redacted.value(leased.credential.token),
-          ephemeralPubHex: leased.credential.ephemeralPubHex,
-          variables: yield* preflightVariables(primary, rule, local),
-          // The set the job will seal to, checked against W(E) here too
-          // (ruling O revision, round 4): a disagreement that is not a race
-          // is answered before the issuer is touched
-          recipients: recipients.map(({ member, device }) => ({
-            userId: member.userId,
-            encPubHex: device.encPubHex,
-          })),
-        },
-      })
-      .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
-    const site = { variable: primary, environmentId: input.environmentId };
-    const outcome = yield* callConnector(rotateCredential(rule, current, inputs, site));
-    const planned = yield* plannedValues(primary, rule, local, outcome);
-    const io = yield* CliIo;
-    const mintInput = { input, rule, planned, outcome, params };
-    const mintToken = yield* mintTokenFor(input, leased, outcome);
-    const minted = yield* sealAndMint({
-      ...mintInput,
-      lease: leased,
-      recipients,
-      token: mintToken,
-    }).pipe(
-      Effect.catchTag(
-        "RotationProposalRejected",
-        (error) =>
-          error.reason === "recipients-mismatch"
-            ? Effect.gen(function* () {
-                // The one post-issuer refusal that is purely a race (O-7):
-                // the members or devices changed between the lease and the
-                // mint. The plaintext is still in memory, so lease again,
-                // compute W(E) from the current chain, seal again and mint
-                // once more (a new proposal id); a second mismatch stops
-                yield* io.logError(
-                  "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
-                );
-                // Under the lease's key and the newest token the job holds
-                // for it — the mint's, minted seconds ago, else the lease's —
-                // while it lasts (a runner whose issuance endpoint stopped
-                // answering can still recover — O-13 / O-15); a fresh pair
-                // otherwise
-                const again = yield* leaseEnvironmentsWithCredential({
-                  ...input,
-                  environmentIds: [input.environmentId],
-                  credential: { ...leased.credential, token: mintToken },
-                }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
-                const againMaterial = again.materials.get(input.environmentId);
-                if (againMaterial === undefined) {
-                  return yield* Effect.fail(
-                    cliError("The lease returned no material (internal inconsistency)"),
-                  );
-                }
-                const againRecipients = proposalRecipients(
-                  againMaterial.verified,
-                  input.environmentId,
-                );
-                const second = yield* sealAndMint({
-                  ...mintInput,
-                  lease: again,
-                  recipients: againRecipients,
-                  token: yield* mintTokenFor(input, again, outcome),
-                }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
-                return { ...second, resealed: true };
-              })
-            : Effect.fail(mintRefusal(error, outcome)),
-        (error) => Effect.fail(mintRefusal(error, outcome)),
+  const target = ruleFor(input.config, input.name.normalize("NFC"));
+  if (target === null) {
+    return yield* Effect.fail(
+      cliError(
+        `No rotation rule for ${displayText(input.name)} in ${displayText(input.configPath)}. Add one (see the Rotation page in the docs). Nothing was leased`,
       ),
     );
-    yield* logWarnings([...material.warnings, ...outcome.warnings]);
-    return {
-      proposalId: minted.proposalId,
-      primary,
-      connector: rule.connector,
-      variables: planned.map(({ name, variableId, baseVersion }) => ({
-        name,
-        variableId,
-        baseVersion,
-      })),
-      recipientDevices: minted.recipients.length,
-      recipientMembers: new Set(minted.recipients.map((recipient) => recipient.member.userId)).size,
-      facts: outcome.facts,
-      valueShape: describeValueShapes(outcome),
-      currentShape: describeShape(outcome.currentShape),
-      previous: outcome.previous,
-      expiresAtMs: minted.expiresAtMs,
-      resealed: minted.resealed,
-      warnings: [],
-    };
+  }
+  if (!isProposalId(encodeHex(new Uint8Array(16)))) {
+    // Unreachable (a fixed-size hex); keeps the id form pinned to the crypto package's definition
+    return yield* Effect.fail(cliError("internal: the proposal id form is inconsistent"));
+  }
+  const { rule, primary } = target;
+  const leased = yield* leaseEnvironmentsWithCredential({
+    ...input,
+    environmentIds: [input.environmentId, ...inputEnvironments(rule, input.environmentId)],
   });
-}
+  const material = leased.materials.get(input.environmentId);
+  if (material === undefined) {
+    return yield* Effect.fail(cliError("The lease returned no material (internal inconsistency)"));
+  }
+  const local = byNameOf(material);
+  const current = yield* currentCredential(primary, rule, local);
+  const inputs = yield* leasedInputs(primary, rule, input.environmentId, leased.materials);
+  const plan = yield* planRotation(rule, current).pipe(
+    Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
+  );
+  if (plan.immediate) {
+    return yield* Effect.fail(
+      cliError(
+        `Refusing to propose a rotation of ${displayText(primary)} from CI: this rule's rotation invalidates the current credential at once (${plan.description}). A sealed proposal keeps the current credential in use until a member accepts it, so it needs a rule with a grace period (a finalize step). Run \`maruhi var rotate ${displayText(primary)}\` from a member's machine instead. Nothing was sent to the issuer`,
+      ),
+    );
+  }
+  const recipients = proposalRecipients(material.verified, input.environmentId);
+  if (recipients.length === 0) {
+    return yield* Effect.fail(
+      cliError(
+        `No member device can accept a proposal for environment ${displayText(input.environmentId)} (nobody with role member or above has it in scope). Nothing was sent to the issuer`,
+      ),
+    );
+  }
+  // The pre-flight (O-4): the mint's checks that the issuer cannot undo
+  // once a credential exists (a stale base, a pending proposal for the
+  // same variable, the pending cap) are asked first, under the lease's
+  // credential; a refusal here strands nothing
+  const params = { projectId: input.projectId, environmentId: input.environmentId };
+  yield* leased.client.lease
+    .preflight({
+      params,
+      payload: {
+        oidcToken: Redacted.value(leased.credential.token),
+        ephemeralPubHex: leased.credential.ephemeralPubHex,
+        variables: yield* preflightVariables(primary, rule, local),
+        // The set the job will seal to, checked against W(E) here too
+        // (ruling O revision, round 4): a disagreement that is not a race
+        // is answered before the issuer is touched
+        recipients: recipients.map(({ member, device }) => ({
+          userId: member.userId,
+          encPubHex: device.encPubHex,
+        })),
+      },
+    })
+    .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
+  const site = { variable: primary, environmentId: input.environmentId };
+  const outcome = yield* callConnector(rotateCredential(rule, current, inputs, site));
+  const planned = yield* plannedValues(primary, rule, local, outcome);
+  const io = yield* CliIo;
+  const mintInput = { input, rule, planned, outcome, params };
+  const mintToken = yield* mintTokenFor(input, leased, outcome);
+  const minted = yield* sealAndMint({
+    ...mintInput,
+    lease: leased,
+    recipients,
+    token: mintToken,
+  }).pipe(
+    Effect.catchTag(
+      "RotationProposalRejected",
+      (error) =>
+        error.reason === "recipients-mismatch"
+          ? Effect.gen(function* () {
+              // The one post-issuer refusal that is purely a race (O-7):
+              // the members or devices changed between the lease and the
+              // mint. The plaintext is still in memory, so lease again,
+              // compute W(E) from the current chain, seal again and mint
+              // once more (a new proposal id); a second mismatch stops
+              yield* io.logError(
+                "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
+              );
+              // Under the lease's key and the newest token the job holds
+              // for it — the mint's, minted seconds ago, else the lease's —
+              // while it lasts (a runner whose issuance endpoint stopped
+              // answering can still recover — O-13 / O-15); a fresh pair
+              // otherwise
+              const again = yield* leaseEnvironmentsWithCredential({
+                ...input,
+                environmentIds: [input.environmentId],
+                credential: { ...leased.credential, token: mintToken },
+              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+              const againMaterial = again.materials.get(input.environmentId);
+              if (againMaterial === undefined) {
+                return yield* Effect.fail(
+                  cliError("The lease returned no material (internal inconsistency)"),
+                );
+              }
+              const againRecipients = proposalRecipients(
+                againMaterial.verified,
+                input.environmentId,
+              );
+              const second = yield* sealAndMint({
+                ...mintInput,
+                lease: again,
+                recipients: againRecipients,
+                token: yield* mintTokenFor(input, again, outcome),
+              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+              return { ...second, resealed: true };
+            })
+          : Effect.fail(mintRefusal(error, outcome)),
+      (error) => Effect.fail(mintRefusal(error, outcome)),
+    ),
+  );
+  yield* logWarnings([...material.warnings, ...outcome.warnings]);
+  return {
+    proposalId: minted.proposalId,
+    primary,
+    connector: rule.connector,
+    variables: planned.map(({ name, variableId, baseVersion }) => ({
+      name,
+      variableId,
+      baseVersion,
+    })),
+    recipientDevices: minted.recipients.length,
+    recipientMembers: new Set(minted.recipients.map((recipient) => recipient.member.userId)).size,
+    facts: outcome.facts,
+    valueShape: describeValueShapes(outcome),
+    currentShape: describeShape(outcome.currentShape),
+    previous: outcome.previous,
+    expiresAtMs: minted.expiresAtMs,
+    resealed: minted.resealed,
+    warnings: [],
+  };
+});
 
 interface SealAndMintInput {
   readonly input: CiRotateInput;
@@ -595,55 +583,53 @@ interface Minted {
  * refusals come back as they are (the caller decides which one is a
  * race); everything else is the mint refusal with the recovery step.
  */
-function sealAndMint(
+const sealAndMint = Effect.fn("ci-rotate.sealAndMint")(function* (
   mint: SealAndMintInput,
-): Effect.Effect<Minted, CliError | RotationProposalRejectedError, CliIo> {
-  return Effect.gen(function* () {
-    const { input, outcome, lease, recipients } = mint;
-    const proposalId = encodeHex(crypto.getRandomValues(new Uint8Array(16)));
-    const variables = yield* Effect.forEach(mint.planned, (value) =>
-      Effect.map(
-        sealToRecipients({
-          projectId: input.projectId,
-          environmentId: input.environmentId,
+): Effect.fn.Return<Minted, CliError | RotationProposalRejectedError, CliIo> {
+  const { input, outcome, lease, recipients } = mint;
+  const proposalId = encodeHex(crypto.getRandomValues(new Uint8Array(16)));
+  const variables = yield* Effect.forEach(mint.planned, (value) =>
+    Effect.map(
+      sealToRecipients({
+        projectId: input.projectId,
+        environmentId: input.environmentId,
+        proposalId,
+        variableId: value.variableId,
+        baseVersion: value.baseVersion,
+        bytes: value.bytes,
+        recipients,
+      }),
+      (wraps) => ({ variableId: value.variableId, baseVersion: value.baseVersion, wraps }),
+    ),
+  );
+  const receipt = yield* lease.client.lease
+    .propose({
+      params: mint.params,
+      payload: {
+        // Why it is unwrapped: the wire boundary of the mint request (the
+        // lease's ephemeral key under a token of the same workload —
+        // AUTH_SPEC §14-5)
+        oidcToken: Redacted.value(mint.token),
+        ephemeralPubHex: lease.credential.ephemeralPubHex,
+        proposal: {
           proposalId,
-          variableId: value.variableId,
-          baseVersion: value.baseVersion,
-          bytes: value.bytes,
-          recipients,
-        }),
-        (wraps) => ({ variableId: value.variableId, baseVersion: value.baseVersion, wraps }),
+          connector: mint.rule.connector,
+          facts: acceptableFacts(outcome.facts),
+          // The lifetime travels as days; the server sets the instant
+          // (a CI clock ahead of the server can never make the proposal
+          // unacceptable after the issuer was touched — O-9)
+          expiresInDays: input.expiresInDays,
+          variables,
+        },
+      },
+    })
+    .pipe(
+      Effect.catchTag("RotationProposalRejected", Effect.fail, (error) =>
+        Effect.fail(mintRefusal(error, outcome)),
       ),
     );
-    const receipt = yield* lease.client.lease
-      .propose({
-        params: mint.params,
-        payload: {
-          // Why it is unwrapped: the wire boundary of the mint request (the
-          // lease's ephemeral key under a token of the same workload —
-          // AUTH_SPEC §14-5)
-          oidcToken: Redacted.value(mint.token),
-          ephemeralPubHex: lease.credential.ephemeralPubHex,
-          proposal: {
-            proposalId,
-            connector: mint.rule.connector,
-            facts: acceptableFacts(outcome.facts),
-            // The lifetime travels as days; the server sets the instant
-            // (a CI clock ahead of the server can never make the proposal
-            // unacceptable after the issuer was touched — O-9)
-            expiresInDays: input.expiresInDays,
-            variables,
-          },
-        },
-      })
-      .pipe(
-        Effect.catchTag("RotationProposalRejected", Effect.fail, (error) =>
-          Effect.fail(mintRefusal(error, outcome)),
-        ),
-      );
-    return { proposalId, expiresAtMs: receipt.expiresAtMs, recipients, resealed: false };
-  });
-}
+  return { proposalId, expiresAtMs: receipt.expiresAtMs, recipients, resealed: false };
+});
 
 /**
  * The mint's token: one minted now, for the lease's ephemeral key (K-5 —
@@ -653,40 +639,38 @@ function sealAndMint(
  * again, unless it has expired meanwhile (K-6): then nothing can store the
  * proposal and the recovery for the credential at the issuer is said.
  */
-function mintTokenFor(
+const mintTokenFor = Effect.fn("ci-rotate.mintTokenFor")(function* (
   input: CiRotateInput,
   lease: LeasedEnvironments,
   outcome: RotationOutcome,
-): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
+): Effect.fn.Return<Redacted.Redacted<string>, CliError, CliIo> {
   // The fetch's bound follows the lease token's life (O-18): a hung
   // endpoint must not eat the fallback to a token that still lives
-  return Effect.gen(function* () {
-    const boundNowMs = yield* Clock.currentTimeMillis;
-    return yield* fetchGitHubOidcToken(
-      input.audience,
-      issuanceBoundFor(lease.credential.token, boundNowMs),
-    ).pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          const io = yield* CliIo;
-          const expiresAtMs = tokenExpiresAtMs(lease.credential.token);
-          const nowMs = yield* Clock.currentTimeMillis;
-          if (expiresAtMs !== null && expiresAtMs <= nowMs) {
-            return yield* Effect.fail(
-              cliError(
-                `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} before a fresh one could be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
-              ),
-            );
-          }
-          yield* io.logError(
-            `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
+  const boundNowMs = yield* Clock.currentTimeMillis;
+  return yield* fetchGitHubOidcToken(
+    input.audience,
+    issuanceBoundFor(lease.credential.token, boundNowMs),
+  ).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        const io = yield* CliIo;
+        const expiresAtMs = tokenExpiresAtMs(lease.credential.token);
+        const nowMs = yield* Clock.currentTimeMillis;
+        if (expiresAtMs !== null && expiresAtMs <= nowMs) {
+          return yield* Effect.fail(
+            cliError(
+              `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} before a fresh one could be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
+            ),
           );
-          return lease.credential.token;
-        }),
-      ),
-    );
-  });
-}
+        }
+        yield* io.logError(
+          `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
+        );
+        return lease.credential.token;
+      }),
+    ),
+  );
+});
 
 /** The report lines of a mint (the command prints them; values never appear). */
 export function describeProposal(result: CiRotateResult, environmentId: string): string[] {
