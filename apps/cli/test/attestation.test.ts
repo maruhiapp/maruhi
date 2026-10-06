@@ -464,6 +464,28 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     expect(server.requests).toHaveLength(2);
   });
 
+  it("reads a tracking file without the format version as corrupt (the head is submitted again)", async () => {
+    const env = await makeTestEnv();
+    const built = await buildStandardChain();
+    const server = await startServer([
+      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+        status: 204,
+        bodyText: "",
+      })),
+    ]);
+    const view3 = await verifiedViewOf(built, 3, []);
+    await submissionProgram(env, server.origin, view3, built.projectId);
+    expect(server.requests).toHaveLength(1);
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(env.floorDir, `${built.projectId}.attested.json`),
+      `${JSON.stringify({ head: { seq: 3, hashHex: built.hashes[2] } })}\n`,
+    );
+    await submissionProgram(env, server.origin, view3, built.projectId);
+    expect(server.requests).toHaveLength(2);
+    expect(env.errors).toEqual([]);
+  });
+
   it("a submission failure (old server = route missing) degrades to a one-line warning without failing the command", async () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();

@@ -152,14 +152,13 @@ const mapErrorTo =
     effect.pipe(Effect.mapError(() => cliError(message(projectId))));
 
 /**
- * The attested-head file's shape (`{ v: 1, head }` is what is written).
- * `v` is the format-version marker: writes always emit 1, and reads accept
- * any or absent `v` — matching the pre-schema reader, which ignored the
- * field entirely. `head` is decodable-checked by decodeChainHead, not the
- * schema, so the accepted set is unchanged.
+ * The attested-head file's shape: `{ v: 1, head }`. `v` is the
+ * format-version marker (a file without it, or with another version, reads
+ * as corrupt). `head` is decodable-checked by decodeChainHead, not the
+ * schema.
  */
 const AttestedHeadFileSchema = Schema.Struct({
-  v: Schema.optionalKey(Schema.Unknown),
+  v: Schema.Literal(1),
   head: Schema.Unknown,
 });
 
