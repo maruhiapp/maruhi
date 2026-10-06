@@ -363,8 +363,8 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   // task (under the permit, committed atomically). Since recipient is
   // the third component of the primary key, a key-prefix match is
   // impossible, so it is looked up via the recipient index dw_recipient
-  // (recipient_user_id, recipient_class) (a migration step of
-  // do-schema.ts) — the scan is limited to the wrap rows addressed to
+  // (recipient_user_id, recipient_class) (created by the do-schema.ts
+  // base step) — the scan is limited to the wrap rows addressed to
   // the target user_id (test/do-schema.test.ts pins it via EXPLAIN
   // QUERY PLAN)
   deleteStaleMemberWraps: (recipientUserId, keepEncPubHex) => {

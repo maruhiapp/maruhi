@@ -97,7 +97,7 @@ export interface MirrorState {
   readonly lastHeadHashHex: string;
   /** The replica's audit seq at the last replication (or the mark): rows past it are the mirror's own. */
   readonly lastAuditSeq: number;
-  /** The replica's attestation mark at the last replication (or the mark); null on a row written before step 6. */
+  /** The replica's attestation mark at the last replication (or the mark); null on a row written before the column existed (a DO that already ran the pre-squash steps). */
   readonly lastAttestationMark: number | null;
   /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
   readonly lastMutationSeq: number | null;

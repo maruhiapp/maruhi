@@ -441,7 +441,8 @@ export function writeSnapshot(input: WriteSnapshotInput): Effect.Effect<WriteSna
 
 /**
  * The marks a cursor binds: the chain head, the attestation mark and the
- * mutation counter (kept by the schema's triggers — do-schema.ts step 7)
+ * mutation counter (kept by the schema's triggers — the mutation triggers
+ * the do-schema.ts base step creates)
  * must not move between pages, or the export restarts. The exported audit
  * log is bounded by the cursor's `exportedSeq` (the export's own audit
  * row, the last one before the marks were taken): rows past it are the

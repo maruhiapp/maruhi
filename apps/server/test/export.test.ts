@@ -25,7 +25,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   isMutationTracked,
-  PROJECT_DO_MIGRATIONS,
+  PROJECT_DO_LATEST_SCHEMA_VERSION,
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
@@ -226,9 +226,9 @@ async function d1Rows(query: string, ...bindings: (string | number)[]) {
   ).results;
 }
 
-/** The DO's schema version as the export's marks carry it (the last migration step). */
+/** The DO's schema version as the export's marks carry it (the latest recorded version). */
 function readProjectDoSchemaVersionOf(): number {
-  return PROJECT_DO_MIGRATIONS.length;
+  return PROJECT_DO_LATEST_SCHEMA_VERSION;
 }
 
 describe("project export (AUTH_SPEC §11-6)", () => {
@@ -768,7 +768,7 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(JSON.stringify(outcome)).not.toContain(projectId);
   });
 
-  /** The triggers a snapshot table carries: the three of step 7 on a tracked one, step 9's on the audit log, none elsewhere. */
+  /** The triggers a snapshot table carries: the three mutation triggers on a tracked one, the audit write trigger on the audit log, none elsewhere. */
   function expectedTriggers(table: string): string[] {
     if (isMutationTracked(table)) {
       return [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`];
@@ -792,7 +792,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       );
       expect(triggers.map((row) => row["name"])).toEqual(expectedTriggers(table));
     }
-    // No other table carries a trigger (step 7 goes on the declared tables only — ruling C revision, round 5)
+    // No other table carries a trigger (the mutation triggers go on the declared tables only — ruling C revision, round 5)
     const triggered = await queryProjectDo(
       projectId,
       "SELECT DISTINCT tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY tbl_name",
@@ -821,9 +821,9 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(afterWrite).toBe(after + 1);
     await auditRow("var.read", "fe".repeat(16));
     expect(await counterSeq()).toBe(afterWrite);
-    // A fresh DO's step-9 trigger is the text the re-assert expects: its
-    // first re-open performs no DDL (the schema row stays — round 9)
-    const stepNine = await queryProjectDo(
+    // A fresh DO's audit write trigger is the text the re-assert expects:
+    // its first re-open performs no DDL (the schema row stays — round 9)
+    const auditTrigger = await queryProjectDo(
       projectId,
       "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
     );
@@ -833,7 +833,7 @@ describe("project import (the restore job with identitiesKey)", () => {
         projectId,
         "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
       ),
-    ).toEqual(stepNine);
+    ).toEqual(auditTrigger);
     // The trigger's deny list is re-asserted at every open (ruling C
     // revision, round 7): a deployed trigger naming fewer read-path rows is
     // re-created with the list the code carries
