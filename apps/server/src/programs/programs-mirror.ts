@@ -91,7 +91,7 @@ export interface MirrorPageRequest {
   readonly sequence: number;
   readonly lines: readonly string[];
   /** The source's mutation counter as the export's head reported it (the trailer page records it). */
-  readonly sourceMutationSeq?: number | undefined;
+  readonly sourceMutationSeq: number;
 }
 
 function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
@@ -117,7 +117,9 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
     mirror: true,
     sourceOrigin: state.sourceOrigin,
     markedAtMs: state.markedAtMs,
-    ...(state.lastSyncedAtMs === null || !admin
+    // The commit writes the sync time and the source's counter together,
+    // so both are set exactly when a replication was recorded
+    ...(state.lastSyncedAtMs === null || state.lastMutationSeq === null || !admin
       ? {}
       : {
           lastSync: {
@@ -125,8 +127,8 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
             chainHeadSeq: state.lastHeadSeq,
             chainHeadHashHex: state.lastHeadHashHex,
             auditMaxSeq: state.lastAuditSeq,
-            attestationMark: state.lastAttestationMark ?? 0,
-            ...(state.lastMutationSeq === null ? {} : { mutationSeq: state.lastMutationSeq }),
+            attestationMark: state.lastAttestationMark,
+            mutationSeq: state.lastMutationSeq,
           },
         }),
     ...(state.expectedSequence === 0 ? {} : { nextSequence: state.expectedSequence }),
@@ -291,7 +293,7 @@ export const mirrorPageProgram = Effect.fn("programs-mirror.mirrorPageProgram")(
     tables: PROJECT_DO_TABLES,
     state,
     nowMs: yield* Clock.currentTimeMillis,
-    sourceMutationSeq: page.sourceMutationSeq ?? null,
+    sourceMutationSeq: page.sourceMutationSeq,
   }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
   // The chain and the audit log were replaced: the derived memory is
   // discarded and the audit-head column extended to the end (the same

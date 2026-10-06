@@ -169,14 +169,6 @@ describe("invite accept", () => {
       linkSignatureHex: "cd".repeat(64),
     });
     expect(malformed.status).toBe(400);
-    // The old wire shape (the token field) is a strict-acceptance 400 (no compatibility path)
-    const legacy = await acceptRequest(bearer(tokenOf(inviteFixture.tokens, STRANGER)), {
-      token: `maruhi_inv_${"A".repeat(43)}`,
-      encPubHex: keys.encPubHex,
-      sigPubHex: keys.sigPubHex,
-      signatureHex: "ab".repeat(64),
-    });
-    expect(legacy.status).toBe(400);
   });
 
   it("unusable invites are 410 with a reason (status precedes expiry)", async () => {

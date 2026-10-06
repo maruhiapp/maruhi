@@ -155,8 +155,7 @@ export const auditHeadProgram = Effect.fn("programs-audit.auditHeadProgram")(fun
   }
   const audit = yield* AuditStore;
   // Extend the accumulated-hash column up to MAX(seq) before
-  // reading (lazy materialization — the first call doubles as the
-  // initialization migration over existing rows. AUDIT_SPEC §5.1).
+  // reading (lazy materialization — AUDIT_SPEC §5.1).
   // Note: this GET is read-shaped but is an endpoint that
   // **deliberately writes** (lazy materialization of a derived
   // column = the contract "the read path extends before reading").

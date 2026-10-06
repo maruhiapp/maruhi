@@ -178,6 +178,7 @@ const dummyEnvStatement = (name: string, status: "active" | "deleted" = "active"
 const dummyWrap = {
   suite: "maruhi/v1" as const,
   epoch: 1,
+  recipientClass: "member" as const,
   recipientUserId: STRANGER,
   recipientEncPubHex: "ab".repeat(32),
   encHex: "cd".repeat(32),
@@ -601,7 +602,14 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             deleteDekWrapsProgram(
               actor(OWNER),
               ENV,
-              [{ epoch: 7, recipientUserId: STRANGER, recipientEncPubHex: "ab".repeat(32) }],
+              [
+                {
+                  epoch: 7,
+                  recipientClass: "member",
+                  recipientUserId: STRANGER,
+                  recipientEncPubHex: "ab".repeat(32),
+                },
+              ],
               cache,
             ),
           ),

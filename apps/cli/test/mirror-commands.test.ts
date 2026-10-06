@@ -27,11 +27,13 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import {
   built,
   deadOrigin,
+  exportHeadOfChain,
   headOfChain,
   mirrorHandlers,
   mirrorState,
   type MirrorState,
   owner,
+  SOURCE_MUTATION_SEQ,
   start,
 } from "./support/mirror.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
@@ -123,14 +125,14 @@ function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
       if (request.query["cursor"] === undefined) {
         return {
           status: 200,
-          json: { lines: lines.slice(0, 3), next: "Y3Vyc29y", head: headOfChain() },
+          json: { lines: lines.slice(0, 3), next: "Y3Vyc29y", head: exportHeadOfChain() },
         };
       }
       if (state.changedPages > 0) {
         state.changedPages -= 1;
         return { status: 409, json: { _tag: "ExportChanged", reason: "project-changed" } };
       }
-      return { status: 200, json: { lines: lines.slice(3), head: headOfChain() } };
+      return { status: 200, json: { lines: lines.slice(3), head: exportHeadOfChain() } };
     },
   ];
 }
@@ -164,8 +166,8 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     );
     const lines = snapshotLines();
     expect(pair.state.pages).toEqual([
-      { sequence: 0, lines: lines.slice(0, 3) },
-      { sequence: 1, lines: lines.slice(3) },
+      { sequence: 0, lines: lines.slice(0, 3), sourceMutationSeq: SOURCE_MUTATION_SEQ },
+      { sequence: 1, lines: lines.slice(3), sourceMutationSeq: SOURCE_MUTATION_SEQ },
     ]);
     const logs = pair.env.logs.join("\n");
     expect(logs).toContain(
@@ -840,7 +842,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     pair.state.status = {
       ...pair.state.status,
       head: headOfChain(),
-      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0, mutationSeq: SOURCE_MUTATION_SEQ },
     };
     // Frozen at seq 1 with an entry that is not the mirror's: a fork, no
     // sync can repair it, and the refusal says so (no sync is suggested)
@@ -909,7 +911,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     planned.state.status = {
       ...planned.state.status,
       head: headOfChain(),
-      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0, mutationSeq: SOURCE_MUTATION_SEQ },
     };
     sourceStatus = {
       mirror: true,
@@ -946,13 +948,19 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     syncedBack.state.status = {
       ...syncedBack.state.status,
       head: headOfChain(),
-      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0, mutationSeq: SOURCE_MUTATION_SEQ },
     };
     sourceStatus = {
       mirror: true,
       sourceOrigin: syncedBack.mirror.origin,
       head: { ...headOfChain(), auditMaxSeq: 12 },
-      lastSync: { atMs: 6, ...headOfChain(), auditMaxSeq: 10, attestationMark: 0 },
+      lastSync: {
+        atMs: 6,
+        ...headOfChain(),
+        auditMaxSeq: 10,
+        attestationMark: 0,
+        mutationSeq: SOURCE_MUTATION_SEQ,
+      },
     };
     try {
       expect(
@@ -992,7 +1000,12 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         mirror: true,
         sourceOrigin: pair.mirror.origin,
         head: headOfChain(),
-        lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+        lastSync: {
+          atMs: 5,
+          ...headOfChain(),
+          attestationMark: 0,
+          mutationSeq: SOURCE_MUTATION_SEQ,
+        },
       };
       expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
         0,
@@ -1021,7 +1034,13 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       status: 200,
       json: {
         nextSequence: 0,
-        committed: { atMs: 5, ...headOfChain(), chainHeadHashHex: "ab".repeat(32) },
+        committed: {
+          atMs: 5,
+          ...headOfChain(),
+          attestationMark: 0,
+          mutationSeq: SOURCE_MUTATION_SEQ,
+          chainHeadHashHex: "ab".repeat(32),
+        },
       },
     };
     expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
@@ -1048,6 +1067,8 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         committed: {
           atMs: 5,
           ...headOfChain(),
+          attestationMark: 0,
+          mutationSeq: SOURCE_MUTATION_SEQ,
           chainHeadSeq: 1,
           chainHeadHashHex: built.hashes[0] ?? "",
         },
@@ -1070,6 +1091,8 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         committed: {
           atMs: 5,
           ...headOfChain(),
+          attestationMark: 0,
+          mutationSeq: SOURCE_MUTATION_SEQ,
           chainHeadSeq: 3,
           chainHeadHashHex: "ab".repeat(32),
         },

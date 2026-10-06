@@ -399,7 +399,7 @@ export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRo
     facts: LeaseTokenFacts,
     variables: readonly PreflightVariableInput[],
     cache: StateCache,
-    recipients?: readonly PreflightRecipientInput[],
+    recipients: readonly PreflightRecipientInput[],
   ): Effect.fn.Return<
     void,
     ProposalRejection,
@@ -431,12 +431,11 @@ export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRo
     for (const variable of variables) {
       yield* preflightVariable(store, environmentId, variable, nowMs);
     }
-    // The recipient set the job will seal to, when it says (ruling O
-    // revision, round 4): a disagreement with W(E) that is not a race — a
-    // chain view that differs, a device registered since the lease — is
-    // answered here, before the issuer is touched; the mint repeats it
+    // The recipient set the job will seal to (ruling O revision, round 4):
+    // a disagreement with W(E) that is not a race — a chain view that
+    // differs, a device registered since the lease — is answered here,
+    // before the issuer is touched; the mint repeats it
     if (
-      recipients !== undefined &&
       !recipientsMatch(
         proposalRecipientKeys(state, environmentId),
         recipients.map((recipient) => ({

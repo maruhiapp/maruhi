@@ -174,10 +174,8 @@ export const RotationPreflightRequestSchema = Schema.Struct({
    * cap; the bound is the §12-8 DEK-wrap row cap, set above that for the
    * same reason (the mint's wraps carry the same set).
    */
-  recipients: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ userId: BoundedUserId, encPubHex: EncPubHex })).check(
-      Schema.isMaxLength(10_000),
-    ),
+  recipients: Schema.Array(Schema.Struct({ userId: BoundedUserId, encPubHex: EncPubHex })).check(
+    Schema.isMaxLength(10_000),
   ),
 });
 

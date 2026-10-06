@@ -123,9 +123,7 @@ const replicateOnce = Effect.fn("mirror.replicateOnce")(function* (
           lines: exported.lines,
           // The source's counter rides with every page; the mirror records
           // the trailer page's with the replica (the no-change check)
-          ...(exported.head.mutationSeq === undefined
-            ? {}
-            : { sourceMutationSeq: exported.head.mutationSeq }),
+          sourceMutationSeq: exported.head.mutationSeq,
         },
       })
       .pipe(Effect.mapError(toCliError));
@@ -391,7 +389,7 @@ function sourceUnchanged(
 /** The three marks the last replication brought are the source's current ones, and the mirror still holds that head. */
 function marksUnchanged(before: MirrorStatus, source: MirrorStatus): boolean {
   const last = before.lastSync;
-  if (last === undefined || last.mutationSeq === undefined) {
+  if (last === undefined) {
     return false;
   }
   return (

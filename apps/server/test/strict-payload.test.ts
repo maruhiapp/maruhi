@@ -258,11 +258,10 @@ describe("environment create / rotation composite (§12-4)", () => {
     });
   });
 
-  it("rejects a composite without the boundary checkpoint field with 400 (fail-closed for older CLIs)", async () => {
-    // §12-4's mandatory bundling: a create / rotate composite from
-    // an old CLI that does not know checkpoint fails closed as a
-    // Schema-stage 400 (the consequence of session-33 ruling E-3 —
-    // SELF_HOSTING's update ordering covers the operational side).
+  it("rejects a composite without the required boundary checkpoint field with 400", async () => {
+    // §12-4's mandatory bundling: a create / rotate composite without
+    // the checkpoint field fails closed as a Schema-stage 400
+    // (session-33 ruling E-3).
     // Per the file-top convention, probe / control are paired within
     // this test (if it depended on a prior test's clean, a change on
     // the prior side would silently lose the guarantee that the 400
@@ -438,6 +437,7 @@ describe("DEK wrap registration (§12-6)", () => {
     const wrap = {
       suite: "maruhi/v1",
       epoch: 1,
+      recipientClass: "member",
       recipientUserId: OWNER,
       recipientEncPubHex: "ab".repeat(32),
       encHex: "cd".repeat(32),

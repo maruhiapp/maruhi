@@ -519,7 +519,6 @@ async function sealedShareFor(
 /**
  * `GET /auth/guardian/shares/:groupId` (GuardianShareResult): the leading
  * row's fields plus `deviceShares` (all of your device rows — K3-10).
- * Omitting `deviceShares` yields the legacy-server shape.
  */
 function myShareHandler(
   rows: readonly {

@@ -18,13 +18,10 @@
 // boundary without adding a dependency. The D1 side (db.package) keeps using
 // Drizzle.
 
-// The current schema (version 9: the pre-squash steps 1-9 — the 2026-09-26
-// fold of the first history plus the 2026-10-02 appends — were squashed into
-// one base step on 2026-10-06, owner-approved, the same move the D1 schema
-// made with drizzle/20260926225739_init. Design record of the first fold:
-// dk-design.md §22-4). The DDL is in creation order, so a fresh DO's
-// sqlite_master layout matches an upgraded one's, except for the unused
-// mirror_state residue column described at mirror_state below.
+// The current schema (version 9: the base step — the migration history was
+// squashed into it on 2026-10-06, owner-approved, the same move the D1
+// schema made with drizzle/20260926225739_init). The DDL is in creation
+// order.
 const PROJECT_DO_DDL = [
   `CREATE TABLE chain_entries (
      seq INTEGER PRIMARY KEY,
@@ -68,8 +65,7 @@ const PROJECT_DO_DDL = [
   // values, CRYPTO_SPEC §4.2 layout v3): NULL on v1 / v2 rows; on a v3 row the
   // signed string ("" = no declaration, else the decimal day count). It is
   // declared last among the columns (a column definition cannot follow a
-  // table constraint in CREATE TABLE input) — the same column order the
-  // pre-squash ALTERs produced
+  // table constraint in CREATE TABLE input)
   `CREATE TABLE variable_meta_statements (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -363,13 +359,7 @@ const PROJECT_DO_DDL = [
   // without uploading a replica. last_mutation_seq (ruling H revision,
   // round 3): the source's mutation counter the replica was exported at, so
   // a sync's no-change check covers every write (attestations included) by
-  // construction. Both sit at the end because the pre-squash ALTERs appended
-  // them — the squashed base reproduces the same column order.
-  // Residue of the squash: a DO upgraded to 9 before the squash may carry an
-  // unused nullable `mirror_state.last_audit_head_hash_hex` (added by the
-  // pre-squash steps, unread since ruling J revision round 8, never written
-  // or read by name anywhere); a later step must not add a column of that
-  // name — the ALTER would refuse on those DOs
+  // construction (NULL until the first replication since the mark)
   `CREATE TABLE mirror_state (
      id INTEGER PRIMARY KEY CHECK (id = 1),
      source_origin TEXT NOT NULL,
@@ -380,7 +370,7 @@ const PROJECT_DO_DDL = [
      last_head_seq INTEGER,
      last_head_hash_hex TEXT,
      last_audit_seq INTEGER,
-     last_attestation_mark INTEGER,
+     last_attestation_mark INTEGER NOT NULL,
      last_mutation_seq INTEGER
    )`,
   // The deployment-local mutation counter a paged export binds its cursor to
@@ -419,15 +409,10 @@ export interface ProjectDoMigrationPlan {
   readonly steps: readonly ProjectDoMigration[];
 }
 
-/**
- * The version the 2026-10-06 squash records: history before it (versions
- * 1-9 on the pre-squash lineage) was folded into the base step,
- * owner-approved.
- */
+/** The version the base step records. */
 const PROJECT_DO_BASE_VERSION = 9;
 
-// The tables the squashed base declares (the pre-squash steps 1-6's
-// declared set, unchanged — PROJECT_DO_TABLES is derived from it).
+// The tables the base declares (PROJECT_DO_TABLES is derived from it).
 const PROJECT_DO_BASE_TABLES: readonly string[] = [
   "chain_entries",
   "environments",
@@ -473,8 +458,8 @@ export const PROJECT_DO_MIGRATIONS: ProjectDoMigrationPlan = {
       for (const statement of PROJECT_DO_DDL) {
         sql.exec(statement);
       }
-      // The mutation triggers on every declared table that isMutationTracked
-      // (the pre-squash steps' mechanism, folded in): AFTER INSERT / UPDATE /
+      // The mutation triggers on every declared table that isMutationTracked:
+      // AFTER INSERT / UPDATE /
       // DELETE on every snapshot table that takes part in an export's
       // consistency — every declared table but the audit log and its
       // cumulative-hash column, which the export bounds by seq, and the
@@ -675,17 +660,9 @@ export function applyProjectDoMigrations(
     );
   }
   if (current > 0 && current < plan.baseVersion) {
-    // A stored version below the base predates the squash: the pre-squash
-    // steps were folded into the base (2026-10-06, owner-approved — zero
-    // live users), so there is no sequence of steps that could upgrade it;
-    // the project must be recreated. Same throw site and blast radius as
-    // the rollback guard above: it fires in the DO constructor, so a
-    // project DO at such a version cannot open at all
-    throw new Error(
-      `project DO schema version ${current} predates the squashed schema ` +
-        `(version ${plan.baseVersion}, squashed 2026-10-06); this DO cannot be ` +
-        `upgraded in place — recreate the project`,
-    );
+    // No step records a version below the base: such a value is corrupt
+    // (fail closed, like readProjectDoSchemaVersion's corrupt path)
+    throw new Error(`project DO schema_meta.version is corrupt: ${current}`);
   }
   if (current === 0) {
     storage.transactionSync(() => {

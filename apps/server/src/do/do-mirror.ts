@@ -97,9 +97,9 @@ export interface MirrorState {
   readonly lastHeadHashHex: string;
   /** The replica's audit seq at the last replication (or the mark): rows past it are the mirror's own. */
   readonly lastAuditSeq: number;
-  /** The replica's attestation mark at the last replication (or the mark); null on a row written before the column existed (a DO that already ran the pre-squash steps). */
-  readonly lastAttestationMark: number | null;
-  /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
+  /** The replica's attestation mark at the last replication (or the mark). */
+  readonly lastAttestationMark: number;
+  /** The source's mutation counter the replica was exported at (null until the first replication since the mark). */
   readonly lastMutationSeq: number | null;
 }
 
@@ -117,8 +117,7 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastHeadSeq: Number(row["last_head_seq"]),
     lastHeadHashHex: String(row["last_head_hash_hex"]),
     lastAuditSeq: Number(row["last_audit_seq"]),
-    lastAttestationMark:
-      row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
+    lastAttestationMark: Number(row["last_attestation_mark"]),
     lastMutationSeq: row["last_mutation_seq"] === null ? null : Number(row["last_mutation_seq"]),
   };
 }
@@ -368,8 +367,8 @@ export interface MirrorCommit {
   readonly auditMaxSeq: number;
   /** The replica's attestation mark (the source's latest head-attestation acceptance time). */
   readonly attestationMark: number;
-  /** The source's mutation counter the replica was exported at (absent when the sync did not say). */
-  readonly mutationSeq?: number;
+  /** The source's mutation counter the replica was exported at. */
+  readonly mutationSeq: number;
   /** The mirror's own audit rows re-appended after the replica's (ruling G revision). */
   readonly ownAuditRows: number;
 }
@@ -737,8 +736,8 @@ export interface MirrorCommitInput {
   readonly tables: readonly string[];
   readonly state: MirrorState;
   readonly nowMs: number;
-  /** The source's mutation counter the trailer page carried (null = not said). */
-  readonly sourceMutationSeq: number | null;
+  /** The source's mutation counter the trailer page carried. */
+  readonly sourceMutationSeq: number;
 }
 
 /**
@@ -814,7 +813,7 @@ export function commitMirrorReplica(
           chainHeadHashHex: marks.chainHeadHashHex ?? "",
           auditMaxSeq: replicaAuditSeq,
           attestationMark: marks.attestationMark,
-          ...(input.sourceMutationSeq === null ? {} : { mutationSeq: input.sourceMutationSeq }),
+          mutationSeq: input.sourceMutationSeq,
           ownAuditRows,
         };
         sql.exec(

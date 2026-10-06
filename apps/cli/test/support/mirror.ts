@@ -93,8 +93,18 @@ export const headOfChain = () => ({
   auditMaxSeq: 4,
 });
 
+/** The source's mutation counter the export's head reports (every page carries it to the mirror). */
+export const SOURCE_MUTATION_SEQ = 5;
+
+/** An export page's head: the chain head plus the source's mutation counter. */
+export const exportHeadOfChain = () => ({ ...headOfChain(), mutationSeq: SOURCE_MUTATION_SEQ });
+
 export interface MirrorState {
-  readonly pages: { readonly sequence: number; readonly lines: readonly string[] }[];
+  readonly pages: {
+    readonly sequence: number;
+    readonly lines: readonly string[];
+    readonly sourceMutationSeq: number;
+  }[];
   readonly bearers: string[];
   status: Record<string, unknown>;
   /** An injected answer for the page carrying the trailer. */
@@ -127,14 +137,25 @@ export function mirrorHandlers(state: MirrorState): MockHandler[] {
       return { status: 200, json: state.status };
     }),
     onRequest("PUT", `${path}/pages`, (request) => {
-      const body = request.body as { readonly sequence: number; readonly lines: readonly string[] };
+      const body = request.body as MirrorState["pages"][number];
       state.pages.push(body);
       const trailer = body.lines.some((line) => line.includes('"kind":"trailer"'));
       if (trailer && state.lastPage !== null) {
         return state.lastPage;
       }
       return trailer
-        ? { status: 200, json: { nextSequence: 0, committed: { atMs: 5, ...headOfChain() } } }
+        ? {
+            status: 200,
+            json: {
+              nextSequence: 0,
+              committed: {
+                atMs: 5,
+                ...headOfChain(),
+                attestationMark: 0,
+                mutationSeq: body.sourceMutationSeq,
+              },
+            },
+          }
         : { status: 200, json: { nextSequence: body.sequence + 1 } };
     }),
     onRequest("GET", "/auth/me", () => ({

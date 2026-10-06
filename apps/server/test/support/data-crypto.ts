@@ -333,8 +333,8 @@ export function makeDek(): Uint8Array {
 export interface WireWrappedDek {
   readonly suite: string;
   readonly epoch: number;
-  /** Recipient class (AUTH_SPEC §12-6; omitted = member). */
-  readonly recipientClass?: "member" | "server";
+  /** Recipient class (AUTH_SPEC §12-6). */
+  readonly recipientClass: "member" | "server";
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
@@ -457,6 +457,7 @@ export async function wrapDekTo(input: {
   return signWrapAs(input.signerUserId, input.projectId, input.environmentId, {
     suite: SUITE_ID,
     epoch: input.epoch,
+    recipientClass: "member",
     recipientUserId: input.recipientUserId,
     recipientEncPubHex: encPubHex,
     encHex: encodeHex(wrapped.enc),

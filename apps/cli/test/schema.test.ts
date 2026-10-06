@@ -470,7 +470,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
 
   it("layoutVersion v4 trips the typed error 'unsupported layout (client update)' (session-46 §8 iteration 5; v3 is supported since PF6 R9)", async () => {
     // Distribution decode isn't a Literal (an integer with no pinned
-    // ceiling), so v3 passes decode and the support-range check before
+    // ceiling), so v4 passes decode and the support-range check before
     // signature verification refuses it in the honest failure mode —
     // it doesn't masquerade as a Schema error or a bad signature
     // (suspected tampering)
@@ -489,6 +489,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("layout version 4");
+    expect(errors).toContain("(supported: 1, 2, 3)");
     expect(errors).toContain("update the maruhi CLI");
     expect(errors).toContain("not a tampering indication");
     expect(errors).not.toContain("forged");

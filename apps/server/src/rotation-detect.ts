@@ -179,10 +179,9 @@ function accessWindows(
 /**
  * Map Q1's membership-interval events (genesis / member_added / role_changed /
  * member_removed) onto scope transitions. genesis is structurally `all`
- * (CRYPTO_SPEC §6.2). A row whose scope cannot be read (corrupt payload, or a
- * pre-K2 shape — assumed absent because it is a re-creation target) fails safe
- * and opens the window as `all` (for detection, the safe side is not missing
- * — design record §9 K3-F).
+ * (CRYPTO_SPEC §6.2). A row whose scope cannot be read (a corrupt payload)
+ * fails safe and opens the window as `all` (for detection, the safe side is
+ * not missing — design record §9 K3-F).
  */
 function membershipTransitions(events: readonly MembershipEventRow[]): readonly ScopeTransition[] {
   return events.map((event) => {

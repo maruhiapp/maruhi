@@ -72,7 +72,7 @@
   // tools (throwaway; never imported by product code), and scripts/ —
   // standalone repo tooling run via bun, never imported.
   // apps/web/public holds statically served assets outside the SPA (e.g.
-  // invite.css referenced by invite.html — AUTH_SPEC §15-3); they sit off the
+  // pages.css referenced by invite.html — AUTH_SPEC §15-3); they sit off the
   // module graph and would be falsely flagged unreachable.
   // For apps/site (Blume), blume.config.ts is the entry read by the Blume CLI,
   // and .astro / .mdx plus public/ static assets are off the module graph.

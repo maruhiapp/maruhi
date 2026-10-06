@@ -34,13 +34,6 @@ import { DataStore } from "./data/data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
 
-/** A recipient class omitted at the wire / RPC boundary defaults to member (AUTH_SPEC §12-6). */
-export function wrapRecipientClass(ref: {
-  readonly recipientClass?: DekRecipientClass;
-}): DekRecipientClass {
-  return ref.recipientClass ?? "member";
-}
-
 /**
  * Duplicate-detection key of (epoch × recipient class × recipient × device
  * key) — the deletion path (programs-dek). The class's source of truth is the
@@ -49,11 +42,11 @@ export function wrapRecipientClass(ref: {
  */
 export function wrapRefKey(ref: {
   readonly epoch: number;
-  readonly recipientClass?: DekRecipientClass;
+  readonly recipientClass: DekRecipientClass;
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
 }): string {
-  return `${ref.epoch}:${wrapRecipientClass(ref)}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
+  return `${ref.epoch}:${ref.recipientClass}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
 }
 
 /**
@@ -159,7 +152,7 @@ function checkWrapRecipient(
   environmentId: string,
   wrap: DekWrapInput,
 ): DataRejection | null {
-  if (wrapRecipientClass(wrap) === "server") {
+  if (wrap.recipientClass === "server") {
     const grant = state.serverGrants.get(wrap.recipientUserId);
     if (grant === undefined) {
       return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
@@ -206,7 +199,7 @@ export function allRecipientsAreOwnDevices(
   const ownKeys = new Set([...caller.devices.values()].map((device) => device.encPubHex));
   return wraps.every(
     (wrap) =>
-      wrapRecipientClass(wrap) === "member" &&
+      wrap.recipientClass === "member" &&
       wrap.recipientUserId === caller.userId &&
       ownKeys.has(wrap.recipientEncPubHex),
   );
@@ -453,7 +446,7 @@ export function dekRegisteredEvent(
   return dataEvent(actor, nowMs, "dek.registered", {
     environmentId,
     epoch: wrap.epoch,
-    ...(wrapRecipientClass(wrap) === "server"
+    ...(wrap.recipientClass === "server"
       ? { targetKeyFingerprintHex: wrap.recipientUserId }
       : { targetUserId: wrap.recipientUserId }),
     actorKeyFingerprintHex: signer.keyFingerprintHex,

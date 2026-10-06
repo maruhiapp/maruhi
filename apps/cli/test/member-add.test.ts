@@ -592,6 +592,7 @@ describe("maruhi member add", () => {
         wraps: [
           {
             epoch: 1,
+            recipientClass: "member",
             recipientUserId: acceptor.userId,
             recipientEncPubHex: expect.any(String) as string,
           },
@@ -736,6 +737,7 @@ describe("maruhi member add", () => {
         wraps: [
           {
             epoch: 1,
+            recipientClass: "member",
             recipientUserId: acceptor.userId,
             recipientEncPubHex: expect.any(String) as string,
           },
@@ -845,6 +847,7 @@ describe("maruhi member add", () => {
         wraps: [
           {
             epoch: 1,
+            recipientClass: "member",
             recipientUserId: acceptor.userId,
             recipientEncPubHex: expect.any(String) as string,
           },

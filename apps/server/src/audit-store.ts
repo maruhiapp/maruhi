@@ -584,8 +584,9 @@ const HEAD_CHUNK_ROWS = 50;
  * audit rows per request (the appendManySync cap): the steady-state
  * backlog (extended on each read) is at most "the appends since the
  * previous read", and even the largest single burst clears in one call.
- * The limit can only be hit by the first materialization of a huge
- * existing log, in which case it is "more-remains" → AuditHeadNotReady
+ * The limit can only be hit by a backlog larger than that (a large log
+ * whose column has not been materialized yet), in which case it is
+ * "more-remains" → AuditHeadNotReady
  * (503) → the client's bounded retries (progress is persisted per chunk
  * — each call advances up to 10,000 rows).
  */

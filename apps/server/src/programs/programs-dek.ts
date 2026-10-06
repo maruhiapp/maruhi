@@ -24,7 +24,6 @@ import {
   checkWrapRequestCount,
   dekRegisteredEvent,
   ensureWrapSetAcceptable,
-  wrapRecipientClass,
   wrapRefKey,
 } from "../dek-wraps.ts";
 import type { StateCache } from "../do/chain-store.ts";
@@ -139,7 +138,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
     // row's deletion would stack two audit rows
     const slot = (yield* store.listWrapSlots(environmentId, ref.epoch, ref.recipientUserId)).find(
       (candidate) =>
-        candidate.recipientClass === wrapRecipientClass(ref) &&
+        candidate.recipientClass === ref.recipientClass &&
         candidate.recipientEncPubHex === ref.recipientEncPubHex,
     );
     if (slot === undefined) {
@@ -153,7 +152,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
       epoch: ref.epoch,
       recipientUserId: ref.recipientUserId,
       recipientEncPubHex: slot.recipientEncPubHex,
-      recipientClass: wrapRecipientClass(ref),
+      recipientClass: ref.recipientClass,
     });
   }
   const audit = yield* AuditStore;

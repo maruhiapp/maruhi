@@ -59,9 +59,9 @@ export const MirrorSyncRecordSchema = Schema.Struct({
   chainHeadSeq: PositiveInt,
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.Number,
-  attestationMark: Schema.optionalKey(Schema.Number),
+  attestationMark: Schema.Number,
   /** The source's mutation counter the replica was exported at (the sync's no-change check — ruling H revision, round 3). */
-  mutationSeq: Schema.optionalKey(Schema.Number),
+  mutationSeq: Schema.Number,
   ownAuditRows: Schema.optionalKey(Schema.Number),
 });
 
@@ -115,7 +115,7 @@ export const MirrorPageSchema = Schema.Struct({
     Schema.isMaxLength(MAX_MIRROR_PAGE_LINES),
   ),
   /** The source's mutation counter as the export's head reported it (recorded with the replica by the page carrying the trailer). */
-  sourceMutationSeq: Schema.optionalKey(Schema.Number),
+  sourceMutationSeq: Schema.Number,
 });
 
 export type MirrorPage = typeof MirrorPageSchema.Type;

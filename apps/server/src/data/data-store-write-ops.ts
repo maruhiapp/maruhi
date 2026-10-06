@@ -338,7 +338,7 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       environmentId,
       wrap.epoch,
-      wrap.recipientClass ?? "member",
+      wrap.recipientClass,
       wrap.recipientUserId,
       wrap.suite,
       wrap.recipientEncPubHex,

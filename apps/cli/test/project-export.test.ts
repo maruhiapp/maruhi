@@ -164,6 +164,7 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
     chainHeadSeq: built.entries.length,
     chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
     auditMaxSeq: 2,
+    mutationSeq: 3,
     ...(options.mirrorOf === undefined ? {} : { mirrorOf: options.mirrorOf }),
   };
   const fixture: { changedPages: number; staleCompanions: number } = {

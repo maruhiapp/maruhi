@@ -18,7 +18,11 @@ import {
   type WrappedCryptoError,
 } from "@maruhi/core";
 import type { MetaStatementContext, MetaVariableSchema } from "@maruhi/crypto";
-import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/crypto";
+import {
+  SUPPORTED_META_LAYOUT_VERSIONS,
+  verifyDistributedMetaStatement,
+  verifyDistributedValue,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -156,7 +160,7 @@ function failureOutcome<T>(
       kind: "rejected",
       // An honest breaking mode (the client needs an update) — not evidence of tampering (ruling CR)
       evidence: false,
-      message: `${label} uses statement layout version ${error.layoutVersion}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
+      message: `${label} uses statement layout version ${error.layoutVersion}, which this CLI does not support (supported: ${SUPPORTED_META_LAYOUT_VERSIONS.join(", ")}). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
   }
   if (isFutureFailure(verified, chainHeadSeq, error)) {

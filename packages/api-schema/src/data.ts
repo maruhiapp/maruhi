@@ -584,8 +584,8 @@ export type SchemaPolicy = typeof SchemaPolicySchema.Type;
  * Recipient class of a DEK wrap (AUTH_SPEC §12-6): member = a current
  * member on the chain (identified by user_id + enc public key), server
  * = the server key of a valid grant_server (identified by FP + enc
- * public key — it has no user_id). Defaults to member (same shape as
- * the wire before recipient classes were introduced).
+ * public key — it has no user_id). Required on every wrap and wrap
+ * reference.
  */
 const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
 
@@ -612,7 +612,7 @@ const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
-  recipientClass: Schema.optionalKey(DekRecipientClassSchema),
+  recipientClass: DekRecipientClassSchema,
   recipientUserId: BoundedUserId,
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
@@ -658,7 +658,7 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
  */
 export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
-  recipientClass: Schema.optionalKey(DekRecipientClassSchema),
+  recipientClass: DekRecipientClassSchema,
   recipientUserId: BoundedUserId,
   /**
    * The recipient device key of the slot (the AUTH_SPEC §12-6 device

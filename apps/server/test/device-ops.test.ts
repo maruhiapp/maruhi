@@ -643,7 +643,12 @@ describe("two-stage authorization — a device's effective permissions (design r
     // Addressing another member requires member or above (reader is 403)
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: MEMBER, recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: MEMBER,
+          recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
@@ -720,7 +725,14 @@ describe("two-stage authorization — a device's effective permissions (design r
     expect(await wrapRows()).toHaveLength(4);
 
     const precise = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: OWNER, recipientEncPubHex: phone.encPubHex }],
+      wraps: [
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: OWNER,
+          recipientEncPubHex: phone.encPubHex,
+        },
+      ],
     });
     expect(precise.status).toBe(204);
     expect(
@@ -731,14 +743,26 @@ describe("two-stage authorization — a device's effective permissions (design r
     // (the primary key's enc public key)
     const primary = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: OWNER, recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: OWNER,
+          recipientEncPubHex: vectorKeyOf(OWNER).enc_pub_hex,
+        },
       ],
     });
     expect(primary.status).toBe(204);
     expect((await wrapRows()).map((row) => row["recipient_user_id"])).toEqual([MEMBER, READER]);
     // A nonexistent reference is 404 (same with a device specified)
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: OWNER, recipientEncPubHex: phone.encPubHex }],
+      wraps: [
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: OWNER,
+          recipientEncPubHex: phone.encPubHex,
+        },
+      ],
     });
     expect(gone.status).toBe(404);
   });
@@ -771,7 +795,12 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
     // A delete reference addressing the unique slot by device key
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        {
+          epoch: 1,
+          recipientClass: "member",
+          recipientUserId: READER,
+          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        },
       ],
     });
     expect(removed.status).toBe(204);
