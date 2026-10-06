@@ -33,13 +33,14 @@ import {
   manifestFor,
   manifestHashOf,
   statementFor,
+  statementHashOf,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const DESCRIPTION = "Primary endpoint of the shop";
@@ -102,6 +103,8 @@ async function startRmEnv(options?: {
   readonly initialVariables?: readonly WireDistributedVariableStatement[];
   readonly initialTombstones?: readonly WireDistributedVariableStatement[];
   readonly ignoreRemovals?: boolean;
+  /** Handlers tried before the honest environment's (injected conflicts / concurrent changes). */
+  readonly before?: (state: MetaEnvironmentState) => readonly MockHandler[];
 }): Promise<{ env: TestEnv; state: MetaEnvironmentState }> {
   const { state, handlers } = makeMetaEnvironmentServer({
     chain: built,
@@ -112,7 +115,7 @@ async function startRmEnv(options?: {
     initialTombstones: options?.initialTombstones ?? [],
     ...(options?.ignoreRemovals === undefined ? {} : { ignoreRemovals: options.ignoreRemovals }),
   });
-  const server = await MockServer.start(handlers);
+  const server = await MockServer.start([...(options?.before?.(state) ?? []), ...handlers]);
   servers.push(server);
   const env = await makeTestEnv();
   seedSession(env, server.origin, owner);
@@ -261,11 +264,24 @@ describe("target resolution (typed errors before signing / sending)", () => {
 });
 
 describe("the CAS retry and the binding to the confirmed target", () => {
-  it("when re-resolution returns a different variableId, it stops with a typed error (never removes an unconfirmed variable)", async () => {
-    // The post-confirmation 409 (a concurrent metadata op) →
-    // re-resolution finds **a different variable** under the same name
-    // (a concurrent removal + a same-named creation). Since the
-    // confirmation binds the variableId, this retry must not proceed
+  it("a retry re-resolves the confirmed variableId, never another variable that took the name", async () => {
+    // The post-confirmation 409 (a concurrent metadata op) → a concurrent
+    // removal + a same-named creation put **a different variable** under
+    // the typed name. The confirmation binds the variableId, so the retry
+    // re-resolves that ID: the confirmed variable is already deleted (a
+    // determinate error), and nothing is sent toward the replacement
+    const tombstone = await statementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      variableId: "v-declared",
+      name: "SHOP_URL",
+      author: owner,
+      head: { seq: 1, hashHex: built.projectId },
+      status: "deleted",
+      metaVersion: 2,
+      prevMetaSigHashHex: await statementHashOf(built.projectId, declaredV3),
+      schema: { varType: "url", required: true, description: DESCRIPTION },
+    });
     const replacement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -295,7 +311,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       issuer: owner,
       head: headOf(built, 2),
       envStatement,
-      statements: [replacement],
+      statements: [replacement, tombstone],
       manifestVersion: 2,
       prevManifestSigHashHex: await manifestHashOf(built.projectId, firstManifest),
     });
@@ -322,7 +338,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
             currentEpoch: 1,
             statement: envStatement,
             variables: first ? [declaredV3] : [replacement],
-            deletedVariables: [],
+            deletedVariables: first ? [] : [tombstone],
             manifest: first ? firstManifest : secondManifest,
             schemaPolicy: "enabled" as const,
           },
@@ -347,11 +363,80 @@ describe("the CAS retry and the binding to the confirmed target", () => {
     env.setPromptResponses(["SHOP_URL"]);
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("different variable than the one you confirmed");
+    expect(errors).toContain("Variable SHOP_URL is already deleted");
     // Only the single 409-refused call — no DELETE was sent toward the
     // other variableId
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0]?.path.endsWith("/variables/v-declared")).toBe(true);
+  });
+});
+
+describe("the CAS retry after a concurrent rename", () => {
+  it("deletes the confirmed variable under its new name and says so in one line (no re-prompt)", async () => {
+    const head = headOf(built, built.entries.length);
+    const manifestV1 = await manifestFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      issuer: owner,
+      head,
+      envStatement,
+      statements: [activeV1],
+    });
+    let conflicted = false;
+    const { env, state } = await startRmEnv({
+      initialVariables: [activeV1],
+      before: (current) => {
+        current.manifest = manifestV1;
+        return [
+          async (request) => {
+            if (conflicted || request.method !== "DELETE") {
+              return null;
+            }
+            conflicted = true;
+            // A concurrent rename lands (metaVersion 2 + the manifest chained to v1)
+            const renamed = await statementFor({
+              projectId: built.projectId,
+              environmentId: ENV_ID,
+              variableId: "v-legacy",
+              name: "LEGACY_TOKEN",
+              author: owner,
+              head,
+              metaVersion: 2,
+              prevMetaSigHashHex: await statementHashOf(built.projectId, activeV1),
+            });
+            current.variables = [renamed];
+            current.manifest = await manifestFor({
+              projectId: built.projectId,
+              environmentId: ENV_ID,
+              epoch: 1,
+              issuer: owner,
+              head,
+              envStatement,
+              statements: [renamed],
+              manifestVersion: 2,
+              prevManifestSigHashHex: await manifestHashOf(built.projectId, manifestV1),
+            });
+            return { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } };
+          },
+        ];
+      },
+    });
+    env.setPromptResponses(["LEGACY_KEY"]);
+    expect(await runCli(["var", "rm", "LEGACY_KEY"], env.layer)).toBe(0);
+    // One confirmation only: the retry binds the confirmed ID
+    expect(env.prompts).toHaveLength(1);
+    expect(state.mutations.map((m) => m.kind)).toEqual(["remove"]);
+    const retried = state.mutations[0]?.request.body as { statement: Record<string, unknown> };
+    expect(retried.statement).toMatchObject({
+      variableId: "v-legacy",
+      name: "LEGACY_TOKEN",
+      status: "deleted",
+      metaVersion: 3,
+    });
+    expect(env.errors.join("\n")).toContain(
+      "Note: The variable you confirmed was renamed concurrently from LEGACY_KEY to LEGACY_TOKEN; deleting it under its new name (the confirmation binds the ID, not the name)",
+    );
   });
 });
 

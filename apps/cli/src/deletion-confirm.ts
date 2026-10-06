@@ -10,8 +10,10 @@
 
 import { Effect, Stdio } from "effect";
 
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 
 /** The wording of one deletion's confirmation (every field is already display-neutralized by the caller). */
 interface PermanentDeletion {
@@ -73,3 +75,26 @@ export const confirmPermanentDeletion = Effect.fn("deletion-confirm.confirmPerma
     }
   },
 );
+
+/**
+ * The one-line notice of a CAS retry (§12-5) that re-resolved the confirmed
+ * target under a different name than the confirmation showed (a concurrent
+ * rename). The confirmation binds the target's ID, which never changes and is
+ * never reused, so the deletion proceeds without a second prompt — but the
+ * name the user saw is no longer the target's name, and that is said (the
+ * notice ledger drops an identical line on a later retry).
+ */
+export function noteConcurrentRename(input: {
+  /** The target as shown, without its name (e.g. `Environment dev`). */
+  readonly subject: string;
+  /** The name the confirmation showed. */
+  readonly seenName: string;
+  /** The re-resolved, verified current name. */
+  readonly currentName: string;
+}): Effect.Effect<void, never, CliIo> {
+  return input.seenName === input.currentName
+    ? Effect.void
+    : logNote(
+        `${input.subject} was renamed concurrently from ${displayText(input.seenName)} to ${displayText(input.currentName)}; deleting it under its new name (the confirmation binds the ID, not the name)`,
+      );
+}

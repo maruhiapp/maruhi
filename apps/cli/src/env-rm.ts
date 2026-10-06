@@ -30,7 +30,7 @@ import { PayloadMismatchError } from "@maruhi/api-schema";
 import { Effect, Stdio } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
-import { confirmPermanentDeletion } from "./deletion-confirm.ts";
+import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
 import { displayText } from "./display.ts";
 import {
   type EnvironmentMetaInput,
@@ -170,9 +170,11 @@ const attemptDeletion = Effect.fn("env-rm.attemptDeletion")(function* (
 /**
  * The deletion refusal the generic rendering would misdescribe:
  * payload-mismatch here is about the statement, not a value's AAD — the
- * server stores a different active name than the one signed (§4.2 — the
- * name check precedes the metaVersion CAS, so a concurrent rename lands
- * here rather than as a 409).
+ * server stores a different active name than the one signed (§4.2). The
+ * server judges it after the metaVersion CAS (§12-5's check order), so it is
+ * never a concurrent rename (that is a 409, retried): the statement was
+ * signed over the verified current state and the server disagrees — a hard
+ * stop, not retried.
  */
 function deletionRefusal(
   input: EnvironmentMetaInput,
@@ -180,7 +182,7 @@ function deletionRefusal(
 ): CliError | null {
   return error instanceof PayloadMismatchError
     ? cliError(
-        `The server refused the deletion statement: its ${displayText(error.field)} does not match environment ${input.environmentId}'s current state (payload-mismatch — a deletion must keep the last active name). The environment may have been renamed concurrently — re-run \`maruhi env rm\` to sign over the refreshed state`,
+        `The server refused the deletion statement: its ${displayText(error.field)} does not match environment ${input.environmentId}'s current state (payload-mismatch — a deletion must keep the last active name). It was signed over the verified current state, so the server disagrees with what it distributes — investigate the server before retrying`,
       )
     : null;
 }
@@ -239,9 +241,20 @@ export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
       ),
     classify: (error) => (isEnvironmentMetaConflict(error) ? "re-resolve" : null),
     // A concurrent meta operation (a rename) re-resolves: refetch → verify
-    // → re-sign with the then-current name (§12-5). Losing to a concurrent
-    // deletion surfaces as the determinate "already deleted" error
-    recover: (state) => resolveDeletionTarget(input, state.verified),
+    // → re-sign with the then-current name (§12-5), saying so when the
+    // name differs from the one the confirmation showed. Losing to a
+    // concurrent deletion surfaces as the determinate "already deleted"
+    // error
+    recover: (state) =>
+      resolveDeletionTarget(input, state.verified).pipe(
+        Effect.tap((next) =>
+          noteConcurrentRename({
+            subject: `Environment ${input.environmentId}`,
+            seenName: initial.environment.name,
+            currentName: next.environment.name,
+          }),
+        ),
+      ),
     exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
   });
   yield* confirmDeletion(input, accepted);
