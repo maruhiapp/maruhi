@@ -41,12 +41,12 @@ let built: BuiltChain;
 let dek1: Uint8Array;
 let wrap1: WireRecipientDek;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared (required, url type, with a description — §4.2 layout v2). */
+/** declared (required, url type, with a description — §4.2 layout v3). */
 let declaredRequired: WireDistributedVariableStatement;
 /** declared (required = false, no type). */
 let declaredOptional: WireDistributedVariableStatement;
-/** The v2 active statement (number type) and its value. */
-let activeV2: {
+/** The v3 active statement (number type) and its value. */
+let activeV3: {
   variableId: string;
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
@@ -95,7 +95,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "", required: false, description: "" },
   });
-  activeV2 = {
+  activeV3 = {
     variableId: "v-port",
     statement: await statementFor({
       ...common,
@@ -188,7 +188,7 @@ function pullHandler(overrides?: {
   readonly digestStatements?: readonly WireDistributedVariableStatement[];
 }): MockHandler {
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    const variables = overrides?.variables ?? [activeV2, activeV1];
+    const variables = overrides?.variables ?? [activeV3, activeV1];
     const declaredVariables = overrides?.declaredVariables ?? [declaredRequired, declaredOptional];
     const manifest = await manifestFor({
       projectId: built.projectId,
@@ -263,7 +263,7 @@ function echoMetadataJson(
 
 async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unknown> {
   const variables = overrides?.variables ?? [
-    activeV2.statement,
+    activeV3.statement,
     activeV1.statement,
     declaredRequired,
     declaredOptional,
@@ -334,10 +334,10 @@ describe("maruhi schema (display — §1-1)", () => {
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
     expect(output).toContain("NAME\tTYPE\tREQUIRED\tSTATUS\tMAX AGE\tDESCRIPTION");
-    // v2 declared: type, required, description, and status in a row
+    // v3 declared: type, required, description, and status in a row
     expect(output).toContain(`SHOP_URL\turl\ttrue\tdeclared\t-\t${DESCRIPTION_REQUIRED}`);
     expect(output).toContain("OPTIONAL_HINT\t-\tfalse\tdeclared\t-\t-");
-    // v2 active: STATUS = set
+    // v3 active: STATUS = set
     expect(output).toContain("PORT\tnumber\ttrue\tset\t-\tlisten port");
     // v1: TYPE / REQUIRED / DESCRIPTION are `-`
     expect(output).toContain("LEGACY_KEY\t-\t-\tset\t-");
@@ -433,7 +433,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
       chainHandler(),
       pullHandler({
         variables: [activeV1],
-        declaredVariables: [declaredRequired, activeV2.statement],
+        declaredVariables: [declaredRequired, activeV3.statement],
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
@@ -474,29 +474,52 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
     // signature verification refuses it in the honest failure mode —
     // it doesn't masquerade as a Schema error or a bad signature
     // (suspected tampering)
-    const v4 = { ...activeV2.statement, layoutVersion: 4 };
+    const v4 = { ...activeV3.statement, layoutVersion: 4 };
     const env = await startEnv([
       chainHandler(),
       pullHandler({
-        variables: [{ ...activeV2, statement: v4 }, activeV1],
+        variables: [{ ...activeV3, statement: v4 }, activeV1],
         declaredVariables: [],
-        // The digest is computed from the v2 canonical form (the
+        // The digest is computed from the v3 canonical form (the
         // client refuses at the statement stage, so it never reaches
         // the manifest stage)
-        digestStatements: [activeV2.statement, activeV1.statement],
+        digestStatements: [activeV3.statement, activeV1.statement],
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("layout version 4");
-    expect(errors).toContain("(supported: 1, 2, 3)");
+    expect(errors).toContain("(supported: 1, 3)");
     expect(errors).toContain("update the maruhi CLI");
     expect(errors).toContain("not a tampering indication");
     expect(errors).not.toContain("forged");
     expect(errors).not.toContain("signature");
   });
 
-  it("a partial distribution of v2 fields (an all-or-nothing violation) is refused (§12-2)", async () => {
+  it("the retired layoutVersion 2 trips the same typed 'unsupported layout' error (CRYPTO_SPEC §4.2 — 0.15-draft)", async () => {
+    // The former v2 wire shape: the v3 field set without maxAgeDays. The
+    // support-range check refuses it before signature verification — it is
+    // neither a partial-field-set refusal nor a bad signature
+    const { maxAgeDays: _dropped, ...v2Shape } = activeV3.statement;
+    const v2 = { ...v2Shape, layoutVersion: 2 };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({
+        variables: [{ ...activeV3, statement: v2 }, activeV1],
+        declaredVariables: [],
+        digestStatements: [activeV3.statement, activeV1.statement],
+      }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("layout version 2");
+    expect(errors).toContain("(supported: 1, 3)");
+    expect(errors).toContain("update the maruhi CLI");
+    expect(errors).not.toContain("forged");
+    expect(errors).not.toContain("signature");
+  });
+
+  it("a partial distribution of v3 fields (an all-or-nothing violation) is refused (§12-2)", async () => {
     const partial: Record<string, unknown> = { ...declaredRequired };
     delete partial["description"];
     const env = await startEnv([
@@ -508,7 +531,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("only part of the layout-v2 field set");
+    expect(env.errors.join("\n")).toContain("only part of the layout-v3 field set");
   });
 });
 
@@ -552,7 +575,7 @@ describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
     const env = await startEnv([
       chainHandler(),
       pullHandler({
-        variables: [{ ...activeV2, value: badPort }, activeV1],
+        variables: [{ ...activeV3, value: badPort }, activeV1],
         declaredVariables: [],
       }),
     ]);
@@ -725,7 +748,7 @@ describe("maruhi schema set (§1-2)", () => {
     expect(renameCalls).toHaveLength(2);
   });
 
-  it("the first v2 re-issue onto a v1 variable requires an explicit required (a local refusal before signing/sending)", async () => {
+  it("the first v3 re-issue onto a v1 variable requires an explicit required (a local refusal before signing/sending)", async () => {
     // A v1 statement has nothing to inherit required from (§1-2's
     // partial update is a 'previous value' rule). Silently applying the
     // creation default true would put a presence contract the user
@@ -745,7 +768,7 @@ describe("maruhi schema set (§1-2)", () => {
     ).toHaveLength(0);
   });
 
-  it("a v1 variable's v2 re-issue passes with an explicit required, and varType / description take their unspecified defaults ('')", async () => {
+  it("a v1 variable's v3 re-issue passes with an explicit required, and varType / description take their unspecified defaults ('')", async () => {
     const echo: MutationEcho = { body: null, base: [activeV1.statement] };
     const renameCalls: MockRequest[] = [];
     const env = await startEnv([
@@ -906,10 +929,11 @@ describe("maruhi push's activation (the first value push onto a declared — §1
     expect(body.statement["status"]).toBe("active");
     expect(body.statement["metaVersion"]).toBe(2);
     expect(body.statement["name"]).toBe("SHOP_URL");
-    expect(body.statement["layoutVersion"]).toBe(2);
+    expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe(DESCRIPTION_REQUIRED);
+    expect(body.statement["maxAgeDays"]).toBeNull();
     expect(body.manifest["manifestVersion"]).toBe(2);
     expect(env.logs.join("\n")).toContain("Pushed SHOP_URL (version=1, epoch=1)");
   });

@@ -560,7 +560,7 @@ describe("maruhi env diff", () => {
   });
 
   describe("schema awareness (S4 — the required axis of design doc §1-5)", () => {
-    /** A layout-v2 statement (status / schema specified form). */
+    /** A layout-v3 statement (status / schema specified form). */
     function schemaVariableOf(
       environmentId: string,
       variableId: string,
@@ -627,7 +627,7 @@ describe("maruhi env diff", () => {
           varType: "",
           required: true,
         }),
-        // v2 × v1 (prod has no schema column)
+        // v3 × v1 (prod has no schema column)
         await schemaVariableOf(DEV, "var-c", "SHARED_V1", "active", {
           varType: "",
           required: true,

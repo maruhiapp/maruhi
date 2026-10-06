@@ -1,5 +1,5 @@
 // Checks for the values_digest **subject selection** of CRYPTO_SPEC §6.2
-// (declared of §4.2 layout v2): variables with status = declared (value not
+// (declared of §4.2 layout v3): variables with status = declared (value not
 // yet set) do not appear in values_digest. The LP canonical form itself is
 // already pinned and invariant by the values_digests section of
 // chain-entries.json (checkpoint.ts) — this file pins only the selection rule

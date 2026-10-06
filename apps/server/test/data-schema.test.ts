@@ -1,26 +1,26 @@
-// Layout v2 — integration tests of the valueless schema's server-side
-// acceptance surface.
+// Layout v3 (the schema layout) — integration tests of the valueless
+// schema's server-side acceptance surface.
 //
-// Scope: all items of AUTH_SPEC §12-5 "acceptance of layout v2,
+// Scope: all items of AUTH_SPEC §12-5 "acceptance of layout v3,
 // declared, and activation" + §12-8 (the description acceptance check)
 // + §12-11 (schemaPolicy) + §12-7 (declared distribution, advisory
 // bundling). This pins the design document's
 // (docs/notes/value-free-schema-design.md §3) "safe to stop" claim —
-// with the default disabled, v2 acceptance lies dormant and v1 is
+// with the default disabled, v3 acceptance lies dormant and v1 is
 // unchanged — plus the boundary of §12-5's four 422 error names
 // (schema-policy-disabled / activation-required / layout-regression /
 // schema-required).
 //
 // How the suite is split (shared helpers in
-// support/schema-v2-scenario.ts; for the split's motivation see the
+// support/schema-scenario.ts; for the split's motivation see the
 // top of support/membership-scenario.ts):
 // - this file: the schemaPolicy setting, the enablement gate, declared
 //   creation and activation
-// - data-schema-v2-transitions.test.ts: transitions and layout
+// - data-schema-transitions.test.ts: transitions and layout
 //   monotonicity, deletions' just-before match, schema re-issuance and
-//   reversibility
-// - data-schema-v2-locked.test.ts: schema-locked, description,
-//   unsupported layouts
+//   reversibility, max age
+// - data-schema-locked.test.ts: schema-locked, description,
+//   unsupported layouts (the retired layout 2 included)
 
 import { describe, expect, it } from "vitest";
 
@@ -47,12 +47,12 @@ import {
   setSchemaPolicyOk,
   token,
   unsignedManifest,
-  v2Fields,
+  v3Fields,
   VAR,
   varStatements,
 } from "./support/data-scenario.ts";
 import { queryProjectDo } from "./support/project-do.ts";
-import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
+import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
 
@@ -144,10 +144,10 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
   });
 });
 
-describe("the enablement gate — the default disabled rejects only new v2 adoption (§12-5 / §12-11)", () => {
-  it("a value-bundled v2 creation is 422 schema-policy-disabled (the v1 path is unchanged)", async () => {
+describe("the enablement gate — the default disabled rejects only new v3 adoption (§12-5 / §12-11)", () => {
+  it("a value-bundled v3 creation is 422 schema-policy-disabled (the v1 path is unchanged)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    const rejected = await createVariableV2Request({
+    const rejected = await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -178,7 +178,7 @@ describe("the enablement gate — the default disabled rejects only new v2 adopt
     expect(await auditCount("var.created", VAR)).toBe(0);
   });
 
-  it("a v2 re-issuance on a v1 variable is 422 schema-policy-disabled", async () => {
+  it("a v3 re-issuance on a v1 variable is 422 schema-policy-disabled", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({
@@ -186,7 +186,7 @@ describe("the enablement gate — the default disabled rejects only new v2 adopt
       name: "DATABASE_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url" }),
+      v3: v3Fields({ varType: "url" }),
     });
     const { manifest } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -256,14 +256,15 @@ describe("declared creation and activation (§12-5)", () => {
     // "declared is the only legitimate valueless state")
     expect(pulled.variables).toEqual([]);
     expect(pulled.declaredVariables).toHaveLength(1);
-    // The v2 carrier fields (§12-2) are carried aligned with the statement
+    // The v3 carrier fields (§12-2) are carried aligned with the statement
     expect(pulled.declaredVariables?.[0]).toMatchObject({
       variableId: VAR,
       status: "declared",
-      layoutVersion: 2,
+      layoutVersion: 3,
       varType: "url",
       required: false,
       description: "endpoint",
+      maxAgeDays: null,
       authorUserId: MEMBER,
     });
     const metadata = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(READER));
@@ -358,7 +359,7 @@ describe("declared creation and activation (§12-5)", () => {
   it("the activation composite on an active variable is 422 payload-mismatch (status — an explicit guard, independent of the version value)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -386,10 +387,10 @@ describe("declared creation and activation (§12-5)", () => {
     }
   });
 
-  it("an active v1 variable under disabled cannot be promoted to v2 via the activation path either (§12-11 bypass is blocked)", async () => {
+  it("an active v1 variable under disabled cannot be promoted to v3 via the activation path either (§12-11 bypass is blocked)", async () => {
     // activation does not check schemaPolicy (because a declared's
-    // immediate predecessor is always v2), but that exemption presumes
-    // the target is a declared. Without the guard, a v2 re-issuance
+    // immediate predecessor is always v3), but that exemption presumes
+    // the target is a declared. Without the guard, a v3 re-issuance
     // would pass under disabled on a v1 active variable with version
     // latest+1
     const dek = await createEnvironmentOk(fixture, ENV, "App");
@@ -447,7 +448,7 @@ describe("declared creation and activation (§12-5)", () => {
       name: "API_TOKEN",
       status: "declared",
       authorUserId: MEMBER,
-      v2: v2Fields(),
+      v3: v3Fields(),
     });
     const renameBundle = await manifestForStatement(rename, MEMBER);
     const renameResponse = await requestJson(
@@ -480,7 +481,7 @@ describe("declared creation and activation (§12-5)", () => {
       status: "deleted",
       metaVersion: 1,
       prevMetaSigHashHex: "",
-      ...v2Fields(),
+      ...v3Fields(),
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),

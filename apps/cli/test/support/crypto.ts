@@ -339,55 +339,49 @@ export interface WireDistributedValue extends WireEncryptedPayload {
   readonly writerKeyFingerprintHex: string;
 }
 
-/** The layout-v2 schema fields (wire form — §12-2; required is boolean). */
+/** The layout-v3 schema fields (wire form — §12-2; required is boolean). */
 export interface WireStatementSchema {
   readonly varType: "" | "string" | "number" | "boolean" | "url";
   readonly required: boolean;
   readonly description: string;
-  /** Present = a layout-v3 statement (null = no max age declared). */
+  /** The max age in days (null or omitted = no max age declared). */
   readonly maxAgeDays?: number | null;
 }
 
-/** A schema with maxAgeDays (null included) is a layout-v3 statement; without it, v2. */
-function layoutVersionOf(schema: WireStatementSchema): 2 | 3 {
-  return schema.maxAgeDays === undefined ? 2 : 3;
-}
-
 /**
- * The signed layout context of a schema-bearing statement (§4.2): the layout
- * version and the schema fields in their signed string forms (required as
- * "true" | "false"); nothing for a v1 statement.
+ * The signed layout context of a schema-bearing statement (§4.2): layout 3
+ * and the schema fields in their signed string forms (required as
+ * "true" | "false", max_age_days "" or the decimal); nothing for a v1
+ * statement.
  */
 function signedLayoutOf(schema: WireStatementSchema | undefined): {
-  readonly layoutVersion?: 2 | 3;
+  readonly layoutVersion?: 3;
   readonly schema?: {
     readonly varType: WireStatementSchema["varType"];
     readonly required: "true" | "false";
     readonly description: string;
-    readonly maxAgeDays?: string;
+    readonly maxAgeDays: string;
   };
 } {
   if (schema === undefined) {
     return {};
   }
   return {
-    layoutVersion: layoutVersionOf(schema),
+    layoutVersion: 3,
     schema: {
       varType: schema.varType,
       required: schema.required ? "true" : "false",
       description: schema.description,
-      ...signedMaxAgeOf(schema),
+      maxAgeDays: signedMaxAgeOf(schema),
     },
   };
 }
 
-/** Layout v3's max_age_days in the signed string form ("" = none); nothing on a v2 schema. */
-function signedMaxAgeOf(schema: { readonly maxAgeDays?: number | null }): {
-  readonly maxAgeDays?: string;
-} {
-  return schema.maxAgeDays === undefined
-    ? {}
-    : { maxAgeDays: schema.maxAgeDays === null ? "" : String(schema.maxAgeDays) };
+/** max_age_days in the signed string form ("" = none). */
+function signedMaxAgeOf(schema: { readonly maxAgeDays?: number | null }): string {
+  return schema.maxAgeDays === undefined || schema.maxAgeDays === null
+    ? ""
+    : String(schema.maxAgeDays);
 }
 
 /** The distributed variable meta statement (DistributedVariableMetaStatement — §12-2). */
@@ -404,14 +398,15 @@ export interface WireDistributedVariableStatement {
   readonly signatureHex: string;
   readonly authorUserId: string;
   readonly authorKeyFingerprintHex: string;
-  /** Layout-v2 carrier fields (§12-2 — all four absent in v1). */
+  /** Layout-v3 carrier fields (§12-2 — all five absent in v1). */
   readonly layoutVersion?: number;
   readonly varType?: WireStatementSchema["varType"];
   readonly required?: boolean;
   readonly description?: string;
+  readonly maxAgeDays?: number | null;
 }
 
-/** The distributed environment meta statement (same shape minus variableId and the v2 fields). */
+/** The distributed environment meta statement (same shape minus variableId and the v3 fields). */
 export interface WireDistributedEnvironmentStatement {
   readonly suite: "maruhi/v1";
   readonly environmentId: string;
@@ -435,7 +430,7 @@ interface StatementInputBase {
   readonly status?: "active" | "deleted" | "declared";
   readonly metaVersion?: number;
   readonly prevMetaSigHashHex?: string;
-  /** Layout-v2 schema fields (passing one signs it as a v2 statement). */
+  /** Layout-v3 schema fields (passing one signs it as a v3 statement). */
   readonly schema?: WireStatementSchema;
 }
 
@@ -480,7 +475,7 @@ async function signDistributedStatement(
     authorKeyFingerprintHex: input.author.fingerprintHex,
     ...(input.schema === undefined
       ? {}
-      : { layoutVersion: layoutVersionOf(input.schema), ...input.schema }),
+      : { layoutVersion: 3, ...input.schema, maxAgeDays: input.schema.maxAgeDays ?? null }),
   };
 }
 
@@ -488,7 +483,7 @@ async function signDistributedStatement(
  * Signs a variable meta statement (§4.2) with the author key and returns it in
  * the distributed form (with author info — §12-2). Defaults to the creation
  * shape (metaVersion 1, active, empty prev, v1 layout). Passing `schema` signs
- * it as layout v2 (with schema fields).
+ * it as layout v3 (with schema fields).
  */
 export async function statementFor(
   input: StatementInputBase & { readonly variableId: string },
@@ -553,7 +548,7 @@ export async function statementHashOf(
               varType: statement.varType,
               required: statement.required ? ("true" as const) : ("false" as const),
               description: statement.description,
-              ...signedMaxAgeOf(statement),
+              maxAgeDays: signedMaxAgeOf(statement),
             },
           }),
       metaVersion: statement.metaVersion,

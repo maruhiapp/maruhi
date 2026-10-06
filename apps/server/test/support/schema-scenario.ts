@@ -1,4 +1,4 @@
-// Shared helpers for layout v2 (valueless schema — S2) integration tests.
+// Shared helpers for layout v3 (valueless schema) integration tests.
 // Assumes the fixture of data-scenario.ts (registerDataScenario).
 
 import { encryptValue } from "./data-crypto.ts";
@@ -8,22 +8,22 @@ import {
   fixture,
   manifestForStatement,
   token,
-  variableStatementV2For,
+  variableStatementV3For,
   varStatements,
 } from "./data-scenario.ts";
 
-/** v2 value-bundled creation (§12-5 — active + schema field). Advances the
+/** v3 value-bundled creation (§12-5 — active + schema field). Advances the
  * record on 200. */
-export async function createVariableV2Request(input: {
+export async function createVariableV3Request(input: {
   readonly variableId: string;
   readonly name: string;
   readonly plaintext: string;
   readonly dek: Uint8Array;
   readonly actorUserId?: string;
-  readonly schema?: Parameters<typeof variableStatementV2For>[0]["schema"];
+  readonly schema?: Parameters<typeof variableStatementV3For>[0]["schema"];
 }): Promise<Response> {
   const actorUserId = input.actorUserId ?? MEMBER;
-  const statement = await variableStatementV2For({
+  const statement = await variableStatementV3For({
     authorUserId: actorUserId,
     variableId: input.variableId,
     name: input.name,
