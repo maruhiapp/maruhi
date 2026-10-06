@@ -230,14 +230,18 @@ function manifestV1(
 
 describe("manifest distribution-time verification (§6.3 — wiring into crypto's shared implementation)", () => {
   it("absence is uniformly refused", async () => {
+    // The omission fails the wire schema's decode before verification
+    // — the same verdict as a dropped environment statement (§6.3;
+    // required on the wire since AUTH_SPEC 0.28-draft). Pinned to the
+    // full refusal text
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("did not distribute an environment manifest");
-    expect(errors).toContain("manifest suppression");
+    expect(env.errors.at(-1)).toBe(
+      'maruhi: Some data does not match the schema (the environment manifest is required — an omitted manifest is refused as manifest suppression (CRYPTO_SPEC §6.3) at ["manifest"]). Check the values you provided, and that the CLI and server versions match',
+    );
   });
 
   it("refuses a missing variable (distributing a variable that is not in the digest = the carriage form of an omission in reverse)", async () => {
@@ -713,7 +717,7 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
 });
 
 /* -------------------------------------------------------------------------- */
-/* Migration path (session-27 §14 PR-M1 — v1 init for pre-manifest envs)    */
+/* A rotate-accepting stub server (the rotate path's in-test peer)          */
 /* -------------------------------------------------------------------------- */
 
 interface RotateBody {
@@ -742,13 +746,14 @@ interface RotateBody {
 }
 
 /**
- * The server of an environment created before manifests: no stored manifest
- * (pull does not bundle manifest). Once it accepts a rotate composite, it distributes the accepted manifest thereafter.
+ * A stub server that accepts the rotate composite and then distributes
+ * the accepted manifest (the manifest is always bundled — required on
+ * the wire since 0.28-draft).
  */
-function makeLegacyServer(input: {
+function makeRotateAcceptingServer(input: {
   readonly serveManifestAfterAccept?: boolean;
-  /** The initially distributed manifest (undefined = uninitialized server). */
-  readonly initialManifest?: WireDistributedManifest;
+  /** The initially distributed manifest. */
+  readonly initialManifest: WireDistributedManifest;
   /** The initial chain (default = chain1). */
   readonly built?: BuiltChain;
   readonly currentEpoch?: number;
@@ -771,7 +776,7 @@ function makeLegacyServer(input: {
   const rotateBodies: RotateBody[] = [];
   const pushes: string[] = [];
   let currentEpoch = input.currentEpoch ?? 1;
-  let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
+  let manifest: WireDistributedManifest = input.initialManifest;
   // The stored checkpoint snapshot (§16-2 — saved when a boundary checkpoint
   // is accepted and bundled into later value-bearing pulls. Material for rule 2 — PR-M3)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
@@ -795,7 +800,7 @@ function makeLegacyServer(input: {
         variables,
         deletedVariables: [],
         deks,
-        ...(manifest === null ? {} : { manifest }),
+        manifest,
         ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
         schemaPolicy: "enabled" as const,
       },
@@ -895,7 +900,7 @@ describe("rollback detection after rotate acceptance (§6.3 / §4.3 (4))", () =>
     // (rule (a)) — one more detection layer, but the fixed point that the
     // swallow is rejected within the same run is unchanged
     const staleManifest = await manifestV1({ statements: [] });
-    const state = makeLegacyServer({
+    const state = makeRotateAcceptingServer({
       initialManifest: staleManifest,
       // Keeps distributing v1 without storing the accepted v2 (models a rollback server)
       serveManifestAfterAccept: false,
@@ -913,7 +918,7 @@ describe("rollback detection after rotate acceptance (§6.3 / §4.3 (4))", () =>
     // distributing the old version after acceptance is rejected as
     // checkpoint-regressed within the same run (the missing floor persistence is disclosed via a warning)
     const staleManifest = await manifestV1({ statements: [] });
-    const state = makeLegacyServer({
+    const state = makeRotateAcceptingServer({
       initialManifest: staleManifest,
       serveManifestAfterAccept: false,
     });

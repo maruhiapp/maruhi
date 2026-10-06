@@ -99,6 +99,12 @@ export interface LeaseBody {
   readonly chain: readonly unknown[];
   readonly headSeq: number;
   readonly headHashHex: string;
+  /** The bundled environment manifest (§14-2 — required since 0.28-draft). */
+  readonly manifest: {
+    readonly manifestVersion: number;
+    readonly epoch: number;
+    readonly issuerUserId: string;
+  };
   readonly variables: readonly {
     readonly variableId: string;
     readonly value: {

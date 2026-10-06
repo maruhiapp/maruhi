@@ -58,7 +58,6 @@ import type {
 import type { ManifestFloor } from "./floor.ts";
 import {
   type ManifestDigestEntry,
-  missingManifestMessage,
   type VerifiedManifest,
   verifyDistributedManifest,
 } from "./manifest.ts";
@@ -129,23 +128,21 @@ const verifyStage = Effect.fn("values.verifyStage")(function* <T>(
 });
 
 /**
- * The manifest stage (§4.3 / §6.3): omission = unconditional refusal. When
- * distributed, the digest is recomputed from every verified statement
- * (tombstones included) and compared.
+ * The manifest stage (§4.3 / §6.3): a required response field — the
+ * wire schema already refuses an omission at decode (the same verdict
+ * as a dropped environment statement, so it never reaches this stage).
+ * The digest is recomputed from every verified statement (tombstones
+ * included) and compared.
  */
 function verifyManifestStage(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
-  readonly manifest: DistributedEnvironmentManifest | undefined;
+  readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
   /** The floor's manifest record (the predecessor of the adjacent prev verification — M1-A1. null when there is no floor). */
   readonly floorManifest: ManifestFloor | null;
 }): Effect.Effect<StageResult<VerifiedManifest>, CliError> {
-  const wireManifest = input.manifest;
-  if (wireManifest === undefined) {
-    return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
-  }
   return verifyStage(
     () =>
       // A manifest refusal is a contradiction between signed distributed
@@ -155,7 +152,7 @@ function verifyManifestStage(input: {
       verifyDistributedManifest({
         verified: input.verified,
         environmentId: input.environmentId,
-        manifest: wireManifest,
+        manifest: input.manifest,
         entries: input.entries,
         envMeta: {
           metaVersion: input.environment.metaVersion,
@@ -189,7 +186,7 @@ const verifyAllCommon = Effect.fn("values.verifyAllCommon")(function* <
     readonly statement: DistributedEnvironmentMetaStatement;
     readonly deletedVariables: readonly DistributedVariableMetaStatement[];
     readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-    readonly manifest?: DistributedEnvironmentManifest | undefined;
+    readonly manifest: DistributedEnvironmentManifest;
   },
   verifyActives: () => Promise<
     VerifyOutcome<{ readonly values: readonly T[]; readonly ids: Set<string> }>
@@ -520,10 +517,9 @@ export const verifyLeaseDistribution = Effect.fn("values.verifyLeaseDistribution
     },
     CliError
   > {
-    // Manifest verification is mandatory (CRYPTO_SPEC §9.1 (5)) and an
-    // omission = unconditional refusal (no migration allowance: a workload
-    // cannot initialize — initialization is a member's explicit operation,
-    // §14). The floor-derived prev check does not apply — a workload is a
+    // Manifest verification is mandatory (CRYPTO_SPEC §9.1 (5)) and a
+    // required response field — the wire schema refuses an omission at
+    // decode, same as pull. The floor-derived prev check does not apply — a workload is a
     // first-sync class that holds no floor (§14.3-3. session-31 §3 M1-A1's
     // note that leases are out of scope): signature, digest, epoch
     // agreement, and omission refusal stay at the pull's level, and the
@@ -576,7 +572,7 @@ export interface VerifiedEnvironmentMetadata {
   readonly tombstones: readonly VerifiedTombstone[];
   /** The verified environment meta-statement (the envMeta material for manifest issuance). */
   readonly environment: VerifiedMetaEvidence;
-  /** The verified manifest (omission already refused — no migration tolerance on a metadata-only pull). */
+  /** The verified manifest (required on the wire — an omission is refused at decode, same as the with-values pull). */
   readonly manifest: VerifiedManifest;
   /**
    * The server-claimed schemaPolicy (§12-7 / §12-11 — advisory). **Never an
@@ -640,7 +636,7 @@ interface MetadataPullWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly DistributedVariableMetaStatement[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
-  readonly manifest?: DistributedEnvironmentManifest;
+  readonly manifest: DistributedEnvironmentManifest;
   /** The advisory bundling of schemaPolicy (§12-7). */
   readonly schemaPolicy: SchemaPolicy;
 }

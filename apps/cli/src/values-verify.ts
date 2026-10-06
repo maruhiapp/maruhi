@@ -475,8 +475,12 @@ export interface PullWire {
    * version exists). Absent = no declared.
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** The latest manifest (§12-7 — omission is unconditionally refused, §6.3). */
-  readonly manifest?: DistributedEnvironmentManifest | undefined;
+  /**
+   * The latest manifest (§12-7 — required on the wire; the schema
+   * refuses an omission at decode — the same verdict as a dropped
+   * environment statement, §6.3).
+   */
+  readonly manifest: DistributedEnvironmentManifest;
   /**
    * The enumeration of value snapshots at the checkpoint (§12-7 — rule
    * 2's material. An omission on an environment with a baseline is refused

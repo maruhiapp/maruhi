@@ -467,11 +467,11 @@ export const CreateEnvironmentManifestSchema = Schema.Struct({
 /**
  * The manifest bundled into meta operations (variable create / rename /
  * delete, environment rename) and the rotate composite (the §12-5 (6)
- * manifestVersion CAS = declared == latest + 1). manifestVersion 1 is
- * also accepted: the first meta operation / rotate of an environment
- * created before manifests were introduced issues v1 from no stored
- * manifest (= latest 0) (the migration procedure — session-27 §14
- * PR-M1).
+ * manifestVersion CAS = declared == latest + 1). manifestVersion 1
+ * exists only inside the environment-creation composite — its wire
+ * form is CreateEnvironmentManifestSchema; a v1 declared to any other
+ * operation can only meet the CAS as latest 0, which a created
+ * environment never is (§12-4's atomic write — 0.28-draft).
  */
 export const EnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -489,10 +489,10 @@ export type EnvironmentManifest = typeof EnvironmentManifestSchema.Type;
  * verified chain history and the distributed statement set (CRYPTO_SPEC
  * §4.3 / §6.3 — digest recomputation and epoch consistency). **Absence =
  * unconditional refusal** (§6.3 — there is no warning-downgrade branch
- * for "uninitialized"). It is optional on the wire only during the
- * transitional state until environments created before manifests were
- * introduced finish migrating (the server bundles it whenever a stored
- * row exists).
+ * for "uninitialized"). Required on the wire (§12-7 / §14-2 —
+ * 0.28-draft): a created environment always has a stored manifest
+ * (§12-4's atomic write), so the server never omits it — a missing
+ * row is a server fault, not an omission.
  */
 export const DistributedEnvironmentManifestSchema = Schema.Struct({
   ...manifestBaseFields,
@@ -504,6 +504,22 @@ export const DistributedEnvironmentManifestSchema = Schema.Struct({
 
 /** A distributed environment manifest with its issuer identity. */
 export type DistributedEnvironmentManifest = typeof DistributedEnvironmentManifestSchema.Type;
+
+/**
+ * The distributed manifest in its required wire position (§12-7 /
+ * §14-2 — required since 0.28-draft). The annotateKey message keeps
+ * the refusal semantics on the field whose presence is enforced: an
+ * omitted manifest is refused as manifest suppression (the same
+ * verdict as a dropped environment statement — CRYPTO_SPEC §6.3), not
+ * reported as a bare missing-key shape error.
+ */
+export const RequiredDistributedEnvironmentManifestSchema =
+  DistributedEnvironmentManifestSchema.pipe(
+    Schema.annotateKey({
+      messageMissingKey:
+        "the environment manifest is required — an omitted manifest is refused as manifest suppression (CRYPTO_SPEC §6.3)",
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Enumeration of the checkpoint-time value snapshots (AUTH_SPEC §12-7 /

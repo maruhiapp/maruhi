@@ -34,7 +34,6 @@ import {
   DeleteVariableMetaStatementSchema,
   DeleteVariableMetaStatementV2Schema,
   DistributedEncryptedPayloadSchema,
-  DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
   EncryptedPayloadSchema,
@@ -43,6 +42,7 @@ import {
   RenameEnvironmentMetaStatementSchema,
   RenameVariableMetaStatementSchema,
   RenameVariableMetaStatementV2Schema,
+  RequiredDistributedEnvironmentManifestSchema,
   SchemaPolicySchema,
   VariableVersionHistoryEntrySchema,
   WrappedDekSchema,
@@ -211,14 +211,14 @@ export const EnvironmentPullSchema = Schema.Struct({
    */
   schemaPolicy: SchemaPolicySchema,
   /**
-   * The latest environment manifest + issuer info (§12-7). The client
-   * verifies digest recomputation and epoch consistency; **absence is
-   * refused unconditionally** (CRYPTO_SPEC §6.3). It is optional only
-   * during the transitional state until environments created before
-   * manifests were introduced finish migrating (the server bundles it
-   * whenever a stored row exists).
+   * The latest environment manifest + issuer info (§12-7). Required —
+   * a created environment always has a stored manifest (§12-4's atomic
+   * write), so the server never omits it (a missing row is a server
+   * fault, not an omission). The client verifies digest recomputation
+   * and epoch consistency; **absence is refused unconditionally**
+   * (CRYPTO_SPEC §6.3).
    */
-  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  manifest: RequiredDistributedEnvironmentManifestSchema,
   /**
    * Enumeration of the value snapshots at checkpoint time (§12-7).
    * Always bundled when a latest `checkpoint` containing an entry for
@@ -252,8 +252,12 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
   // the same column as active ones; the status field discriminates)
   variables: Schema.Array(DistributedVariableMetaStatementSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
-  /** The latest environment manifest (the completeness of metadata verification is the same level in this mode — §12-7). */
-  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  /**
+   * The latest environment manifest (the completeness of metadata
+   * verification is at the same level in this mode — §12-7). Required,
+   * same as the with-values pull.
+   */
+  manifest: RequiredDistributedEnvironmentManifestSchema,
   /** schemaPolicy advisory bundle (§12-7 / §12-11 — same convention as EnvironmentPull). */
   schemaPolicy: SchemaPolicySchema,
 });
@@ -352,9 +356,7 @@ export const environmentsGroup = HttpApiGroup.make("environments")
           deks: Schema.Array(WrappedDekSchema),
           // Manifest with the new epoch baked in (manifestVersion =
           // latest + 1; it reflects the epoch advance even when the meta
-          // set is unchanged — CRYPTO_SPEC §4.3. The first rotate of an
-          // environment created before manifests were introduced bundles
-          // v1 = the migration path)
+          // set is unchanged — CRYPTO_SPEC §4.3)
           manifest: EnvironmentManifestSchema,
           // Boundary checkpoint (§12-4).
           // rotate = H+1, checkpoint = H+2. The tuple's values_digest
