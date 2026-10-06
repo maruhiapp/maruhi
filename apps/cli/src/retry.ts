@@ -42,7 +42,7 @@ interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> 
    * lambdas, so the constraint collapses to never (verified on
    * 2026-10-06 against env-rotate-send.ts).
    */
-  readonly passthrough?: abstract new (args: any) => { readonly _tag: K };
+  readonly passthrough?: abstract new (...args: never) => { readonly _tag: K };
 }
 
 /**
