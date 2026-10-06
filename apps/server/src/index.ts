@@ -58,7 +58,7 @@ import { readWorkerSecrets, WorkerEnv, WorkerSecrets } from "./worker-env.ts";
 export { ProjectChainDO } from "./do/chain-do.ts";
 export type { Env } from "./do/chain-do.ts";
 
-// Findings from spike-b: HttpApiBuilder.layer nominally requires
+// HttpApiBuilder.layer nominally requires
 // HttpPlatform / FileSystem / Etag.Generator / Path (for a pure JSON
 // API they are never invoked at runtime). workerd has no FS, so
 // FileSystem.layerNoop satisfies the type requirement only

@@ -4,7 +4,6 @@
 // Because its contents change every build (it embeds the payload's
 // content hash), the CSP permits only that script's SHA-256 hash instead
 // of 'unsafe-inline'. This keeps "effectively script-src 'self'".
-// Verification notes: docs/notes/spike-a.md
 //
 // It also fixes /invite (the invite-link landing page — AUTH_SPEC §15-3 /
 // ADR-0018 amendment 2, item 5) structurally on its invariant "carries no

@@ -127,7 +127,7 @@ h1 { font-size: 1.25rem; font-weight: 600; }
  *      code). On a code mismatch (404), retype and resend the same
  *      result (no biometric redo)
  * `userVerification: "required"`: on an authenticator without UV
- * the PRF silently goes missing (spike-prf.md §2).
+ * the PRF silently goes missing.
  */
 export const PRF_PAGE_JS = `"use strict";
 (function () {

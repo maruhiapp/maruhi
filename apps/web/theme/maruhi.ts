@@ -1,7 +1,7 @@
 // The maruhi brand theme (ADR-0013: the only place brand definitions
 // live). What ships is static CSS produced by `astryx theme build`
 // (the <Theme> runtime injection inserts an inline <style>, which is
-// incompatible with style-src 'self' — docs/notes/spike-a.md).
+// incompatible with style-src 'self').
 //
 // The color rulings are docs/notes/web-design-pass.md §1-1 / §1-2 and
 // §3 "rulings recorded while implementing DP1" (A / B).
