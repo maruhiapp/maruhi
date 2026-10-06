@@ -31,6 +31,7 @@ import {
 import type { DataWriteOps, VariableRow } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
+import type { MetaOperation } from "../data/verify-meta.ts";
 import {
   acceptMetaStatement,
   ensureDescriptionPolicy,
@@ -242,6 +243,8 @@ const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")
   readonly projectId: string;
   readonly environmentId: string;
   readonly variableId: string;
+  /** Selects the pipeline's predecessor-match checks (run after the metaVersion CAS — §12-5). */
+  readonly operation: MetaOperation;
   readonly latestMetaVersion: number;
   readonly history: ChainHistoryIndex;
   readonly member: ChainMember;
@@ -258,6 +261,7 @@ const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")
         projectId,
         environmentId,
         target: { kind: "variable", variableId },
+        operation: input.operation,
         latestMetaVersion: input.latestMetaVersion,
         history,
         member: candidate,
@@ -555,32 +559,20 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
       cache,
     );
     // The DO storage total guard (§12-8): after existence and the support
-    // range, before the status / name guards, CAS, and signature
+    // range, before CAS and signature
     yield* ensureStorageAdmitsGrowth;
-    // The activation target is only declared (§12-5 — it is not a
-    // general-purpose composite of "value push + meta reissue"). Since the
-    // value CAS only enforces version = latestVersion + 1 it cannot double as
-    // the target check (sending version N+1 to an active variable would pass),
-    // so this explicit guard is what keeps a value push to an active variable
-    // from riding the activation composite
-    if (variable.latestStatus !== "declared") {
-      return yield* rejectData({ kind: "payload-mismatch", field: "status" });
-    }
-    // activation does not double as a rename: name keeps the name declared at
-    // declaration as-is (the same acceptance check as delete's name
-    // preservation — renames are owned by the rename path together with the
-    // var.renamed audit, and the "name change ⇔ var.renamed row"
-    // correspondence must not break). With preservation matching, the NFC and
-    // uniqueness checks at declaration acceptance stay valid as-is
-    if (input.statement.name !== variable.name) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
-    }
     // Since declared is the only legitimate latestVersion-0 state, the CAS
     // forces value version 1 (the "value version 1" of §12-5)
     yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
-    // The meta acceptance pipeline (§12-5): CAS → anchor → description
+    // The meta acceptance pipeline (§12-5): CAS → anchor → the activation's
+    // predecessor-match checks (the target is a declared variable — this is
+    // not a general-purpose composite of "value push + meta reissue" — and
+    // the declared name is kept: activation does not double as a rename, so
+    // the NFC and uniqueness checks at declaration stay valid) → description
     // acceptance check → signature verification (the declared → active
-    // transition and layout monotonicity are crypto's predecessor check)
+    // transition and layout monotonicity are crypto's predecessor check).
+    // The predecessor-match checks run after the CAS, so an activation
+    // signed before a concurrent rename is a 409 (§12-5's check order)
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -588,6 +580,7 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
           projectId,
           environmentId,
           target: { kind: "variable", variableId },
+          operation: "activate",
           latestMetaVersion: variable.latestMetaVersion,
           history,
           member: candidate,
@@ -683,25 +676,22 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     // and before CAS / signature verification (keeps the same prefix shape as
     // the delete path — delete does not call the guard)
     yield* ensureStorageAdmitsGrowth;
-    // rename / schema reissue never changes status (§12-5): declared →
-    // active is only the activation composite (with value), and active →
-    // declared is forbidden. Since the wire can carry both statuses, the
-    // acceptance check pins the match against the current state (the same
-    // payload-mismatch as the name-preservation check)
-    if (statement.status !== variable.latestStatus) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "status" });
-    }
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    // The manifest is recomputed and cross-checked on the set after the
-    // rename is applied
+    // rename / schema reissue never changes status (§12-5): declared →
+    // active is only the activation composite (with value), and active →
+    // declared is forbidden. The wire can carry both statuses, so the
+    // pipeline pins the match against the predecessor after the CAS. The
+    // manifest is recomputed and cross-checked on the set after the rename
+    // is applied
     const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
       variableId,
+      operation: "reissue",
       latestMetaVersion: variable.latestMetaVersion,
       history,
       member,
@@ -759,18 +749,16 @@ export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariable
       statement,
       cache,
     );
-    // A deleted statement's name preserves the previous active name (§4.2 —
-    // byte-exact)
-    if (statement.name !== variable.name) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
-    }
-    // The manifest is recomputed and cross-checked on the set including the
-    // tombstone (a digest mismatch from hiding a tombstone is caught here —
-    // §4.3 (3))
+    // A deleted statement preserves the previous name, schema fields and
+    // layout (§4.2 — byte-exact): the pipeline checks this after the
+    // metaVersion CAS (§12-5's check order). The manifest is recomputed and
+    // cross-checked on the set including the tombstone (a digest mismatch
+    // from hiding a tombstone is caught here — §4.3 (3))
     const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
       variableId,
+      operation: "delete",
       latestMetaVersion: variable.latestMetaVersion,
       history,
       member,

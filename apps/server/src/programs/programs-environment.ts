@@ -37,16 +37,17 @@ import {
 import { DataStore } from "../data/data-store.ts";
 import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "../data/verify-meta.ts";
+import type { MetaOperation } from "../data/verify-meta.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { requireActiveEnvironment } from "../quotas.ts";
 import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";
 
 /**
  * The environment-statement acceptance shared by rename and delete
- * (§12-4): the statement's caps → CAS → signature (acceptMetaStatement),
- * which resolves the signing device (design record §8 K3-1), then the
- * second-stage authorization — that device's effective permission
- * (`role` × environment ∈ effective scope).
+ * (§12-4): the statement's caps → CAS → the operation's predecessor-match
+ * checks → signature (acceptMetaStatement), which resolves the signing
+ * device (design record §8 K3-1), then the second-stage authorization — that
+ * device's effective permission (`role` × environment ∈ effective scope).
  */
 const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnvironmentStatement")(
   function* (
@@ -57,6 +58,7 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
     },
     environment: { readonly environmentId: string; readonly latestMetaVersion: number },
     statement: MetaStatementInput,
+    operation: MetaOperation,
     role: Role,
   ) {
     const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
@@ -66,6 +68,7 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
           projectId: access.projectId,
           environmentId: environment.environmentId,
           target: { kind: "environment" },
+          operation,
           latestMetaVersion: environment.latestMetaVersion,
           history: access.history,
           member: candidate,
@@ -114,6 +117,7 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
       access,
       environment,
       statement,
+      "reissue",
       "member",
     );
     // Composite acceptance of the manifest (§12-4 / §12-5): an
@@ -165,16 +169,17 @@ export const deleteEnvironmentProgram = Effect.fn("programs-environment.deleteEn
     const access = yield* requireEnvironmentAccess(actor.userId, "admin", environmentId, cache);
     const environment = yield* requireActiveEnvironment(environmentId);
     // deleted's name preserves the immediately-prior active name
-    // (§4.2 — byte-exact)
-    if (statement.name !== environment.name) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "name" });
-    }
+    // (§4.2 — byte-exact): a predecessor-match check, so the meta
+    // pipeline runs it after the metaVersion CAS (a deletion signed
+    // over a stale view — e.g. before a concurrent rename — is a 409,
+    // not a 422 — §12-5's check order)
     // Includes stage 2 (design record §8 K3-1): admin × environment ∈
     // effective scope under the signing device's effective permission
     const { author, signedBytesHashHex } = yield* acceptEnvironmentStatement(
       access,
       environment,
       statement,
+      "delete",
       "admin",
     );
     const store = yield* DataStore;

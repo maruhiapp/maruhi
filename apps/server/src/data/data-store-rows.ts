@@ -235,6 +235,7 @@ export function variableAnchorOf(row: StoredRow | undefined): MetaAnchor | null 
   }
   return {
     signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+    name: stringColumn(row, "name"),
     status: storedVariableStatus(stringColumn(row, "status")),
     layoutVersion: numberColumn(row, "layout_version"),
     schema: storedSchemaColumns(row, ""),
@@ -248,6 +249,7 @@ export function environmentAnchorOf(row: StoredRow | undefined): MetaAnchor | nu
   }
   return {
     signedBytesHashHex: stringColumn(row, "signed_bytes_hash_hex"),
+    name: stringColumn(row, "name"),
     status: storedEnvStatus(stringColumn(row, "status")),
     layoutVersion: 1,
     schema: null,
