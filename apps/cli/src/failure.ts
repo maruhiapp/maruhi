@@ -50,7 +50,7 @@ import {
   VersionConflictError,
 } from "@maruhi/api-schema";
 import { ChainInvalidError } from "@maruhi/core";
-import { Schema } from "effect";
+import { Schema, SchemaIssue } from "effect";
 import { HttpClientError } from "effect/http";
 
 import { displayText } from "./display.ts";
@@ -107,6 +107,52 @@ function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
   return `Some data does not match the schema (${detail}). Check the values you provided, and that the CLI and server versions match`;
 }
+
+/**
+ * Whether the issue is the refusal of a response that omits the
+ * environment manifest (required on the wire since AUTH_SPEC
+ * 0.28-draft). In effect 4.0.0 the struct decode stops at the first
+ * error, so the failure arrives as `AnyOf → Composite → Pointer →
+ * MissingKey` (the `AnyOf` is the response union's wrapper) for the
+ * pull, metadata-pull and lease responses alike — one match covers
+ * all three (the lease path decodes in ci-lease.ts). The descent
+ * walks only the non-`Pointer` nodes and stops at the first
+ * `Pointer`: a nested field missing further down (e.g. `x.manifest`)
+ * reaches its own `Pointer` through another `Pointer`'s subtree and
+ * is never entered, so only the missing top-level key can match. An
+ * encode-side MissingKey at ["manifest"] would also match, but that
+ * direction is unreachable: the manifest field is a required typed
+ * field of every request body the CLI builds.
+ */
+const isMissingManifestIssue = (issue: SchemaIssue.Issue): boolean => {
+  if (issue instanceof SchemaIssue.Pointer) {
+    return (
+      issue.path.length === 1 &&
+      issue.path[0] === "manifest" &&
+      issue.issue instanceof SchemaIssue.MissingKey
+    );
+  }
+  if (issue instanceof SchemaIssue.Filter || issue instanceof SchemaIssue.Encoding) {
+    return isMissingManifestIssue(issue.issue);
+  }
+  if (issue instanceof SchemaIssue.Composite || issue instanceof SchemaIssue.AnyOf) {
+    return issue.issues.some(isMissingManifestIssue);
+  }
+  return false;
+};
+
+/**
+ * §6.3's manifest-suppression verdict. Unlike every other schema
+ * failure this one names a server-side act, not an input or a version
+ * problem — an older server always sends the manifest when the row
+ * exists, so absence can only mean corruption or a hostile / broken
+ * server. It is therefore pulled out ahead of the generic schema
+ * renderer, whose "check the values / versions" guidance would
+ * misdirect at exactly this verdict. The environment id is not
+ * available at this layer, so it is not named.
+ */
+const MANIFEST_SUPPRESSION_MESSAGE =
+  "The server did not distribute an environment manifest. A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected";
 
 /**
  * Reason-specific guidance for 503 `LeaseUnavailable` (AUTH_SPEC
@@ -384,6 +430,14 @@ const renderers: readonly Renderer[] = [
   when(isInstanceOf(MirrorSyncRejectedError), renderMirrorSyncRejected),
   when(isInstanceOf(MirrorStateError), renderMirrorState),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
+  // §6.3's manifest suppression is pulled out ahead of the generic
+  // schema renderer (see isMissingManifestIssue) — its verdict names a
+  // server-side act, not an input or version problem
+  when(
+    (error): error is Schema.SchemaError =>
+      Schema.isSchemaError(error) && isMissingManifestIssue(error.issue),
+    () => MANIFEST_SUPPRESSION_MESSAGE,
+  ),
   // The third kind of typed-client failure (with the two above, the declaration is exhausted)
   when(Schema.isSchemaError, renderSchemaFailure),
 ];

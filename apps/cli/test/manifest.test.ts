@@ -232,15 +232,16 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
   it("absence is uniformly refused", async () => {
     // The omission fails the wire schema's decode before verification
     // — the same verdict as a dropped environment statement (§6.3;
-    // required on the wire since AUTH_SPEC 0.28-draft). Pinned to the
-    // full refusal text
+    // required on the wire since AUTH_SPEC 0.28-draft). The renderer
+    // dedicated to it (failure.ts) pins the verdict wording, without
+    // the generic "check the values / versions" guidance
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.at(-1)).toBe(
-      'maruhi: Some data does not match the schema (the environment manifest is required — an omitted manifest is refused as manifest suppression (CRYPTO_SPEC §6.3) at ["manifest"]). Check the values you provided, and that the CLI and server versions match',
+      "maruhi: The server did not distribute an environment manifest. A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected",
     );
   });
 
