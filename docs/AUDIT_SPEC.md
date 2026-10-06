@@ -648,8 +648,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 - Frequent attributes are promoted to columns (for indexes); everything else
   is payload JSON. Columns are NULL-allowed, and per-event-kind required
   attributes are enforced at the app layer (Effect Schema)
-- **Audit-head cumulative hash (2026-08-18 session 27 drafting — resolving
-  open item #2. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
+- **Audit-head cumulative hash (2026-08-18 session 27 drafting. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
   maintains a cumulative hash on each audit-row append — `h_n =
   lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))`
   (`h_0` = the empty string. LP is CRYPTO_SPEC §2.1). `row_digest` is the
@@ -833,7 +832,7 @@ The read API is not built per §6–§7 (Phase 2).
     The current state of declarations (latest 1 row per member) is held by the
     data plane (AUTH_SPEC §16-1); server acceptance times are not distributed
 - **Viewing permission (2026-08-12 revision — replacing the old v1 interim
-  plan. Resolves open item #1)**: events are split into 2 visibility classes.
+  plan)**: events are split into 2 visibility classes.
   The line's principle is "**is it surveillance information on a person's
   action, or the operation of the disclosure mechanism**":
   - **Class 1 (chain role reader or above = all members)**: facts already
