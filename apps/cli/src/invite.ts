@@ -51,7 +51,7 @@ import { CliIo } from "./io.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { describeScope, sameScope } from "./scope.ts";
 
-/** The issuance (a listing response row — §15-1. An old row has null). */
+/** The issuance (a listing response row — §15-1). */
 export interface InviteIssuance {
   readonly linkPubHex: string;
   readonly headHashHex: string;
@@ -323,9 +323,7 @@ export function pinMismatchOf(
   if (pin === undefined) {
     return "missing";
   }
-  return pin.linkPubHex !== row.issuance?.linkPubHex ||
-    pin.role !== row.role ||
-    !sameScope(pin, row)
+  return pin.linkPubHex !== row.issuance.linkPubHex || pin.role !== row.role || !sameScope(pin, row)
     ? "mismatch"
     : "match";
 }

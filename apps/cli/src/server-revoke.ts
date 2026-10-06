@@ -240,6 +240,7 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
       {
         maxAttempts: MAX_ATTEMPTS,
         attempt: (state) =>
+          // Already revoked by a concurrent revoke — skip the append and proceed to rotation.
           state.alreadyRevoked
             ? Effect.succeed({ verified: state.verified, appended: false })
             : Effect.gen(function* () {

@@ -426,8 +426,7 @@ const keychainSession = Effect.fn("session.keychainSession")(function* (
   }
   // The early expiry warning (ruling CL): the expiry was saved to the
   // record at login (expiresAtMs in keychain.ts), so a local check without
-  // traffic suffices. Old records (pre-W3a logins) lack it = no warning
-  // (added on re-login)
+  // traffic suffices.
   yield* warnNearExpiry(record.expiresAtMs, "Sign in again with `maruhi login` to rotate it");
   return {
     origin,

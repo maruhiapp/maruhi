@@ -18,8 +18,8 @@
 //
 // Accept check order (a ruling — pinned per reason code by tests):
 // Schema 400 → auth 401 → CSRF / key-material condition 403 → unknown
-// link_pub 404 → unusable 410 (an old row without an issue document is
-// → link signature 422 (which=link) → accept signature 422
+// link_pub 404 → unusable 410 → link signature 422 (which=link)
+// → accept signature 422
 // (which=accept) → CAS (a loss re-reads to 410).
 //
 // The link key's secret never passes through the server (only the
@@ -56,10 +56,9 @@ import type { InvitationRecord, InviteIssuance } from "../invite-domain.ts";
 
 /**
  * Derives the unusability reason (§15-1: expiry is derived from
- * expires_at). The check order is fixed as state → presence of an
- * issue document → expiry (revoked-and-expired is revoked — pinned by
- * tests). Returns null when pending, within expiry, and an issue
- * document exists (usable).
+ * expires_at). The check order is fixed as state → expiry
+ * (revoked-and-expired is revoked — pinned by tests). Returns null
+ * when pending and within expiry (usable).
  */
 function goneReasonOf(
   record: InvitationRecord,
