@@ -766,7 +766,7 @@ describe("maruhi env diff", () => {
       expect(await runCli(["env", "bogus", DEV, PROD], env.layer)).toBe(2);
       expect(env.errors).toEqual([
         "Usage: maruhi env <subcommand> [flags]",
-        "maruhi: Unknown subcommand (expected one of: create | rename | rm | rotate | diff)",
+        "maruhi: Unknown subcommand (expected one of: create | list | rename | rm | rotate | diff)",
       ]);
       expect(lastServer().requests).toEqual([]);
     });
@@ -780,7 +780,7 @@ describe("maruhi env diff", () => {
       expect(await runCli(["env", "bogus", DEV, " "], env.layer)).toBe(2);
       expect(env.errors).toEqual([
         "Usage: maruhi env <subcommand> [flags]",
-        "maruhi: Unknown subcommand (expected one of: create | rename | rm | rotate | diff)",
+        "maruhi: Unknown subcommand (expected one of: create | list | rename | rm | rotate | diff)",
       ]);
       expect(lastServer().requests).toEqual([]);
     });

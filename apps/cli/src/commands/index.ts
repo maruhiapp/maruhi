@@ -78,6 +78,7 @@ import {
 import {
   envCreateConfig,
   envDiffConfig,
+  envListConfig,
   envRenameConfig,
   envRmConfig,
   envRotateConfig,
@@ -167,6 +168,7 @@ const GROUP_CONFIGS: Readonly<
 > = {
   env: {
     create: envCreateConfig,
+    list: envListConfig,
     rename: envRenameConfig,
     rm: envRmConfig,
     rotate: envRotateConfig,

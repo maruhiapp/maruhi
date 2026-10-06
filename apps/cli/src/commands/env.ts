@@ -12,11 +12,13 @@ import {
   floorHandleFor,
   openEnvironment,
   openMetadataEnvironmentPair,
+  openMetadataProject,
   openProject,
 } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { envCreateOp } from "../env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "../env-diff.ts";
+import { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } from "../env-list.ts";
 import { envRenameOp } from "../env-rename.ts";
 import { envRmOp } from "../env-rm.ts";
 import { envRotateOp } from "../env-rotate.ts";
@@ -24,6 +26,7 @@ import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
+import { loadMasterKeys } from "../session.ts";
 import {
   loadSyncConfig,
   advanceReceiptsAfterRotation,
@@ -83,6 +86,15 @@ export const envRenameConfig = {
       "New display name (NFC-normalized; unique among the environments that are not deleted)",
     ),
     Argument.withSchema(NonBlank),
+  ),
+};
+
+export const envListConfig = {
+  ...projectFlags(),
+  all: singleFlag("all", "Also list deleted environments (kept as signed deletion records)"),
+  json: singleFlag(
+    "json",
+    "Print the environments as JSON (ID, name, status, current epoch, whether your scope covers it)",
   ),
 };
 
@@ -275,6 +287,50 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
 });
 
 /**
+ * `maruhi env list [--all] [--json]`: the verified chain's environments with
+ * their verified names and status, the chain-derived epoch and whether the
+ * caller's effective scope covers each. Zero values, so the agent gate
+ * (ensureValueDisplayAllowed) does not apply, and the master key is not
+ * required (the keyless class of member list): this machine's device key,
+ * when there is one, only narrows the scope column to the device's cap, and
+ * without it the column falls back to the member scope with a Note.
+ */
+const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
+  flags: CommonFlags & { readonly all: boolean; readonly json: boolean },
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const context = yield* openMetadataProject(flags);
+  // A missing or unusable key is not an error here: the listing says which
+  // scope it judged against (the Note below, and scopeBasis in --json)
+  const keys = yield* loadMasterKeys(context.session).pipe(Effect.orElseSucceed(() => null));
+  const list = yield* envListOp({
+    client: context.client,
+    verified: context.verified,
+    resync: context.resync,
+    userId: context.session.userId,
+    ownKeyFingerprintHex: keys?.fingerprintHex ?? null,
+  });
+  if (list.memberBasisReason !== null) {
+    yield* logNote(
+      `${list.memberBasisReason}, so in-scope shows your member scope (no device cap is applied)`,
+    );
+  }
+  if (flags.json) {
+    yield* io.log(envListJson(list, flags.all));
+    return;
+  }
+  const rows = shownEnvironmentRows(list, flags.all);
+  yield* io.log(`Environments (${rows.length}) — verified chain head seq=${list.headSeq}:`);
+  for (const row of rows) {
+    yield* io.log(`  ${formatEnvListRow(row)}`);
+  }
+  const hidden = list.rows.length - rows.length;
+  if (hidden > 0) {
+    yield* logNote(`${countNoun(hidden, "deleted environment")} not shown (--all lists them)`);
+  }
+});
+
+/**
  * `maruhi env diff <a> <b>`: compares the two environments' **variable
  * name sets** (values are neither fetched nor decrypted). A difference
  * leaves the exit code 0: "a difference exists" is a **report content** of
@@ -384,6 +440,18 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     ),
   );
 
+  const envList = Command.make(
+    "list",
+    envListConfig,
+    Effect.fn("commands-env.envList")(function* (values) {
+      yield* envListCommand(values);
+    }),
+  ).pipe(
+    Command.withDescription(
+      "List the project's environments (ID, display name, status, current epoch, and whether your scope covers it; deleted ones only with --all)",
+    ),
+  );
+
   const envRm = Command.make(
     "rm",
     envRmConfig,
@@ -403,8 +471,8 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   // The nested subcommands remove the need to hand-write the refusal of
   // "an option that does not apply to that operation"
   const env = Command.make("env").pipe(
-    Command.withDescription("Manage environments (create / rename / rm / rotate / diff)"),
-    Command.withSubcommands([envCreate, envRename, envRm, envRotate, envDiff]),
+    Command.withDescription("Manage environments (create / list / rename / rm / rotate / diff)"),
+    Command.withSubcommands([envCreate, envList, envRename, envRm, envRotate, envDiff]),
   );
 
   return env;

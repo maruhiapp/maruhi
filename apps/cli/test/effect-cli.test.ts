@@ -503,7 +503,7 @@ describe("env's nested subcommands (ADR-0016 decision 6 — stage 2)", () => {
     const bogus = await startEnv();
     expect(await runCli(["env", "bogus", "dev"], bogus.env.layer)).toBe(2);
     expect(bogus.env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: create | rename | rm | rotate | diff)",
+      "Unknown subcommand (expected one of: create | list | rename | rm | rotate | diff)",
     );
     expectNoLeak(bogus.env, ["bogus"]);
     expect(bogus.server.requests).toHaveLength(0);
