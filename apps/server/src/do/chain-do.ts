@@ -1179,7 +1179,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     variables: readonly PreflightVariableInput[],
-    recipients?: readonly PreflightRecipientInput[],
+    recipients: readonly PreflightRecipientInput[],
   ): Promise<PreflightOutcome> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(

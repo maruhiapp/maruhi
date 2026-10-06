@@ -192,7 +192,14 @@ async function proposalFor(options: ProposalOptions = {}) {
   };
 }
 
-/** The pre-flight of a mint (AUTH_SPEC §14-5 — the mint's checks before the issuer is touched). */
+/** W(E) of the fixture's environment: the writers' device enc keys. */
+const writerRecipients = () =>
+  WRITERS.map((userId) => ({ userId, encPubHex: vectorKeyOf(userId).enc_pub_hex }));
+
+/**
+ * The pre-flight of a mint (AUTH_SPEC §14-5 — the mint's checks before the
+ * issuer is touched). The recipient set defaults to W(E).
+ */
 async function preflight(input: {
   readonly variables: readonly { variableId: string; baseVersion: number }[];
   readonly oidcToken?: string;
@@ -207,7 +214,7 @@ async function preflight(input: {
         oidcToken: input.oidcToken ?? (await makeOidcToken()),
         ephemeralPubHex: workload.publicKeyHex,
         variables: input.variables,
-        ...(input.recipients === undefined ? {} : { recipients: input.recipients }),
+        recipients: input.recipients ?? writerRecipients(),
       }),
     },
   );
@@ -675,17 +682,10 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     await grantServer({ scope: [ENV] });
     await expectStatus(await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }), 200);
-    // The recipient set the job will seal to is checked here too when the
-    // job says it (ruling O revision, round 4): exactly W(E) passes, a
-    // missing writer is refused before the issuer is touched
-    const writers = WRITERS.map((userId) => ({
-      userId,
-      encPubHex: vectorKeyOf(userId).enc_pub_hex,
-    }));
-    await expectStatus(
-      await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }], recipients: writers }),
-      200,
-    );
+    // The recipient set the job will seal to is checked here too (ruling O
+    // revision, round 4): exactly W(E) passes (above), a missing writer is
+    // refused before the issuer is touched
+    const writers = writerRecipients();
     await expectRejected(
       await preflight({
         variables: [{ variableId: VAR, baseVersion: 1 }],
