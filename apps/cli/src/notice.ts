@@ -125,30 +125,28 @@ export interface NoticeOptions {
 }
 
 /** Writes a notice to stderr (dedupe by exact text within one run — `run` scope only). */
-function logNotice(
+const logNotice = Effect.fn("notice.logNotice")(function* (
   kind: NoticeKind,
   text: string,
   options: NoticeOptions,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const scope = options.scope ?? "run";
-    const ledger = yield* Effect.serviceOption(NoticeLedger);
-    if (kind !== "error" && scope === "run" && Option.isSome(ledger)) {
-      const key = `${kind}\u0000${text}`;
-      if (ledger.value.has(key)) {
-        return;
-      }
-      ledger.value.add(key);
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  const scope = options.scope ?? "run";
+  const ledger = yield* Effect.serviceOption(NoticeLedger);
+  if (kind !== "error" && scope === "run" && Option.isSome(ledger)) {
+    const key = `${kind}\u0000${text}`;
+    if (ledger.value.has(key)) {
+      return;
     }
-    const observer = yield* Effect.serviceOption(NoticeObserver);
-    if (Option.isSome(observer)) {
-      observer.value(kind, text);
-    }
-    const line = formatNotice(kind, text, io.colorEnabled());
-    yield* io.logError(scope === "prompt" ? `  ${line}` : line);
-  });
-}
+    ledger.value.add(key);
+  }
+  const observer = yield* Effect.serviceOption(NoticeObserver);
+  if (Option.isSome(observer)) {
+    observer.value(kind, text);
+  }
+  const line = formatNotice(kind, text, io.colorEnabled());
+  yield* io.logError(scope === "prompt" ? `  ${line}` : line);
+});
 
 /** Writes `Note: <text>` to stderr (information — the command succeeded). */
 export function logNote(text: string, options: NoticeOptions = {}) {

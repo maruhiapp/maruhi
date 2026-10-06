@@ -50,7 +50,7 @@ import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
 
-export interface VarRotateInput {
+interface VarRotateInput {
   readonly context: EnvironmentContext;
   readonly config: RotateConfig;
   readonly configPath: string;
@@ -75,7 +75,7 @@ export interface VarRotateResult {
   readonly warnings: readonly string[];
 }
 
-export interface VarFinalizeInput extends VarRotateInput {
+interface VarFinalizeInput extends VarRotateInput {
   /** The version that held the credential to invalidate (null = the one before the latest). */
   readonly previousVersion: number | null;
 }
@@ -107,106 +107,100 @@ function resolveRule(input: VarRotateInput): Effect.Effect<ResolvedTarget, CliEr
 }
 
 /** The decrypted values of one environment by name (the pull's view and wraps are reused for the keys). */
-function decryptedByName(
+const decryptedByName = Effect.fn("var-rotate.decryptedByName")(function* (
   context: EnvironmentContext,
   environmentId: string,
   pulled: VerifiedEnvironmentPull,
-): Effect.Effect<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError> {
-  return Effect.gen(function* () {
-    const keys = yield* environmentKeysFor({
-      client: context.client,
-      verified: pulled.verified,
-      environmentId,
-      recipient: context.recipient,
-      prefetched: pulled.deks,
-    });
-    const byName = new Map<string, Redacted.Redacted<Uint8Array>>();
-    for (const variable of pulled.variables) {
-      byName.set(
-        variable.name,
-        yield* decryptVerifiedValue({
-          verified: pulled.verified,
-          environmentId,
-          variable,
-          deksByEpoch: keys.deksByEpoch,
-          chainEpoch: keys.currentEpoch,
-        }),
-      );
-    }
-    return byName;
+): Effect.fn.Return<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError> {
+  const keys = yield* environmentKeysFor({
+    client: context.client,
+    verified: pulled.verified,
+    environmentId,
+    recipient: context.recipient,
+    prefetched: pulled.deks,
   });
-}
+  const byName = new Map<string, Redacted.Redacted<Uint8Array>>();
+  for (const variable of pulled.variables) {
+    byName.set(
+      variable.name,
+      yield* decryptVerifiedValue({
+        verified: pulled.verified,
+        environmentId,
+        variable,
+        deksByEpoch: keys.deksByEpoch,
+        chainEpoch: keys.currentEpoch,
+      }),
+    );
+  }
+  return byName;
+});
 
 /** Pulls and decrypts another environment the rule points at for an admin input (scope checked first — §6.3). */
-function pullOtherEnvironment(
+const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(function* (
   context: EnvironmentContext,
   environmentId: string,
-): Effect.Effect<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError, CliServices> {
-  return Effect.gen(function* () {
-    yield* requireEnvironmentInScope({
-      verified: context.verified,
-      userId: context.session.userId,
-      environmentId,
-      operation: "read the admin credential from",
-    });
-    const floor = yield* floorHandleFor(context, environmentId);
-    const pulled = yield* pullVerifiedEnvironment({
-      client: context.client,
-      verified: context.verified,
-      environmentId: environmentId as EnvironmentId,
-      resync: context.resync,
-      floor,
-    });
-    return yield* decryptedByName(context, environmentId, pulled);
+): Effect.fn.Return<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError, CliServices> {
+  yield* requireEnvironmentInScope({
+    verified: context.verified,
+    userId: context.session.userId,
+    environmentId,
+    operation: "read the admin credential from",
   });
-}
+  const floor = yield* floorHandleFor(context, environmentId);
+  const pulled = yield* pullVerifiedEnvironment({
+    client: context.client,
+    verified: context.verified,
+    environmentId: environmentId as EnvironmentId,
+    resync: context.resync,
+    floor,
+  });
+  return yield* decryptedByName(context, environmentId, pulled);
+});
 
 /**
  * The admin inputs a rule names, decrypted (this environment's from the
  * pull already made; another environment's through its own verified pull).
  * A missing input stops the command before anything is sent.
  */
-function resolveInputs(
+const resolveInputs = Effect.fn("var-rotate.resolveInputs")(function* (
   context: EnvironmentContext,
   refs: InputRefs,
   local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
   primary: string,
-): Effect.Effect<RotateInputs, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const inputs: Record<string, Uint8Array> = {};
-    const others = new Map<string, ReadonlyMap<string, Redacted.Redacted<Uint8Array>>>();
-    for (const [inputName, ref] of Object.entries(refs)) {
-      let source = local;
-      if (ref.environment !== null && ref.environment !== context.environmentId) {
-        const cached = others.get(ref.environment);
-        if (cached === undefined) {
-          const pulled = yield* pullOtherEnvironment(context, ref.environment);
-          others.set(ref.environment, pulled);
-          source = pulled;
-        } else {
-          source = cached;
-        }
+): Effect.fn.Return<RotateInputs, CliError, CliServices> {
+  const inputs: Record<string, Uint8Array> = {};
+  const others = new Map<string, ReadonlyMap<string, Redacted.Redacted<Uint8Array>>>();
+  for (const [inputName, ref] of Object.entries(refs)) {
+    let source = local;
+    if (ref.environment !== null && ref.environment !== context.environmentId) {
+      const cached = others.get(ref.environment);
+      if (cached === undefined) {
+        const pulled = yield* pullOtherEnvironment(context, ref.environment);
+        others.set(ref.environment, pulled);
+        source = pulled;
+      } else {
+        source = cached;
       }
-      const value = source.get(ref.name);
-      if (value === undefined) {
-        const where =
-          ref.environment === null || ref.environment === context.environmentId
-            ? "this environment"
-            : `environment ${displayText(ref.environment)}`;
-        return yield* Effect.fail(
-          cliError(
-            `The rotation rule for ${displayText(primary)} names variable ${displayText(ref.name)} in ${where} as its ${inputName}, but it has no value there. Set it with \`maruhi push\`, or fix the rule. Nothing was sent to the issuer`,
-          ),
-        );
-      }
-      // Reason for unwrapping: the connector consumes the admin credential in
-      // memory to call the issuer's API (integration-options.md §4 R2). It is
-      // never displayed, written, or sent anywhere but the issuer
-      inputs[inputName] = Redacted.value(value);
     }
-    return inputs;
-  });
-}
+    const value = source.get(ref.name);
+    if (value === undefined) {
+      const where =
+        ref.environment === null || ref.environment === context.environmentId
+          ? "this environment"
+          : `environment ${displayText(ref.environment)}`;
+      return yield* Effect.fail(
+        cliError(
+          `The rotation rule for ${displayText(primary)} names variable ${displayText(ref.name)} in ${where} as its ${inputName}, but it has no value there. Set it with \`maruhi push\`, or fix the rule. Nothing was sent to the issuer`,
+        ),
+      );
+    }
+    // Reason for unwrapping: the connector consumes the admin credential in
+    // memory to call the issuer's API (integration-options.md §4 R2). It is
+    // never displayed, written, or sent anywhere but the issuer
+    inputs[inputName] = Redacted.value(value);
+  }
+  return inputs;
+});
 
 /** One companion's current value (the AWS key id), refused with the rule it belongs to when missing. */
 function companionValue(
@@ -225,27 +219,25 @@ function companionValue(
 }
 
 /** The rule's credential as currently stored: the primary and every companion, decrypted. */
-function currentCredential(
+const currentCredential = Effect.fn("var-rotate.currentCredential")(function* (
   target: ResolvedTarget,
   local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
-): Effect.Effect<CredentialValues, CliError> {
-  return Effect.gen(function* () {
-    const primary = local.get(target.primary);
-    if (primary === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(target.primary)} has no value in this environment (a rotation replaces an existing credential; push the first value with \`maruhi push ${displayText(target.primary)}\`)`,
-        ),
-      );
-    }
-    const companions: Record<string, Uint8Array> = {};
-    for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
-      const value = yield* companionValue(local, variable, target);
-      companions[companion] = Redacted.value(value);
-    }
-    return { primary: Redacted.value(primary), companions };
-  });
-}
+): Effect.fn.Return<CredentialValues, CliError> {
+  const primary = local.get(target.primary);
+  if (primary === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        `Variable ${displayText(target.primary)} has no value in this environment (a rotation replaces an existing credential; push the first value with \`maruhi push ${displayText(target.primary)}\`)`,
+      ),
+    );
+  }
+  const companions: Record<string, Uint8Array> = {};
+  for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
+    const value = yield* companionValue(local, variable, target);
+    companions[companion] = Redacted.value(value);
+  }
+  return { primary: Redacted.value(primary), companions };
+});
 
 /** The connector's failure becomes the CLI error carrying its wording as-is (the connector names the issuer's problem). */
 export function connectorFailure(error: ConnectorError): CliError {
@@ -266,32 +258,30 @@ export function callConnector<A, R>(
 }
 
 /** Confirms an invalidating step: `--yes`, or a y/N prompt at a terminal; non-interactive without --yes refuses. */
-export function ensureConfirmed(input: {
+export const ensureConfirmed = Effect.fn("var-rotate.ensureConfirmed")(function* (input: {
   readonly facts: readonly string[];
   readonly prompt: string;
   readonly refusal: string;
   readonly yes: boolean;
   /** What a "no" answer reports (default: nothing was sent to the issuer). */
   readonly abort?: string | undefined;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    if (input.yes) {
-      yield* Effect.forEach(input.facts, io.logError, { discard: true });
-      return;
-    }
-    const stdio = yield* Stdio.Stdio;
-    const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
-    if (!interactive) {
-      return yield* Effect.fail(cliError(input.refusal));
-    }
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
+  const io = yield* CliIo;
+  if (input.yes) {
     yield* Effect.forEach(input.facts, io.logError, { discard: true });
-    const answer = yield* io.promptLine({ prompt: input.prompt });
-    if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
-      return yield* Effect.fail(cliError(input.abort ?? "Aborted: nothing was sent to the issuer"));
-    }
-  });
-}
+    return;
+  }
+  const stdio = yield* Stdio.Stdio;
+  const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
+  if (!interactive) {
+    return yield* Effect.fail(cliError(input.refusal));
+  }
+  yield* Effect.forEach(input.facts, io.logError, { discard: true });
+  const answer = yield* io.promptLine({ prompt: input.prompt });
+  if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
+    return yield* Effect.fail(cliError(input.abort ?? "Aborted: nothing was sent to the issuer"));
+  }
+});
 
 function pushOne(
   context: EnvironmentContext,
@@ -339,174 +329,168 @@ function pushFailureMessage(
 }
 
 /** Pushes the new credential: companions first (the AWS key id), then the primary. A failure says what already exists at the issuer. */
-function pushOutcome(
+const pushOutcome = Effect.fn("var-rotate.pushOutcome")(function* (
   context: EnvironmentContext,
   pulled: VerifiedEnvironmentPull,
   target: ResolvedTarget,
   outcome: RotationOutcome,
-): Effect.Effect<VarRotateResult["pushed"], CliError> {
-  return Effect.gen(function* () {
-    const pushed: { readonly name: string; readonly version: PushedVersion }[] = [];
-    const planned: { readonly name: string; readonly bytes: Uint8Array }[] = [];
-    for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
-      const bytes = outcome.values.companions[companion];
-      if (bytes !== undefined) {
-        planned.push({ name: variable, bytes });
-      }
+): Effect.fn.Return<VarRotateResult["pushed"], CliError> {
+  const pushed: { readonly name: string; readonly version: PushedVersion }[] = [];
+  const planned: { readonly name: string; readonly bytes: Uint8Array }[] = [];
+  for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
+    const bytes = outcome.values.companions[companion];
+    if (bytes !== undefined) {
+      planned.push({ name: variable, bytes });
     }
-    planned.push({ name: target.primary, bytes: outcome.values.primary });
-    for (const item of planned) {
-      const version = yield* pushOne(context, pulled, item.name, item.bytes).pipe(
-        Effect.mapError((error) => cliError(pushFailureMessage(item.name, error, pushed, outcome))),
-      );
-      pushed.push({ name: item.name, version });
-    }
-    return pushed;
-  });
-}
+  }
+  planned.push({ name: target.primary, bytes: outcome.values.primary });
+  for (const item of planned) {
+    const version = yield* pushOne(context, pulled, item.name, item.bytes).pipe(
+      Effect.mapError((error) => cliError(pushFailureMessage(item.name, error, pushed, outcome))),
+    );
+    pushed.push({ name: item.name, version });
+  }
+  return pushed;
+});
 
 /** `maruhi var rotate <NAME>`: a new credential at the issuer, pushed as a new version; the old one stays valid until finalized. */
-export function varRotateOp(
+export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   input: VarRotateInput,
-): Effect.Effect<VarRotateResult, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const { context } = input;
-    const target = yield* resolveRule(input);
-    const pulled = yield* pullVerifiedEnvironment({
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId as EnvironmentId,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    const local = yield* decryptedByName(context, context.environmentId, pulled);
-    const current = yield* currentCredential(target, local);
-    const inputs = yield* resolveInputs(context, target.rule.inputs, local, target.primary);
-    const plan = yield* planRotation(target.rule, current).pipe(
-      Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
-    );
-    if (plan.immediate) {
-      yield* ensureConfirmed({
-        facts: [
-          `Rotating ${displayText(target.primary)} will ${plan.description}. Consumers holding the current value stop working until the new one is deployed`,
-        ],
-        prompt: "Proceed with the rotation? [y/N]: ",
-        refusal: `Refusing to rotate ${displayText(target.primary)} in a non-interactive environment without --yes: this rule's rotation invalidates the current credential at once (${plan.description}). Re-run with --yes to accept that explicitly`,
-        yes: input.yes,
-      });
-    }
-    const site = { variable: target.primary, environmentId: context.environmentId };
-    const outcome = yield* callConnector(rotateCredential(target.rule, current, inputs, site));
-    // A line count that changed is worth a look before the push (D-16)
-    const lineWarning = lineCountWarning(
-      displayText(target.primary),
-      outcome.shape,
-      outcome.currentShape,
-      target.rule.connector,
-    );
-    if (lineWarning !== null) {
-      yield* logWarning(lineWarning);
-    }
-    const pushed = yield* pushOutcome(context, pulled, target, outcome);
-    const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
-    return {
-      primary: target.primary,
-      connector: target.rule.connector,
-      pushed,
-      facts: outcome.facts,
-      valueShape: describeValueShapes(outcome),
-      previous: outcome.previous,
-      maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
-      warnings: [
-        ...pulled.warnings,
-        ...outcome.warnings,
-        ...pushed.flatMap((entry) => entry.version.warnings),
-      ],
-    };
+): Effect.fn.Return<VarRotateResult, CliError, CliServices> {
+  const { context } = input;
+  const target = yield* resolveRule(input);
+  const pulled = yield* pullVerifiedEnvironment({
+    client: context.client,
+    verified: context.verified,
+    environmentId: context.environmentId as EnvironmentId,
+    resync: context.resync,
+    floor: context.floorHandle,
   });
-}
-
-/** `maruhi var rotate <NAME> --finalize`: invalidates the credential the previous version held. */
-export function varFinalizeOp(
-  input: VarFinalizeInput,
-): Effect.Effect<VarFinalizeResult, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const { context } = input;
-    const target = yield* resolveRule(input);
-    const base = {
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId as EnvironmentId,
-      resync: context.resync,
-      floor: context.floorHandle,
-      recipient: context.recipient,
-    };
-    const primary = yield* verifiedAncestorValues({
-      ...base,
-      name: target.primary,
-      toVersion: input.previousVersion,
-    });
-    // The admin inputs and the companions' current values come from the
-    // current environment state (a fresh verified pull — the credential in
-    // use now authenticates a self-rotation)
-    const pulled = yield* pullVerifiedEnvironment(base);
-    const local = yield* decryptedByName(context, context.environmentId, pulled);
-    // A companion (the AWS key id): its current value from the verified
-    // pull, and the ids every earlier version held, lineage-verified. The
-    // connector decides against the issuer which of those to invalidate;
-    // nothing server-declared (the history's versions or times) takes part
-    const currentCompanions: Record<string, Uint8Array> = {};
-    const previousCompanions: Record<string, Uint8Array> = {};
-    const ancestors: Record<string, readonly Uint8Array[]> = {};
-    const warnings = [...primary.warnings];
-    // The previous credential's companions are positional: the version
-    // directly before the current one pairs with the primary's only when
-    // the primary's previous version is also the one directly before
-    // (one rotation pushes the pair together); otherwise no pairing is
-    // claimed and the finalize sees the ancestors alone (C-7)
-    const paired = primary.ancestorVersion === primary.latestVersion - 1;
-    for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
-      const value = yield* companionValue(local, variable, target);
-      currentCompanions[companion] = Redacted.value(value);
-      const range = yield* verifiedAncestorRange({ ...base, name: variable });
-      ancestors[companion] = range.ancestors.map((entry) => Redacted.value(entry.value));
-      const before = range.ancestors[0];
-      if (paired && before !== undefined && before.version === range.latestVersion - 1) {
-        previousCompanions[companion] = Redacted.value(before.value);
-      }
-      warnings.push(...range.warnings);
-    }
-    const previous: CredentialValues = {
-      primary: Redacted.value(primary.ancestor),
-      companions: previousCompanions,
-    };
-    const current: CredentialValues = {
-      primary: Redacted.value(primary.latest),
-      companions: currentCompanions,
-    };
-    const inputs = yield* resolveInputs(context, target.rule.inputs, local, target.primary);
+  const local = yield* decryptedByName(context, context.environmentId, pulled);
+  const current = yield* currentCredential(target, local);
+  const inputs = yield* resolveInputs(context, target.rule.inputs, local, target.primary);
+  const plan = yield* planRotation(target.rule, current).pipe(
+    Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
+  );
+  if (plan.immediate) {
     yield* ensureConfirmed({
       facts: [
-        `Finalizing the rotation of ${displayText(target.primary)} will ${describeFinalize(target.rule)} (the credential of version ${primary.ancestorVersion}; version ${primary.latestVersion} is current). Anything still using the previous credential stops working`,
+        `Rotating ${displayText(target.primary)} will ${plan.description}. Consumers holding the current value stop working until the new one is deployed`,
       ],
-      prompt: "Proceed? [y/N]: ",
-      refusal: `Refusing to finalize the rotation of ${displayText(target.primary)} in a non-interactive environment without --yes (it invalidates the previous credential at the issuer). Re-run with --yes to accept that explicitly`,
+      prompt: "Proceed with the rotation? [y/N]: ",
+      refusal: `Refusing to rotate ${displayText(target.primary)} in a non-interactive environment without --yes: this rule's rotation invalidates the current credential at once (${plan.description}). Re-run with --yes to accept that explicitly`,
       yes: input.yes,
     });
-    const site = { variable: target.primary, environmentId: context.environmentId };
-    const outcome = yield* callConnector(
-      finalizeCredential(target.rule, previous, current, inputs, ancestors, site),
-    );
-    return {
-      primary: target.primary,
-      connector: target.rule.connector,
-      outcome,
-      previousVersion: primary.ancestorVersion,
-      latestVersion: primary.latestVersion,
-      warnings,
-    };
+  }
+  const site = { variable: target.primary, environmentId: context.environmentId };
+  const outcome = yield* callConnector(rotateCredential(target.rule, current, inputs, site));
+  // A line count that changed is worth a look before the push (D-16)
+  const lineWarning = lineCountWarning(
+    displayText(target.primary),
+    outcome.shape,
+    outcome.currentShape,
+    target.rule.connector,
+  );
+  if (lineWarning !== null) {
+    yield* logWarning(lineWarning);
+  }
+  const pushed = yield* pushOutcome(context, pulled, target, outcome);
+  const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
+  return {
+    primary: target.primary,
+    connector: target.rule.connector,
+    pushed,
+    facts: outcome.facts,
+    valueShape: describeValueShapes(outcome),
+    previous: outcome.previous,
+    maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
+    warnings: [
+      ...pulled.warnings,
+      ...outcome.warnings,
+      ...pushed.flatMap((entry) => entry.version.warnings),
+    ],
+  };
+});
+
+/** `maruhi var rotate <NAME> --finalize`: invalidates the credential the previous version held. */
+export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
+  input: VarFinalizeInput,
+): Effect.fn.Return<VarFinalizeResult, CliError, CliServices> {
+  const { context } = input;
+  const target = yield* resolveRule(input);
+  const base = {
+    client: context.client,
+    verified: context.verified,
+    environmentId: context.environmentId as EnvironmentId,
+    resync: context.resync,
+    floor: context.floorHandle,
+    recipient: context.recipient,
+  };
+  const primary = yield* verifiedAncestorValues({
+    ...base,
+    name: target.primary,
+    toVersion: input.previousVersion,
   });
-}
+  // The admin inputs and the companions' current values come from the
+  // current environment state (a fresh verified pull — the credential in
+  // use now authenticates a self-rotation)
+  const pulled = yield* pullVerifiedEnvironment(base);
+  const local = yield* decryptedByName(context, context.environmentId, pulled);
+  // A companion (the AWS key id): its current value from the verified
+  // pull, and the ids every earlier version held, lineage-verified. The
+  // connector decides against the issuer which of those to invalidate;
+  // nothing server-declared (the history's versions or times) takes part
+  const currentCompanions: Record<string, Uint8Array> = {};
+  const previousCompanions: Record<string, Uint8Array> = {};
+  const ancestors: Record<string, readonly Uint8Array[]> = {};
+  const warnings = [...primary.warnings];
+  // The previous credential's companions are positional: the version
+  // directly before the current one pairs with the primary's only when
+  // the primary's previous version is also the one directly before
+  // (one rotation pushes the pair together); otherwise no pairing is
+  // claimed and the finalize sees the ancestors alone (C-7)
+  const paired = primary.ancestorVersion === primary.latestVersion - 1;
+  for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
+    const value = yield* companionValue(local, variable, target);
+    currentCompanions[companion] = Redacted.value(value);
+    const range = yield* verifiedAncestorRange({ ...base, name: variable });
+    ancestors[companion] = range.ancestors.map((entry) => Redacted.value(entry.value));
+    const before = range.ancestors[0];
+    if (paired && before !== undefined && before.version === range.latestVersion - 1) {
+      previousCompanions[companion] = Redacted.value(before.value);
+    }
+    warnings.push(...range.warnings);
+  }
+  const previous: CredentialValues = {
+    primary: Redacted.value(primary.ancestor),
+    companions: previousCompanions,
+  };
+  const current: CredentialValues = {
+    primary: Redacted.value(primary.latest),
+    companions: currentCompanions,
+  };
+  const inputs = yield* resolveInputs(context, target.rule.inputs, local, target.primary);
+  yield* ensureConfirmed({
+    facts: [
+      `Finalizing the rotation of ${displayText(target.primary)} will ${describeFinalize(target.rule)} (the credential of version ${primary.ancestorVersion}; version ${primary.latestVersion} is current). Anything still using the previous credential stops working`,
+    ],
+    prompt: "Proceed? [y/N]: ",
+    refusal: `Refusing to finalize the rotation of ${displayText(target.primary)} in a non-interactive environment without --yes (it invalidates the previous credential at the issuer). Re-run with --yes to accept that explicitly`,
+    yes: input.yes,
+  });
+  const site = { variable: target.primary, environmentId: context.environmentId };
+  const outcome = yield* callConnector(
+    finalizeCredential(target.rule, previous, current, inputs, ancestors, site),
+  );
+  return {
+    primary: target.primary,
+    connector: target.rule.connector,
+    outcome,
+    previousVersion: primary.ancestorVersion,
+    latestVersion: primary.latestVersion,
+    warnings,
+  };
+});
 
 /** The report lines of a rotation (the command prints them; values never appear). */
 export function describeRotation(result: VarRotateResult, environmentId: string): string[] {

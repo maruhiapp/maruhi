@@ -42,20 +42,18 @@ export function generateVariableId(): string {
  * self-computed value that, once accepted, becomes the local
  * floor's meta record (§6.3 — not a server declaration).
  */
-export function signStatementAndHash(
+export const signStatementAndHash = Effect.fn("meta-statement.signStatementAndHash")(function* (
   context: MetaStatementContext,
   signingKey: CryptoKey,
-): Effect.Effect<{ readonly signatureHex: string; readonly metaSigHashHex: string }, CliError> {
-  return Effect.gen(function* () {
-    const signature = yield* cryptoEffect(() => signMetaStatement({ context, signingKey })).pipe(
-      Effect.mapError(() => cliError("Failed to sign the meta statement")),
-    );
-    const metaSigHash = yield* cryptoEffect(() => computeMetaSignedBytesHash(context)).pipe(
-      Effect.mapError(() => cliError("Failed to compute the meta-statement signed-bytes hash")),
-    );
-    return { signatureHex: signature, metaSigHashHex: metaSigHash };
-  });
-}
+): Effect.fn.Return<{ readonly signatureHex: string; readonly metaSigHashHex: string }, CliError> {
+  const signature = yield* cryptoEffect(() => signMetaStatement({ context, signingKey })).pipe(
+    Effect.mapError(() => cliError("Failed to sign the meta statement")),
+  );
+  const metaSigHash = yield* cryptoEffect(() => computeMetaSignedBytesHash(context)).pipe(
+    Effect.mapError(() => cliError("Failed to compute the meta-statement signed-bytes hash")),
+  );
+  return { signatureHex: signature, metaSigHashHex: metaSigHash };
+});
 
 /** The create statement's target (§4.2's target — a variable or the environment itself). */
 export type CreateStatementTarget =

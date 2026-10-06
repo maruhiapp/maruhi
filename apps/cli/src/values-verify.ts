@@ -773,14 +773,14 @@ export async function verifyActiveVariables(
  * the caller keeps them as targets without trusting the deletion; §7 never
  * silently skips on the server's claim alone).
  */
-export function verifiedDeletedEnvironments(
-  verified: VerifiedProject,
-  environments: readonly {
-    readonly environmentId: string;
-    readonly statement: DistributedEnvironmentMetaStatement;
-  }[],
-): Effect.Effect<ReadonlySet<string>, CliError> {
-  return Effect.gen(function* () {
+export const verifiedDeletedEnvironments = Effect.fn("values-verify.verifiedDeletedEnvironments")(
+  function* (
+    verified: VerifiedProject,
+    environments: readonly {
+      readonly environmentId: string;
+      readonly statement: DistributedEnvironmentMetaStatement;
+    }[],
+  ): Effect.fn.Return<ReadonlySet<string>, CliError> {
     const deleted = new Set<string>();
     for (const environment of environments) {
       const statement = environment.statement;
@@ -801,5 +801,5 @@ export function verifiedDeletedEnvironments(
       }
     }
     return deleted;
-  });
-}
+  },
+);

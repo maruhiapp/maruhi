@@ -394,43 +394,43 @@ function describeFailure(failure: unknown): string {
  * `maruhi mcp`: serves until stdin reaches EOF (the host closed the session),
  * then returns normally (exit 0).
  */
-export function mcpServeOp(flags: CommonFlags): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    yield* checkFlags(flags);
-    const stdio = yield* Stdio.Stdio;
-    if (yield* stdio.stdinIsTerminal) {
-      yield* logNote(
-        "`maruhi mcp` speaks the Model Context Protocol on stdin/stdout — register it with your agent host instead of running it in a terminal (setup: https://maruhi.app/docs/ai-agents). Press Ctrl-D to exit",
-      );
-    }
-    const context = narrowedContext(yield* Effect.context<CliServices>());
-    // Calls are serialized: one call at a time = one `maruhi schema` at a
-    // time, the shape the prologue (floor and pin writes) was built for
-    const permit = yield* Semaphore.make(1);
-    const read = (environment: string | undefined) =>
-      permit
-        .withPermits(1)(readSchema(flags, environment))
-        .pipe(
-          // A defect's message is never shown (the CLI's rule — failure.ts):
-          // the agent and the host log get its type name only
-          Effect.catchDefect((defect) => Effect.fail(cliError(describeFailure(defect)))),
-          Effect.provideContext(context),
-        );
-    // The stdio protocol interrupts the fiber that built it on stdin EOF, so
-    // the server runs in a child fiber and its interruption reads as a clean
-    // shutdown here
-    const fiber = yield* Layer.launch(serverLayer(flags, read)).pipe(
-      Effect.provideContext(context),
-      Effect.forkChild,
+export const mcpServeOp = Effect.fn("mcp.mcpServeOp")(function* (
+  flags: CommonFlags,
+): Effect.fn.Return<void, CliError, CliServices> {
+  yield* checkFlags(flags);
+  const stdio = yield* Stdio.Stdio;
+  if (yield* stdio.stdinIsTerminal) {
+    yield* logNote(
+      "`maruhi mcp` speaks the Model Context Protocol on stdin/stdout — register it with your agent host instead of running it in a terminal (setup: https://maruhi.app/docs/ai-agents). Press Ctrl-D to exit",
     );
-    const exit = yield* Fiber.await(fiber);
-    if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
-      const failure = Cause.findErrorOption(exit.cause);
-      return yield* Effect.fail(
-        cliError(
-          `The MCP server stopped: ${Option.isSome(failure) ? describeFailure(failure.value) : "internal error"}`,
-        ),
+  }
+  const context = narrowedContext(yield* Effect.context<CliServices>());
+  // Calls are serialized: one call at a time = one `maruhi schema` at a
+  // time, the shape the prologue (floor and pin writes) was built for
+  const permit = yield* Semaphore.make(1);
+  const read = (environment: string | undefined) =>
+    permit
+      .withPermits(1)(readSchema(flags, environment))
+      .pipe(
+        // A defect's message is never shown (the CLI's rule — failure.ts):
+        // the agent and the host log get its type name only
+        Effect.catchDefect((defect) => Effect.fail(cliError(describeFailure(defect)))),
+        Effect.provideContext(context),
       );
-    }
-  });
-}
+  // The stdio protocol interrupts the fiber that built it on stdin EOF, so
+  // the server runs in a child fiber and its interruption reads as a clean
+  // shutdown here
+  const fiber = yield* Layer.launch(serverLayer(flags, read)).pipe(
+    Effect.provideContext(context),
+    Effect.forkChild,
+  );
+  const exit = yield* Fiber.await(fiber);
+  if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
+    const failure = Cause.findErrorOption(exit.cause);
+    return yield* Effect.fail(
+      cliError(
+        `The MCP server stopped: ${Option.isSome(failure) ? describeFailure(failure.value) : "internal error"}`,
+      ),
+    );
+  }
+});

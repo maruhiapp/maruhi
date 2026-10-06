@@ -84,27 +84,27 @@ function identitiesPathOf(outPath: string): string {
 }
 
 /** Refuses an existing file (an export never overwrites — a stale file next to a fresh one is how a migration goes wrong). */
-function ensureAbsent(path: string): Effect.Effect<void, CliError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    // NotFound is the only error `exists` folds to absent — a check that
-    // fails otherwise is a real error, never a silent "absent"
-    const exists = yield* fs
-      .exists(path)
-      .pipe(
-        Effect.mapError((error) =>
-          cliError(
-            `Checking ${displayText(path)} failed (${error.reason.cause instanceof Error ? error.reason.cause.name : "unknown"})`,
-          ),
+const ensureAbsent = Effect.fn("project-export.ensureAbsent")(function* (
+  path: string,
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
+  const fs = yield* FileSystem.FileSystem;
+  // NotFound is the only error `exists` folds to absent — a check that
+  // fails otherwise is a real error, never a silent "absent"
+  const exists = yield* fs
+    .exists(path)
+    .pipe(
+      Effect.mapError((error) =>
+        cliError(
+          `Checking ${displayText(path)} failed (${error.reason.cause instanceof Error ? error.reason.cause.name : "unknown"})`,
         ),
-      );
-    if (exists) {
-      return yield* Effect.fail(
-        cliError(`Refusing to overwrite ${displayText(path)} (choose another --out path)`),
-      );
-    }
-  });
-}
+      ),
+    );
+  if (exists) {
+    return yield* Effect.fail(
+      cliError(`Refusing to overwrite ${displayText(path)} (choose another --out path)`),
+    );
+  }
+});
 
 /**
  * Removes a file, tolerating its absence. A removal failure is a defect

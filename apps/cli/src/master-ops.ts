@@ -36,28 +36,26 @@ import { serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import type { MasterKeys } from "./session.ts";
 
 /** Opens the segment addressed to me as a guardian (called right before approving; the result is resealed immediately). */
-export function openOwnGuardianShare(input: {
+export const openOwnGuardianShare = Effect.fn("master-ops.openOwnGuardianShare")(function* (input: {
   readonly masterKeys: MasterKeys;
   readonly wrapped: WrappedDek;
   readonly context: GuardianWrapContext;
-}): Effect.Effect<Uint8Array, CliError> {
-  return Effect.gen(function* () {
-    // info is assembled by openGuardianShare in the spec's field order (a transplant fails decryption — §8.3)
-    return yield* cryptoEffect(() =>
-      openGuardianShare({
-        guardianKeyPair: input.masterKeys.encKeyPair,
-        wrapped: input.wrapped,
-        context: input.context,
-      }),
-    ).pipe(
-      Effect.mapError(() =>
-        cliError(
-          "Cannot open your guardian share with the device key on this machine. The ward may have sealed the group to a previous key of yours, or before this device was registered — ask them to re-add you with `maruhi guardian add`",
-        ),
+}): Effect.fn.Return<Uint8Array, CliError> {
+  // info is assembled by openGuardianShare in the spec's field order (a transplant fails decryption — §8.3)
+  return yield* cryptoEffect(() =>
+    openGuardianShare({
+      guardianKeyPair: input.masterKeys.encKeyPair,
+      wrapped: input.wrapped,
+      context: input.context,
+    }),
+  ).pipe(
+    Effect.mapError(() =>
+      cliError(
+        "Cannot open your guardian share with the device key on this machine. The ward may have sealed the group to a previous key of yours, or before this device was registered — ask them to re-add you with `maruhi guardian add`",
       ),
-    );
-  });
-}
+    ),
+  );
+});
 
 /**
  * Wraps the reserve key's blob B with the KEK (§8.1's master-wrap
@@ -67,32 +65,28 @@ export function openOwnGuardianShare(input: {
  * there is no path that passes a device key's record (the types are
  * the same, but callers only ever bring a reserve key).
  */
-export function wrapReserveBlob(input: {
+export const wrapReserveBlob = Effect.fn("master-ops.wrapReserveBlob")(function* (input: {
   readonly record: StoredMasterKey;
   readonly kek: Uint8Array;
   readonly context: MasterWrapContext;
-}): Effect.Effect<{ readonly nonce: Uint8Array; readonly ciphertext: Uint8Array }, CliError> {
-  return Effect.gen(function* () {
-    // JSON.stringify(record) is not used (the private side would be redacted — the note in keychain.ts)
-    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
-    return yield* cryptoEffect(() =>
-      wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
-    ).pipe(Effect.mapError(() => cliError("Failed to wrap the reserve key")));
-  });
-}
+}): Effect.fn.Return<{ readonly nonce: Uint8Array; readonly ciphertext: Uint8Array }, CliError> {
+  // JSON.stringify(record) is not used (the private side would be redacted — the note in keychain.ts)
+  const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
+  return yield* cryptoEffect(() =>
+    wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
+  ).pipe(Effect.mapError(() => cliError("Failed to wrap the reserve key")));
+});
 
 /** Seals a 32-byte value to the requester's ephemeral public key (the E.pub decoded from the code). */
-export function sealForRequester(input: {
+export const sealForRequester = Effect.fn("master-ops.sealForRequester")(function* (input: {
   readonly ephemeralPublicKey: EncryptionKey;
   readonly value: Uint8Array;
   readonly context: HandoffWrapContext;
-}): Effect.Effect<WrappedDek, CliError> {
-  return Effect.gen(function* () {
-    return yield* cryptoEffect(() => sealHandoffValue(input)).pipe(
-      Effect.mapError(() => cliError("Failed to seal the approval to the requester's key")),
-    );
-  });
-}
+}): Effect.fn.Return<WrappedDek, CliError> {
+  return yield* cryptoEffect(() => sealHandoffValue(input)).pipe(
+    Effect.mapError(() => cliError("Failed to seal the approval to the requester's key")),
+  );
+});
 
 /**
  * The ledger's client-issued id (ULID). wrap_id / group_id are

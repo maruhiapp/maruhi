@@ -61,7 +61,7 @@ export interface VerifiedManifest {
 export type ManifestDigestEntry = VariablesDigestEntry;
 
 /** Issuance input: the previous manifest (none = env create's v1) and the post-issuance meta state. */
-export interface SignManifestInput {
+interface SignManifestInput {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   /** The current epoch at issuance time (rotate compound = new_epoch; otherwise = the verified view's current epoch). */
@@ -102,56 +102,54 @@ export interface SignedManifest {
  * context, and derives the wire manifest mechanically from that very context
  * so the signed bytes and the wire can never drift apart.
  */
-export function signNextManifest(
+export const signNextManifest = Effect.fn("manifest.signNextManifest")(function* (
   input: SignManifestInput,
-): Effect.Effect<SignedManifest, CliError> {
-  return Effect.gen(function* () {
-    const digest = yield* cryptoEffect(() => computeVariablesDigest(SUITE_ID, input.entries)).pipe(
-      Effect.mapError(() => cliError("Failed to compute the manifest variables digest")),
-    );
-    const context: EnvManifestContext = {
+): Effect.fn.Return<SignedManifest, CliError> {
+  const digest = yield* cryptoEffect(() => computeVariablesDigest(SUITE_ID, input.entries)).pipe(
+    Effect.mapError(() => cliError("Failed to compute the manifest variables digest")),
+  );
+  const context: EnvManifestContext = {
+    suite: SUITE_ID,
+    projectId: input.verified.projectId,
+    environmentId: input.environmentId,
+    epoch: input.epoch,
+    manifestVersion: (input.previous?.manifestVersion ?? 0) + 1,
+    variablesDigestHex: digest,
+    envMetaVersion: input.envMeta.metaVersion,
+    envMetaSigHashHex: input.envMeta.sigHashHex,
+    prevManifestSigHashHex: input.previous?.signedBytesHashHex ?? "",
+    issuerUserId: input.issuerUserId,
+    chainHeadHashHex: input.chainHead.hashHex,
+    chainHeadSeq: input.chainHead.seq,
+  };
+  const signature = yield* cryptoEffect(() =>
+    signEnvManifest({ context, signingKey: input.signingKey }),
+  ).pipe(Effect.mapError(() => cliError("Failed to sign the environment manifest")));
+  const hash = yield* cryptoEffect(() => computeEnvManifestSignedBytesHash(context)).pipe(
+    Effect.mapError(() => cliError("Failed to compute the manifest signed-bytes hash")),
+  );
+  return {
+    // The wire is entirely derived from the signed context (this
+    // module's reason to exist. suite is a Literal — the context
+    // is built with SUITE_ID inside)
+    manifest: {
       suite: SUITE_ID,
-      projectId: input.verified.projectId,
-      environmentId: input.environmentId,
-      epoch: input.epoch,
-      manifestVersion: (input.previous?.manifestVersion ?? 0) + 1,
-      variablesDigestHex: digest,
-      envMetaVersion: input.envMeta.metaVersion,
-      envMetaSigHashHex: input.envMeta.sigHashHex,
-      prevManifestSigHashHex: input.previous?.signedBytesHashHex ?? "",
-      issuerUserId: input.issuerUserId,
-      chainHeadHashHex: input.chainHead.hashHex,
-      chainHeadSeq: input.chainHead.seq,
-    };
-    const signature = yield* cryptoEffect(() =>
-      signEnvManifest({ context, signingKey: input.signingKey }),
-    ).pipe(Effect.mapError(() => cliError("Failed to sign the environment manifest")));
-    const hash = yield* cryptoEffect(() => computeEnvManifestSignedBytesHash(context)).pipe(
-      Effect.mapError(() => cliError("Failed to compute the manifest signed-bytes hash")),
-    );
-    return {
-      // The wire is entirely derived from the signed context (this
-      // module's reason to exist. suite is a Literal — the context
-      // is built with SUITE_ID inside)
-      manifest: {
-        suite: SUITE_ID,
-        environmentId: context.environmentId,
-        epoch: context.epoch,
-        manifestVersion: context.manifestVersion,
-        variablesDigestHex: context.variablesDigestHex,
-        envMetaVersion: context.envMetaVersion,
-        envMetaSigHashHex: context.envMetaSigHashHex,
-        prevManifestSigHashHex: context.prevManifestSigHashHex,
-        chainHeadHashHex: context.chainHeadHashHex,
-        chainHeadSeq: context.chainHeadSeq,
-        signatureHex: signature,
-      },
-      manifestSigHashHex: hash,
-      manifestVersion: context.manifestVersion,
+      environmentId: context.environmentId,
       epoch: context.epoch,
-    };
-  });
-}
+      manifestVersion: context.manifestVersion,
+      variablesDigestHex: context.variablesDigestHex,
+      envMetaVersion: context.envMetaVersion,
+      envMetaSigHashHex: context.envMetaSigHashHex,
+      prevManifestSigHashHex: context.prevManifestSigHashHex,
+      chainHeadHashHex: context.chainHeadHashHex,
+      chainHeadSeq: context.chainHeadSeq,
+      signatureHex: signature,
+    },
+    manifestSigHashHex: hash,
+    manifestVersion: context.manifestVersion,
+    epoch: context.epoch,
+  };
+});
 
 /** The distributed manifest's verification result (future = the entry to bounded re-sync — values.ts's shared convention). */
 export type ManifestVerifyOutcome =

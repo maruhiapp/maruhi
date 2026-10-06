@@ -15,62 +15,58 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 
 /** `maruhi token list`. */
-export function tokenListOp(input: {
+export const tokenListOp = Effect.fn("token.tokenListOp")(function* (input: {
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { tokens } = yield* input.client.auth.listTokens({}).pipe(
-      Effect.catchTag(
-        "Forbidden",
-        () =>
-          Effect.fail(
-            cliError(
-              "Listing tokens needs an admin token (all projects × admin) or a browser session; this token cannot list them (AUTH_SPEC §6)",
-            ),
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const { tokens } = yield* input.client.auth.listTokens({}).pipe(
+    Effect.catchTag(
+      "Forbidden",
+      () =>
+        Effect.fail(
+          cliError(
+            "Listing tokens needs an admin token (all projects × admin) or a browser session; this token cannot list them (AUTH_SPEC §6)",
           ),
-        (error) => Effect.fail(toCliError(error)),
-      ),
+        ),
+      (error) => Effect.fail(toCliError(error)),
+    ),
+  );
+  if (tokens.length === 0) {
+    yield* io.log("No API tokens");
+    return;
+  }
+  yield* io.log("id\tname\tprefix\tscopes\tcreated\tlast used\texpires");
+  for (const token of [...tokens].toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
+    yield* io.log(
+      `${displayText(token.id)}\t${displayText(token.name)}\t${displayText(token.tokenPrefix)}\t${token.scopes.map((scope) => `${displayText(scope.project)}:${scope.permission}`).join(",")}\t${formatUtcMinutes(token.createdAtMs)}\t${token.lastUsedAtMs === null ? "never" : formatUtcMinutes(token.lastUsedAtMs)}\t${formatUtcMinutes(token.expiresAtMs)}`,
     );
-    if (tokens.length === 0) {
-      yield* io.log("No API tokens");
-      return;
-    }
-    yield* io.log("id\tname\tprefix\tscopes\tcreated\tlast used\texpires");
-    for (const token of [...tokens].toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
-      yield* io.log(
-        `${displayText(token.id)}\t${displayText(token.name)}\t${displayText(token.tokenPrefix)}\t${token.scopes.map((scope) => `${displayText(scope.project)}:${scope.permission}`).join(",")}\t${formatUtcMinutes(token.createdAtMs)}\t${token.lastUsedAtMs === null ? "never" : formatUtcMinutes(token.lastUsedAtMs)}\t${formatUtcMinutes(token.expiresAtMs)}`,
-      );
-    }
-  });
-}
+  }
+});
 
 /** `maruhi token revoke <token-id>`. */
-export function tokenRevokeOp(input: {
+export const tokenRevokeOp = Effect.fn("token.tokenRevokeOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly tokenId: string;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* input.client.auth.revokeTokenById({ params: { tokenId: input.tokenId } }).pipe(
-      Effect.catchTags(
-        {
-          TokenNotFound: () =>
-            Effect.fail(
-              cliError(
-                `No token with id ${displayText(input.tokenId)} belongs to you (already revoked, or another account's — see \`maruhi token list\`)`,
-              ),
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* input.client.auth.revokeTokenById({ params: { tokenId: input.tokenId } }).pipe(
+    Effect.catchTags(
+      {
+        TokenNotFound: () =>
+          Effect.fail(
+            cliError(
+              `No token with id ${displayText(input.tokenId)} belongs to you (already revoked, or another account's — see \`maruhi token list\`)`,
             ),
-          Forbidden: () =>
-            Effect.fail(
-              cliError(
-                "Revoking a token by id needs an admin token (all projects × admin) or a browser session (AUTH_SPEC §6)",
-              ),
+          ),
+        Forbidden: () =>
+          Effect.fail(
+            cliError(
+              "Revoking a token by id needs an admin token (all projects × admin) or a browser session (AUTH_SPEC §6)",
             ),
-        },
-        (error) => Effect.fail(toCliError(error)),
-      ),
-    );
-    yield* io.log(`Revoked token ${displayText(input.tokenId)}`);
-  });
-}
+          ),
+      },
+      (error) => Effect.fail(toCliError(error)),
+    ),
+  );
+  yield* io.log(`Revoked token ${displayText(input.tokenId)}`);
+});

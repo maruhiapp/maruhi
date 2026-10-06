@@ -26,7 +26,7 @@ const MAX_RESTARTS = 3;
 /** The bound on pages of one replication (far above any project the storage guard admits). */
 const MAX_PAGES = 100_000;
 
-export interface MirrorSyncInput<R = never> {
+interface MirrorSyncInput<R = never> {
   /** The server (the source of the export). */
   readonly source: MaruhiClient;
   /** The mirror (its status). */
@@ -94,115 +94,111 @@ type Attempt =
   | { readonly kind: "changed" };
 
 /** One pass over the export's pages into the mirror; "changed" = the project moved (the caller restarts at sequence 0). */
-function replicateOnce(input: MirrorSyncInput<unknown>): Effect.Effect<Attempt, CliError> {
-  return Effect.gen(function* () {
-    const params = { projectId: input.projectId };
-    const pages = input.pages ?? input.mirror;
-    let cursor: string | undefined;
-    let sequence = 0;
-    let lines = 0;
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-      const exported = yield* input.source.export
-        .page({ params, query: cursor === undefined ? {} : { cursor } })
-        .pipe(
-          Effect.catchTag(
-            "ExportChanged",
-            () => Effect.succeed(null),
-            (error) => Effect.fail(toCliError(error)),
-          ),
-        );
-      if (exported === null) {
-        return { kind: "changed" } as const;
-      }
-      const uploaded = yield* pages.mirror
-        .pages({
-          params,
-          payload: {
-            sequence,
-            lines: exported.lines,
-            // The source's counter rides with every page; the mirror records
-            // the trailer page's with the replica (the no-change check)
-            ...(exported.head.mutationSeq === undefined
-              ? {}
-              : { sourceMutationSeq: exported.head.mutationSeq }),
-          },
-        })
-        .pipe(Effect.mapError(toCliError));
-      lines += exported.lines.length;
-      cursor = exported.next;
-      if (cursor === undefined) {
-        if (uploaded.committed === undefined) {
-          return yield* Effect.fail(
-            cliError(
-              "The mirror staged the last page without committing it (the export ended without a trailer line). Re-run `maruhi mirror sync`; if it persists, check that the server and the mirror versions match",
-            ),
-          );
-        }
-        return { kind: "done", pages: page + 1, lines, committed: uploaded.committed } as const;
-      }
-      if (uploaded.committed !== undefined) {
+const replicateOnce = Effect.fn("mirror.replicateOnce")(function* (
+  input: MirrorSyncInput<unknown>,
+): Effect.fn.Return<Attempt, CliError> {
+  const params = { projectId: input.projectId };
+  const pages = input.pages ?? input.mirror;
+  let cursor: string | undefined;
+  let sequence = 0;
+  let lines = 0;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const exported = yield* input.source.export
+      .page({ params, query: cursor === undefined ? {} : { cursor } })
+      .pipe(
+        Effect.catchTag(
+          "ExportChanged",
+          () => Effect.succeed(null),
+          (error) => Effect.fail(toCliError(error)),
+        ),
+      );
+    if (exported === null) {
+      return { kind: "changed" } as const;
+    }
+    const uploaded = yield* pages.mirror
+      .pages({
+        params,
+        payload: {
+          sequence,
+          lines: exported.lines,
+          // The source's counter rides with every page; the mirror records
+          // the trailer page's with the replica (the no-change check)
+          ...(exported.head.mutationSeq === undefined
+            ? {}
+            : { sourceMutationSeq: exported.head.mutationSeq }),
+        },
+      })
+      .pipe(Effect.mapError(toCliError));
+    lines += exported.lines.length;
+    cursor = exported.next;
+    if (cursor === undefined) {
+      if (uploaded.committed === undefined) {
         return yield* Effect.fail(
           cliError(
-            "The mirror committed the replica before the export's last page (a trailer line arrived early). This does not happen with an honest server and mirror — investigate before relying on either",
+            "The mirror staged the last page without committing it (the export ended without a trailer line). Re-run `maruhi mirror sync`; if it persists, check that the server and the mirror versions match",
           ),
         );
       }
-      sequence = uploaded.nextSequence;
+      return { kind: "done", pages: page + 1, lines, committed: uploaded.committed } as const;
     }
-    return yield* Effect.fail(
-      cliError(
-        `The server kept returning more pages past the ${MAX_PAGES}-page bound — stopping. This does not happen with an honest server; investigate the server if it persists`,
-      ),
-    );
-  });
-}
+    if (uploaded.committed !== undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "The mirror committed the replica before the export's last page (a trailer line arrived early). This does not happen with an honest server and mirror — investigate before relying on either",
+        ),
+      );
+    }
+    sequence = uploaded.nextSequence;
+  }
+  return yield* Effect.fail(
+    cliError(
+      `The server kept returning more pages past the ${MAX_PAGES}-page bound — stopping. This does not happen with an honest server; investigate the server if it persists`,
+    ),
+  );
+});
 
 /** Replicates the whole project (restarting when it changes) into a mirror that is marked. */
-export function mirrorSyncOp<R>(
+export const mirrorSyncOp = Effect.fn("mirror.mirrorSyncOp")(function* <R>(
   input: MirrorSyncInput<R>,
-): Effect.Effect<MirrorSyncResult, CliError, R> {
-  return Effect.gen(function* () {
-    const before = yield* markedMirrorStatus(input);
-    const source = yield* starSource(input);
-    const verdict = yield* syncVerdict(input, before, source);
-    if (verdict === "current") {
-      return { kind: "current", before } as const;
-    }
-    const replicated = yield* replicateWithRestarts(input, verdict.verified);
-    return { kind: "replicated", ...replicated, before } as const;
-  });
-}
+): Effect.fn.Return<MirrorSyncResult, CliError, R> {
+  const before = yield* markedMirrorStatus(input);
+  const source = yield* starSource(input);
+  const verdict = yield* syncVerdict(input, before, source);
+  if (verdict === "current") {
+    return { kind: "current", before } as const;
+  }
+  const replicated = yield* replicateWithRestarts(input, verdict.verified);
+  return { kind: "replicated", ...replicated, before } as const;
+});
 
 /** The mirror's status: it must be marked, and marked as a mirror of the server the sync exports from (H-15). */
-function markedMirrorStatus(
+const markedMirrorStatus = Effect.fn("mirror.markedMirrorStatus")(function* (
   input: MirrorSyncInput<unknown>,
-): Effect.Effect<MirrorStatus, CliError> {
-  return Effect.gen(function* () {
-    const before = yield* mirrorStatusOp({ client: input.mirror, projectId: input.projectId });
-    if (!before.mirror) {
-      return yield* Effect.fail(
-        cliError(
-          "The project is not marked as a mirror on that server (its writes are open). An owner marks it with `maruhi mirror mark --server <mirror url> --source <server url>` first",
-        ),
-      );
-    }
-    // A cron left at the former primary after a failover elsewhere would
-    // export a frozen copy into a mirror of another source (an equal-head
-    // replica commits): the recorded source must be this server
-    if (
-      before.sourceOrigin !== undefined &&
-      before.sourceOrigin !== input.sourceOrigin &&
-      input.force !== true
-    ) {
-      return yield* Effect.fail(
-        cliError(
-          `The mirror holds this project as a mirror of ${before.sourceOrigin}, not of ${input.sourceOrigin}: sync from that server, re-point the mirror at this one (\`maruhi mirror mark --source ${input.sourceOrigin}\`), or pass --force to replicate from here anyway`,
-        ),
-      );
-    }
-    return before;
-  });
-}
+): Effect.fn.Return<MirrorStatus, CliError> {
+  const before = yield* mirrorStatusOp({ client: input.mirror, projectId: input.projectId });
+  if (!before.mirror) {
+    return yield* Effect.fail(
+      cliError(
+        "The project is not marked as a mirror on that server (its writes are open). An owner marks it with `maruhi mirror mark --server <mirror url> --source <server url>` first",
+      ),
+    );
+  }
+  // A cron left at the former primary after a failover elsewhere would
+  // export a frozen copy into a mirror of another source (an equal-head
+  // replica commits): the recorded source must be this server
+  if (
+    before.sourceOrigin !== undefined &&
+    before.sourceOrigin !== input.sourceOrigin &&
+    input.force !== true
+  ) {
+    return yield* Effect.fail(
+      cliError(
+        `The mirror holds this project as a mirror of ${before.sourceOrigin}, not of ${input.sourceOrigin}: sync from that server, re-point the mirror at this one (\`maruhi mirror mark --source ${input.sourceOrigin}\`), or pass --force to replicate from here anyway`,
+      ),
+    );
+  }
+  return before;
+});
 
 /**
  * The server's own mark (its status, read with the owner's session): mirrors
@@ -213,30 +209,30 @@ function markedMirrorStatus(
  * (the planned failover's last sync, or a sibling re-pointed here) goes
  * through. `force` overrides (ruling H revision, rounds 8 and 9).
  */
-function starSource(input: MirrorSyncInput<unknown>): Effect.Effect<MirrorStatus, CliError> {
-  return Effect.gen(function* () {
-    const source = yield* input.source.mirror
-      .status({ params: { projectId: input.projectId } })
-      .pipe(Effect.mapError(toCliError));
-    if (!source.mirror || input.force === true || source.sourceOrigin === undefined) {
-      return source;
-    }
-    if (source.sourceOrigin !== input.mirrorOrigin) {
-      return yield* Effect.fail(
-        cliError(
-          `The server ${input.sourceOrigin} holds this project as a mirror of ${source.sourceOrigin}: mirrors sync from the primary (a mirror's own audit rows are renumbered at every replication, so a replica taken from it is refused by this mirror after the next one). Sync from ${source.sourceOrigin} (\`maruhi mirror sync --server ${source.sourceOrigin} --mirror ${input.mirrorOrigin}\`, after re-pointing the mirror at it with \`maruhi mirror mark --server ${input.mirrorOrigin} --source ${source.sourceOrigin}\`), or pass --force to replicate from here anyway`,
-        ),
-      );
-    }
-    // A server frozen for this mirror is a source whatever it replicated
-    // from it before (ruling H revision, round 9): the pair stays
-    // consistent — this mirror's rows up to its position travel in the
-    // server's log verbatim, and its own rows are carried by row id. The
-    // renumbering hurts a third mirror of that server only, which the
-    // refusal above covers
+const starSource = Effect.fn("mirror.starSource")(function* (
+  input: MirrorSyncInput<unknown>,
+): Effect.fn.Return<MirrorStatus, CliError> {
+  const source = yield* input.source.mirror
+    .status({ params: { projectId: input.projectId } })
+    .pipe(Effect.mapError(toCliError));
+  if (!source.mirror || input.force === true || source.sourceOrigin === undefined) {
     return source;
-  });
-}
+  }
+  if (source.sourceOrigin !== input.mirrorOrigin) {
+    return yield* Effect.fail(
+      cliError(
+        `The server ${input.sourceOrigin} holds this project as a mirror of ${source.sourceOrigin}: mirrors sync from the primary (a mirror's own audit rows are renumbered at every replication, so a replica taken from it is refused by this mirror after the next one). Sync from ${source.sourceOrigin} (\`maruhi mirror sync --server ${source.sourceOrigin} --mirror ${input.mirrorOrigin}\`, after re-pointing the mirror at it with \`maruhi mirror mark --server ${input.mirrorOrigin} --source ${source.sourceOrigin}\`), or pass --force to replicate from here anyway`,
+      ),
+    );
+  }
+  // A server frozen for this mirror is a source whatever it replicated
+  // from it before (ruling H revision, round 9): the pair stays
+  // consistent — this mirror's rows up to its position travel in the
+  // server's log verbatim, and its own rows are carried by row id. The
+  // renumbering hurts a third mirror of that server only, which the
+  // refusal above covers
+  return source;
+});
 
 /**
  * Nothing to upload when the source's chain head, audit seq and mutation
@@ -248,29 +244,27 @@ function starSource(input: MirrorSyncInput<unknown>): Effect.Effect<MirrorStatus
  * entry is on the source's chain (H-14); the view is handed on to the
  * replication otherwise.
  */
-function syncVerdict<R>(
+const syncVerdict = Effect.fn("mirror.syncVerdict")(function* <R>(
   input: MirrorSyncInput<R>,
   before: MirrorStatus,
   source: MirrorStatus,
-): Effect.Effect<"current" | { readonly verified: VerifiedProject }, CliError, R> {
-  return Effect.gen(function* () {
-    const unchanged = sourceUnchanged(input, before, source);
-    if (unchanged === "current") {
-      return "current";
-    }
-    const verified = yield* input.verified;
-    return unchanged === "current-if-floor-on-chain" &&
-      verified.state.headHashHex === before.lastSync?.chainHeadHashHex
-      ? "current"
-      : { verified };
-  });
-}
+): Effect.fn.Return<"current" | { readonly verified: VerifiedProject }, CliError, R> {
+  const unchanged = sourceUnchanged(input, before, source);
+  if (unchanged === "current") {
+    return "current";
+  }
+  const verified = yield* input.verified;
+  return unchanged === "current-if-floor-on-chain" &&
+    verified.state.headHashHex === before.lastSync?.chainHeadHashHex
+    ? "current"
+    : { verified };
+});
 
 /** The passes over the export (restarting when the project changed, the view rebuilt before each — H-13). */
-function replicateWithRestarts<R>(
+const replicateWithRestarts = Effect.fn("mirror.replicateWithRestarts")(function* <R>(
   input: MirrorSyncInput<R>,
   firstView: VerifiedProject,
-): Effect.Effect<
+): Effect.fn.Return<
   {
     readonly pages: number;
     readonly lines: number;
@@ -282,42 +276,40 @@ function replicateWithRestarts<R>(
   CliError,
   R
 > {
-  return Effect.gen(function* () {
-    let viewBefore = firstView;
-    let restarts = 0;
-    let attempt = yield* replicateOnce(input);
-    while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
-      restarts += 1;
-      viewBefore = yield* input.verified;
-      attempt = yield* replicateOnce(input);
-    }
-    if (attempt.kind === "changed") {
-      // The export's own renderer names `project export`; this is a sync
-      // (round 11)
-      return yield* Effect.fail(
-        cliError(
-          `The project changed on ${input.sourceOrigin} while it was being exported, ${countNoun(MAX_RESTARTS + 1, "time")} in a row: re-run \`maruhi mirror sync\` when the writes settle (the mirror keeps the replication in progress, which the next run restarts at sequence 0)`,
-        ),
-      );
-    }
-    const { pages, lines, committed } = attempt;
-    // A replica past the view taken before the export is the one honest
-    // race (a write landed in between) — or a server that serves one chain
-    // and exports another: the view is taken again, and its floor check
-    // (against the floor the first view advanced) proves it extends the
-    // first; the replica must be on it (ruling H revision, round 9)
-    const verified =
-      committed.chainHeadSeq > viewBefore.state.headSeq
-        ? yield* input.verified.pipe(
-            // The strongest evidence gets the most specific report (round
-            // 10) — and a server that merely stopped answering, or refused
-            // the session, is not one that failed verification (round 11)
-            Effect.mapError((error) => secondViewFailure(error, committed, viewBefore)),
-          )
-        : viewBefore;
-    return { pages, lines, committed, restarts, verified, viewBefore };
-  });
-}
+  let viewBefore = firstView;
+  let restarts = 0;
+  let attempt = yield* replicateOnce(input);
+  while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
+    restarts += 1;
+    viewBefore = yield* input.verified;
+    attempt = yield* replicateOnce(input);
+  }
+  if (attempt.kind === "changed") {
+    // The export's own renderer names `project export`; this is a sync
+    // (round 11)
+    return yield* Effect.fail(
+      cliError(
+        `The project changed on ${input.sourceOrigin} while it was being exported, ${countNoun(MAX_RESTARTS + 1, "time")} in a row: re-run \`maruhi mirror sync\` when the writes settle (the mirror keeps the replication in progress, which the next run restarts at sequence 0)`,
+      ),
+    );
+  }
+  const { pages, lines, committed } = attempt;
+  // A replica past the view taken before the export is the one honest
+  // race (a write landed in between) — or a server that serves one chain
+  // and exports another: the view is taken again, and its floor check
+  // (against the floor the first view advanced) proves it extends the
+  // first; the replica must be on it (ruling H revision, round 9)
+  const verified =
+    committed.chainHeadSeq > viewBefore.state.headSeq
+      ? yield* input.verified.pipe(
+          // The strongest evidence gets the most specific report (round
+          // 10) — and a server that merely stopped answering, or refused
+          // the session, is not one that failed verification (round 11)
+          Effect.mapError((error) => secondViewFailure(error, committed, viewBefore)),
+        )
+      : viewBefore;
+  return { pages, lines, committed, restarts, verified, viewBefore };
+});
 
 /** What the failure of the view taken after the commit means for the replica the mirror now holds (its flags are kept). */
 function secondViewFailure(

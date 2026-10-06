@@ -27,7 +27,7 @@ import { CliIo } from "./io.ts";
 const MAX_LIST_PAGES = 100;
 
 /** One row of the list (the received shape of api-schema's ProjectMembershipSchema). */
-export interface MembershipRow {
+interface MembershipRow {
   readonly projectId: string;
   readonly role: "owner" | "admin" | "member" | "reader";
 }
@@ -38,52 +38,48 @@ export interface MembershipRow {
  * project list` and the device-side commands that scan every
  * project (device.ts / key-recover.ts) share this.
  */
-export function fetchProjectMemberships(
+export const fetchProjectMemberships = Effect.fn("project-list.fetchProjectMemberships")(function* (
   client: MaruhiClient,
-): Effect.Effect<readonly MembershipRow[], CliError> {
-  return Effect.gen(function* () {
-    const rows: MembershipRow[] = [];
-    let after: string | undefined;
-    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const response = yield* client.membership
-        .list({ query: after === undefined ? {} : { after } })
-        .pipe(Effect.mapError(toCliError));
-      rows.push(...response.projects);
-      after = response.nextAfter;
-      if (after === undefined) {
-        break;
-      }
+): Effect.fn.Return<readonly MembershipRow[], CliError> {
+  const rows: MembershipRow[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const response = yield* client.membership
+      .list({ query: after === undefined ? {} : { after } })
+      .pipe(Effect.mapError(toCliError));
+    rows.push(...response.projects);
+    after = response.nextAfter;
+    if (after === undefined) {
+      break;
     }
-    if (after !== undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `The server kept returning more pages past the ${MAX_LIST_PAGES}-page bound — stopping. This does not happen with an honest server; re-run and investigate the server if it persists`,
-        ),
-      );
-    }
-    return rows;
-  });
-}
+  }
+  if (after !== undefined) {
+    return yield* Effect.fail(
+      cliError(
+        `The server kept returning more pages past the ${MAX_LIST_PAGES}-page bound — stopping. This does not happen with an honest server; re-run and investigate the server if it persists`,
+      ),
+    );
+  }
+  return rows;
+});
 
 /** Fetches every page and displays one project per line (stdout carries data only). */
-export function projectListOp(input: {
+export const projectListOp = Effect.fn("project-list.projectListOp")(function* (input: {
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const rows = yield* fetchProjectMemberships(input.client);
-    if (rows.length === 0) {
-      yield* io.log("No projects");
-      yield* io.logError(
-        "You are not a chain-derived member of any project visible to this credential (projects outside the token's scopes are not listed)",
-      );
-      return;
-    }
-    for (const row of rows) {
-      yield* io.log(`${displayText(row.projectId)}\trole=${row.role}`);
-    }
+}): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const rows = yield* fetchProjectMemberships(input.client);
+  if (rows.length === 0) {
+    yield* io.log("No projects");
     yield* io.logError(
-      `${countNoun(rows.length, "project")} as reported by the server — run \`maruhi project verify --project <id>\` for verified state`,
+      "You are not a chain-derived member of any project visible to this credential (projects outside the token's scopes are not listed)",
     );
-  });
-}
+    return;
+  }
+  for (const row of rows) {
+    yield* io.log(`${displayText(row.projectId)}\trole=${row.role}`);
+  }
+  yield* io.logError(
+    `${countNoun(rows.length, "project")} as reported by the server — run \`maruhi project verify --project <id>\` for verified state`,
+  );
+});

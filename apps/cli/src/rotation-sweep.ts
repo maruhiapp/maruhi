@@ -443,11 +443,11 @@ function narrowingAdvice(
  * Shared by the standing warning (warnUnconvergedMandates) and project
  * verify's detail display.
  */
-export function resolveUnconvergedMandates(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-}): Effect.Effect<readonly UnconvergedMandate[] | null, never, CliIo> {
-  return Effect.gen(function* () {
+export const resolveUnconvergedMandates = Effect.fn("rotation-sweep.resolveUnconvergedMandates")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+  }): Effect.fn.Return<readonly UnconvergedMandate[] | null, never, CliIo> {
     const candidates = unconvergedMandates(input.verified, new Set());
     if (candidates.length === 0) {
       return candidates;
@@ -463,8 +463,8 @@ export function resolveUnconvergedMandates(input: {
         }),
       ),
     );
-  });
-}
+  },
+);
 
 /** One mandate's warning line (shared by the standing warning and project verify's detail display). */
 export function describeUnconvergedMandate(
@@ -482,11 +482,11 @@ export function describeUnconvergedMandate(
  * SHOULD — a fetch / verification failure never stops the command
  * itself (it says so and continues).
  */
-export function warnUnconvergedMandates(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-}): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
+export const warnUnconvergedMandates = Effect.fn("rotation-sweep.warnUnconvergedMandates")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+  }): Effect.fn.Return<void, never, CliIo> {
     const filtered = yield* resolveUnconvergedMandates(input);
     if (filtered === null || filtered.length === 0) {
       return;
@@ -498,21 +498,21 @@ export function warnUnconvergedMandates(input: {
     for (const mandate of filtered) {
       yield* io.logError(`  ${describeUnconvergedMandate(input.verified, mandate)}`);
     }
-  });
-}
+  },
+);
 
 /** The verified set of deleted environments (one GET of the environment list + deletion-statement verification — §7). */
-export function verifiedDeletedEnvironmentSet(
+export const verifiedDeletedEnvironmentSet = Effect.fn(
+  "rotation-sweep.verifiedDeletedEnvironmentSet",
+)(function* (
   client: MaruhiClient,
   verified: VerifiedProject,
-): Effect.Effect<ReadonlySet<string>, CliError> {
-  return Effect.gen(function* () {
-    const listed = yield* client.environments
-      .list({ params: { projectId: verified.projectId } })
-      .pipe(Effect.mapError(toCliError));
-    return yield* verifiedDeletedEnvironments(verified, listed.environments);
-  });
-}
+): Effect.fn.Return<ReadonlySet<string>, CliError> {
+  const listed = yield* client.environments
+    .list({ params: { projectId: verified.projectId } })
+    .pipe(Effect.mapError(toCliError));
+  return yield* verifiedDeletedEnvironments(verified, listed.environments);
+});
 
 /** Turning one environment's rotation into a result (failures are collected, not thrown — for §7's all-environment sweep). */
 function rotateOutcome<R>(
@@ -541,54 +541,52 @@ function rotateOutcome<R>(
  * environment set → baseline seq. baselinesOf) — an environment outside
  * the scope is never included among rotate's targets (CRYPTO_SPEC §7).
  */
-export function sweepRotations<R>(input: {
+export const sweepRotations = Effect.fn("rotation-sweep.sweepRotations")(function* <R>(input: {
   readonly rotate: SweepRotate<R>;
   readonly verified: VerifiedProject;
   /** The mandate's environment set → baseline seq (revoke / remove / demotion / narrowing). */
   readonly baselines: EnvironmentBaselines;
   readonly deletedVerified: ReadonlySet<string>;
-}): Effect.Effect<SweepOutcome, never, R> {
-  return Effect.gen(function* () {
-    const candidates = [...input.baselines.keys()]
-      .filter((environmentId) => !input.deletedVerified.has(environmentId))
-      .toSorted(compareCodePoints);
-    const isPending = (environmentId: string) =>
-      isPendingAt(input.verified, environmentId, input.baselines.get(environmentId) ?? 0);
-    const rotated: {
-      readonly environmentId: string;
-      readonly summary: RotationSummary;
-      readonly forcedNewEpoch: boolean;
-    }[] = [];
-    const failed: { readonly environmentId: string; readonly message: string }[] = [];
-    const alreadyRotated: string[] = [];
-    for (const environmentId of candidates.filter(isPending)) {
-      const result = yield* rotateOutcome(input.rotate, environmentId, "force");
-      if (result.kind === "ok") {
-        rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: true });
-      } else {
-        failed.push({ environmentId, message: result.message });
-      }
+}): Effect.fn.Return<SweepOutcome, never, R> {
+  const candidates = [...input.baselines.keys()]
+    .filter((environmentId) => !input.deletedVerified.has(environmentId))
+    .toSorted(compareCodePoints);
+  const isPending = (environmentId: string) =>
+    isPendingAt(input.verified, environmentId, input.baselines.get(environmentId) ?? 0);
+  const rotated: {
+    readonly environmentId: string;
+    readonly summary: RotationSummary;
+    readonly forcedNewEpoch: boolean;
+  }[] = [];
+  const failed: { readonly environmentId: string; readonly message: string }[] = [];
+  const alreadyRotated: string[] = [];
+  for (const environmentId of candidates.filter(isPending)) {
+    const result = yield* rotateOutcome(input.rotate, environmentId, "force");
+    if (result.kind === "ok") {
+      rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: true });
+    } else {
+      failed.push({ environmentId, message: result.message });
     }
-    // The epoch began after the baseline, but whether that round's
-    // **re-encryption completed** is not knowable from the chain (§12-7's
-    // transitional state). Confirm it via the verification pass
-    for (const environmentId of candidates.filter((id) => !isPending(id))) {
-      const result = yield* rotateOutcome(input.rotate, environmentId, "verify");
-      if (result.kind !== "ok") {
-        failed.push({ environmentId, message: result.message });
-      } else if (
-        result.summary.mode === "up-to-date" &&
-        result.summary.remaining === 0 &&
-        result.summary.failure === null
-      ) {
-        alreadyRotated.push(environmentId);
-      } else {
-        // Resumed (or a partial completion remains) — the display and
-        // exit code are derived from RotationSummary by the caller's
-        // reportRotation
-        rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: false });
-      }
+  }
+  // The epoch began after the baseline, but whether that round's
+  // **re-encryption completed** is not knowable from the chain (§12-7's
+  // transitional state). Confirm it via the verification pass
+  for (const environmentId of candidates.filter((id) => !isPending(id))) {
+    const result = yield* rotateOutcome(input.rotate, environmentId, "verify");
+    if (result.kind !== "ok") {
+      failed.push({ environmentId, message: result.message });
+    } else if (
+      result.summary.mode === "up-to-date" &&
+      result.summary.remaining === 0 &&
+      result.summary.failure === null
+    ) {
+      alreadyRotated.push(environmentId);
+    } else {
+      // Resumed (or a partial completion remains) — the display and
+      // exit code are derived from RotationSummary by the caller's
+      // reportRotation
+      rotated.push({ environmentId, summary: result.summary, forcedNewEpoch: false });
     }
-    return { rotated, failed, alreadyRotated: alreadyRotated.toSorted(compareCodePoints) };
-  });
-}
+  }
+  return { rotated, failed, alreadyRotated: alreadyRotated.toSorted(compareCodePoints) };
+});

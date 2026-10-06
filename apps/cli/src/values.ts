@@ -106,29 +106,27 @@ type StageResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly ki
  * failure into a CliError and a rejected into the failure channel (each
  * stage's leftover is the 2 values future | ok).
  */
-function verifyStage<T>(
+const verifyStage = Effect.fn("values.verifyStage")(function* <T>(
   run: () => Promise<VerifyOutcome<T>>,
   description: string,
-): Effect.Effect<StageResult<T>, CliError> {
-  return Effect.gen(function* () {
-    const outcome = yield* Effect.tryPromise({
-      try: run,
-      catch: () => cliError(`${description} failed to run (crypto error)`),
-    });
-    if (outcome.kind === "rejected") {
-      // Signed distributed data that fails verification = evidence (a
-      // re-run does not resolve it — errors.ts's definition of evidence; it
-      // must not be folded into cleanup warnings). The exception is the
-      // honest breaking mode (UnsupportedMetaLayout)
-      return yield* Effect.fail(
-        outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
-      );
-    }
-    return outcome.kind === "future"
-      ? ({ kind: "future" } as const)
-      : ({ kind: "ok", value: outcome.value } as const);
+): Effect.fn.Return<StageResult<T>, CliError> {
+  const outcome = yield* Effect.tryPromise({
+    try: run,
+    catch: () => cliError(`${description} failed to run (crypto error)`),
   });
-}
+  if (outcome.kind === "rejected") {
+    // Signed distributed data that fails verification = evidence (a
+    // re-run does not resolve it — errors.ts's definition of evidence; it
+    // must not be folded into cleanup warnings). The exception is the
+    // honest breaking mode (UnsupportedMetaLayout)
+    return yield* Effect.fail(
+      outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
+    );
+  }
+  return outcome.kind === "future"
+    ? ({ kind: "future" } as const)
+    : ({ kind: "ok", value: outcome.value } as const);
+});
 
 /**
  * The manifest stage (§4.3 / §6.3): omission = unconditional refusal. When
@@ -182,7 +180,9 @@ function verifyManifestStage(input: {
  * of variables ∪ declared ∪ deleted. A future at any stage makes the whole
  * thing future (the bounded-resync entry).
  */
-function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
+const verifyAllCommon = Effect.fn("values.verifyAllCommon")(function* <
+  T extends { readonly variableId: string; readonly name: string },
+>(
   verified: VerifiedProject,
   environmentId: string,
   pull: {
@@ -198,7 +198,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   digestEntryOf: (value: T) => ManifestDigestEntry,
   /** The floor's manifest record (the adjacent prev verification — M1-A1. Paths with no floor pass null). */
   floorManifest: ManifestFloor | null,
-): Effect.Effect<
+): Effect.fn.Return<
   | {
       readonly kind: "ok";
       readonly environment: VerifiedMetaEvidence;
@@ -211,88 +211,86 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   | { readonly kind: "future" },
   CliError
 > {
-  return Effect.gen(function* () {
-    const environment = yield* verifyStage(
-      () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
-      "Environment-statement verification",
-    );
-    if (environment.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    const actives = yield* verifyStage(
-      verifyActives,
-      "Variable-statement / value-signature verification",
-    );
-    if (actives.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    const declared = yield* verifyStage(
-      () =>
-        verifyDeclaredStatements(
-          verified,
-          environmentId,
-          pull.declaredVariables ?? [],
-          actives.value.ids,
-        ),
-      "Declared-variable-statement verification",
-    );
-    if (declared.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    const liveIds = new Set([...actives.value.ids, ...declared.value.ids]);
-    const deleted = yield* verifyStage(
-      () => verifyDeletedStatements(verified, environmentId, pull.deletedVariables, liveIds),
-      "Deleted-variable-statement verification",
-    );
-    if (deleted.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    const warnings: string[] = [];
-    const nameFailure = checkVerifiedNames(
-      [...actives.value.values, ...declared.value.values],
-      warnings,
-    );
-    if (nameFailure !== null) {
-      return yield* Effect.fail(cliError(nameFailure));
-    }
-    const manifest = yield* verifyManifestStage({
-      verified,
-      environmentId,
-      manifest: pull.manifest,
-      entries: [
-        ...actives.value.values.map(digestEntryOf),
-        ...declared.value.values.map((statement) => ({
-          variableId: statement.variableId,
-          status: "declared" as const,
-          metaVersion: statement.metaVersion,
-          metaSigHashHex: statement.metaSigHashHex,
-        })),
-        ...deleted.value.map((tombstone) => ({
-          variableId: tombstone.variableId,
-          status: "deleted" as const,
-          metaVersion: tombstone.metaVersion,
-          metaSigHashHex: tombstone.metaSigHashHex,
-        })),
-      ],
-      environment: environment.value,
-      floorManifest,
-    });
-    if (manifest.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    return {
-      kind: "ok",
-      environment: environment.value,
-      variables: actives.value.values,
-      declared: declared.value.values,
-      tombstones: deleted.value,
-      manifest: manifest.value,
-      warnings,
-    } as const;
+  const environment = yield* verifyStage(
+    () => verifyEnvironmentStatement(verified, environmentId, pull.statement),
+    "Environment-statement verification",
+  );
+  if (environment.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  const actives = yield* verifyStage(
+    verifyActives,
+    "Variable-statement / value-signature verification",
+  );
+  if (actives.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  const declared = yield* verifyStage(
+    () =>
+      verifyDeclaredStatements(
+        verified,
+        environmentId,
+        pull.declaredVariables ?? [],
+        actives.value.ids,
+      ),
+    "Declared-variable-statement verification",
+  );
+  if (declared.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  const liveIds = new Set([...actives.value.ids, ...declared.value.ids]);
+  const deleted = yield* verifyStage(
+    () => verifyDeletedStatements(verified, environmentId, pull.deletedVariables, liveIds),
+    "Deleted-variable-statement verification",
+  );
+  if (deleted.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  const warnings: string[] = [];
+  const nameFailure = checkVerifiedNames(
+    [...actives.value.values, ...declared.value.values],
+    warnings,
+  );
+  if (nameFailure !== null) {
+    return yield* Effect.fail(cliError(nameFailure));
+  }
+  const manifest = yield* verifyManifestStage({
+    verified,
+    environmentId,
+    manifest: pull.manifest,
+    entries: [
+      ...actives.value.values.map(digestEntryOf),
+      ...declared.value.values.map((statement) => ({
+        variableId: statement.variableId,
+        status: "declared" as const,
+        metaVersion: statement.metaVersion,
+        metaSigHashHex: statement.metaSigHashHex,
+      })),
+      ...deleted.value.map((tombstone) => ({
+        variableId: tombstone.variableId,
+        status: "deleted" as const,
+        metaVersion: tombstone.metaVersion,
+        metaSigHashHex: tombstone.metaSigHashHex,
+      })),
+    ],
+    environment: environment.value,
+    floorManifest,
   });
-}
+  if (manifest.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  return {
+    kind: "ok",
+    environment: environment.value,
+    variables: actives.value.values,
+    declared: declared.value.values,
+    tombstones: deleted.value,
+    manifest: manifest.value,
+    warnings,
+  } as const;
+});
 
-function verifyAll(
+const verifyAll = Effect.fn("values.verifyAll")(function* (
   verified: VerifiedProject,
   environmentId: string,
   pull: PullWire,
@@ -306,7 +304,7 @@ function verifyAll(
    * (checkpoint-integrity.ts).
    */
   fetchedAtHeadSeq: number,
-): Effect.Effect<
+): Effect.fn.Return<
   | {
       readonly kind: "ok";
       readonly snapshot: VerifiedPullSnapshot;
@@ -315,65 +313,63 @@ function verifyAll(
   | { readonly kind: "future" },
   CliError
 > {
-  return Effect.gen(function* () {
-    const result = yield* verifyAllCommon(
-      verified,
-      environmentId,
-      pull,
-      () => verifyActiveVariables(verified, environmentId, pull.variables),
-      (value) => ({
-        variableId: value.variableId,
-        status: "active" as const,
-        metaVersion: value.metaVersion,
-        metaSigHashHex: value.metaSignedBytesHashHex,
-      }),
-      floorManifest,
-    );
-    if (result.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    // Rule 2 of checkpoint integrity (§6.3 — the value-carrying path only.
-    // metadata-only is out of scope since it carries no values, §12-7). The
-    // tombstone deletion explanation assumes the manifest-consistent set,
-    // so it sits after the manifest stage (inside verifyAllCommon). A
-    // refusal with evidence = a contradiction between verified data and the
-    // chain notarization (typed so rotate's endgame classification does not
-    // downgrade it to the "a re-run fixes it" guidance). A refusal without
-    // evidence = a shape a benign race — the baseline advanced past the
-    // fetch-time view — can also explain (a re-pull can resolve it)
-    const checkpoint = yield* Effect.tryPromise({
-      try: () =>
-        checkCheckpointIntegrity({
-          history: verified.history,
-          environmentId,
-          snapshot: pull.checkpointSnapshot,
-          variables: result.variables,
-          tombstoneIds: new Set(result.tombstones.map((tombstone) => tombstone.variableId)),
-          fetchedAtHeadSeq,
-        }),
-      catch: () => cliError("Checkpoint-integrity verification failed to run (crypto error)"),
-    });
-    if (checkpoint.kind === "rejected") {
-      return yield* Effect.fail(
-        checkpoint.evidence ? evidenceError(checkpoint.message) : cliError(checkpoint.message),
-      );
-    }
-    if (checkpoint.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    return {
-      kind: "ok",
-      snapshot: {
-        environment: result.environment,
+  const result = yield* verifyAllCommon(
+    verified,
+    environmentId,
+    pull,
+    () => verifyActiveVariables(verified, environmentId, pull.variables),
+    (value) => ({
+      variableId: value.variableId,
+      status: "active" as const,
+      metaVersion: value.metaVersion,
+      metaSigHashHex: value.metaSignedBytesHashHex,
+    }),
+    floorManifest,
+  );
+  if (result.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  // Rule 2 of checkpoint integrity (§6.3 — the value-carrying path only.
+  // metadata-only is out of scope since it carries no values, §12-7). The
+  // tombstone deletion explanation assumes the manifest-consistent set,
+  // so it sits after the manifest stage (inside verifyAllCommon). A
+  // refusal with evidence = a contradiction between verified data and the
+  // chain notarization (typed so rotate's endgame classification does not
+  // downgrade it to the "a re-run fixes it" guidance). A refusal without
+  // evidence = a shape a benign race — the baseline advanced past the
+  // fetch-time view — can also explain (a re-pull can resolve it)
+  const checkpoint = yield* Effect.tryPromise({
+    try: () =>
+      checkCheckpointIntegrity({
+        history: verified.history,
+        environmentId,
+        snapshot: pull.checkpointSnapshot,
         variables: result.variables,
-        declared: result.declared,
-        tombstones: result.tombstones,
-        manifest: result.manifest,
-      },
-      warnings: result.warnings,
-    } as const;
+        tombstoneIds: new Set(result.tombstones.map((tombstone) => tombstone.variableId)),
+        fetchedAtHeadSeq,
+      }),
+    catch: () => cliError("Checkpoint-integrity verification failed to run (crypto error)"),
   });
-}
+  if (checkpoint.kind === "rejected") {
+    return yield* Effect.fail(
+      checkpoint.evidence ? evidenceError(checkpoint.message) : cliError(checkpoint.message),
+    );
+  }
+  if (checkpoint.kind === "future") {
+    return { kind: "future" } as const;
+  }
+  return {
+    kind: "ok",
+    snapshot: {
+      environment: result.environment,
+      variables: result.variables,
+      declared: result.declared,
+      tombstones: result.tombstones,
+      manifest: result.manifest,
+    },
+    warnings: result.warnings,
+  } as const;
+});
 
 /**
  * The shared skeleton of the pull family (§6.3-2b): fetch → verify →
@@ -385,7 +381,10 @@ function verifyAll(
  * entry at or below the floor's seq matches). A re-verification that is
  * still future is refused with divergedMessage.
  */
-function pullWithBoundedResync<TWire, TVerified>(input: {
+const pullWithBoundedResync = Effect.fn("values.pullWithBoundedResync")(function* <
+  TWire,
+  TVerified,
+>(input: {
   readonly verified: VerifiedProject;
   /** The bounded resync on a future head (once). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -400,27 +399,25 @@ function pullWithBoundedResync<TWire, TVerified>(input: {
   /** The floor check / commit. view = the view used for verification (may have advanced via the resync). */
   readonly accept: (view: VerifiedProject, value: TVerified) => Effect.Effect<void, CliError>;
   readonly divergedMessage: string;
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly view: VerifiedProject; readonly wire: TWire; readonly value: TVerified },
   CliError
 > {
-  return Effect.gen(function* () {
-    const wire = yield* input.fetch;
-    const first = yield* input.verify(input.verified, wire);
-    if (first.kind === "ok") {
-      yield* input.accept(input.verified, first.value);
-      return { view: input.verified, wire, value: first.value };
-    }
-    const advanced = yield* resyncExtended(input.resync, input.verified);
-    const second = yield* input.verify(advanced, wire);
-    if (second.kind === "ok") {
-      yield* input.accept(advanced, second.value);
-      return { view: advanced, wire, value: second.value };
-    }
-    // A distribution bound to a chain position that still does not exist after the resync = evidence of a fork / forgery
-    return yield* Effect.fail(evidenceError(input.divergedMessage));
-  });
-}
+  const wire = yield* input.fetch;
+  const first = yield* input.verify(input.verified, wire);
+  if (first.kind === "ok") {
+    yield* input.accept(input.verified, first.value);
+    return { view: input.verified, wire, value: first.value };
+  }
+  const advanced = yield* resyncExtended(input.resync, input.verified);
+  const second = yield* input.verify(advanced, wire);
+  if (second.kind === "ok") {
+    yield* input.accept(advanced, second.value);
+    return { view: advanced, wire, value: second.value };
+  }
+  // A distribution bound to a chain position that still does not exist after the resync = evidence of a fork / forgery
+  return yield* Effect.fail(evidenceError(input.divergedMessage));
+});
 
 /**
  * Pulls one environment and verifies every value's write signature and every
@@ -509,20 +506,20 @@ export function pullVerifiedEnvironment(input: {
  * (§14.3-3), and its main relaxation is the repository anchor (anchor.ts —
  * §6.3 out-of-band anchor (b)).
  */
-export function verifyLeaseDistribution(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: EnvironmentId;
-  readonly wire: PullWire;
-}): Effect.Effect<
-  {
-    readonly variables: readonly VerifiedPulledValue[];
-    /** The verified declared (§14-2 — material for ci run's presence check). */
-    readonly declared: readonly VerifiedVariableStatement[];
-    readonly warnings: readonly string[];
-  },
-  CliError
-> {
-  return Effect.gen(function* () {
+export const verifyLeaseDistribution = Effect.fn("values.verifyLeaseDistribution")(
+  function* (input: {
+    readonly verified: VerifiedProject;
+    readonly environmentId: EnvironmentId;
+    readonly wire: PullWire;
+  }): Effect.fn.Return<
+    {
+      readonly variables: readonly VerifiedPulledValue[];
+      /** The verified declared (§14-2 — material for ci run's presence check). */
+      readonly declared: readonly VerifiedVariableStatement[];
+      readonly warnings: readonly string[];
+    },
+    CliError
+  > {
     // Manifest verification is mandatory (CRYPTO_SPEC §9.1 (5)) and an
     // omission = unconditional refusal (no migration allowance: a workload
     // cannot initialize — initialization is a member's explicit operation,
@@ -566,8 +563,8 @@ export function verifyLeaseDistribution(input: {
       declared: result.snapshot.declared,
       warnings,
     };
-  });
-}
+  },
+);
 
 /** The verified response of a metadata-only pull (§12-7's metadata-only mode). */
 export interface VerifiedEnvironmentMetadata {

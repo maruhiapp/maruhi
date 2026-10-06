@@ -68,66 +68,64 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
 }
 
 /** `maruhi project init`: sign a genesis entry and initialize the project. */
-export function projectInitOp(input: {
+export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly session: CliSession;
   readonly masterKeys: MasterKeys;
   readonly orgFlag?: string;
-}): Effect.Effect<{ readonly projectId: string }, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const me = yield* input.client.auth.me({}).pipe(Effect.mapError(toCliError));
-    const picked = pickOrg(me.orgs, input.orgFlag);
-    if (picked.kind === "rejected") {
-      return yield* Effect.fail(cliError(picked.message));
-    }
-    const org = picked.org;
+}): Effect.fn.Return<{ readonly projectId: string }, CliError, CliIo> {
+  const io = yield* CliIo;
+  const me = yield* input.client.auth.me({}).pipe(Effect.mapError(toCliError));
+  const picked = pickOrg(me.orgs, input.orgFlag);
+  if (picked.kind === "rejected") {
+    return yield* Effect.fail(cliError(picked.message));
+  }
+  const org = picked.org;
 
-    const timestampMs = yield* Clock.currentTimeMillis;
-    const unsigned: UnsignedChainEntry = {
-      suite: SUITE_ID,
-      seq: 1,
-      prevHashHex: GENESIS_PREV_HASH,
-      op: "genesis",
-      payload: {
-        encPubHex: input.masterKeys.record.encPubHex,
-        sigPubHex: input.masterKeys.record.sigPubHex,
-      },
-      actor: {
-        userId: input.session.userId,
-        keyFingerprintHex: input.masterKeys.fingerprintHex,
-      },
-      timestampMs,
-    };
-    const signed = yield* cryptoEffect(() =>
-      signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
-    ).pipe(Effect.mapError(() => cliError("Failed to sign the genesis entry")));
-    // The project ID precomputed client-side (the genesis hash — §6.4)
-    const expectedProjectId = yield* cryptoPromise("computeChainEntryHash", () =>
-      computeChainEntryHash(signed),
-    ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
+  const timestampMs = yield* Clock.currentTimeMillis;
+  const unsigned: UnsignedChainEntry = {
+    suite: SUITE_ID,
+    seq: 1,
+    prevHashHex: GENESIS_PREV_HASH,
+    op: "genesis",
+    payload: {
+      encPubHex: input.masterKeys.record.encPubHex,
+      sigPubHex: input.masterKeys.record.sigPubHex,
+    },
+    actor: {
+      userId: input.session.userId,
+      keyFingerprintHex: input.masterKeys.fingerprintHex,
+    },
+    timestampMs,
+  };
+  const signed = yield* cryptoEffect(() =>
+    signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
+  ).pipe(Effect.mapError(() => cliError("Failed to sign the genesis entry")));
+  // The project ID precomputed client-side (the genesis hash — §6.4)
+  const expectedProjectId = yield* cryptoPromise("computeChainEntryHash", () =>
+    computeChainEntryHash(signed),
+  ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
 
-    const head = yield* input.client.membership
-      .init({ payload: { orgId: org.orgId, entry: signed } })
-      .pipe(Effect.mapError(toCliError));
+  const head = yield* input.client.membership
+    .init({ payload: { orgId: org.orgId, entry: signed } })
+    .pipe(Effect.mapError(toCliError));
 
-    // The server's issued value is not trusted: fail unless it exactly matches the precomputed value
-    if (head.projectId !== expectedProjectId || head.headHashHex !== expectedProjectId) {
-      return yield* Effect.fail(
-        cliError(
-          "The project ID returned by the server does not match the genesis hash (inconsistent server response)",
-        ),
-      );
-    }
-
-    yield* io.log(`Created project ${head.projectId}`);
-    yield* io.log(`To make it the default: \`maruhi config set defaultProject ${head.projectId}\``);
-    // schema import stays an independent command (not folded into
-    // init — design doc §1-3). Add just one guidance line to init's
-    // completion output
-    yield* io.log(
-      "To bootstrap a schema from an existing .env / .env.example: create an environment (`maruhi env create <id>`), then run `maruhi schema import <file>`",
+  // The server's issued value is not trusted: fail unless it exactly matches the precomputed value
+  if (head.projectId !== expectedProjectId || head.headHashHex !== expectedProjectId) {
+    return yield* Effect.fail(
+      cliError(
+        "The project ID returned by the server does not match the genesis hash (inconsistent server response)",
+      ),
     );
-    return { projectId: head.projectId };
-  });
-}
+  }
+
+  yield* io.log(`Created project ${head.projectId}`);
+  yield* io.log(`To make it the default: \`maruhi config set defaultProject ${head.projectId}\``);
+  // schema import stays an independent command (not folded into
+  // init — design doc §1-3). Add just one guidance line to init's
+  // completion output
+  yield* io.log(
+    "To bootstrap a schema from an existing .env / .env.example: create an environment (`maruhi env create <id>`), then run `maruhi schema import <file>`",
+  );
+  return { projectId: head.projectId };
+});

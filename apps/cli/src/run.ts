@@ -372,73 +372,71 @@ export const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * no execution-control names); the error mentions only the variable name,
  * never the value.
  */
-export function buildInjectionEnv(
+export const buildInjectionEnv = Effect.fn("run.buildInjectionEnv")(function* (
   variables: readonly DecryptedVariable[],
-): Effect.Effect<Readonly<Record<string, string>>, CliError> {
-  return Effect.gen(function* () {
-    const env: Record<string, string> = {};
-    // Windows environment variable names are case-insensitive, so
-    // allowing names differing only in case to coexist would silently
-    // crush one side. Refuse as a collision
-    const seenUpper = new Set<string>();
-    for (const variable of variables) {
-      const upper = variable.name.toUpperCase();
-      if (seenUpper.has(upper)) {
-        return yield* Effect.fail(
-          cliError(
-            `Variable names collide differing only by letter case (they become the same environment variable on Windows): ${displayText(variable.name)}`,
-          ),
-        );
-      }
-      seenUpper.add(upper);
-      // Environment variable names are limited to POSIX identifiers
-      // ([A-Za-z_][A-Za-z0-9_]*). This filters out not only `=` / NUL /
-      // control characters but also bash function-import encoded names
-      // (BASH_FUNC_x%% and x() forms — shellshock-family function
-      // injection): a malicious member could create a variable of that
-      // name and a victim running `maruhi run -- bash ...` would load
-      // the attacker-defined function into the shell
-      if (!SAFE_ENV_NAME.test(variable.name)) {
-        return yield* Effect.fail(
-          cliError(
-            `The variable name cannot be injected as an environment variable (names may use only alphanumerics and _, starting with a letter or _): ${displayText(variable.name)}`,
-          ),
-        );
-      }
-      if (isDeniedEnvName(variable.name)) {
-        return yield* Effect.fail(
-          cliError(
-            `Refusing to inject variable name ${displayText(variable.name)}: it is an execution-control environment variable (rename the variable)`,
-          ),
-        );
-      }
-      // Reason for unwrapping: injection into the child process's env
-      // (this function's product). Unwrapped only at the last moment
-      // before injection; the plaintext appears only in the returned env
-      // map. Error messages carry only the variable name (none of the
-      // three branches below includes the value)
-      // The decoding policy is unified into display.ts (fatal — shared
-      // with pull --show)
-      const value = decodeValueText(Redacted.value(variable.value));
-      if (value === null) {
-        return yield* Effect.fail(
-          cliError(
-            `The value of variable ${displayText(variable.name)} is not valid UTF-8 (it cannot be injected as an environment variable)`,
-          ),
-        );
-      }
-      if (value.includes("\0")) {
-        return yield* Effect.fail(
-          cliError(
-            `The value of variable ${displayText(variable.name)} contains NUL (it cannot be injected as an environment variable)`,
-          ),
-        );
-      }
-      env[variable.name] = value;
+): Effect.fn.Return<Readonly<Record<string, string>>, CliError> {
+  const env: Record<string, string> = {};
+  // Windows environment variable names are case-insensitive, so
+  // allowing names differing only in case to coexist would silently
+  // crush one side. Refuse as a collision
+  const seenUpper = new Set<string>();
+  for (const variable of variables) {
+    const upper = variable.name.toUpperCase();
+    if (seenUpper.has(upper)) {
+      return yield* Effect.fail(
+        cliError(
+          `Variable names collide differing only by letter case (they become the same environment variable on Windows): ${displayText(variable.name)}`,
+        ),
+      );
     }
-    return env;
-  });
-}
+    seenUpper.add(upper);
+    // Environment variable names are limited to POSIX identifiers
+    // ([A-Za-z_][A-Za-z0-9_]*). This filters out not only `=` / NUL /
+    // control characters but also bash function-import encoded names
+    // (BASH_FUNC_x%% and x() forms — shellshock-family function
+    // injection): a malicious member could create a variable of that
+    // name and a victim running `maruhi run -- bash ...` would load
+    // the attacker-defined function into the shell
+    if (!SAFE_ENV_NAME.test(variable.name)) {
+      return yield* Effect.fail(
+        cliError(
+          `The variable name cannot be injected as an environment variable (names may use only alphanumerics and _, starting with a letter or _): ${displayText(variable.name)}`,
+        ),
+      );
+    }
+    if (isDeniedEnvName(variable.name)) {
+      return yield* Effect.fail(
+        cliError(
+          `Refusing to inject variable name ${displayText(variable.name)}: it is an execution-control environment variable (rename the variable)`,
+        ),
+      );
+    }
+    // Reason for unwrapping: injection into the child process's env
+    // (this function's product). Unwrapped only at the last moment
+    // before injection; the plaintext appears only in the returned env
+    // map. Error messages carry only the variable name (none of the
+    // three branches below includes the value)
+    // The decoding policy is unified into display.ts (fatal — shared
+    // with pull --show)
+    const value = decodeValueText(Redacted.value(variable.value));
+    if (value === null) {
+      return yield* Effect.fail(
+        cliError(
+          `The value of variable ${displayText(variable.name)} is not valid UTF-8 (it cannot be injected as an environment variable)`,
+        ),
+      );
+    }
+    if (value.includes("\0")) {
+      return yield* Effect.fail(
+        cliError(
+          `The value of variable ${displayText(variable.name)} contains NUL (it cannot be injected as an environment variable)`,
+        ),
+      );
+    }
+    env[variable.name] = value;
+  }
+  return env;
+});
 
 /**
  * Message shown when `maruhi run` has no command after `--`. Shared by the
@@ -458,38 +456,36 @@ export const RUN_COMMAND_REQUIRED =
  * required = false declared is not injected and only noted (stderr).
  * Neither wording includes the description.
  */
-export function enforceDeclaredPresence(
+export const enforceDeclaredPresence = Effect.fn("run.enforceDeclaredPresence")(function* (
   declared: readonly DeclaredVariable[],
   /** The closing clause of what did not happen (run = the child was never started, sync = nothing was sent). */
   outcome = "The command was not started",
-): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const missing = declared
-      .filter((variable) => variable.required)
-      .map((variable) => displayText(variable.name))
-      .toSorted();
-    if (missing.length > 0) {
-      // The strict error of a child never started (presence — verified
-      // statements only). Two recovery paths are spelled out: set the
-      // value (activation), or when the declaration was mistaken lower
-      // required via --optional (no command deletes a declaration yet)
-      return yield* Effect.fail(
-        cliError(
-          `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. ${outcome}`,
-        ),
-      );
-    }
-    const optional = declared
-      .filter((variable) => !variable.required)
-      .map((variable) => displayText(variable.name))
-      .toSorted();
-    if (optional.length > 0) {
-      yield* logNote(
-        `declared variables without values were not injected (declared as not required): ${optional.join(", ")}`,
-      );
-    }
-  });
-}
+): Effect.fn.Return<void, CliError, CliIo> {
+  const missing = declared
+    .filter((variable) => variable.required)
+    .map((variable) => displayText(variable.name))
+    .toSorted();
+  if (missing.length > 0) {
+    // The strict error of a child never started (presence — verified
+    // statements only). Two recovery paths are spelled out: set the
+    // value (activation), or when the declaration was mistaken lower
+    // required via --optional (no command deletes a declaration yet)
+    return yield* Effect.fail(
+      cliError(
+        `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. ${outcome}`,
+      ),
+    );
+  }
+  const optional = declared
+    .filter((variable) => !variable.required)
+    .map((variable) => displayText(variable.name))
+    .toSorted();
+  if (optional.length > 0) {
+    yield* logNote(
+      `declared variables without values were not injected (declared as not required): ${optional.join(", ")}`,
+    );
+  }
+});
 
 // The advisory type check's (§14.3-7) judgment. The declared type is a
 // closed set (§4.2 — "" = unspecified is outside the check). The
@@ -553,46 +549,42 @@ export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): r
  * (undefined = no redaction: stdio is inherited). Residual: an unknown
  * agent on a PTY is caught by neither layer; the root fix is `proxy run`.
  */
-export function redactionFragments(
+export const redactionFragments = Effect.fn("run.redactionFragments")(function* (
   variables: readonly DecryptedVariable[],
   /** Further secrets to scrub (`proxy run`: the brokered values known at start). */
   extraSecrets: readonly Uint8Array[] = [],
-): Effect.Effect<readonly Uint8Array[] | undefined, never, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const agent = yield* AgentProfileRef;
-    const io = yield* CliIo;
-    const stdio = yield* Stdio.Stdio;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    const triggered = agent.isAgent || !stdoutIsTerminal || !io.stderrIsTerminal();
-    if (!triggered || variables.length + extraSecrets.length === 0) {
-      return undefined;
-    }
-    // Reason for unwrapping: the fragments are the search patterns of the
-    // redaction itself (what the child's output is scrubbed of). They stay
-    // inside the ProcessRunner boundary and never appear in any message
-    return [...variables.map((variable) => Redacted.value(variable.value)), ...extraSecrets];
-  });
-}
+): Effect.fn.Return<readonly Uint8Array[] | undefined, never, CliIo | Stdio.Stdio> {
+  const agent = yield* AgentProfileRef;
+  const io = yield* CliIo;
+  const stdio = yield* Stdio.Stdio;
+  const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+  const triggered = agent.isAgent || !stdoutIsTerminal || !io.stderrIsTerminal();
+  if (!triggered || variables.length + extraSecrets.length === 0) {
+    return undefined;
+  }
+  // Reason for unwrapping: the fragments are the search patterns of the
+  // redaction itself (what the child's output is scrubbed of). They stay
+  // inside the ProcessRunner boundary and never appear in any message
+  return [...variables.map((variable) => Redacted.value(variable.value)), ...extraSecrets];
+});
 
 /** `maruhi run`: inject decrypted variables into the child env and run the command. */
-export function runOp(input: {
+export const runOp = Effect.fn("run.runOp")(function* (input: {
   readonly command: readonly string[];
   readonly variables: readonly DecryptedVariable[];
-}): Effect.Effect<number, CliError, ProcessRunner | CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    // An empty string cannot execute (`maruhi run -- "$CMD"` with CMD
-    // unset arrives in this shape). "One argument is present" and
-    // "there is a target to run" are different things
-    if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
-      // A mistake in how it was written = a usage error (2). Same treatment as the entry-point check
-      return yield* Effect.fail(usageError(RUN_COMMAND_REQUIRED));
-    }
-    const runner = yield* ProcessRunner;
-    const extraEnv = yield* buildInjectionEnv(input.variables);
-    return yield* runner.run({
-      command: input.command,
-      extraEnv,
-      redact: yield* redactionFragments(input.variables),
-    });
+}): Effect.fn.Return<number, CliError, ProcessRunner | CliIo | Stdio.Stdio> {
+  // An empty string cannot execute (`maruhi run -- "$CMD"` with CMD
+  // unset arrives in this shape). "One argument is present" and
+  // "there is a target to run" are different things
+  if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
+    // A mistake in how it was written = a usage error (2). Same treatment as the entry-point check
+    return yield* Effect.fail(usageError(RUN_COMMAND_REQUIRED));
+  }
+  const runner = yield* ProcessRunner;
+  const extraEnv = yield* buildInjectionEnv(input.variables);
+  return yield* runner.run({
+    command: input.command,
+    extraEnv,
+    redact: yield* redactionFragments(input.variables),
   });
-}
+});

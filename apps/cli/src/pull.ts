@@ -134,64 +134,62 @@ export function missingWrapReason(variable: {
  * decryption paths would silently regress — one side would lose the
  * self-built coordinates and the epoch cap check).
  */
-export function decryptVerifiedValue(input: {
+export const decryptVerifiedValue = Effect.fnUntraced(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly variable: VerifiedPulledValue;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   /** The chain-derived current epoch (the declared epoch's cap — the defense line against a derivation inconsistency). */
   readonly chainEpoch: number;
-}): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
-  return Effect.gen(function* () {
-    const variable = input.variable;
-    // The value signature's verification (§6.3-4) already guarantees
-    // "the current epoch at declared head = the value's epoch", and by
-    // epoch monotonicity this value is at or below the current epoch.
-    // The check here is kept as a defense line against a derivation
-    // inconsistency (an implementation bug)
-    if (variable.epoch > input.chainEpoch) {
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(variable.name)} declares epoch ${variable.epoch}, beyond the chain's current epoch (${input.chainEpoch}) (inconsistent with the verified view)`,
-        ),
-      );
-    }
-    const dek = input.deksByEpoch.get(variable.epoch);
-    if (dek === undefined) {
-      return yield* Effect.fail(cliError(missingWrapReason(variable)));
-    }
-    const nonce = decodeHex(variable.nonceHex);
-    const ciphertext = decodeHex(variable.ciphertextHex);
-    if (nonce === null || ciphertext === null) {
-      return yield* Effect.fail(
-        cliError(`Variable ${displayText(variable.name)} has a malformed ciphertext`),
-      );
-    }
-    const plaintext = yield* cryptoEffect(() =>
-      decryptVariable({
-        // Reason for unwrapping: the decryption's key input (the crypto boundary)
-        dek: Redacted.value(dek),
-        context: {
-          projectId: input.verified.projectId,
-          environmentId: input.environmentId,
-          epoch: variable.epoch,
-          variableId: variable.variableId,
-          version: variable.version,
-        },
-        nonce,
-        ciphertext,
-      }),
-    ).pipe(
-      Effect.mapError(() =>
-        cliError(
-          `Cannot decrypt variable ${displayText(variable.name)} (context mismatch or corrupted ciphertext — possibly replaced by the server)`,
-        ),
+}): Effect.fn.Return<Redacted.Redacted<Uint8Array>, CliError> {
+  const variable = input.variable;
+  // The value signature's verification (§6.3-4) already guarantees
+  // "the current epoch at declared head = the value's epoch", and by
+  // epoch monotonicity this value is at or below the current epoch.
+  // The check here is kept as a defense line against a derivation
+  // inconsistency (an implementation bug)
+  if (variable.epoch > input.chainEpoch) {
+    return yield* Effect.fail(
+      cliError(
+        `Variable ${displayText(variable.name)} declares epoch ${variable.epoch}, beyond the chain's current epoch (${input.chainEpoch}) (inconsistent with the verified view)`,
       ),
     );
-    // The decryption's product is wrapped here. From here on the plaintext flows only as a Redacted
-    return Redacted.make(plaintext, { label: "variable-value" });
-  });
-}
+  }
+  const dek = input.deksByEpoch.get(variable.epoch);
+  if (dek === undefined) {
+    return yield* Effect.fail(cliError(missingWrapReason(variable)));
+  }
+  const nonce = decodeHex(variable.nonceHex);
+  const ciphertext = decodeHex(variable.ciphertextHex);
+  if (nonce === null || ciphertext === null) {
+    return yield* Effect.fail(
+      cliError(`Variable ${displayText(variable.name)} has a malformed ciphertext`),
+    );
+  }
+  const plaintext = yield* cryptoEffect(() =>
+    decryptVariable({
+      // Reason for unwrapping: the decryption's key input (the crypto boundary)
+      dek: Redacted.value(dek),
+      context: {
+        projectId: input.verified.projectId,
+        environmentId: input.environmentId,
+        epoch: variable.epoch,
+        variableId: variable.variableId,
+        version: variable.version,
+      },
+      nonce,
+      ciphertext,
+    }),
+  ).pipe(
+    Effect.mapError(() =>
+      cliError(
+        `Cannot decrypt variable ${displayText(variable.name)} (context mismatch or corrupted ciphertext — possibly replaced by the server)`,
+      ),
+    ),
+  );
+  // The decryption's product is wrapped here. From here on the plaintext flows only as a Redacted
+  return Redacted.make(plaintext, { label: "variable-value" });
+});
 
 /** Narrowing the variables to decrypt (omitted `select` = all). Applies only to the verified set. */
 function selectedVariables(
@@ -210,7 +208,7 @@ function selectedVariables(
  * versions may span epochs until a rotation's re-encryption completes
  * (§12-7).
  */
-export function pullVariables(input: {
+export const pullVariables = Effect.fn("pull.pullVariables")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -235,100 +233,98 @@ export function pullVariables(input: {
    * returned as a fact).
    */
   readonly fillOwnDeviceGaps?: { readonly signingKeyPair: SigningKeyPair };
-}): Effect.Effect<PulledVariables, CliError> {
-  return Effect.gen(function* () {
-    // (0) Target environment ∈ one's own scope (CRYPTO_SPEC §6.3 — never
-    // wait for the server's 403. 2026-09-15 ES K4, design record K4-C).
-    // This is the only shared path of a values-bearing pull (pull / run /
-    // sync / rotate's re-encryption), so a multi-environment command that
-    // never passes through the `--env` prologue (context.ts) also stops
-    // here. Since a values-bearing pull records a `var.read`, it is
-    // dropped before communicating
-    yield* requireEnvironmentInScope({
-      verified: input.verified,
-      userId: input.recipient.userId,
-      environmentId: input.environmentId,
-      operation: "pull values from",
-    });
-    // (1) Verifying the value signatures (before decryption). On a
-    // future head, a view advanced by the bounded resync comes back — the
-    // later checks (wraps, epochs) also run on the same view
-    const pulled = yield* pullVerifiedEnvironment(input);
-    const verified = pulled.verified;
-
-    // (2) The wraps' §5.1 / §5.2 verification and unwrap (no DEK is used
-    // until the commitment match also succeeds). The current epoch
-    // (chain-derived — §6.2) and the DEK set are derived in bulk from the
-    // same verified view (deks.ts's environmentKeysFor)
-    const keys = yield* environmentKeysFor({
-      client: input.client,
-      verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      prefetched: pulled.deks,
-    });
-    const deksByEpoch = keys.deksByEpoch;
-
-    // The difference check against §7's all-epoch distribution (the
-    // self-side detection of an unfinished backfill — the B2 ruling):
-    // every member should hold every DEK of epochs 1..current addressed
-    // to them, so a gap is always a sign of an interrupted member-add
-    // backfill or an unfinished repair (no false positives). Since a gap
-    // in an epoch the current values need for decryption is already
-    // stopped by decryptVerifiedValue as a definitive failure, here we
-    // catch a silent gap in historical epochs (never surfaced by the
-    // current values alone) as a SHOULD warning
-    const missingEpochs = missingEpochsOf(keys);
-    const warnings =
-      missingEpochs.length === 0
-        ? pulled.warnings
-        : [
-            ...pulled.warnings,
-            describeMissingOwnEpochs(verified.projectId, input.environmentId, missingEpochs),
-          ];
-
-    const results: DecryptedVariable[] = [];
-    for (const variable of selectedVariables(pulled.variables, input.select)) {
-      // A duplicate active name was already refused by the statement
-      // verification (values-verify.ts) (§4.2 — `maruhi run`'s environment
-      // variable injection has no path that silently crushes one side)
-      const plaintext = yield* decryptVerifiedValue({
-        verified,
-        environmentId: input.environmentId,
-        variable,
-        deksByEpoch,
-        chainEpoch: keys.currentEpoch,
-      });
-      results.push({
-        variableId: variable.variableId,
-        name: variable.name,
-        version: variable.version,
-        epoch: variable.epoch,
-        varType: variable.schema?.varType ?? "",
-        required: variable.schema?.required ?? false,
-        maxAgeDays: variable.schema?.maxAgeDays ?? null,
-        value: plaintext,
-      });
-    }
-    // Filling the sibling devices' gaps (DK K11): only after decryption
-    // is done (a failed pull fills nothing). A failure folds into the
-    // result and never changes the pull's outcome
-    const ownDeviceGapFills = yield* fillOwnDeviceGaps({
-      client: input.client,
-      verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      signer: input.fillOwnDeviceGaps,
-      currentEpoch: keys.currentEpoch,
-      deksByEpoch,
-      rows: pulled.deks,
-    });
-    return {
-      verified,
-      variables: results,
-      declared: toDeclaredVariables(pulled.declared),
-      warnings,
-      ownDeviceGapFills,
-    };
+}): Effect.fn.Return<PulledVariables, CliError> {
+  // (0) Target environment ∈ one's own scope (CRYPTO_SPEC §6.3 — never
+  // wait for the server's 403. 2026-09-15 ES K4, design record K4-C).
+  // This is the only shared path of a values-bearing pull (pull / run /
+  // sync / rotate's re-encryption), so a multi-environment command that
+  // never passes through the `--env` prologue (context.ts) also stops
+  // here. Since a values-bearing pull records a `var.read`, it is
+  // dropped before communicating
+  yield* requireEnvironmentInScope({
+    verified: input.verified,
+    userId: input.recipient.userId,
+    environmentId: input.environmentId,
+    operation: "pull values from",
   });
-}
+  // (1) Verifying the value signatures (before decryption). On a
+  // future head, a view advanced by the bounded resync comes back — the
+  // later checks (wraps, epochs) also run on the same view
+  const pulled = yield* pullVerifiedEnvironment(input);
+  const verified = pulled.verified;
+
+  // (2) The wraps' §5.1 / §5.2 verification and unwrap (no DEK is used
+  // until the commitment match also succeeds). The current epoch
+  // (chain-derived — §6.2) and the DEK set are derived in bulk from the
+  // same verified view (deks.ts's environmentKeysFor)
+  const keys = yield* environmentKeysFor({
+    client: input.client,
+    verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    prefetched: pulled.deks,
+  });
+  const deksByEpoch = keys.deksByEpoch;
+
+  // The difference check against §7's all-epoch distribution (the
+  // self-side detection of an unfinished backfill — the B2 ruling):
+  // every member should hold every DEK of epochs 1..current addressed
+  // to them, so a gap is always a sign of an interrupted member-add
+  // backfill or an unfinished repair (no false positives). Since a gap
+  // in an epoch the current values need for decryption is already
+  // stopped by decryptVerifiedValue as a definitive failure, here we
+  // catch a silent gap in historical epochs (never surfaced by the
+  // current values alone) as a SHOULD warning
+  const missingEpochs = missingEpochsOf(keys);
+  const warnings =
+    missingEpochs.length === 0
+      ? pulled.warnings
+      : [
+          ...pulled.warnings,
+          describeMissingOwnEpochs(verified.projectId, input.environmentId, missingEpochs),
+        ];
+
+  const results: DecryptedVariable[] = [];
+  for (const variable of selectedVariables(pulled.variables, input.select)) {
+    // A duplicate active name was already refused by the statement
+    // verification (values-verify.ts) (§4.2 — `maruhi run`'s environment
+    // variable injection has no path that silently crushes one side)
+    const plaintext = yield* decryptVerifiedValue({
+      verified,
+      environmentId: input.environmentId,
+      variable,
+      deksByEpoch,
+      chainEpoch: keys.currentEpoch,
+    });
+    results.push({
+      variableId: variable.variableId,
+      name: variable.name,
+      version: variable.version,
+      epoch: variable.epoch,
+      varType: variable.schema?.varType ?? "",
+      required: variable.schema?.required ?? false,
+      maxAgeDays: variable.schema?.maxAgeDays ?? null,
+      value: plaintext,
+    });
+  }
+  // Filling the sibling devices' gaps (DK K11): only after decryption
+  // is done (a failed pull fills nothing). A failure folds into the
+  // result and never changes the pull's outcome
+  const ownDeviceGapFills = yield* fillOwnDeviceGaps({
+    client: input.client,
+    verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    signer: input.fillOwnDeviceGaps,
+    currentEpoch: keys.currentEpoch,
+    deksByEpoch,
+    rows: pulled.deks,
+  });
+  return {
+    verified,
+    variables: results,
+    declared: toDeclaredVariables(pulled.declared),
+    warnings,
+    ownDeviceGapFills,
+  };
+});

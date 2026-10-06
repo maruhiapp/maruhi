@@ -109,14 +109,14 @@ export function selectInvitation(
  * automatic failure — a legitimate key update is possible). A successful
  * ceremony / flag match is recorded into the book.
  */
-export function confirmInviteeFingerprint(input: {
-  readonly origin: string;
-  readonly targetUserId: string;
-  readonly role: Role;
-  readonly fingerprintHex: string;
-  readonly expectFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
-  return Effect.gen(function* () {
+export const confirmInviteeFingerprint = Effect.fn("member-add-ceremony.confirmInviteeFingerprint")(
+  function* (input: {
+    readonly origin: string;
+    readonly targetUserId: string;
+    readonly role: Role;
+    readonly fingerprintHex: string;
+    readonly expectFingerprintHex: string | null;
+  }): Effect.fn.Return<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
       input.fingerprintHex,
@@ -191,8 +191,8 @@ export function confirmInviteeFingerprint(input: {
         "Acceptance key fingerprint confirmation failed (the re-typed word does not match). add_member was not performed — re-run once you can check with the acceptor",
     });
     yield* book.record;
-  });
-}
+  },
+);
 
 /**
  * Resolving the destination login (adequacy form 4's (iii)): `--github` →
@@ -201,11 +201,11 @@ export function confirmInviteeFingerprint(input: {
  * prompt, and a typo becomes a query for "someone else's GitHub" — naming
  * is limited to issuance time or an explicit flag).
  */
-function resolveAddresseeLogin(input: {
-  readonly flagLogin: string | null;
-  readonly pinLogin: string | null;
-}): Effect.Effect<string | null, never, CliIo> {
-  return Effect.gen(function* () {
+const resolveAddresseeLogin = Effect.fn("member-add-ceremony.resolveAddresseeLogin")(
+  function* (input: {
+    readonly flagLogin: string | null;
+    readonly pinLogin: string | null;
+  }): Effect.fn.Return<string | null, never, CliIo> {
     const io = yield* CliIo;
     if (input.flagLogin !== null) {
       return input.flagLogin;
@@ -217,8 +217,8 @@ function resolveAddresseeLogin(input: {
       return input.pinLogin;
     }
     return null;
-  });
-}
+  },
+);
 
 /**
  * The two choices when unregistered (supplement 21 ruling D ④): when the
@@ -227,36 +227,32 @@ function resolveAddresseeLogin(input: {
  * terminal + non-agent + no flag (non-interactive stays flag-only, as
  * before). yes = proceed to the ceremony.
  */
-function askCeremonyOrWait(input: {
+const askCeremonyOrWait = Effect.fn("member-add-ceremony.askCeremonyOrWait")(function* (input: {
   readonly login: string;
   readonly flagProvided: boolean;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const stdio = yield* Stdio.Stdio;
-    const interactive =
-      !io.agentProfile().isAgent &&
-      (yield* stdio.stdinIsTerminal) &&
-      (yield* stdio.stdoutIsTerminal);
-    if (!interactive || input.flagProvided) {
-      return;
-    }
-    yield* io.log(
-      `github.com/${input.login} has not registered this key as a signing key. Ask them to run \`maruhi key publish\` and re-run \`maruhi member add\` to add them without a call, or confirm the 12 words with them now`,
-    );
-    const answer = yield* io.promptLine({
-      prompt:
-        "Type yes to confirm the 12 words now; anything else to stop and wait for their registration: ",
-    });
-    if (answer.trim().toLowerCase() !== "yes") {
-      return yield* Effect.fail(
-        cliError(
-          `add_member was not performed. Ask github.com/${input.login} to register their key with \`maruhi key publish\`, then re-run \`maruhi member add\``,
-        ),
-      );
-    }
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
+  const io = yield* CliIo;
+  const stdio = yield* Stdio.Stdio;
+  const interactive =
+    !io.agentProfile().isAgent && (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
+  if (!interactive || input.flagProvided) {
+    return;
+  }
+  yield* io.log(
+    `github.com/${input.login} has not registered this key as a signing key. Ask them to run \`maruhi key publish\` and re-run \`maruhi member add\` to add them without a call, or confirm the 12 words with them now`,
+  );
+  const answer = yield* io.promptLine({
+    prompt:
+      "Type yes to confirm the 12 words now; anything else to stop and wait for their registration: ",
   });
-}
+  if (answer.trim().toLowerCase() !== "yes") {
+    return yield* Effect.fail(
+      cliError(
+        `add_member was not performed. Ask github.com/${input.login} to register their key with \`maruhi key publish\`, then re-run \`maruhi member add\``,
+      ),
+    );
+  }
+});
 
 /**
  * The inviter's adequacy form 4 (CRYPTO_SPEC §6.5 — IV2): in addition to
@@ -269,15 +265,15 @@ function askCeremonyOrWait(input: {
  * destination, unregistered, unfetchable) = false = falls back to adequacy
  * forms 1-3 (confirmInviteeFingerprint).
  */
-export function confirmInviteeViaBacking(input: {
-  readonly identityBacking: IdentityBacking;
-  readonly flagLogin: string | null;
-  readonly pinLogin: string | null;
-  readonly sigPubHex: string;
-  readonly fingerprintHex: string;
-  readonly expectFingerprintHex: string | null;
-}): Effect.Effect<boolean, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+export const confirmInviteeViaBacking = Effect.fn("member-add-ceremony.confirmInviteeViaBacking")(
+  function* (input: {
+    readonly identityBacking: IdentityBacking;
+    readonly flagLogin: string | null;
+    readonly pinLogin: string | null;
+    readonly sigPubHex: string;
+    readonly fingerprintHex: string;
+    readonly expectFingerprintHex: string | null;
+  }): Effect.fn.Return<boolean, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
     const io = yield* CliIo;
     if (input.identityBacking === "none") {
       if (input.flagLogin !== null) {
@@ -326,5 +322,5 @@ export function confirmInviteeViaBacking(input: {
     );
     yield* io.log(`  fp:   ${input.fingerprintHex}`);
     return true;
-  });
-}
+  },
+);
