@@ -46,7 +46,7 @@ import {
 } from "./sync-plan.ts";
 
 /** `maruhi ci sync`'s input (flags + the repository config's target). */
-export interface CiSyncInput extends CiLeaseInput {
+interface CiSyncInput extends CiLeaseInput {
   readonly target: SyncTarget;
   /** Explicit confirmation of apply to a production target (the same word as the local apply). */
   readonly yes: boolean;
@@ -70,60 +70,58 @@ function materialOf(
  * to the target through its driver. No receipt is read or written: the CI
  * job holds no signing key, so it re-applies everything and deletes nothing.
  */
-export function ciSyncOp(
+export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
   input: CiSyncInput,
-): Effect.Effect<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { target } = input;
-    const tokenEnvironment =
-      target.driver.kind === "http" && target.driver.token.environment !== target.environment
-        ? target.driver.token.environment
-        : null;
-    const materials = yield* leaseEnvironments({
-      ...input,
-      environmentIds: [
-        target.environment as EnvironmentId,
-        ...(tokenEnvironment === null ? [] : [tokenEnvironment as EnvironmentId]),
-      ],
-    });
-    const source = yield* materialOf(materials, target.environment);
-    const plan = yield* computePlan({
-      target,
-      source: sourceVariablesOf(source.variables),
-      declared: source.declared,
-      // No receipt: every selected variable is add (full re-apply); no deletion arises
-      receipt: null,
-    });
-    yield* reviewPlan(target, plan, { kind: "none-in-ci" });
-    const work = yield* prepareWork(target, plan, writesOf(source.variables));
-    if (work.writes.length === 0) {
-      yield* io.log("Nothing to apply: the target selects no variable with a value");
-      return;
-    }
-    yield* requireProductionConsent(target, input.yes, "maruhi ci sync");
-    let token: IntegrationToken | null = null;
-    if (target.driver.kind === "http") {
-      const holder = yield* materialOf(materials, target.driver.token.environment);
-      token = yield* integrationTokenOf(target.driver.token, holder.variables);
-    }
-    const result = yield* runDriver({
+): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const { target } = input;
+  const tokenEnvironment =
+    target.driver.kind === "http" && target.driver.token.environment !== target.environment
+      ? target.driver.token.environment
+      : null;
+  const materials = yield* leaseEnvironments({
+    ...input,
+    environmentIds: [
+      target.environment as EnvironmentId,
+      ...(tokenEnvironment === null ? [] : [tokenEnvironment as EnvironmentId]),
+    ],
+  });
+  const source = yield* materialOf(materials, target.environment);
+  const plan = yield* computePlan({
+    target,
+    source: sourceVariablesOf(source.variables),
+    declared: source.declared,
+    // No receipt: every selected variable is add (full re-apply); no deletion arises
+    receipt: null,
+  });
+  yield* reviewPlan(target, plan, { kind: "none-in-ci" });
+  const work = yield* prepareWork(target, plan, writesOf(source.variables));
+  if (work.writes.length === 0) {
+    yield* io.log("Nothing to apply: the target selects no variable with a value");
+    return;
+  }
+  yield* requireProductionConsent(target, input.yes, "maruhi ci sync");
+  let token: IntegrationToken | null = null;
+  if (target.driver.kind === "http") {
+    const holder = yield* materialOf(materials, target.driver.token.environment);
+    token = yield* integrationTokenOf(target.driver.token, holder.variables);
+  }
+  const result = yield* runDriver({
+    target,
+    work,
+    token,
+    httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
+  });
+  if (result.failure !== null) {
+    return yield* failDriver({
       target,
       work,
-      token,
-      httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
+      result,
+      receiptsEnvironment: null,
+      next: "re-run the job (every selected variable is written again)",
     });
-    if (result.failure !== null) {
-      return yield* failDriver({
-        target,
-        work,
-        result,
-        receiptsEnvironment: null,
-        next: "re-run the job (every selected variable is written again)",
-      });
-    }
-    yield* io.log(
-      `Applied to target ${displayText(target.name)}: ${countNoun(result.written.length, "variable")} written (no receipt is kept in CI, and nothing is deleted)`,
-    );
-  });
-}
+  }
+  yield* io.log(
+    `Applied to target ${displayText(target.name)}: ${countNoun(result.written.length, "variable")} written (no receipt is kept in CI, and nothing is deleted)`,
+  );
+});

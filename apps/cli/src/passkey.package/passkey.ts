@@ -136,32 +136,30 @@ function ceremonyFailure(
 }
 
 /** Displays the URL and confirmation code, and auto-launches the browser (the same single fallback path as login). */
-function announceListener(
+const announceListener = Effect.fn("passkey.announceListener")(function* (
   io: CliIoShape,
   listener: PrfListener,
   confirmCode: string,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    yield* io.logError("");
-    yield* io.logError("Open this page in your browser to continue with your passkey:");
-    yield* io.logError("");
-    yield* io.logError(`    ${listener.url}`);
-    yield* io.logError("");
-    yield* io.logError(
-      `Confirmation code (type it into the page): ${displayConfirmCode(confirmCode)}`,
-    );
-    yield* io.logError("");
-    yield* io.logError(
-      `If this terminal runs on a remote machine (SSH, a dev container, Codespaces), forward port ${listener.port} to your local machine first and open the URL there`,
-    );
-    const opened = yield* io.openBrowser(listener.url);
-    yield* io.logError(
-      opened
-        ? "Opened your browser. If nothing appeared, open the URL above manually (waiting up to 5 minutes; press Ctrl+C to cancel)"
-        : "Could not open a browser automatically. Open the URL above manually (waiting up to 5 minutes; press Ctrl+C to cancel)",
-    );
-  });
-}
+): Effect.fn.Return<void> {
+  yield* io.logError("");
+  yield* io.logError("Open this page in your browser to continue with your passkey:");
+  yield* io.logError("");
+  yield* io.logError(`    ${listener.url}`);
+  yield* io.logError("");
+  yield* io.logError(
+    `Confirmation code (type it into the page): ${displayConfirmCode(confirmCode)}`,
+  );
+  yield* io.logError("");
+  yield* io.logError(
+    `If this terminal runs on a remote machine (SSH, a dev container, Codespaces), forward port ${listener.port} to your local machine first and open the URL there`,
+  );
+  const opened = yield* io.openBrowser(listener.url);
+  yield* io.logError(
+    opened
+      ? "Opened your browser. If nothing appeared, open the URL above manually (waiting up to 5 minutes; press Ctrl+C to cancel)"
+      : "Could not open a browser automatically. Open the URL above manually (waiting up to 5 minutes; press Ctrl+C to cancel)",
+  );
+});
 
 /** Waits for the page's accepted POST (cut off at 5 minutes. The listener's own failure is also a ceremony failure). */
 function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, CliError> {
@@ -194,38 +192,36 @@ interface PrfOutcome {
  * always closes. The token shares the listener's lifetime. The PRF
  * output exists only as the value returned from here.
  */
-function runPrfCeremony(
+const runPrfCeremony = Effect.fn("passkey.runPrfCeremony")(function* (
   config: PrfPageConfig,
   action: "register" | "recover",
-): Effect.Effect<PrfOutcome, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const confirmCode = newConfirmCode();
-    return yield* Effect.acquireUseRelease(
-      Effect.tryPromise({
-        try: () => startPrfListener(config, confirmCode),
-        catch: () =>
-          cliError(
-            "Cannot listen on 127.0.0.1 for the passkey page (no free local port, or loopback networking is unavailable)",
-          ),
+): Effect.fn.Return<PrfOutcome, CliError, CliIo> {
+  const io = yield* CliIo;
+  const confirmCode = newConfirmCode();
+  return yield* Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => startPrfListener(config, confirmCode),
+      catch: () =>
+        cliError(
+          "Cannot listen on 127.0.0.1 for the passkey page (no free local port, or loopback networking is unavailable)",
+        ),
+    }),
+    (listener) =>
+      Effect.gen(function* () {
+        yield* announceListener(io, listener, confirmCode);
+        const post = yield* awaitOutcome(listener);
+        if ("error" in post) {
+          return yield* Effect.fail(ceremonyFailure(post.error, action));
+        }
+        const prf = decodeHex(post.prfHex);
+        if (prf === null) {
+          return yield* Effect.fail(cliError("The passkey page sent a malformed PRF value"));
+        }
+        return { credentialIdHex: post.credentialIdHex, prf };
       }),
-      (listener) =>
-        Effect.gen(function* () {
-          yield* announceListener(io, listener, confirmCode);
-          const post = yield* awaitOutcome(listener);
-          if ("error" in post) {
-            return yield* Effect.fail(ceremonyFailure(post.error, action));
-          }
-          const prf = decodeHex(post.prfHex);
-          if (prf === null) {
-            return yield* Effect.fail(cliError("The passkey page sent a malformed PRF value"));
-          }
-          return { credentialIdHex: post.credentialIdHex, prf };
-        }),
-      (listener) => Effect.promise(() => listener.close()),
-    );
-  });
-}
+    (listener) => Effect.promise(() => listener.close()),
+  );
+});
 
 function deriveKek(prf: Uint8Array): Effect.Effect<Uint8Array, CliError> {
   return cryptoEffect(() => derivePasskeyKek(prf)).pipe(
@@ -267,121 +263,117 @@ function describeRow(row: PasskeyRow): string {
  * ledger (ledger-open.ts — opening is the qualification for
  * changing the ledger. K4-2).
  */
-export function sealPasskeyOp(input: {
+export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly reserve: ReserveKeys;
   readonly label?: string | undefined;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensurePasskeyCeremonyAllowed(io, "register");
-    const rows = yield* fetchPasskeyRows(input.client);
-    if (rows.length >= MAX_PASSKEY_WRAPS_PER_USER) {
-      return yield* Effect.fail(
-        cliError(
-          `You already have ${MAX_PASSKEY_WRAPS_PER_USER} passkeys registered (the limit). Remove one with \`maruhi key seal remove <wrap-id>\` first (see \`maruhi key seal list\`)`,
-        ),
-      );
-    }
-    // wrap_id is bound by AAD, so it is issued before encryption.
-    // prf_salt is a per-registration random (a public parameter).
-    // The user handle is a per-registration random too (ruling G)
-    const wrapId = newLedgerId();
-    const prfSaltHex = encodeHex(crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES)));
-    const outcome = yield* runPrfCeremony(
-      {
-        mode: "register",
-        rpId: "localhost",
-        userName: `maruhi · ${new URL(input.session.origin).host}`,
-        userIdHex: encodeHex(crypto.getRandomValues(new Uint8Array(USER_HANDLE_BYTES))),
-        prfSaltHex,
-        excludeCredentialIdsHex: rows.map((row) => row.credentialIdHex),
-      },
-      "register",
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* ensurePasskeyCeremonyAllowed(io, "register");
+  const rows = yield* fetchPasskeyRows(input.client);
+  if (rows.length >= MAX_PASSKEY_WRAPS_PER_USER) {
+    return yield* Effect.fail(
+      cliError(
+        `You already have ${MAX_PASSKEY_WRAPS_PER_USER} passkeys registered (the limit). Remove one with \`maruhi key seal remove <wrap-id>\` first (see \`maruhi key seal list\`)`,
+      ),
     );
-    const kek = yield* deriveKek(outcome.prf);
-    const wrapped = yield* wrapReserveBlob({
-      record: input.reserve.record,
-      kek,
-      context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
-    });
-    yield* input.client.keyWraps
-      .passkeyRegister({
-        payload: {
-          wrapId,
-          wrap: {
-            suite: "maruhi/v1",
-            nonceHex: encodeHex(wrapped.nonce),
-            ciphertextHex: encodeHex(wrapped.ciphertext),
-          },
-          credentialIdHex: outcome.credentialIdHex,
-          prfSaltHex,
-          rpId: "localhost",
-          ...(input.label === undefined ? {} : { label: input.label }),
-        },
-      })
-      .pipe(
-        Effect.catchTag("KeyWrapPolicy", (error) =>
-          Effect.fail(
-            error.reason === "too-many-passkeys"
-              ? cliError(
-                  `The server refused the registration: the passkey limit (${MAX_PASSKEY_WRAPS_PER_USER}) is reached. Remove one with \`maruhi key seal remove <wrap-id>\` first`,
-                )
-              : cliError(
-                  `The server refused the registration (${error.reason}). Re-run to try again`,
-                ),
-          ),
-        ),
-        Effect.mapError(toCliError),
-      );
-    yield* io.log(`Sealed the reserve key to a passkey (wrap ${wrapId})`);
-    yield* io.log(`reserve key fingerprint: ${input.reserve.fingerprintHex}`);
-    yield* logNote(
-      "a machine with no device key can restore the reserve key with `maruhi key recover --passkey` and register itself as a new device. If you delete the passkey from your authenticator, remove this wrap with `maruhi key seal remove` too",
-    );
+  }
+  // wrap_id is bound by AAD, so it is issued before encryption.
+  // prf_salt is a per-registration random (a public parameter).
+  // The user handle is a per-registration random too (ruling G)
+  const wrapId = newLedgerId();
+  const prfSaltHex = encodeHex(crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES)));
+  const outcome = yield* runPrfCeremony(
+    {
+      mode: "register",
+      rpId: "localhost",
+      userName: `maruhi · ${new URL(input.session.origin).host}`,
+      userIdHex: encodeHex(crypto.getRandomValues(new Uint8Array(USER_HANDLE_BYTES))),
+      prfSaltHex,
+      excludeCredentialIdsHex: rows.map((row) => row.credentialIdHex),
+    },
+    "register",
+  );
+  const kek = yield* deriveKek(outcome.prf);
+  const wrapped = yield* wrapReserveBlob({
+    record: input.reserve.record,
+    kek,
+    context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
   });
-}
+  yield* input.client.keyWraps
+    .passkeyRegister({
+      payload: {
+        wrapId,
+        wrap: {
+          suite: "maruhi/v1",
+          nonceHex: encodeHex(wrapped.nonce),
+          ciphertextHex: encodeHex(wrapped.ciphertext),
+        },
+        credentialIdHex: outcome.credentialIdHex,
+        prfSaltHex,
+        rpId: "localhost",
+        ...(input.label === undefined ? {} : { label: input.label }),
+      },
+    })
+    .pipe(
+      Effect.catchTag("KeyWrapPolicy", (error) =>
+        Effect.fail(
+          error.reason === "too-many-passkeys"
+            ? cliError(
+                `The server refused the registration: the passkey limit (${MAX_PASSKEY_WRAPS_PER_USER}) is reached. Remove one with \`maruhi key seal remove <wrap-id>\` first`,
+              )
+            : cliError(
+                `The server refused the registration (${error.reason}). Re-run to try again`,
+              ),
+        ),
+      ),
+      Effect.mapError(toCliError),
+    );
+  yield* io.log(`Sealed the reserve key to a passkey (wrap ${wrapId})`);
+  yield* io.log(`reserve key fingerprint: ${input.reserve.fingerprintHex}`);
+  yield* logNote(
+    "a machine with no device key can restore the reserve key with `maruhi key recover --passkey` and register itself as a new device. If you delete the passkey from your authenticator, remove this wrap with `maruhi key seal remove` too",
+  );
+});
 
 const NO_PASSKEY_REGISTERED =
   "No passkey is registered for your account. Seal the reserve key to one with `maruhi key seal passkey` (on a registered device), or open it with the recovery code instead (`maruhi key recover` / omit --passkey)";
 
 /** Fetches the wrap of the row the ceremony selected (consumes the combined window once — an audit event requiring monitoring). */
-function fetchWrap(
+const fetchWrap = Effect.fn("passkey.fetchWrap")(function* (
   client: MaruhiClient,
   wrapId: string,
-): Effect.Effect<FetchedWrap, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const wrap = yield* client.keyWraps.passkeyGet({ params: { wrapId } }).pipe(
-      Effect.catchTag("KeyWrapNotFound", () =>
-        Effect.fail(
-          cliError(
-            "That passkey wrap no longer exists on the server (it was removed meanwhile). Run `maruhi key seal list` to see what is registered",
-          ),
+): Effect.fn.Return<FetchedWrap, CliError, HttpClient.HttpClient> {
+  const wrap = yield* client.keyWraps.passkeyGet({ params: { wrapId } }).pipe(
+    Effect.catchTag("KeyWrapNotFound", () =>
+      Effect.fail(
+        cliError(
+          "That passkey wrap no longer exists on the server (it was removed meanwhile). Run `maruhi key seal list` to see what is registered",
         ),
       ),
-      Effect.catchTag("KeyWrapRateLimited", (error) =>
-        Effect.fail(
-          cliError(
-            `The key-wrap fetch limit was reached. Retry after ${error.retryAfterSeconds} seconds`,
-          ),
+    ),
+    Effect.catchTag("KeyWrapRateLimited", (error) =>
+      Effect.fail(
+        cliError(
+          `The key-wrap fetch limit was reached. Retry after ${error.retryAfterSeconds} seconds`,
         ),
       ),
-      Effect.mapError(toCliError),
-    );
-    const nonce = decodeHex(wrap.wrap.nonceHex);
-    const ciphertext = decodeHex(wrap.wrap.ciphertextHex);
-    if (nonce === null || ciphertext === null) {
-      return yield* Effect.fail(cliError("The server response is malformed (cannot decode hex)"));
-    }
-    return {
-      prfSaltHex: wrap.prfSaltHex,
-      credentialIdHex: wrap.credentialIdHex,
-      nonce,
-      ciphertext,
-    };
-  });
-}
+    ),
+    Effect.mapError(toCliError),
+  );
+  const nonce = decodeHex(wrap.wrap.nonceHex);
+  const ciphertext = decodeHex(wrap.wrap.ciphertextHex);
+  if (nonce === null || ciphertext === null) {
+    return yield* Effect.fail(cliError("The server response is malformed (cannot decode hex)"));
+  }
+  return {
+    prfSaltHex: wrap.prfSaltHex,
+    credentialIdHex: wrap.credentialIdHex,
+    nonce,
+    ciphertext,
+  };
+});
 
 /** The fetched wrap (salt + credential + ciphertext). */
 interface FetchedWrap {
@@ -403,74 +395,70 @@ interface RecoveryMaterial {
  * credential → fetch that row's wrap (rulings F / I). Since the
  * blob fetch is after the ceremony, a cancel consumes no window.
  */
-function recoverCeremonyFirst(
+const recoverCeremonyFirst = Effect.fn("passkey.recoverCeremonyFirst")(function* (
   client: MaruhiClient,
   rows: readonly PasskeyRow[],
-): Effect.Effect<RecoveryMaterial, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const outcome = yield* runPrfCeremony(
-      {
-        mode: "recover",
-        rpId: "localhost",
-        credentials: rows.map((row) => ({
-          credentialIdHex: row.credentialIdHex,
-          prfSaltHex: row.prfSaltHex,
-        })),
-      },
-      "recover",
-    );
-    const row = rows.find((candidate) => candidate.credentialIdHex === outcome.credentialIdHex);
-    if (row === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          "The browser used a passkey that is not registered for your account, so the key cannot be restored. Re-run and choose one of the registered passkeys",
-        ),
-      );
-    }
-    const wrap = yield* fetchWrap(client, row.wrapId);
-    return { wrapId: row.wrapId, wrap, outcome };
-  });
-}
-
-/** Decrypt → interpret the record (the PRF output and KEK exist only in this function's locals). */
-function unwrapReserveRecord(input: {
-  readonly session: CliSession;
-  readonly material: RecoveryMaterial;
-}): Effect.Effect<StoredMasterKey, CliError> {
-  return Effect.gen(function* () {
-    const { wrap, outcome, wrapId } = input.material;
-    if (outcome.credentialIdHex !== wrap.credentialIdHex) {
-      return yield* Effect.fail(
-        cliError(
-          "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the reserve key cannot be opened. Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey",
-        ),
-      );
-    }
-    const kek = yield* deriveKek(outcome.prf);
-    const unwrapped = yield* cryptoEffect(() =>
-      unwrapMasterBlob({
-        kek,
-        wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
-        context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
-      }),
-    ).pipe(
-      Effect.mapError(() =>
-        cliError(
-          "Cannot decrypt the wrapped reserve key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
-        ),
+): Effect.fn.Return<RecoveryMaterial, CliError, CliIo | HttpClient.HttpClient> {
+  const outcome = yield* runPrfCeremony(
+    {
+      mode: "recover",
+      rpId: "localhost",
+      credentials: rows.map((row) => ({
+        credentialIdHex: row.credentialIdHex,
+        prfSaltHex: row.prfSaltHex,
+      })),
+    },
+    "recover",
+  );
+  const row = rows.find((candidate) => candidate.credentialIdHex === outcome.credentialIdHex);
+  if (row === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        "The browser used a passkey that is not registered for your account, so the key cannot be restored. Re-run and choose one of the registered passkeys",
       ),
     );
-    const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped));
-    if (record === null) {
-      return yield* Effect.fail(
-        cliError(
-          "The decrypted blob is not a key record. The device that registered this passkey wrote a broken record, or a newer maruhi wrote it — update maruhi, or open the reserve key another way",
-        ),
-      );
-    }
-    return record;
-  });
-}
+  }
+  const wrap = yield* fetchWrap(client, row.wrapId);
+  return { wrapId: row.wrapId, wrap, outcome };
+});
+
+/** Decrypt → interpret the record (the PRF output and KEK exist only in this function's locals). */
+const unwrapReserveRecord = Effect.fn("passkey.unwrapReserveRecord")(function* (input: {
+  readonly session: CliSession;
+  readonly material: RecoveryMaterial;
+}): Effect.fn.Return<StoredMasterKey, CliError> {
+  const { wrap, outcome, wrapId } = input.material;
+  if (outcome.credentialIdHex !== wrap.credentialIdHex) {
+    return yield* Effect.fail(
+      cliError(
+        "The wrap fetched from the server belongs to a different passkey than the one the browser used, so the reserve key cannot be opened. Nothing was changed — re-run, and if it repeats, check `maruhi key seal list` and re-register the passkey",
+      ),
+    );
+  }
+  const kek = yield* deriveKek(outcome.prf);
+  const unwrapped = yield* cryptoEffect(() =>
+    unwrapMasterBlob({
+      kek,
+      wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
+      context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
+    }),
+  ).pipe(
+    Effect.mapError(() =>
+      cliError(
+        "Cannot decrypt the wrapped reserve key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
+      ),
+    ),
+  );
+  const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped));
+  if (record === null) {
+    return yield* Effect.fail(
+      cliError(
+        "The decrypted blob is not a key record. The device that registered this passkey wrote a broken record, or a newer maruhi wrote it — update maruhi, or open the reserve key another way",
+      ),
+    );
+  }
+  return record;
+});
 
 /**
  * Opens the reserve key with a registered passkey and returns its record
@@ -478,11 +466,11 @@ function unwrapReserveRecord(input: {
  * recover --passkey`'s pre-stage and a ledger change's `--passkey`
  * opening (ledger-open.ts).
  */
-export function openReserveWithPasskey(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-}): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+export const openReserveWithPasskey = Effect.fn("passkey.openReserveWithPasskey")(
+  function* (input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+  }): Effect.fn.Return<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
     const io = yield* CliIo;
     yield* ensurePasskeyCeremonyAllowed(io, "recover");
     const rows = yield* fetchPasskeyRows(input.client);
@@ -491,45 +479,39 @@ export function openReserveWithPasskey(input: {
     }
     const material = yield* recoverCeremonyFirst(input.client, rows);
     return yield* unwrapReserveRecord({ session: input.session, material });
-  });
-}
+  },
+);
 
 /** `maruhi key seal list`: list the passkey wraps in the ledger (public parameters only). */
-export function listPasskeysOp(input: {
+export const listPasskeysOp = Effect.fn("passkey.listPasskeysOp")(function* (input: {
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const rows = yield* fetchPasskeyRows(input.client);
-    if (rows.length === 0) {
-      yield* io.log("No passkeys are registered (seal your key with `maruhi key seal passkey`)");
-      return;
-    }
-    for (const row of rows) {
-      yield* io.log(describeRow(row));
-    }
-  });
-}
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const rows = yield* fetchPasskeyRows(input.client);
+  if (rows.length === 0) {
+    yield* io.log("No passkeys are registered (seal your key with `maruhi key seal passkey`)");
+    return;
+  }
+  for (const row of rows) {
+    yield* io.log(describeRow(row));
+  }
+});
 
 /** `maruhi key seal remove <wrap-id>`: delete one passkey wrap from the ledger. */
-export function removePasskeyOp(input: {
+export const removePasskeyOp = Effect.fn("passkey.removePasskeyOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly wrapId: string;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensurePasskeyCeremonyAllowed(io, "remove");
-    yield* input.client.keyWraps.passkeyDelete({ params: { wrapId: input.wrapId } }).pipe(
-      Effect.catchTag("KeyWrapNotFound", () =>
-        Effect.fail(
-          cliError("No passkey wrap with that ID (list them with `maruhi key seal list`)"),
-        ),
-      ),
-      Effect.mapError(toCliError),
-    );
-    yield* io.log(`Removed passkey wrap ${displayText(input.wrapId)}`);
-    yield* logNote(
-      "the passkey itself stays in your authenticator; delete it there if you no longer want it",
-    );
-  });
-}
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* ensurePasskeyCeremonyAllowed(io, "remove");
+  yield* input.client.keyWraps.passkeyDelete({ params: { wrapId: input.wrapId } }).pipe(
+    Effect.catchTag("KeyWrapNotFound", () =>
+      Effect.fail(cliError("No passkey wrap with that ID (list them with `maruhi key seal list`)")),
+    ),
+    Effect.mapError(toCliError),
+  );
+  yield* io.log(`Removed passkey wrap ${displayText(input.wrapId)}`);
+  yield* logNote(
+    "the passkey itself stays in your authenticator; delete it there if you no longer want it",
+  );
+});

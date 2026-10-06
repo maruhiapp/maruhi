@@ -93,28 +93,26 @@ export interface PushSyncSetup {
  * nothing (the push behaves as if no config existed) and cannot be combined
  * with `--config`.
  */
-export function loadPushSyncConfig(input: {
+export const loadPushSyncConfig = Effect.fn("sync-push.loadPushSyncConfig")(function* (input: {
   readonly config: string | undefined;
   readonly noSync: boolean;
-}): Effect.Effect<PushSyncSetup | null, CliError> {
-  return Effect.gen(function* () {
-    if (input.noSync) {
-      if (input.config !== undefined) {
-        // Do not silently allow the shape that avoids reading the pointed-at config
-        return yield* Effect.fail(
-          usageError("--no-sync and --config cannot be combined (drop one of them)"),
-        );
-      }
-      return null;
-    }
+}): Effect.fn.Return<PushSyncSetup | null, CliError> {
+  if (input.noSync) {
     if (input.config !== undefined) {
-      const config = yield* loadSyncConfig(input.config);
-      return { config, path: input.config, explicit: true };
+      // Do not silently allow the shape that avoids reading the pointed-at config
+      return yield* Effect.fail(
+        usageError("--no-sync and --config cannot be combined (drop one of them)"),
+      );
     }
-    const config = yield* loadSyncConfigIfPresent(DEFAULT_SYNC_CONFIG_PATH);
-    return config === null ? null : { config, path: DEFAULT_SYNC_CONFIG_PATH, explicit: false };
-  });
-}
+    return null;
+  }
+  if (input.config !== undefined) {
+    const config = yield* loadSyncConfig(input.config);
+    return { config, path: input.config, explicit: true };
+  }
+  const config = yield* loadSyncConfigIfPresent(DEFAULT_SYNC_CONFIG_PATH);
+  return config === null ? null : { config, path: DEFAULT_SYNC_CONFIG_PATH, explicit: false };
+});
 
 /** What the cleanup will do (decided before the push, so a usage error stops it). */
 export type PushSyncDecision =
@@ -239,38 +237,36 @@ function recoveryHint(target: SyncTarget): string {
 }
 
 /** CI launch: hits `gh workflow run` and reports only the acceptance (exit code 0). */
-function triggerWorkflow(
+const triggerWorkflow = Effect.fn("sync-push.triggerWorkflow")(function* (
   target: SyncTarget,
   onPush: Extract<OnPush, { kind: "workflow" }>,
-): Effect.Effect<void, CliError, CliIo | ProcessRunner> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const runner = yield* ProcessRunner;
-    const invocation = buildWorkflowDispatch(target, onPush);
-    const name = displayText(target.name);
-    const file = displayText(onPush.file);
-    const outcome = yield* runner.exec(invocation);
-    if (outcome.exitCode === 0) {
-      yield* io.log(
-        `Triggered workflow ${file} for target ${name} (\`gh workflow run\` in ${displayText(onPush.cwd)}). CI applies it with \`maruhi ci sync\` and keeps no receipt, so the next local \`maruhi sync plan ${name}\` still shows the pushed variable as pending`,
-      );
-      return;
-    }
-    if (outcome.exitCode === GH_EXIT_AUTH) {
-      yield* logWarning(
-        `the push is done, but workflow ${file} was not triggered for target ${name}: gh is not signed in (run \`gh auth login\`, or trigger the workflow yourself). ${recoveryHint(target)}`,
-      );
-      return;
-    }
-    // gh's output is not trusted: there should be no values, but the discipline of scrub-then-truncate is the same
-    for (const line of scrubVendorOutput(outcome.output, [])) {
-      yield* io.logError(`  ${displayText(onPush.command)}: ${line}`);
-    }
-    yield* logWarning(
-      `the push is done, but workflow ${file} was not triggered for target ${name} (${displayText(onPush.command)} exited with code ${outcome.exitCode}; its output is shown above). Check that the workflow exists on the branch gh dispatches to and has a workflow_dispatch trigger with a "target" input, then trigger it yourself or let the next push retry. ${recoveryHint(target)}`,
+): Effect.fn.Return<void, CliError, CliIo | ProcessRunner> {
+  const io = yield* CliIo;
+  const runner = yield* ProcessRunner;
+  const invocation = buildWorkflowDispatch(target, onPush);
+  const name = displayText(target.name);
+  const file = displayText(onPush.file);
+  const outcome = yield* runner.exec(invocation);
+  if (outcome.exitCode === 0) {
+    yield* io.log(
+      `Triggered workflow ${file} for target ${name} (\`gh workflow run\` in ${displayText(onPush.cwd)}). CI applies it with \`maruhi ci sync\` and keeps no receipt, so the next local \`maruhi sync plan ${name}\` still shows the pushed variable as pending`,
     );
-  });
-}
+    return;
+  }
+  if (outcome.exitCode === GH_EXIT_AUTH) {
+    yield* logWarning(
+      `the push is done, but workflow ${file} was not triggered for target ${name}: gh is not signed in (run \`gh auth login\`, or trigger the workflow yourself). ${recoveryHint(target)}`,
+    );
+    return;
+  }
+  // gh's output is not trusted: there should be no values, but the discipline of scrub-then-truncate is the same
+  for (const line of scrubVendorOutput(outcome.output, [])) {
+    yield* io.logError(`  ${displayText(onPush.command)}: ${line}`);
+  }
+  yield* logWarning(
+    `the push is done, but workflow ${file} was not triggered for target ${name} (${displayText(onPush.command)} exited with code ${outcome.exitCode}; its output is shown above). Check that the workflow exists on the branch gh dispatches to and has a workflow_dispatch trigger with a "target" input, then trigger it yourself or let the next push retry. ${recoveryHint(target)}`,
+  );
+});
 
 /**
  * A ledger holding exactly one floor handle per environment for
@@ -296,46 +292,44 @@ function floorLedger(
 }
 
 /** Direct apply: the existing apply as-is (unchanged rows are skipped). */
-function applyTarget(
+const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   context: EnvironmentContext,
   setup: PushSyncSetup,
   target: SyncTarget,
   floorOf: (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices>,
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* io.log(
-      `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,
-    );
-    // One floor handle per environment (the sync source = the
-    // push destination gets push's handle; the receipt
-    // environment and the unified token's environment get the
-    // same one the ledger returns)
-    const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
-    const tokenFloor =
-      target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
-    yield* syncApplyOp({
-      client: context.client,
-      verified: context.verified,
-      recipient: context.recipient,
-      resync: context.resync,
-      target,
-      // The push's environment = the sync source: passes push's advanced floor handle as-is
-      sourceFloor: context.floorHandle,
-      receiptsEnvironment: setup.config.receiptsEnvironment as EnvironmentId,
-      receiptsFloor,
-      writerUserId: context.session.userId,
-      signingKey: context.masterKeys.sigKeyPair.privateKey,
-      // A production target cannot become "apply" at the config
-      // stage (sync-config.ts). Even if reached,
-      // requireProductionConsent stops it and it becomes a
-      // warning
-      yes: false,
-      tokenFloor,
-      display: { showUnchanged: false },
-    });
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  yield* io.log(
+    `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,
+  );
+  // One floor handle per environment (the sync source = the
+  // push destination gets push's handle; the receipt
+  // environment and the unified token's environment get the
+  // same one the ledger returns)
+  const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
+  const tokenFloor =
+    target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
+  yield* syncApplyOp({
+    client: context.client,
+    verified: context.verified,
+    recipient: context.recipient,
+    resync: context.resync,
+    target,
+    // The push's environment = the sync source: passes push's advanced floor handle as-is
+    sourceFloor: context.floorHandle,
+    receiptsEnvironment: setup.config.receiptsEnvironment as EnvironmentId,
+    receiptsFloor,
+    writerUserId: context.session.userId,
+    signingKey: context.masterKeys.sigKeyPair.privateKey,
+    // A production target cannot become "apply" at the config
+    // stage (sync-config.ts). Even if reached,
+    // requireProductionConsent stops it and it becomes a
+    // warning
+    yes: false,
+    tokenFloor,
+    display: { showUnchanged: false },
   });
-}
+});
 
 /**
  * Runs the sync each `onPush` target asked for, after the push was reported.
@@ -343,48 +337,46 @@ function applyTarget(
  * the mark, and the next apply or CI run delivers it) and the remaining
  * targets are still processed. Only evidence fails the command.
  */
-export function syncAfterPush(input: {
+export const syncAfterPush = Effect.fn("sync-push.syncAfterPush")(function* (input: {
   readonly context: EnvironmentContext;
   readonly setup: PushSyncSetup;
   readonly decision: PushSyncDecision;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const { context, setup, decision } = input;
-    if (decision.kind === "other-project") {
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const { context, setup, decision } = input;
+  if (decision.kind === "other-project") {
+    yield* logNote(
+      `the sync config ${displayText(setup.path)} belongs to a different project, so nothing was synced after the push`,
+    );
+    return;
+  }
+  if (decision.kind === "none") {
+    if (setup.explicit) {
       yield* logNote(
-        `the sync config ${displayText(setup.path)} belongs to a different project, so nothing was synced after the push`,
-      );
-      return;
-    }
-    if (decision.kind === "none") {
-      if (setup.explicit) {
-        yield* logNote(
-          `no target in the sync config copies this variable from environment ${displayText(context.environmentId)} on push, so nothing was synced (set "onPush" on a target to sync it after every push)`,
-        );
-      }
-      return;
-    }
-    for (const target of decision.namesCommand) {
-      yield* logNote(
-        `target ${displayText(target.name)} names the program to run (its command in ${displayText(setup.path)}), and a config found in the working directory does not start one after a push. Run \`maruhi sync apply ${displayText(target.name)}\` now, or pass --config ${displayText(setup.path)} on the next push`,
+        `no target in the sync config copies this variable from environment ${displayText(context.environmentId)} on push, so nothing was synced (set "onPush" on a target to sync it after every push)`,
       );
     }
-    const floorOf = floorLedger(context);
-    for (const target of decision.targets) {
-      const onPush = target.onPush;
-      if (onPush === null) {
-        continue;
-      }
-      const attempt = yield* asCleanupOutcome(
-        onPush.kind === "apply"
-          ? applyTarget(context, setup, target, floorOf)
-          : triggerWorkflow(target, onPush),
-      );
-      if (attempt.kind === "failed") {
-        yield* logWarning(
-          `the push is done, but target ${displayText(target.name)} could not be synced (${attempt.error.message}). ${recoveryHint(target)}`,
-        );
-      }
+    return;
+  }
+  for (const target of decision.namesCommand) {
+    yield* logNote(
+      `target ${displayText(target.name)} names the program to run (its command in ${displayText(setup.path)}), and a config found in the working directory does not start one after a push. Run \`maruhi sync apply ${displayText(target.name)}\` now, or pass --config ${displayText(setup.path)} on the next push`,
+    );
+  }
+  const floorOf = floorLedger(context);
+  for (const target of decision.targets) {
+    const onPush = target.onPush;
+    if (onPush === null) {
+      continue;
     }
-  });
-}
+    const attempt = yield* asCleanupOutcome(
+      onPush.kind === "apply"
+        ? applyTarget(context, setup, target, floorOf)
+        : triggerWorkflow(target, onPush),
+    );
+    if (attempt.kind === "failed") {
+      yield* logWarning(
+        `the push is done, but target ${displayText(target.name)} could not be synced (${attempt.error.message}). ${recoveryHint(target)}`,
+      );
+    }
+  }
+});

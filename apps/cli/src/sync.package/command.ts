@@ -136,43 +136,43 @@ function requireInitFlag(value: string | undefined, flag: string): Effect.Effect
  * views that disagree by opening two environments separately — same
  * reason as env diff).
  */
-function openSyncTarget(values: {
+const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (values: {
   readonly server: string | undefined;
   readonly project: string | undefined;
   readonly config: string | undefined;
   readonly target: string;
 }) {
-  return Effect.gen(function* () {
-    // The config is read before any network (a broken file's detection is never placed behind a round trip)
-    const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
-    const target = yield* requireSyncTarget(config, values.target);
-    yield* checkConfigProject(config, values.project);
-    const context = yield* openProject({
-      server: values.server,
-      project: values.project ?? config.projectId,
-    });
-    const sourceFloor = yield* floorHandleFor(context, target.environment);
-    const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
-    // The http driver's integration-token environment. When it equals
-    // the sync-source / receipt environment, **the same floor handle** is
-    // used (holding two handles on one environment would leave the
-    // receipt's push unaware of the floor the token's pull advanced)
-    const tokenFloor =
-      target.driver.kind !== "http"
-        ? null
-        : target.driver.token.environment === target.environment
-          ? sourceFloor
-          : target.driver.token.environment === config.receiptsEnvironment
-            ? receiptsFloor
-            : yield* floorHandleFor(context, target.driver.token.environment);
-    return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
+  // The config is read before any network (a broken file's detection is never placed behind a round trip)
+  const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
+  const target = yield* requireSyncTarget(config, values.target);
+  yield* checkConfigProject(config, values.project);
+  const context = yield* openProject({
+    server: values.server,
+    project: values.project ?? config.projectId,
   });
-}
+  const sourceFloor = yield* floorHandleFor(context, target.environment);
+  const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
+  // The http driver's integration-token environment. When it equals
+  // the sync-source / receipt environment, **the same floor handle** is
+  // used (holding two handles on one environment would leave the
+  // receipt's push unaware of the floor the token's pull advanced)
+  const tokenFloor =
+    target.driver.kind !== "http"
+      ? null
+      : target.driver.token.environment === target.environment
+        ? sourceFloor
+        : target.driver.token.environment === config.receiptsEnvironment
+          ? receiptsFloor
+          : yield* floorHandleFor(context, target.driver.token.environment);
+  return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
+});
 
 /** @public */
 export function makeSyncCommands() {
-  const syncPlan = Command.make("plan", syncPlanConfig, (values) =>
-    Effect.gen(function* () {
+  const syncPlan = Command.make(
+    "plan",
+    syncPlanConfig,
+    Effect.fn("sync-command.syncPlan")(function* (values) {
       const opened = yield* openSyncTarget(values);
       yield* syncPlanOp({
         client: opened.context.client,
@@ -191,8 +191,10 @@ export function makeSyncCommands() {
     ),
   );
 
-  const syncApply = Command.make("apply", syncApplyConfig, (values) =>
-    Effect.gen(function* () {
+  const syncApply = Command.make(
+    "apply",
+    syncApplyConfig,
+    Effect.fn("sync-command.syncApply")(function* (values) {
       const opened = yield* openSyncTarget(values);
       yield* syncApplyOp({
         client: opened.context.client,
@@ -216,8 +218,10 @@ export function makeSyncCommands() {
     ),
   );
 
-  const syncInit = Command.make("init", syncInitConfig, (values) =>
-    Effect.gen(function* () {
+  const syncInit = Command.make(
+    "init",
+    syncInitConfig,
+    Effect.fn("sync-command.syncInit")(function* (values) {
       const preset = yield* requireInitFlag(values.preset, "--preset");
       const environment = yield* requireInitFlag(values.env, "--env");
       const receipts = yield* requireInitFlag(values.receipts, "--receipts");

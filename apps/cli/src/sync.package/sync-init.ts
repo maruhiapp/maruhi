@@ -26,7 +26,7 @@ import { defaultDriverOf, isUnavailable, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId } from "./sync-types.ts";
 
 /** `maruhi sync init`'s input (all from explicit flags). */
-export interface SyncInitInput {
+interface SyncInitInput {
   readonly target: string;
   readonly preset: string;
   readonly driver: string | undefined;
@@ -129,76 +129,76 @@ function targetObjectOf(
 }
 
 /** Assembles the config object, validates it through the strict parser, then serializes it to a JSON string. */
-function buildSyncConfigJson(input: SyncInitInput): Effect.Effect<string, CliError> {
-  return Effect.gen(function* () {
-    if (!Object.hasOwn(SYNC_PRESETS, input.preset)) {
-      return yield* Effect.fail(
-        usageError(`--preset must be one of ${Object.keys(SYNC_PRESETS).join(", ")}`),
-      );
-    }
-    const preset = SYNC_PRESETS[input.preset as PresetId];
-    const driver = input.driver ?? defaultDriverOf(preset);
-    if (driver !== "exec" && driver !== "http") {
-      return yield* Effect.fail(
-        usageError("--driver must be exec (the default when the preset has one) or http"),
-      );
-    }
-    const declaration = driver === "exec" ? preset.exec : preset.http;
-    if (isUnavailable(declaration)) {
-      return yield* Effect.fail(
-        usageError(
-          `--driver ${driver}: ${declaration.unavailable}; use --driver ${defaultDriverOf(preset)}`,
-        ),
-      );
-    }
-    const options = parseOptionFlags(input.options, declaration.options);
-    if (options instanceof Error) {
-      return yield* Effect.fail(options);
-    }
-    const config = compact({
-      version: 1,
-      project: input.project,
-      receipts: { environment: input.receipts },
-      targets: { [input.target]: targetObjectOf(input, driver, options) },
-    });
-    const json = `${JSON.stringify(config, null, 2)}\n`;
-    // The product passes the strict parser unchanged (if it does not, report the write-up error with a reason)
-    const parsed = parseSyncConfig(json, ".");
-    if (typeof parsed === "string") {
-      return yield* Effect.fail(usageError(`The config would be invalid: ${parsed}`));
-    }
-    return json;
+const buildSyncConfigJson = Effect.fn("sync-init.buildSyncConfigJson")(function* (
+  input: SyncInitInput,
+): Effect.fn.Return<string, CliError> {
+  if (!Object.hasOwn(SYNC_PRESETS, input.preset)) {
+    return yield* Effect.fail(
+      usageError(`--preset must be one of ${Object.keys(SYNC_PRESETS).join(", ")}`),
+    );
+  }
+  const preset = SYNC_PRESETS[input.preset as PresetId];
+  const driver = input.driver ?? defaultDriverOf(preset);
+  if (driver !== "exec" && driver !== "http") {
+    return yield* Effect.fail(
+      usageError("--driver must be exec (the default when the preset has one) or http"),
+    );
+  }
+  const declaration = driver === "exec" ? preset.exec : preset.http;
+  if (isUnavailable(declaration)) {
+    return yield* Effect.fail(
+      usageError(
+        `--driver ${driver}: ${declaration.unavailable}; use --driver ${defaultDriverOf(preset)}`,
+      ),
+    );
+  }
+  const options = parseOptionFlags(input.options, declaration.options);
+  if (options instanceof Error) {
+    return yield* Effect.fail(options);
+  }
+  const config = compact({
+    version: 1,
+    project: input.project,
+    receipts: { environment: input.receipts },
+    targets: { [input.target]: targetObjectOf(input, driver, options) },
   });
-}
+  const json = `${JSON.stringify(config, null, 2)}\n`;
+  // The product passes the strict parser unchanged (if it does not, report the write-up error with a reason)
+  const parsed = parseSyncConfig(json, ".");
+  if (typeof parsed === "string") {
+    return yield* Effect.fail(usageError(`The config would be invalid: ${parsed}`));
+  }
+  return json;
+});
 
 /** `maruhi sync init`: emits the config JSON to stdout (the command's output — decision 9). */
-export function syncInitOp(input: SyncInitInput): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const json = yield* buildSyncConfigJson(input);
-    yield* io.log(json.trimEnd());
-    if (input.variables === undefined) {
-      yield* logNote(
-        'the target copies every variable of the environment ("all"). Keep public configuration and platform-owned resources out with "exclude", or list the names to copy in "variables"',
-      );
-    }
-    const preset = SYNC_PRESETS[input.preset as PresetId];
-    if ((input.driver ?? defaultDriverOf(preset)) === "http") {
-      yield* logNote(
-        `the http driver reads the vendor's token from the maruhi variable named in "token". Push it there before the first apply, and give the token the least permission the target needs (see the Deploy targets page in the docs)`,
-      );
-    } else if (!isUnavailable(preset.exec) && preset.exec.signInHint !== undefined) {
-      yield* logNote(preset.exec.signInHint);
-    }
-    if (input.project === undefined) {
-      yield* logNote(
-        'add "project": "<project ID>" to pin the config to one project (`maruhi sync` then refuses a --project flag that names another)',
-      );
-    }
-    if (input.onPush === "workflow") {
-      yield* logNote(
-        `the workflow must have a workflow_dispatch trigger with a "target" input and run \`maruhi ci sync\` for it (see the Deploy targets page in the docs). \`maruhi push\` triggers it with gh, which must be installed and signed in`,
-      );
-    }
-  });
-}
+export const syncInitOp = Effect.fn("sync-init.syncInitOp")(function* (
+  input: SyncInitInput,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const json = yield* buildSyncConfigJson(input);
+  yield* io.log(json.trimEnd());
+  if (input.variables === undefined) {
+    yield* logNote(
+      'the target copies every variable of the environment ("all"). Keep public configuration and platform-owned resources out with "exclude", or list the names to copy in "variables"',
+    );
+  }
+  const preset = SYNC_PRESETS[input.preset as PresetId];
+  if ((input.driver ?? defaultDriverOf(preset)) === "http") {
+    yield* logNote(
+      `the http driver reads the vendor's token from the maruhi variable named in "token". Push it there before the first apply, and give the token the least permission the target needs (see the Deploy targets page in the docs)`,
+    );
+  } else if (!isUnavailable(preset.exec) && preset.exec.signInHint !== undefined) {
+    yield* logNote(preset.exec.signInHint);
+  }
+  if (input.project === undefined) {
+    yield* logNote(
+      'add "project": "<project ID>" to pin the config to one project (`maruhi sync` then refuses a --project flag that names another)',
+    );
+  }
+  if (input.onPush === "workflow") {
+    yield* logNote(
+      `the workflow must have a workflow_dispatch trigger with a "target" input and run \`maruhi ci sync\` for it (see the Deploy targets page in the docs). \`maruhi push\` triggers it with gh, which must be installed and signed in`,
+    );
+  }
+});

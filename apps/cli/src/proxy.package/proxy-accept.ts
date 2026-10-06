@@ -180,33 +180,31 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
 
   return {
     filePath: path,
-    lookup: (configPath) =>
-      Effect.gen(function* () {
-        const loaded = yield* loadRaw();
-        if (loaded.state !== "loaded") {
-          return loaded;
-        }
-        const accepted = Object.hasOwn(loaded.file.accepted, configPath)
-          ? loaded.file.accepted[configPath]
-          : undefined;
-        return accepted === undefined ? { state: "missing" } : { state: "found", accepted };
-      }),
+    lookup: Effect.fn("proxy-accept.lookup")(function* (configPath) {
+      const loaded = yield* loadRaw();
+      if (loaded.state !== "loaded") {
+        return loaded;
+      }
+      const accepted = Object.hasOwn(loaded.file.accepted, configPath)
+        ? loaded.file.accepted[configPath]
+        : undefined;
+      return accepted === undefined ? { state: "missing" } : { state: "found", accepted };
+    }),
     accept: (configPath, accepted) =>
       merge(
         (file) => ({ ...file, accepted: { ...file.accepted, [configPath]: accepted } }),
         "the accepted proxy config",
       ),
-    brokeredProject: (projectId) =>
-      Effect.gen(function* () {
-        const loaded = yield* loadRaw();
-        if (loaded.state !== "loaded") {
-          return loaded;
-        }
-        const mark = Object.hasOwn(loaded.file.projects, projectId)
-          ? loaded.file.projects[projectId]
-          : undefined;
-        return mark === undefined ? { state: "missing" } : { state: "found", mark };
-      }),
+    brokeredProject: Effect.fn("proxy-accept.brokeredProject")(function* (projectId) {
+      const loaded = yield* loadRaw();
+      if (loaded.state !== "loaded") {
+        return loaded;
+      }
+      const mark = Object.hasOwn(loaded.file.projects, projectId)
+        ? loaded.file.projects[projectId]
+        : undefined;
+      return mark === undefined ? { state: "missing" } : { state: "found", mark };
+    }),
     markBrokered: (projectId, mark) =>
       merge(
         (file) =>
@@ -235,22 +233,24 @@ function corruptRecord(filePath: string): CliError {
 }
 
 /** Who may accept, and how — the tail of every refusal of an unaccepted config. */
-function howToAccept(): Effect.Effect<string, never, Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const agent = yield* AgentProfileRef;
-    if (agent.isAgent) {
-      const detected = agent.name === undefined ? "" : ` (${agent.name})`;
-      return `an AI agent environment was detected${detected}: a person reviews the file and runs ${ACCEPT_COMMAND} from a terminal (an agent cannot accept its own rules); until then the values are neither brokered nor injected`;
-    }
-    const stdio = yield* Stdio.Stdio;
-    const stdinIsTerminal = yield* stdio.stdinIsTerminal;
-    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
-    if (!stdinIsTerminal || !stdoutIsTerminal) {
-      return `${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}: review the file and run ${ACCEPT_COMMAND} from a terminal (pipes, redirects, CI, and AI agents cannot accept it)`;
-    }
-    return `review it, then run ${ACCEPT_COMMAND} to accept it`;
-  });
-}
+const howToAccept = Effect.fn("proxy-accept.howToAccept")(function* (): Effect.fn.Return<
+  string,
+  never,
+  Stdio.Stdio
+> {
+  const agent = yield* AgentProfileRef;
+  if (agent.isAgent) {
+    const detected = agent.name === undefined ? "" : ` (${agent.name})`;
+    return `an AI agent environment was detected${detected}: a person reviews the file and runs ${ACCEPT_COMMAND} from a terminal (an agent cannot accept its own rules); until then the values are neither brokered nor injected`;
+  }
+  const stdio = yield* Stdio.Stdio;
+  const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+  const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+  if (!stdinIsTerminal || !stdoutIsTerminal) {
+    return `${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}: review the file and run ${ACCEPT_COMMAND} from a terminal (pipes, redirects, CI, and AI agents cannot accept it)`;
+  }
+  return `review it, then run ${ACCEPT_COMMAND} to accept it`;
+});
 
 /**
  * The acceptance rule for the config about to be applied: a content match
@@ -258,13 +258,13 @@ function howToAccept(): Effect.Effect<string, never, Stdio.Stdio> {
  * network or decryption, naming who can accept it and how. `path` is the
  * path as the user wrote it (for messages).
  */
-export function ensureProxyConfigAccepted(input: {
-  readonly path: string;
-  readonly content: string;
-  /** The project whose values the config is about to govern — the acceptance must name it (R-24). */
-  readonly projectId: string;
-}): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio> {
-  return Effect.gen(function* () {
+export const ensureProxyConfigAccepted = Effect.fn("proxy-accept.ensureProxyConfigAccepted")(
+  function* (input: {
+    readonly path: string;
+    readonly content: string;
+    /** The project whose values the config is about to govern — the acceptance must name it (R-24). */
+    readonly projectId: string;
+  }): Effect.fn.Return<void, CliError, ProxyAcceptStore | Stdio.Stdio> {
     const store = yield* ProxyAcceptStore;
     const lookup = yield* store.lookup(yield* resolvedPath(input.path));
     if (lookup.state === "corrupt") {
@@ -291,59 +291,55 @@ export function ensureProxyConfigAccepted(input: {
         `Refused to apply the proxy config ${input.path}: ${change}, and ${yield* howToAccept()}`,
       ),
     );
-  });
-}
+  },
+);
 
 /**
  * `maruhi proxy accept`: a person at a terminal records the config's
  * content as accepted on this machine. Returns what changed (for the
  * command's own summary of the rules).
  */
-export function acceptProxyConfig(input: {
+export const acceptProxyConfig = Effect.fn("proxy-accept.acceptProxyConfig")(function* (input: {
   readonly path: string;
   readonly content: string;
   /** The project the config is for: marked as brokered on this machine at acceptance (R-18 — the gate must be armed before any run). */
   readonly projectId: string;
-}): Effect.Effect<
+}): Effect.fn.Return<
   "first use" | "changed" | "project added" | "unchanged",
   CliError,
   ProxyAcceptStore | Stdio.Stdio
 > {
-  return Effect.gen(function* () {
-    yield* ensureHumanCeremonyAllowed({
-      agentRefusal: (detected) =>
-        `Refused to accept the proxy config: an AI agent environment was detected${detected}. Accepting the rules is a person's act (an agent cannot accept its own rules): run ${ACCEPT_COMMAND} yourself from a terminal`,
-      terminalRefusal: (reason) =>
-        `Refused to accept the proxy config: ${reason}. Accepting the rules takes a person at an interactive terminal (pipes, redirects, CI, and AI agents are refused)`,
-    });
-    const store = yield* ProxyAcceptStore;
-    const key = yield* resolvedPath(input.path);
-    const lookup = yield* store.lookup(key);
-    if (lookup.state === "corrupt") {
-      return yield* Effect.fail(corruptRecord(store.filePath));
-    }
-    const same = lookup.state === "found" && lookup.accepted.content === input.content;
-    const outcome: "first use" | "changed" | "project added" | "unchanged" = same
-      ? lookup.accepted.projectIds.includes(input.projectId)
-        ? "unchanged"
-        : "project added"
-      : lookup.state === "missing"
-        ? "first use"
-        : "changed";
-    const nowMs = yield* Clock.currentTimeMillis;
-    if (outcome !== "unchanged") {
-      // A changed content starts the project list over: the acceptance is of this content, for these projects
-      const projectIds = same
-        ? [...lookup.accepted.projectIds, input.projectId]
-        : [input.projectId];
-      yield* store.accept(key, { content: input.content, acceptedAtMs: nowMs, projectIds });
-    }
-    // Armed here, not at the first brokered run: between accepting and
-    // running, deleting the file must already be gated (R-18)
-    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: nowMs });
-    return outcome;
+  yield* ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) =>
+      `Refused to accept the proxy config: an AI agent environment was detected${detected}. Accepting the rules is a person's act (an agent cannot accept its own rules): run ${ACCEPT_COMMAND} yourself from a terminal`,
+    terminalRefusal: (reason) =>
+      `Refused to accept the proxy config: ${reason}. Accepting the rules takes a person at an interactive terminal (pipes, redirects, CI, and AI agents are refused)`,
   });
-}
+  const store = yield* ProxyAcceptStore;
+  const key = yield* resolvedPath(input.path);
+  const lookup = yield* store.lookup(key);
+  if (lookup.state === "corrupt") {
+    return yield* Effect.fail(corruptRecord(store.filePath));
+  }
+  const same = lookup.state === "found" && lookup.accepted.content === input.content;
+  const outcome: "first use" | "changed" | "project added" | "unchanged" = same
+    ? lookup.accepted.projectIds.includes(input.projectId)
+      ? "unchanged"
+      : "project added"
+    : lookup.state === "missing"
+      ? "first use"
+      : "changed";
+  const nowMs = yield* Clock.currentTimeMillis;
+  if (outcome !== "unchanged") {
+    // A changed content starts the project list over: the acceptance is of this content, for these projects
+    const projectIds = same ? [...lookup.accepted.projectIds, input.projectId] : [input.projectId];
+    yield* store.accept(key, { content: input.content, acceptedAtMs: nowMs, projectIds });
+  }
+  // Armed here, not at the first brokered run: between accepting and
+  // running, deleting the file must already be gated (R-18)
+  yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: nowMs });
+  return outcome;
+});
 
 /**
  * A brokered run marks its project (idempotent — normally already marked
@@ -351,17 +347,15 @@ export function acceptProxyConfig(input: {
  * used under another `--project`). A mark that cannot be written is an
  * error: the mark is what gates the plain run later (R-18).
  */
-export function markProjectBrokered(input: {
+export const markProjectBrokered = Effect.fn("proxy-accept.markProjectBrokered")(function* (input: {
   readonly projectId: string;
   readonly configPath: string;
-}): Effect.Effect<void, CliError, ProxyAcceptStore> {
-  return Effect.gen(function* () {
-    const store = yield* ProxyAcceptStore;
-    const key = yield* resolvedPath(input.configPath);
-    const markedAtMs = yield* Clock.currentTimeMillis;
-    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs });
-  });
-}
+}): Effect.fn.Return<void, CliError, ProxyAcceptStore> {
+  const store = yield* ProxyAcceptStore;
+  const key = yield* resolvedPath(input.configPath);
+  const markedAtMs = yield* Clock.currentTimeMillis;
+  yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs });
+});
 
 /**
  * Plain `maruhi run` without a config in the working directory, for a
@@ -373,25 +367,25 @@ export function markProjectBrokered(input: {
  * record that cannot be read fails closed (it is reported, never taken as
  * "never brokered" — the R-15 discipline).
  */
-export function ensurePlainRunOfBrokeredProjectAllowed(
+export const ensurePlainRunOfBrokeredProjectAllowed = Effect.fn(
+  "proxy-accept.ensurePlainRunOfBrokeredProjectAllowed",
+)(function* (
   projectId: string,
-): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
-  return Effect.gen(function* () {
-    const store = yield* ProxyAcceptStore;
-    const lookup = yield* store.brokeredProject(projectId);
-    if (lookup.state === "corrupt") {
-      return yield* Effect.fail(corruptRecord(store.filePath));
-    }
-    if (lookup.state === "missing") {
-      return;
-    }
-    const where = `this project is brokered on this machine (its proxy config ${lookup.mark.configPath} was accepted) and no proxy config is in the working directory`;
-    yield* ensureHumanCeremonyAllowed({
-      agentRefusal: (detected) =>
-        `Refused to run with the real values: an AI agent environment was detected${detected}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or a person runs it from a terminal`,
-      terminalRefusal: (reason) =>
-        `Refused to run with the real values: ${reason}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or run it yourself in a terminal`,
-    });
-    yield* logNote(`${where}; injecting the real values`);
+): Effect.fn.Return<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
+  const store = yield* ProxyAcceptStore;
+  const lookup = yield* store.brokeredProject(projectId);
+  if (lookup.state === "corrupt") {
+    return yield* Effect.fail(corruptRecord(store.filePath));
+  }
+  if (lookup.state === "missing") {
+    return;
+  }
+  const where = `this project is brokered on this machine (its proxy config ${lookup.mark.configPath} was accepted) and no proxy config is in the working directory`;
+  yield* ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) =>
+      `Refused to run with the real values: an AI agent environment was detected${detected}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or a person runs it from a terminal`,
+    terminalRefusal: (reason) =>
+      `Refused to run with the real values: ${reason}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or run it yourself in a terminal`,
   });
-}
+  yield* logNote(`${where}; injecting the real values`);
+});

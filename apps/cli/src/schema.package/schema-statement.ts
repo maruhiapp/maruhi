@@ -166,20 +166,18 @@ function toWireStatementV2(context: StatementContextV2, signatureHex: string): W
   };
 }
 
-function signV2(
+const signV2 = Effect.fn("schema-statement.signV2")(function* (
   input: VariableStatementV2Input,
   lifecycle: LifecycleFields,
-): Effect.Effect<SignedStatementV2<WireStatementV2Any>, CliError> {
-  return Effect.gen(function* () {
-    const context = statementContextV2(input, lifecycle);
-    // Signing + self-computed hash are shared with the v1 creation form (meta-statement.ts)
-    const signed = yield* signStatementAndHash(context, input.signingKey);
-    return {
-      statement: toWireStatementV2(context, signed.signatureHex),
-      metaSigHashHex: signed.metaSigHashHex,
-    };
-  });
-}
+): Effect.fn.Return<SignedStatementV2<WireStatementV2Any>, CliError> {
+  const context = statementContextV2(input, lifecycle);
+  // Signing + self-computed hash are shared with the v1 creation form (meta-statement.ts)
+  const signed = yield* signStatementAndHash(context, input.signingKey);
+  return {
+    statement: toWireStatementV2(context, signed.signatureHex),
+    metaSigHashHex: signed.metaSigHashHex,
+  };
+});
 
 /**
  * Author-signs a declared creation statement (metaVersion 1, status declared,
