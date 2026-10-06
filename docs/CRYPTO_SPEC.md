@@ -168,7 +168,7 @@ var_meta_signed_bytes_v3 = LP("maruhi/v1/var-meta-sig-v3",
 - **The write enablement gate (AUTH_SPEC §12-11)** treats v3 like v2: a new adoption (a v1 → v3 reissue, a metaVersion-1 v3 creation) needs the policy enabled; a continuation of an already-v2/v3 variable passes regardless. `schema-locked` requires layout ≥ 2 and a non-empty `var_type` at creation (unchanged in substance)
 - **The verifier's layout selection** is unchanged: the supported range is now {1, 2, 3}; an excess (v4+) is the typed "unsupported layout (client update required)" error before signature verification (ruling CR). Existing v1 / v2 statements and vectors do not change by one byte (extend by appending — §11)
 - **The author's required role is the same as v2** (member or above). The environment meta statement stays v1
-- Test vectors: the additive extension of `test-vectors/metadata-signature.json` (§11's 0.13-draft entry)
+- Test vectors: the additive extension of `test-vectors/metadata-signature.json` (§11's layout v3 entry)
 
 ### 4.3 The environment manifest (drafted 2026-08-18 session 27 — resolving open item #12)
 
@@ -660,6 +660,7 @@ A mirror is a second deployment holding a replica of a project for reads (pulls,
 
 - Held as JSON in `packages/crypto/test-vectors/`: the inputs and expected outputs of each operation (variable encryption, value write signatures, metadata-statement signatures, DEK wraps, DEK-wrap registration signatures, DEK commitments, chain-entry normalization and signing, recovery wraps) with fixed keys and fixed nonces
 - The vector files, the cases each pins, and the conventions they follow are listed in `packages/crypto/test-vectors/README.md`. The independent reference verifier (`test-vectors/tools/verify_reference.mjs`) checks the same cases
+- Layout v3 (§4.2) in `metadata-signature.json`: positives = `var-v3-create-expiring` (max_age_days = 90) / `var-v3-create-no-max-age` (declared, `""`) / `var-v3-upgrade-from-v2` (a v2 → v3 reissue) / `var-v3-delete-keeps-max-age`. Negatives = `layout-confusion-v3-as-v2` (signature family), `tampered-max-age-days` (signature family), `layout-regression-v3-to-v2` (rule family — the generalized monotonicity), `v2-with-max-age` / `v3-missing-max-age` / `v3-max-age-leading-zero` / `v3-max-age-out-of-range` (structural family — InvalidInput). The file carries `var_v3_signed_fields_order` and the `layout_v3` note
 - Vectors are defined by a human (+ review in dialogue) and committed before the implementation
 - Round-trip tests run in CI on all 3 environments: browser / Bun / workerd
 - Negative tests for nonce uniqueness, AAD verification, and chain-verification failure (tampering, reordering, transplantation) are mandatory
