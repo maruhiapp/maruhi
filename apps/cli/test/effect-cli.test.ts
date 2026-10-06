@@ -1,8 +1,8 @@
 // Conformance checks for the argument layer (`effect/cli` — pull /
 // run / env create / env rotate / env diff).
 //
-// Drives the parser's 12 pitfall shapes (docs/notes/cli-parser-alternatives.md)
-// through the same argv and pins that maruhi's discipline holds: a usage
+// Drives 12 argv pitfall shapes a CLI parser commonly gets wrong and
+// pins that maruhi's discipline holds: a usage
 // mistake = exit 2 / diagnostics go to stderr / stdout stays clean / typed
 // values never appear in diagnostics / values are shown only on a human's
 // interactive terminal. Operations are never stubbed — everything goes through **the real runCli**.

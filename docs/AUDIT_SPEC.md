@@ -1,119 +1,8 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
 Version: 1.10-draft
-Status: through 0.6, owner-approved (0.3 approved by the PR #18 merge on
-2026-08-02. Adding the signer key FP to §3.3's `dek.registered` was approved as
-CRYPTO_SPEC §5.1 in PR #21. §3.3's actor key FP extension to signed data
-operations and §3.4's `chain.environment_created` were approved by the PR #27
-merge on 2026-08-04 as a ripple of CRYPTO_SPEC 0.4-draft. 0.6 = §5.2 option A's
-D1 implementation and §3.1's recording rules — session 21 on 2026-08-10,
-approved by merge). 0.7-draft = drafting of Phase 2 feature rulings (2026-08-12
-session 22): §3.2 invite.* / §3.5 revision for workload leases / §4.1
-revoke_server variant input update / §6 visibility classes (resolving open item
-#1) / §7 read API — **owner approval is by the merge of this revision PR**.
-0.8-draft = Wave 2 B2 owner rulings (2026-08-15 session 25): §3.3
-`rotation.recommended` / `rotation.dismissed` recording granularity, actor, and
-dismissal authority; the `dek.deleted` auto-cleanup variant (AUTH_SPEC §12-6);
-`var.version_pushed`'s re-encryption-marker payload / §4.1 step 5's exclusion
-of marker-bearing pushes from resolution derivation (resolving a spec-internal
-contradiction — automatic false resolution of all flags by re-encryption pushes
-of mandatory rotation) / §7 dismissal operation endpoint — **owner approval is
-by the merge of an implementation PR containing this revision** (PR #70 merged
-= approved). 0.9-draft = Wave 2 C1 owner ruling (2026-08-16 session 26): §5.1
-`row_id` column (wire row identifier = random value) / §7 read API's opaque
-cursors and row identifiers and admin-only disclosure of `seq` (reconciling
-§7's "not even by counts" with §6's "a gap = the trace of a deletion" —
-resolving a pullfrog review finding) — **owner approval is by the merge of an
-implementation PR containing this revision** (PR #71 merged = approved).
-1.0-draft = Wave 3 D drafting (2026-08-18 session 27 — design exploration in
-docs/notes/session-27.md): §3.4 `chain.checkpointed` / §5.1 audit-head
-cumulative hash / §6 post-hoc tamper detection via checkpoints and the decision
-not to eventize head declarations / §8 resolution of open item #2 (integrated
-into CRYPTO_SPEC §6.2 `checkpoint`) — **owner approval is by the merge of this
-revision PR**. 1.1-draft = W3a (2026-08-30): clarification of §3.1
-`auth.token_revoked`'s actor (actor = the executing principal, the target id is
-in the payload — accompanies AUTH_SPEC §6's introduction of designated
-revocation. No new event is added) — **owner approval is by the merge of an
-implementation PR containing this revision**. 1.2-draft = drafting of S0
-(value-less schema — CRYPTO_SPEC 0.8-draft / AUTH_SPEC 0.16-draft) (2026-08-30
-session 46): §3.3 `project.schema_policy_changed` (AUTH_SPEC §12-11) and a note
-on `var.created`'s declared creation — **owner approval is by the merge of this
-revision PR**. 1.3-draft = resolving the audit divergence of schema reissuance
-(2026-09-01 owner ruling — PR #121 / #123 handoffs. Candidate comparison in PR
-#125's handoff-handling thread): newly adding §3.3 `var.schema_reissued`
-(meta-statement reissuance with unchanged name — previously recorded as
-`var.renamed`, an operation that did not rename was claiming the name
-"renamed"). Rejected options = widening `var.renamed`'s meaning (the event name
-would misstate the fact forever) / normalizing to a unified event
-`var.meta_reissued` (a vocabulary break with past rows) / a payload flag only
-(the name's lie remains) / read-side reclassification (a standalone audit row
-cannot determine whether a rename happened — the only place where the
-determining material exists is the server at write time) — **owner approval is
-by the merge of an implementation PR containing this revision**. 1.4-draft =
-drafting of H1 (signup control — AUTH_SPEC 0.18-draft §3) (2026-09-01): newly
-adding §3.1 `auth.signup_denied` (recording signupPolicy-based rejection of new
-creation — material for H3's "counting signup rejections" tripwire; follows
-`auth.login_failed`'s fixed-window cap discipline) and adding `signupInviteId`
-to the `auth.user_created` payload (cross-check material for creations caused
-by invite-code consumption) — **owner approval is by the merge of an
-implementation PR containing this revision**. 1.5-draft = audit-log growth
-density measure ② (2026-09-02 owner decision — early resolution of open item
-4. H0 [docs/notes/hosted-design.md §3-3] had placed aggregation "after
-dogfooding measurements", but it is designed and implemented without waiting
-for measurements): revising §3.3 `var.read`'s recording granularity from "1 row
-per variable" to "1 row per environment per with-values bulk pull (payload
-enumerates the returned variables)" (aggregate form) / stating the §4.2 Q3 / Q4
-index requirements' dependence on payload enumeration / §5.3's quantity
-description / §8 resolution of open item 4. Revised together with AUTH_SPEC
-0.20-draft §12-7 / §12-8 — **owner approval is by the merge of an
-implementation PR containing this revision**. 1.6-draft = drafting of KL3
-(master-key wrap ledger — CRYPTO_SPEC 0.9-draft §8 / AUTH_SPEC 0.21-draft
-§13-6–13-10) (2026-09-12. Design record in docs/notes/integration-options.md
-supplement 19): adding the 9 events `auth.key_wrap_*` / `auth.guardian_*` /
-`auth.key_handoff_*` to §3.1 (the existing `auth.recovery_*` are unchanged).
-The design's 13 items are owner-approved as of 2026-09-12 — **approval of the
-spec wording is by the merge of an implementation PR containing this
-revision**. 1.7-draft = IV (2026-09-13. Design record in
-docs/notes/integration-options.md supplement 21): a note on §3.2
-invite.accepted (payload unchanged; the backing source's login is not written).
-No events added — **approval of the spec wording is by the merge of an
-implementation PR containing this revision**. 1.8-draft = ES + PF1 (2026-09-14
-— CRYPTO_SPEC 0.11-draft / AUTH_SPEC 0.23-draft. Design record
-docs/notes/es-design.md, drafting-time drafts docs/notes/es-spec-drafts.md):
-§3.3 `rotation.recommended`'s trigger / §3.4's mirror-payload scope and the 4
-four-eyes kinds with the applied rows / §4.1's per-environment access windows
-and the change_role variant / §6's visibility classes unchanged. The design's
-24 items are owner-approved as of 2026-09-14 — **owner approval is by the merge
-of this revision PR**. **K3 addendum to 1.8-draft (2026-09-15 — the server's
-scope enforcement, design record es-design.md §9)**: add `chain.role_changed`
-to §4.2 Q1's enumeration (a description correction of an index requirement —
-Q1's row still had the old enumeration even though §4.1 step 2 requires
-role_changed's payload to restore the windows and §3.4 already marks it ★ —
-not a consensus rule. Indexes unchanged) — **owner approval is by the merge of
-an implementation PR containing this addendum**. 1.9-draft = DK (device-key
-separation — 2026-09-19. CRYPTO_SPEC 0.12-draft / AUTH_SPEC 0.24-draft. Design
-record docs/notes/dk-design.md, drafting-time drafts
-docs/notes/dk-spec-drafts.md): §2's note that key FP = device / §3.1's 3 event
-descriptions converted to reserve key (event names unchanged) / §3.4's
-`chain.device_added` / `chain.device_revoked` / §4.1's `revoke_device` variant
-(interval narrowed by device windows; (a) checks user_id — the drafting-time
-"check by actor key FP" was corrected in K1 review because `var.read` carries
-no FP. A partial correction of approved item 8, design record dk-design.md §6
-K1-12) / §4.2 Q1's enumeration / §6's classes unchanged. The design's 16 items
-are owner-approved as of 2026-09-20 (design record §4) — **approval of the spec
-wording is by the merge of this revision PR**. 1.10-draft = VH (value history and rollback —
-2026-09-27. AUTH_SPEC 0.25-draft. Design record docs/notes/vh-design.md): §3.3's
-re-encryption marker generalized into the value-lineage payload `{ sameValueAs }`
-(ruling V1) and `var.read`'s enumeration order generalized to (variableId,
-version) for the version value range (ruling V3) / §4.1 procedure 5's
-resolution rule replaced by the lineage derivation — a flag is effective while
-the live value was first encrypted within its exposure bound (the
-environment's epoch at the end of the subject's window, now in
-`rotation.recommended`'s epoch column); re-exposure by rollback re-opens a resolved flag; a dismissal covers
-the flags effective at the time and stays sticky (ruling V2 as corrected by
-the design record's §9) / §7's flag view gains `reopenedByVersion`. Both open points were delegated to the designer by
-the owner on 2026-09-27 — **approval of the spec wording is by the merge of
-this revision PR**
+Status: owner-approved. Every revision is approved by the owner; the merge of
+the PR containing a revision constitutes that approval. History: `git log`.
 
 This document defines the design of maruhi's audit log (what / who / when).
 It presumes CRYPTO_SPEC (especially §6 membership log, §7 rotation-needed
@@ -134,9 +23,7 @@ detection) and AUTH_SPEC (§2 data model).
    never be written to the audit log (CLAUDE.md. An append-only structure
    cannot be rewritten and must be independent of the authentication
    provider). The authentication means's **kind name** (`github_oauth` /
-   `cli_handoff` / the old `device_flow` [replaced by the 2026-08-31 AUTH_SPEC
-   §4 revision — remains valid as a historical value on existing rows] etc.;
-   the same vocabulary as AUTH_SPEC's auth_method) may be recorded
+   `cli_handoff`; the same vocabulary as AUTH_SPEC's auth_method) may be recorded
 3. **No secrets**: do not include plaintext values, ciphertexts, nonces, or key
    material in events. Variable names are plaintext metadata in v1 (CRYPTO_SPEC
    §4), so a snapshot may be included in the payload for UI convenience
@@ -185,7 +72,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 
 | Event | Main attributes | Notes |
 |---|---|---|
-| `auth.login_succeeded` | auth_method | Web OAuth / CLI login (handoff) approval completed (2026-08-31 AUTH_SPEC §4 revision: `device_flow` → `cli_handoff`. The old value on existing rows remains a historical value) |
+| `auth.login_succeeded` | auth_method | Web OAuth / CLI login (handoff) approval completed |
 | `auth.login_failed` | auth_method, reason kind | State mismatch, verification failure, etc. The presented external ID is **not recorded** |
 | `auth.signup_denied` | auth_method, reason kind (`policy-closed` / `invite-required` / `invite-invalid`) | signupPolicy-based rejection of new creation (AUTH_SPEC §3 — 2026-09-01 H1). GitHub auth succeeded, but the presented external ID is **not recorded** (§1-2 — no internal user_id exists at rejection time). The actor is type=user without user_id, same as `auth.login_failed` |
 | `auth.session_revoked` | target session id | Explicit logout / server-side revocation |
@@ -200,7 +87,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 | `auth.guardian_designated` / `auth.guardian_released` | groupId, mode, shareIndex | Designation / release of a guardian. actor = ward, **target = guardian** (also appears on the guardian's own axis). One row per segment |
 | `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id + key FP), target = ward |
 | `auth.key_handoff_requested` | requestId | Creation of a handoff request. actor = ward |
-| `auth.key_handoff_approved` | requestId, source (groupId — `device` was removed in 2026-09-19 DK. `device` on existing rows remains a valid historical value), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
+| `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
 | `auth.key_handoff_collected` | requestId, approvalCount | The requester obtained one or more approvals **for the first time** = the fact that a restoration happened (once per request; not recorded on each polling response — AUTH_SPEC §13-6 `collected_at`). actor = ward |
 | `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id` |
 
@@ -452,10 +339,8 @@ CRYPTO_SPEC §4 identifiers.
   DEK"
 - "New version push" is also the resolution condition of the rotation-needed
   flag (§4 — **judged by the value lineage** — below)
-- ~~**`var.version_pushed`'s re-encryption marker (2026-08-15 session 25 owner
-  ruling — Wave 2 B2)**: `{ reencryption: true }`~~ **`var.version_pushed`'s
-  value-lineage payload (2026-09-27 VH — docs/notes/vh-design.md ruling V1;
-  generalizes and replaces the 2026-08-15 re-encryption marker)**: the push
+- **`var.version_pushed`'s value-lineage payload (2026-09-27 VH —
+  docs/notes/vh-design.md ruling V1)**: the push
   request's `sameValueAs` declaration (AUTH_SPEC §12-5 — the writer's
   self-declaration "this version's plaintext is version k's"; the server
   cannot verify it) is copied into the payload as `{ sameValueAs: k }`
@@ -542,12 +427,6 @@ server's acceptance time are carried.
 - **Device addition / revocation (2026-09-19 DK)**: 1 row per entry (bijection
   unchanged). `chain.device_added` is not a detection trigger, but Q1 reads it
   as the start point of §4.1's device window
-- **Backfill (2026-08-02 session 07 ruling)**: mirror recording starts from
-  entries accepted after the audit-log implementation is introduced. No DO
-  holds a chain accepted before the introduction (unreleased), so v1 does not
-  implement backfill of existing chains. If it becomes needed for a future
-  schema migration etc., it is designed as a reconstruction process based on
-  §1-5 (the mirror is reconstructible from the chain)
 
 ### 3.5 Server access via grant_server ★ (2026-08-12 revision — adapting to workload leases)
 
@@ -703,12 +582,8 @@ member, so the membership interval is not closed (detection is on the "window
 cut at the trigger seq", same as the demotion variant). Revoking a device with
 empty scope (a vote-only device) yields empty candidates and writes no row
 
-~~If environment-scoped role (CRYPTO_SPEC open item #11) is introduced, step
-2's "all environments" narrows to "the environments M had access to". Because
-the chain mirror copies role / scope, this extension works by a query change
-alone (no schema change needed).~~ **Resolved 2026-09-14 (the per-environment
-access windows above)**. Because the chain mirror copies scope (§3.4), it
-works by a query change alone (no schema change needed — unchanged)
+Because the chain mirror copies scope (§3.4), the per-environment access
+windows above work by a query change alone (no schema change needed)
 
 ### 4.2 Query requirements the schema must satisfy
 
@@ -773,8 +648,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 - Frequent attributes are promoted to columns (for indexes); everything else
   is payload JSON. Columns are NULL-allowed, and per-event-kind required
   attributes are enforced at the app layer (Effect Schema)
-- **Audit-head cumulative hash (2026-08-18 session 27 drafting — resolving
-  open item #2. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
+- **Audit-head cumulative hash (2026-08-18 session 27 drafting. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
   maintains a cumulative hash on each audit-row append — `h_n =
   lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))`
   (`h_0` = the empty string. LP is CRYPTO_SPEC §2.1). `row_digest` is the
@@ -818,12 +692,12 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
   (fail-closed — checks and responses happen only on a call where the column
   reached MAX(seq)). Extension progress is persisted across calls, and every
   call including a failure response must advance and converge. The
-  introduction migration recomputes the cumulative hash from existing rows
-  (all rows survive, append-only) to initialize (in lazy-materialize form the
-  first read doubles as this initialization) — tampering done before
-  initialization is out of detection scope (the checkpoint's guarantee covers
-  "post-hoc tampering after the notarization point" — §6 — and initialization
-  only creates its starting point). **The D1 side (§5.2's user / org events)
+  first extension computes the cumulative hash from every existing row (all
+  rows survive, append-only), so no separate initialization step exists —
+  tampering done before that first materialization is out of detection scope
+  (the checkpoint's guarantee covers "post-hoc tampering after the
+  notarization point" — §6 — and the first materialization only creates its
+  starting point). **The D1 side (§5.2's user / org events)
   is out of scope**: a checkpoint lives on the project chain, and there is no
   place to put rows that belong to no project (D1-side tamper resistance stays
   on §6's conventional model)
@@ -958,7 +832,7 @@ The read API is not built per §6–§7 (Phase 2).
     The current state of declarations (latest 1 row per member) is held by the
     data plane (AUTH_SPEC §16-1); server acceptance times are not distributed
 - **Viewing permission (2026-08-12 revision — replacing the old v1 interim
-  plan. Resolves open item #1)**: events are split into 2 visibility classes.
+  plan)**: events are split into 2 visibility classes.
   The line's principle is "**is it surveillance information on a person's
   action, or the operation of the disclosure mechanism**":
   - **Class 1 (chain role reader or above = all members)**: facts already
@@ -1108,22 +982,12 @@ The read API is not built per §6–§7 (Phase 2).
 
 ## 8. Open items
 
-1. ~~Details of the permission model for the audit-log viewing UI~~
-   **Resolved (2026-08-12 — §6's visibility classes. Settled by the merge of
-   this revision PR)**
-2. ~~Checkpointing the audit head onto the chain~~ **Resolved (2026-08-18
-   drafting — settled by the merge of this revision PR)**: integrated into
-   CRYPTO_SPEC §6.2 `checkpoint` op (§5.1's cumulative hash + §6's
-   "unverified-at-issuance notarization" semantics. Resolved together with the
-   old CRYPTO_SPEC open item #4). Implementation in a follow-up PR of Phase 2
-   Wave 3 (design comparison in docs/notes/session-27.md)
-3. Audit-log preservation after project deletion (when the hosted version's
-   compliance requirements emerge: e.g. evacuating a pre-deletion snapshot to
-   the org side)
-4. ~~`var.read`'s aggregation policy (after dogfooding measurements. §3.3 /
-   §5.3)~~ **Resolved (2026-09-02 owner decision — brought forward without
-   waiting for measurements. §3.3's aggregate form = 1 row per environment per
-   with-values bulk pull, payload enumerates the returned variables. Settled
-   by the merge of an implementation PR containing this revision)**
-5. Export (SIEM integration etc.). Separate from the telemetry prohibition
-   (CLAUDE.md), but designed as explicit-operation-only and pull-type only
+Resolved items are removed; the open ones keep their numbers (other text
+cites them by number).
+
+- **#3** Audit-log preservation after project deletion (when the hosted
+  version's compliance requirements emerge: e.g. evacuating a pre-deletion
+  snapshot to the org side)
+- **#5** Export (SIEM integration etc.). Separate from the telemetry
+  prohibition (CLAUDE.md), but designed as explicit-operation-only and
+  pull-type only

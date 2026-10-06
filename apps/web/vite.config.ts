@@ -19,7 +19,7 @@ const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 // writeBundle(linkOrphanStylesheets) injects the SPA CSS as <link> into
 // the publicDir-copied HTML, so the checked assets are written back. The
 // stylexOptions key keeps the legacy mode
-// (docs/notes/spike-a.md — prebuilt CSS consumption; no src alias).
+// (prebuilt CSS consumption; no src alias).
 //
 // This is a local patch on a vendor plugin (awaiting the upstream fix of
 // ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.2 has neither an
@@ -76,8 +76,8 @@ function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
 }
 
 // The StyleX compiler is always on. A build without it loses all styles
-// at runtime (verification record: docs/notes/spike-a.md — e2e is the
-// effective defense), so there is no switch to remove the compiler.
+// at runtime silently (the e2e is the effective defense), so there is
+// no switch to remove the compiler.
 const stylexPlugins = adaptAstryxLayerSplit(
   astryxStylex({
     stylexOptions: {

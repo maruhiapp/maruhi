@@ -33,14 +33,14 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
   - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
 - To run one package or one file: `cd apps/cli && bun x vitest run test/push-create.test.ts`
 
-For development rules, see [CLAUDE.md](CLAUDE.md) (Japanese) and [docs/adr/](docs/adr/) (Japanese). In particular:
+For development rules, see [CLAUDE.md](CLAUDE.md) and [docs/adr/](docs/adr/). In particular:
 
-- The crypto specification [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) (Japanese) is the sole source of truth. Changes to `packages/crypto` must go through human review and verification against the test vectors (`test-vectors/`)
+- The crypto specification [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) is the sole source of truth. Changes to `packages/crypto` must go through human review and verification against the test vectors (`test-vectors/`)
 - Changes that let plaintext secrets pass through the server API, disk, or logs (the diskless invariant) will not be accepted
 
 ## License layout and how contributions are treated
 
-This repository uses different licenses per area ([ADR-0003](docs/adr/0003-license-fsl-mit.md); Japanese):
+This repository uses different licenses per area ([ADR-0003](docs/adr/0003-license-fsl-mit.md)):
 
 - Repository default (including `apps/server` and `apps/web`): [FSL-1.1-MIT](LICENSE.md)
 - `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema`: MIT (`LICENSE` in each directory)

@@ -170,7 +170,7 @@ jobs:
 
       # The web e2e assumes build artifacts (dist/public + _headers), so it is
       # not in the root vitest.config.ts projects and runs as its own step
-      # (recommended in docs/notes/spike-a.md). The port is OS-assigned so
+      # after the build. The port is OS-assigned so
       # parallel runs don't collide.
       - name: 8. Web build (vite + CSP headers)
         run: bun run --filter @maruhi/web build

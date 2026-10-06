@@ -22,14 +22,12 @@ The version is strictly pinned in `.deepsec/package.json`. Updates are separate 
 
 ## Review results
 
-Revalidated, unfixed findings are tracked in
-[`DEEPSEC_FINDINGS_2026-08-25.md`](./DEEPSEC_FINDINGS_2026-08-25.md).
-Past documents were closed through revalidation: the initial full review
-([`2026-08-22`](./DEEPSEC_FINDINGS_2026-08-22.md)) by the 08-24 run, and
-its fixes ([`2026-08-24`](./DEEPSEC_FINDINGS_2026-08-24.md)) by the 08-25
-run (in the latter, 7 of 8 points came back `fixed`, only R4 remains).
-The generated reports under `.deepsec/data/` are gitignored, so use this
-document when handing off to Cloud environments or another chat.
+Findings are not kept as files in the repository. The current state of
+findings is what a deepsec run reports: run it (below) and read the
+generated reports under `.deepsec/data/` (gitignored). To hand findings off
+to a Cloud environment or another chat, export them from that run
+(`deepsec export` under "Daily operations" below) rather than committing
+them.
 
 ## Invoking as a skill
 

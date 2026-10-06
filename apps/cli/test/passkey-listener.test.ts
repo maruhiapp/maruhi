@@ -260,7 +260,7 @@ describe("page-asset invariants (ruling C — CSP script-src 'self' baseline)", 
     expect(PRF_PAGE_JS).not.toMatch(/new\s+Function\b/);
     expect(PRF_PAGE_JS).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
     // WebAuthn requires UV (on authenticators without UV, PRF silently
-    // goes missing — spike-prf.md §2)
+    // goes missing)
     expect(PRF_PAGE_JS.match(/userVerification: "required"/g)).toHaveLength(3);
     expect(PRF_PAGE_JS).not.toMatch(/userVerification: "(preferred|discouraged)"/);
     // The relative-path fetches are exactly the two same-origin ones

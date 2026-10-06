@@ -12,9 +12,6 @@ minimal form). The steps were verified with a real deploy on 2026-08-10
 (session 19) against wrangler 4.120; the commands were re-expressed against cf
 1.0.0-beta (2026-09-30) without a fresh real deploy — see the PR for the
 verification level of each command.
-The 2026-08-11 revision (folding migrations into step 3, and making client_id a
-Workers Secret — AUTH_SPEC §3-2) is waiting on re-verification against a real
-deploy.
 
 ## What comes up
 
@@ -45,7 +42,7 @@ bunx cf auth login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / C
 ```
 
 If you do not want cf to send telemetry, set `CF_SEND_TELEMETRY=false`
-in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing"; Japanese).
+in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing").
 
 ### 2. Create the D1 database
 
@@ -879,9 +876,7 @@ or newer.
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
-  unregistered (a missed `wrangler secret put` — step 5. If this
-  happened after updating an instance stood up with the old steps, see the
-  migration in "Updates"). List registered secrets with
+  unregistered (a missed `wrangler secret put` — step 5). List registered secrets with
   `bunx cf workers secrets list` (values are not shown)
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
@@ -942,5 +937,5 @@ or newer.
   with the ID of the newly created resource", so if the button does not
   replace it the deploy fails with an API error against a UUID that does not
   exist (in that case the placeholder has to be removed)
-- For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md` (Japanese); for the
-  crypto spec see `docs/CRYPTO_SPEC.md` (Japanese)
+- For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md`; for the
+  crypto spec see `docs/CRYPTO_SPEC.md`

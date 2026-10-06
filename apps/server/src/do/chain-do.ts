@@ -666,8 +666,7 @@ const memberRoleProgram = (
   Effect.map(requireMemberState(callerUserId, "reader", cache), (context) => context.member.role);
 
 // ---------------------------------------------------------------------------
-// The Durable Object (the ManagedRuntime pattern; the established shape
-// of spike-b)
+// The Durable Object (the ManagedRuntime pattern)
 // ---------------------------------------------------------------------------
 
 type DoServices = ChainStore | DataStore | AuditStore | ServerKey | StorageMeter;

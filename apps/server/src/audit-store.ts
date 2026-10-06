@@ -349,8 +349,8 @@ interface AuditStoreShape {
    * checkpoint acceptance verification) — SHA-256 is async (WebCrypto)
    * so it cannot sit in the synchronous append block, and lazy extension
    * keeps the hash computation off the var.read bulk-append hot path.
-   * The first call recomputing from all existing rows doubles as the
-   * §5.1 introduction migration. Since no reader observes anything but
+   * The first call computes from all existing rows (no separate
+   * initialization step — §5.1). Since no reader observes anything but
    * the fully extended column, a disagreement between rows and the
    * column is unobservable (the design ruling is docs/notes/session-35.
    * md). Call under the DO permit.
