@@ -193,33 +193,34 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(html).toContain("fun__rsc-payload");
   });
 
-  it("hydrates under strict CSP: build-time RSC content + working client island", async () => {
+  it("hydrates the dashboard under strict CSP with xstyle and the maruhi theme applied", async () => {
     const page = await browser.newPage();
-    const violations: string[] = [];
-    page.on("console", (msg) => {
-      if (msg.text().includes("Content Security Policy")) violations.push(msg.text());
+    const violations = collectViolations(page);
+    // The dashboard is a client component: the project ID only renders
+    // after hydration, the client-side session check and the fetches
+    // (mocked — ruling BS). Interaction under CSP is covered by the
+    // dashboard tests below (tabs, revocations, Load more)
+    await routeProjectOverview(page);
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    const projectId = page.getByTestId("project-id");
+    await expect(projectId.textContent()).resolves.toBe(PROJECT_1);
+
+    // xstyle (static CSS via the StyleX compiler) is applied: HexText's
+    // hexStyles.breakable (src/dashboard/shared.tsx). Without the
+    // compiler the override silently renders unstyled
+    const breakable = await projectId.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        wordBreak: style.wordBreak,
+        overflowWrap: style.overflowWrap,
+        minWidth: style.minWidth,
+      };
     });
-    // The mechanism-verification hooks (built-at / counter) live on
-    // /about ("About this deployment")
-    // (DP2 ruling F — docs/notes/web-design-pass.md §4. The top page
-    // is a minimal landing page)
-    await page.goto(`${BASE}/about`, { waitUntil: "networkidle" });
-
-    // Build-time RSC: the build time embedded by a server component
-    // is displayed
-    await expect(page.getByTestId("built-at").textContent()).resolves.toMatch(
-      /server-rendered at build time: 20\d\d-/,
-    );
-
-    // The client island hydrates and interaction works under CSP
-    const button = page.getByTestId("counter-button");
-    await expect(button.textContent()).resolves.toContain("count: 0");
-    await button.click();
-    await expect(button.textContent()).resolves.toContain("count: 1");
-
-    // xstyle (static CSS via the StyleX compiler) is applied
-    const marginTop = await button.evaluate((el) => getComputedStyle(el).marginTop);
-    expect(marginTop).toBe("20px");
+    expect(breakable).toEqual({
+      wordBreak: "break-all",
+      overflowWrap: "anywhere",
+      minWidth: "0px",
+    });
 
     // The maruhi theme's accent color (defineTheme → astryx theme
     // build) is in effect.
@@ -243,17 +244,23 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 
   it("navigates as SPA via Navigation API (no full page load)", async () => {
     const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.route("**/auth/me", unauthorized);
+    // The landing is a build-time RSC page; its link is the real funnel
+    // into the dashboard
     await page.goto(BASE, { waitUntil: "networkidle" });
     // Place a marker that a full reload would erase
     await page.evaluate(() => {
-      (window as unknown as Record<string, unknown>)["__spike_marker"] = "alive";
+      (window as unknown as Record<string, unknown>)["__spa_marker"] = "alive";
     });
-    await page.getByTestId("to-about").click();
-    await page.getByTestId("about-heading").waitFor();
+    await page.getByTestId("to-dashboard").click();
+    await page.getByTestId("login-card").waitFor();
+    expect(new URL(page.url()).pathname).toBe("/dashboard");
     const marker = await page.evaluate(
-      () => (window as unknown as Record<string, unknown>)["__spike_marker"],
+      () => (window as unknown as Record<string, unknown>)["__spa_marker"],
     );
     expect(marker).toBe("alive"); // SPA transition (the page was not destroyed)
+    expect(violations).toEqual([]);
     await page.close();
   });
 
@@ -426,6 +433,8 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 
   it("degrades to MPA (full page loads) when Navigation API is unavailable", async () => {
     const page = await browser.newPage();
+    const violations = collectViolations(page);
+    await page.route("**/auth/me", unauthorized);
     // Reproduce a browser without the Navigation API (delete
     // window.navigation before any script runs)
     await page.addInitScript(() => {
@@ -434,18 +443,19 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     });
     await page.goto(BASE, { waitUntil: "networkidle" });
     await page.evaluate(() => {
-      (window as unknown as Record<string, unknown>)["__spike_marker"] = "alive";
+      (window as unknown as Record<string, unknown>)["__spa_marker"] = "alive";
     });
-    await page.getByTestId("to-about").click();
-    await page.getByTestId("about-heading").waitFor();
+    await page.getByTestId("to-dashboard").click();
+    // Even after degradation the dashboard itself displays via the SPA
+    // fallback (not_found_handling)
+    await page.getByTestId("login-card").waitFor();
+    expect(new URL(page.url()).pathname).toBe("/dashboard");
     const marker = await page.evaluate(
-      () => (window as unknown as Record<string, unknown>)["__spike_marker"],
+      () => (window as unknown as Record<string, unknown>)["__spa_marker"],
     );
     expect(marker).toBeUndefined(); // A full page load = MPA
     // degradation (fallback="static")
-    // Even after degradation the page content itself displays via
-    // the SPA fallback (not_found_handling)
-    await expect(page.getByTestId("about-heading").textContent()).resolves.toBe("about maruhi");
+    expect(violations).toEqual([]);
     await page.close();
   });
 });

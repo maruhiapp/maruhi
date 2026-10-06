@@ -4,8 +4,8 @@
 // docs moved to apex `maruhi.app` (apps/site — Blume), so this page
 // carries only minimal guidance (logo + a funnel to the dashboard + a
 // link to the product site) (DP2 ruling F — docs/notes/web-design-pass.md
-// §4). The e2e mechanism-verification hooks (built-at / counter /
-// to-about) live at /about (AboutPage — "about this deployment").
+// §4). The e2e checks drive `to-dashboard` for SPA navigation and MPA
+// degradation.
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 
@@ -28,11 +28,6 @@ export function HomePage() {
       <p>
         Docs, installation, and the product overview live at{" "}
         <a href="https://maruhi.app">maruhi.app</a>. Everything else happens in the CLI.
-      </p>
-      <p>
-        <a href={spaPaths.about()} data-testid="to-about">
-          About this deployment
-        </a>
       </p>
     </main>
   );
