@@ -431,57 +431,56 @@ function ensureChainMember(
   return members.has(userId) ? Effect.void : Effect.fail(rejectData({ kind: "not-member" }));
 }
 
-const initProgram = (
+const initProgram = Effect.fn("chain-do.initProgram")(function* (
   expectedProjectId: string,
   entry: ChainEntry,
   admission: InitAdmission,
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const store = yield* ChainStore;
-    const chain = yield* store.load;
-    if (chain.headSeq > 0) {
-      const genesisActor = chain.entries[0]?.actor.userId;
-      if (genesisActor === undefined || chain.headHashHex === null) {
-        // With headSeq > 0 both values exist as an invariant. Missing
-        // means storage corruption; do not convert it into a success
-        // response with an empty string — drop as a defect
-        return yield* Effect.die(new Error("initialized chain is missing genesis or head"));
-      }
-      return yield* new AlreadyInitializedError({
-        genesisActorUserId: genesisActor,
-        headSeq: chain.headSeq,
-        headHashHex: chain.headHashHex,
-      });
+) {
+  const store = yield* ChainStore;
+  const chain = yield* store.load;
+  if (chain.headSeq > 0) {
+    const genesisActor = chain.entries[0]?.actor.userId;
+    if (genesisActor === undefined || chain.headHashHex === null) {
+      // With headSeq > 0 both values exist as an invariant. Missing
+      // means storage corruption; do not convert it into a success
+      // response with an empty string — drop as a defect
+      return yield* Effect.die(new Error("initialized chain is missing genesis or head"));
     }
-    // The AUTH_SPEC §11-3 project-count limit (already judged by the
-    // worker): at the limit, decline only a fresh initialization. Placing
-    // it after the "already initialized?" check (above) lets a repair
-    // re-init (already-initialized) of an at-limit org through regardless
-    // of the limit — this ordering is the implementation point of §11-3's
-    // "do not block the repair path at the limit"
-    if (!admission.admitFresh) {
-      return yield* new FreshInitNotAdmittedError();
-    }
-    // The 4 acceptance steps for an empty chain (the capacity check is
-    // vacuously satisfied on an empty chain). Anything other than
-    // genesis, a bad signature, etc. is rejected by verifyChain with a
-    // §6.3 reason code. On the Schema init accepts every op, but a
-    // non-genesis at seq 1 always becomes a 422 under verifyChain's
-    // framing rule (bad-genesis) — the four-eyes acceptance policy
-    // (appendProgram) is not placed on init because of this invariant
-    // (independent review D3)
-    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    // Project ID = genesis entry hash (§6.4). If the binding between the
-    // routed DO and the entry is broken, do not accept (defense against a
-    // worker-side bug)
-    if (applied.state.headHashHex !== expectedProjectId) {
-      return yield* new ProjectIdMismatchError();
-    }
-    yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
-    updateStateCache(cache, applied);
-    return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
-  });
+    return yield* new AlreadyInitializedError({
+      genesisActorUserId: genesisActor,
+      headSeq: chain.headSeq,
+      headHashHex: chain.headHashHex,
+    });
+  }
+  // The AUTH_SPEC §11-3 project-count limit (already judged by the
+  // worker): at the limit, decline only a fresh initialization. Placing
+  // it after the "already initialized?" check (above) lets a repair
+  // re-init (already-initialized) of an at-limit org through regardless
+  // of the limit — this ordering is the implementation point of §11-3's
+  // "do not block the repair path at the limit"
+  if (!admission.admitFresh) {
+    return yield* new FreshInitNotAdmittedError();
+  }
+  // The 4 acceptance steps for an empty chain (the capacity check is
+  // vacuously satisfied on an empty chain). Anything other than
+  // genesis, a bad signature, etc. is rejected by verifyChain with a
+  // §6.3 reason code. On the Schema init accepts every op, but a
+  // non-genesis at seq 1 always becomes a 422 under verifyChain's
+  // framing rule (bad-genesis) — the four-eyes acceptance policy
+  // (appendProgram) is not placed on init because of this invariant
+  // (independent review D3)
+  const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
+  // Project ID = genesis entry hash (§6.4). If the binding between the
+  // routed DO and the entry is broken, do not accept (defense against a
+  // worker-side bug)
+  if (applied.state.headHashHex !== expectedProjectId) {
+    return yield* new ProjectIdMismatchError();
+  }
+  yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
+  updateStateCache(cache, applied);
+  return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
+});
 
 /**
  * The front stage shared by reads and appends: the initialization check
@@ -489,27 +488,29 @@ const initProgram = (
  * gets nothing back, including the CAS's current-head information and
  * the acceptance policy's decision (the worker maps not-member to 404).
  */
-const loadChainForMember = (callerUserId: string, cache: StateCache) =>
-  Effect.gen(function* () {
-    const store = yield* ChainStore;
-    const chain = yield* store.load;
-    if (chain.headSeq === 0 || chain.headHashHex === null) {
-      return yield* rejectData({ kind: "not-initialized" });
-    }
-    const { state } = yield* deriveStoredState(chain, cache);
-    yield* ensureChainMember(state.members, callerUserId);
-    return {
-      entries: chain.entries,
-      headSeq: chain.headSeq,
-      headHashHex: chain.headHashHex,
-      genesisHashHex: chain.genesisHashHex,
-      totalCanonicalBytes: chain.totalCanonicalBytes,
-      members: state.members,
-      // The current derived state (the reference of the four-eyes
-      // acceptance policy and the growth guard — appendProgram)
-      state,
-    };
-  });
+const loadChainForMember = Effect.fn("chain-do.loadChainForMember")(function* (
+  callerUserId: string,
+  cache: StateCache,
+) {
+  const store = yield* ChainStore;
+  const chain = yield* store.load;
+  if (chain.headSeq === 0 || chain.headHashHex === null) {
+    return yield* rejectData({ kind: "not-initialized" });
+  }
+  const { state } = yield* deriveStoredState(chain, cache);
+  yield* ensureChainMember(state.members, callerUserId);
+  return {
+    entries: chain.entries,
+    headSeq: chain.headSeq,
+    headHashHex: chain.headHashHex,
+    genesisHashHex: chain.genesisHashHex,
+    totalCanonicalBytes: chain.totalCanonicalBytes,
+    members: state.members,
+    // The current derived state (the reference of the four-eyes
+    // acceptance policy and the growth guard — appendProgram)
+    state,
+  };
+});
 
 /**
  * Whether the op grows the access set (the target of the AUTH_SPEC §12-8
@@ -543,115 +544,113 @@ const isGrowthOp = (op: ChainEntry["op"]): boolean => op === "add_member" || op 
  * measurements, both the rejection of add_member / grant_server and the
  * non-blocking of remove_member / checkpoint).
  */
-export const appendProgram = (
+export const appendProgram = Effect.fn("chain-do.appendProgram")(function* (
   parentHeadHashHex: string,
   entry: ChainEntry,
   callerUserId: string,
   cache: StateCache,
-): Effect.Effect<
+): Effect.fn.Return<
   AppendValue,
   DataRejectedError,
   ChainStore | AuditStore | DataStore | StorageMeter
-> =>
-  Effect.gen(function* () {
-    // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
-    // through the composite endpoint. The worker handler refuses ahead of
-    // it, but the same guard sits on the DO side — the authority of the
-    // acceptance decision — so that even if more call paths into the
-    // generic append appear later, the state "the epoch / environment is
-    // on the chain but the wraps / environment row are missing" can
-    // never be created (defense in layers)
-    if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
-      return yield* rejectData({ kind: "composite-required", op: entry.op });
+> {
+  // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
+  // through the composite endpoint. The worker handler refuses ahead of
+  // it, but the same guard sits on the DO side — the authority of the
+  // acceptance decision — so that even if more call paths into the
+  // generic append appear later, the state "the epoch / environment is
+  // on the chain but the wraps / environment row are missing" can
+  // never be created (defense in layers)
+  if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
+    return yield* rejectData({ kind: "composite-required", op: entry.op });
+  }
+  // A standalone (periodic) checkpoint (AUTH_SPEC §16-2): the generic
+  // append accepts it, but branches into a dedicated path that performs
+  // the acceptance verification (content cross-check against the state
+  // at acceptance time) and the atomic snapshot save
+  if (entry.op === "checkpoint") {
+    return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
+  }
+  const chain = yield* loadChainForMember(callerUserId, cache);
+  // The DO storage total guard (AUTH_SPEC §12-8): only the
+  // access-set-growing add_member / grant_server (both direct appends
+  // and four-eyes proposals / approvals — growsAccessSet); aligned at
+  // the entry because the natural follow-up wrap backfill is what is
+  // rejected. remove_member / revoke_server / change_role (revocation,
+  // permission narrowing = security remediation) and checkpoint
+  // (bounded) are accepted even under rejection. Position: after
+  // membership (§11-2), before CAS / verifyChain (resource protection
+  // first)
+  if (growsAccessSet(entry, chain.state)) {
+    yield* ensureStorageAdmitsGrowth;
+  }
+  // The four-eyes propose acceptance policy (AUTH_SPEC §12-8 /
+  // CRYPTO_SPEC §6.4 — not a consensus rule): the expires_at_ms upper
+  // bound → the pending cap (expired ones do not count). The decision
+  // inputs are the current derived state and the server clock, which
+  // only the DO has (never placed on the worker — K5-B). Position: same
+  // as the growth guard — "before the semantic checks (CAS /
+  // verifyChain)"
+  if (entry.op === "propose") {
+    yield* ensureProposalAdmitted(
+      entry.payload.expiresAtMs,
+      chain.state.pendingProposals,
+      yield* Clock.currentTimeMillis,
+    );
+  }
+  // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
+  // §6.4 — 2026-09-19 DK K3): an `add_device` is not accepted when the
+  // actor's **valid** devices have reached the cap (counted on the
+  // pre-acceptance derived state — revoked ones do not count). Same
+  // position as the four-eyes pending cap (after membership, before
+  // CAS / verifyChain). Not a consensus rule
+  if (entry.op === "add_device") {
+    const active = chain.state.members.get(callerUserId)?.devices.size ?? 0;
+    if (active >= MAX_DEVICES_PER_MEMBER) {
+      return yield* rejectData({ kind: "device-limit", limit: MAX_DEVICES_PER_MEMBER });
     }
-    // A standalone (periodic) checkpoint (AUTH_SPEC §16-2): the generic
-    // append accepts it, but branches into a dedicated path that performs
-    // the acceptance verification (content cross-check against the state
-    // at acceptance time) and the atomic snapshot save
-    if (entry.op === "checkpoint") {
-      return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
-    }
-    const chain = yield* loadChainForMember(callerUserId, cache);
-    // The DO storage total guard (AUTH_SPEC §12-8): only the
-    // access-set-growing add_member / grant_server (both direct appends
-    // and four-eyes proposals / approvals — growsAccessSet); aligned at
-    // the entry because the natural follow-up wrap backfill is what is
-    // rejected. remove_member / revoke_server / change_role (revocation,
-    // permission narrowing = security remediation) and checkpoint
-    // (bounded) are accepted even under rejection. Position: after
-    // membership (§11-2), before CAS / verifyChain (resource protection
-    // first)
-    if (growsAccessSet(entry, chain.state)) {
-      yield* ensureStorageAdmitsGrowth;
-    }
-    // The four-eyes propose acceptance policy (AUTH_SPEC §12-8 /
-    // CRYPTO_SPEC §6.4 — not a consensus rule): the expires_at_ms upper
-    // bound → the pending cap (expired ones do not count). The decision
-    // inputs are the current derived state and the server clock, which
-    // only the DO has (never placed on the worker — K5-B). Position: same
-    // as the growth guard — "before the semantic checks (CAS /
-    // verifyChain)"
-    if (entry.op === "propose") {
-      yield* ensureProposalAdmitted(
-        entry.payload.expiresAtMs,
-        chain.state.pendingProposals,
-        yield* Clock.currentTimeMillis,
-      );
-    }
-    // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
-    // §6.4 — 2026-09-19 DK K3): an `add_device` is not accepted when the
-    // actor's **valid** devices have reached the cap (counted on the
-    // pre-acceptance derived state — revoked ones do not count). Same
-    // position as the four-eyes pending cap (after membership, before
-    // CAS / verifyChain). Not a consensus rule
-    if (entry.op === "add_device") {
-      const active = chain.state.members.get(callerUserId)?.devices.size ?? 0;
-      if (active >= MAX_DEVICES_PER_MEMBER) {
-        return yield* rejectData({ kind: "device-limit", limit: MAX_DEVICES_PER_MEMBER });
-      }
-    }
-    yield* ensureParentHead(chain, parentHeadHashHex);
-    // The 4 acceptance steps (size → capacity → verifyChain → insert +
-    // mirror) are shared with the composite path (chain-accept.ts). A
-    // completed approve writes the inner op's mirror-application row and
-    // its side effects in the same commit, and returns the applied
-    // proposal to the worker (K5-H)
-    const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    const appliedProposal = yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
-    updateStateCache(cache, applied);
-    return {
-      headSeq: applied.state.headSeq,
-      headHashHex: applied.state.headHashHex,
-      appliedProposal,
-    };
-  });
+  }
+  yield* ensureParentHead(chain, parentHeadHashHex);
+  // The 4 acceptance steps (size → capacity → verifyChain → insert +
+  // mirror) are shared with the composite path (chain-accept.ts). A
+  // completed approve writes the inner op's mirror-application row and
+  // its side effects in the same commit, and returns the applied
+  // proposal to the worker (K5-H)
+  const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
+  const appliedProposal = yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
+  updateStateCache(cache, applied);
+  return {
+    headSeq: applied.state.headSeq,
+    headHashHex: applied.state.headHashHex,
+    appliedProposal,
+  };
+});
 
 /** The chain get (public for tests — pins that reads pass under rejection). */
-export const snapshotProgram = (
+export const snapshotProgram = Effect.fn("chain-do.snapshotProgram")(function* (
   callerUserId: string,
   cache: StateCache,
-): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> =>
-  Effect.gen(function* () {
-    const chain = yield* loadChainForMember(callerUserId, cache);
-    // Bundling the attestations (AUTH_SPEC §16-1): only the latest
-    // attestations of current members' **valid devices**. The row
-    // deletion at remove_member / revoke_device acceptance
-    // (chain-accept.ts) owns the convergence to the source of truth; the
-    // narrowing here is an independent defensive layer (also matching
-    // the §6.6 (1) client check)
-    const dataStore = yield* DataStore;
-    const attestations = (yield* dataStore.listHeadAttestations).filter((attestation) =>
-      chain.members
-        .get(attestation.attesterUserId)
-        ?.devices.has(attestation.attesterKeyFingerprintHex),
-    );
-    return {
-      entries: chain.entries,
-      headSeq: chain.headSeq,
-      headHashHex: chain.headHashHex,
-      attestations,
-    };
-  });
+): Effect.fn.Return<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> {
+  const chain = yield* loadChainForMember(callerUserId, cache);
+  // Bundling the attestations (AUTH_SPEC §16-1): only the latest
+  // attestations of current members' **valid devices**. The row
+  // deletion at remove_member / revoke_device acceptance
+  // (chain-accept.ts) owns the convergence to the source of truth; the
+  // narrowing here is an independent defensive layer (also matching
+  // the §6.6 (1) client check)
+  const dataStore = yield* DataStore;
+  const attestations = (yield* dataStore.listHeadAttestations).filter((attestation) =>
+    chain.members
+      .get(attestation.attesterUserId)
+      ?.devices.has(attestation.attesterKeyFingerprintHex),
+  );
+  return {
+    entries: chain.entries,
+    headSeq: chain.headSeq,
+    headHashHex: chain.headHashHex,
+    attestations,
+  };
+});
 
 /**
  * The calling principal's chain-derived role (the authorization input of

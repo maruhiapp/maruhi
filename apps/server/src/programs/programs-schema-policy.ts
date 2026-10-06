@@ -19,19 +19,16 @@ import { DataStore } from "../data/data-store.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
-export const getSchemaPolicyProgram = (actor: DataActor, cache: StateCache) =>
-  Effect.gen(function* () {
+export const getSchemaPolicyProgram = Effect.fn("programs-schema-policy.getSchemaPolicyProgram")(
+  function* (actor: DataActor, cache: StateCache) {
     yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
     return { schemaPolicy: yield* store.schemaPolicy };
-  });
+  },
+);
 
-export const setSchemaPolicyProgram = (
-  actor: DataActor,
-  schemaPolicy: SchemaPolicy,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const setSchemaPolicyProgram = Effect.fn("programs-schema-policy.setSchemaPolicyProgram")(
+  function* (actor: DataActor, schemaPolicy: SchemaPolicy, cache: StateCache) {
     yield* requireMemberState(actor.userId, "admin", cache);
     // The DO storage-total guard (AUTH_SPEC §12-8): a settings change
     // is not a content-growth surface, but it is not needed for
@@ -61,4 +58,5 @@ export const setSchemaPolicyProgram = (
         }),
       );
     });
-  });
+  },
+);

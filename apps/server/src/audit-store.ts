@@ -639,32 +639,31 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
  * §5.1 invariant violation (append-only storage corruption), so it is a
  * defect.
  */
-const extendHeadHashes = (
+const extendHeadHashes = Effect.fn("audit-store.extendHeadHashes")(function* (
   sql: SqlStorage,
   maxChunks: number,
-): Effect.Effect<AuditHeadExtensionOutcome> =>
-  Effect.gen(function* () {
-    const state = { hashedUpTo: 0, head: "" };
-    const tail = sql
-      .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
-      .toArray()[0];
-    if (tail !== undefined) {
-      state.hashedUpTo = Number(tail["seq"]);
-      state.head = String(tail["head_hash_hex"]);
+): Effect.fn.Return<AuditHeadExtensionOutcome> {
+  const state = { hashedUpTo: 0, head: "" };
+  const tail = sql
+    .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
+    .toArray()[0];
+  if (tail !== undefined) {
+    state.hashedUpTo = Number(tail["seq"]);
+    state.head = String(tail["head_hash_hex"]);
+  }
+  for (let chunk = 0; chunk < maxChunks; chunk += 1) {
+    if (yield* hashNextChunk(sql, state)) {
+      return "current";
     }
-    for (let chunk = 0; chunk < maxChunks; chunk += 1) {
-      if (yield* hashNextChunk(sql, state)) {
-        return "current";
-      }
-    }
-    // The chunk limit was reached. Settle whether rows remain with a
-    // light existence check (so a call that finished exactly at the
-    // limit does not return a spurious "more-remains")
-    const remains = sql
-      .exec(`SELECT 1 FROM audit_events WHERE seq > ? LIMIT 1`, state.hashedUpTo)
-      .toArray()[0];
-    return remains === undefined ? "current" : "more-remains";
-  });
+  }
+  // The chunk limit was reached. Settle whether rows remain with a
+  // light existence check (so a call that finished exactly at the
+  // limit does not return a spurious "more-remains")
+  const remains = sql
+    .exec(`SELECT 1 FROM audit_events WHERE seq > ? LIMIT 1`, state.hashedUpTo)
+    .toArray()[0];
+  return remains === undefined ? "current" : "more-remains";
+});
 
 /**
  * Hash the next chunk (up to HEAD_CHUNK_ROWS rows) and commit it in a
@@ -706,63 +705,62 @@ class AuditHeadChunkInvalidError extends Data.TaggedError("AuditHeadChunkInvalid
  * restored log (ruling J revision, rounds 10 and 11): memory stays at one
  * chunk whatever the log's size.
  */
-const deriveChunk = (
+const deriveChunk = Effect.fnUntraced(function* (
   sql: SqlStorage,
   source: string,
   target: string,
   state: { hashedUpTo: number; head: string },
-): Effect.Effect<"done" | "more", AuditHeadChunkInvalidError> =>
-  Effect.gen(function* () {
-    const rows = sql
-      .exec(
-        `SELECT ${HEAD_ROW_COLUMNS} FROM ${source} WHERE seq > ? ORDER BY seq LIMIT ?`,
-        state.hashedUpTo,
-        HEAD_CHUNK_ROWS,
-      )
-      .toArray()
-      .map(toAuditHeadRow);
-    if (rows.length === 0) {
-      return "done";
+): Effect.fn.Return<"done" | "more", AuditHeadChunkInvalidError> {
+  const rows = sql
+    .exec(
+      `SELECT ${HEAD_ROW_COLUMNS} FROM ${source} WHERE seq > ? ORDER BY seq LIMIT ?`,
+      state.hashedUpTo,
+      HEAD_CHUNK_ROWS,
+    )
+    .toArray()
+    .map(toAuditHeadRow);
+  if (rows.length === 0) {
+    return "done";
+  }
+  const inserts: (string | number)[] = [];
+  for (const row of rows) {
+    if (row.seq !== state.hashedUpTo + 1) {
+      return yield* new AuditHeadChunkInvalidError({
+        seq: state.hashedUpTo + 1,
+        reason: "seq gap",
+      });
     }
-    const inserts: (string | number)[] = [];
-    for (const row of rows) {
-      if (row.seq !== state.hashedUpTo + 1) {
-        return yield* new AuditHeadChunkInvalidError({
-          seq: state.hashedUpTo + 1,
-          reason: "seq gap",
-        });
-      }
-      const digest = yield* cryptoEffect(() => computeAuditRowDigest(row)).pipe(
-        Effect.mapError(
-          (error) =>
-            new AuditHeadChunkInvalidError({
-              seq: row.seq,
-              reason: `row digest: ${error["_tag"]}`,
-            }),
-        ),
-      );
-      const next = yield* cryptoEffect(() =>
-        computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest),
-      ).pipe(
-        Effect.mapError(
-          (error) =>
-            new AuditHeadChunkInvalidError({
-              seq: row.seq,
-              reason: `head hash: ${error["_tag"]}`,
-            }),
-        ),
-      );
-      state.head = next;
-      state.hashedUpTo = row.seq;
-      inserts.push(row.seq, state.head);
-    }
-    sql.exec(
-      `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
-      ...inserts,
+    const digest = yield* cryptoEffect(() => computeAuditRowDigest(row)).pipe(
+      Effect.mapError(
+        (error) =>
+          new AuditHeadChunkInvalidError({
+            seq: row.seq,
+            reason: `row digest: ${error["_tag"]}`,
+          }),
+      ),
     );
-    // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
-    return rows.length < HEAD_CHUNK_ROWS ? "done" : "more";
-  });
+    const next = yield* cryptoEffect(() =>
+      computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest),
+    ).pipe(
+      Effect.mapError(
+        (error) =>
+          new AuditHeadChunkInvalidError({
+            seq: row.seq,
+            reason: `head hash: ${error["_tag"]}`,
+          }),
+      ),
+    );
+    state.head = next;
+    state.hashedUpTo = row.seq;
+    inserts.push(row.seq, state.head);
+  }
+  sql.exec(
+    `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
+    ...inserts,
+  );
+  // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
+  return rows.length < HEAD_CHUNK_ROWS ? "done" : "more";
+});
 
 /** Whether a stored head hash is one the chaining accepts (64 lowercase hex). */
 export function isAuditHeadHex(value: unknown): value is string {
