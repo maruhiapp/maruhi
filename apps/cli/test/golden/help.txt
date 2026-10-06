@@ -17,7 +17,7 @@ SUBCOMMANDS
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync / rotate)
-  env         Manage environments (create / rotate / diff)
+  env         Manage environments (create / rename / rm / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
@@ -56,7 +56,7 @@ SUBCOMMANDS
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync / rotate)
-  env         Manage environments (create / rotate / diff)
+  env         Manage environments (create / rename / rm / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
@@ -185,7 +185,7 @@ GLOBAL FLAGS
 
 $ maruhi env --help
 DESCRIPTION
-  Manage environments (create / rotate / diff)
+  Manage environments (create / rename / rm / rotate / diff)
 
 USAGE
   maruhi env <subcommand> [flags]
@@ -196,6 +196,8 @@ GLOBAL FLAGS
 
 SUBCOMMANDS
   create    Create an environment
+  rename    Rename an environment's display name (the environment ID and every value stay as they are)
+  rm        Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused
   rotate    Rotate the environment's epoch DEK, or resume an incomplete re-encryption
   diff      Compare the variable-name sets of two environments (names only; no values)
 
@@ -213,6 +215,44 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --name string       Display name (defaults to the environment ID)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi env rename --help
+DESCRIPTION
+  Rename an environment's display name (the environment ID and every value stay as they are)
+
+USAGE
+  maruhi env rename [flags] <environment-id> <new-name>
+
+ARGUMENTS
+  environment-id string    ID of the environment to rename (the ID itself never changes)
+  new-name string          New display name (NFC-normalized; unique among the environments that are not deleted)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi env rm --help
+DESCRIPTION
+  Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused
+
+USAGE
+  maruhi env rm [flags] <environment-id>
+
+ARGUMENTS
+  environment-id string    ID of the environment to delete
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --force             Skip the interactive confirmation (the only non-interactive path; deletion is permanent)
 
 GLOBAL FLAGS
   --help, -h       Show help information

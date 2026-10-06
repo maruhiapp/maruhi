@@ -42,7 +42,11 @@ import { cliError, type CliError } from "../errors.ts";
 import type { FloorHandle, VerifiedSchemaFields, VerifiedTombstone } from "../floor-check.ts";
 import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from "../floor-check.ts";
 import { CliIo } from "../io.ts";
-import { confirmMetaMutation, issueManifestWithIntent } from "../meta-confirm.ts";
+import {
+  confirmAcceptedMetaMutation,
+  confirmsIssuedStatement,
+  issueManifestWithIntent,
+} from "../meta-confirm.ts";
 import { generateVariableId } from "../meta-statement.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { retryOnConflict } from "../retry.ts";
@@ -50,7 +54,6 @@ import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironmentMetadata,
-  type VerifiedEnvironmentMetadata,
 } from "../values.ts";
 import { signContinuationStatementV3, signDeclareStatement } from "./schema-statement.ts";
 
@@ -620,31 +623,17 @@ export const schemaSetOp = Effect.fn("schema.schemaSetOp")(function* (
     exhaustedMessage: `The schema-set conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
   });
   // Effect confirmation (1-E' — §12-10 (3)): success is defined as confirmation on a verifiable distribution
-  const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
-  const statementConfirms = (statement: {
-    readonly metaVersion: number;
-    readonly metaSigHashHex: string;
-  }) =>
-    statement.metaVersion > issued.metaVersion ||
-    (statement.metaVersion === issued.metaVersion &&
-      statement.metaSigHashHex === issued.metaSigHashHex);
-  yield* confirmMetaMutation({
-    client: input.client,
-    verified: accepted.state.verified,
-    environmentId: input.environmentId,
-    resync: input.resync,
-    floor: input.floor,
-    selfManifest: accepted.selfManifest,
-    intentId: accepted.intentId,
-    describe: accepted.created ? "variable declaration" : "schema update",
-    effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
-      metadata.variables.some(
-        (statement) => statement.variableId === accepted.variableId && statementConfirms(statement),
-      ) ||
-      metadata.tombstones.some(
-        (tombstone) => tombstone.variableId === accepted.variableId && statementConfirms(tombstone),
+  yield* confirmAcceptedMetaMutation(
+    input,
+    accepted,
+    accepted.created ? "variable declaration" : "schema update",
+    (metadata, issued) =>
+      [...metadata.variables, ...metadata.tombstones].some(
+        (statement) =>
+          statement.variableId === accepted.variableId &&
+          confirmsIssuedStatement(statement, issued),
       ),
-  });
+  );
   return {
     created: accepted.created,
     variableId: accepted.variableId,

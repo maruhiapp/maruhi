@@ -32,8 +32,11 @@ import {
   LeaseUnavailableError,
   ManifestRejectedError,
   ManifestVersionConflictError,
+  MetaStatementRejectedError,
+  MetaVersionConflictError,
   MirrorStateError,
   MirrorSyncRejectedError,
+  NameNotNfcError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
@@ -276,6 +279,24 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `The manifestVersion conflicted (current manifestVersion=${e.currentManifestVersion}). A concurrent meta operation advanced the environment's manifest — re-run to rebuild it from the refreshed state`,
   ),
+  // Meta-statement acceptance (§12-5). The commands with a bounded 409
+  // re-resolution (var rm, schema set, push, env rename / rm) only arrive
+  // here for the refusals they do not retry
+  when(
+    isInstanceOf(MetaVersionConflictError),
+    (e) =>
+      `The metaVersion conflicted (current metaVersion=${e.currentMetaVersion}). A concurrent meta operation changed the statement first — re-run to sign over the refreshed state`,
+  ),
+  when(
+    isInstanceOf(MetaStatementRejectedError),
+    (e) =>
+      `The meta statement was rejected by server-side validation (reason=${e.reason} — CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5)`,
+  ),
+  when(
+    isInstanceOf(NameNotNfcError),
+    () =>
+      "The server refused the display name as not NFC-normalized (AUTH_SPEC §12-1). This CLI normalizes names before signing — update the maruhi CLI if this persists",
+  ),
   when(
     isInstanceOf(ChainEntryInvalidError),
     (e) =>
@@ -503,8 +524,11 @@ export function isServerRejection(error: unknown): boolean {
     ForbiddenError,
     ManifestRejectedError,
     ManifestVersionConflictError,
+    MetaStatementRejectedError,
+    MetaVersionConflictError,
     MirrorStateError,
     MirrorSyncRejectedError,
+    NameNotNfcError,
     PayloadMismatchError,
     ProjectLimitError,
     ProjectNotFoundError,

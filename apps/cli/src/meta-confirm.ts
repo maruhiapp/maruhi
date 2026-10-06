@@ -56,8 +56,8 @@ export const issueManifestWithIntent = Effect.fn("meta-confirm.issueManifestWith
     readonly issuerUserId: string;
     readonly signingKey: CryptoKey;
     readonly floor: FloorHandle;
-    /** The intent's collation coordinate (the meta operation's target variable). */
-    readonly variableId: string;
+    /** The intent's collation coordinate (the meta operation's target variable; null = the environment's own statement — env rename). */
+    readonly variableId: string | null;
   }): Effect.fn.Return<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
     const chainHead = {
       seq: input.verified.state.headSeq,
@@ -157,3 +157,62 @@ export const confirmMetaMutation = Effect.fn("meta-confirm.confirmMetaMutation")
     ),
   );
 });
+
+/** A statement's (metaVersion, signed-bytes hash) coordinate. */
+interface IssuedStatement {
+  readonly metaVersion: number;
+  readonly metaSigHashHex: string;
+}
+
+/**
+ * Whether a verified statement confirms an issued one (1-E′ — §12-10 (3)):
+ * a later metaVersion (overtaken by a concurrent meta operation chained on
+ * ours), or the same metaVersion with the same signed-bytes hash. The same
+ * version with a different hash means ours was not stored.
+ */
+export function confirmsIssuedStatement(
+  observed: IssuedStatement,
+  issued: IssuedStatement,
+): boolean {
+  return (
+    observed.metaVersion > issued.metaVersion ||
+    (observed.metaVersion === issued.metaVersion &&
+      observed.metaSigHashHex === issued.metaSigHashHex)
+  );
+}
+
+/**
+ * confirmMetaMutation over one accepted attempt's own material (the view it
+ * signed over, its self-issued manifest, its 3-F intent and its issued
+ * statement) — the shared tail of schema set, var rm and env rename.
+ * `effectVisible` judges the overtaken case against the issued statement
+ * (confirmsIssuedStatement is the usual predicate).
+ */
+export function confirmAcceptedMetaMutation(
+  input: {
+    readonly client: MaruhiClient;
+    readonly environmentId: EnvironmentId;
+    readonly resync: Effect.Effect<VerifiedProject, CliError>;
+    readonly floor: FloorHandle;
+  },
+  accepted: IssuedStatement & {
+    readonly state: { readonly verified: VerifiedProject };
+    readonly selfManifest: ManifestFloor;
+    readonly intentId: string;
+  },
+  describe: string,
+  effectVisible: (metadata: VerifiedEnvironmentMetadata, issued: IssuedStatement) => boolean,
+): Effect.Effect<void, CliError> {
+  const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
+  return confirmMetaMutation({
+    client: input.client,
+    verified: accepted.state.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
+    selfManifest: accepted.selfManifest,
+    intentId: accepted.intentId,
+    describe,
+    effectVisible: (metadata) => effectVisible(metadata, issued),
+  });
+}

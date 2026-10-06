@@ -50,6 +50,7 @@ import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type {
   FloorHandle,
+  VerifiedEnvironmentStatement,
   VerifiedMetaEvidence,
   VerifiedPullSnapshot,
   VerifiedTombstone,
@@ -198,7 +199,7 @@ const verifyAllCommon = Effect.fn("values.verifyAllCommon")(function* <
 ): Effect.fn.Return<
   | {
       readonly kind: "ok";
-      readonly environment: VerifiedMetaEvidence;
+      readonly environment: VerifiedEnvironmentStatement;
       readonly variables: readonly T[];
       readonly declared: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
@@ -572,7 +573,7 @@ export interface VerifiedEnvironmentMetadata {
   /** Verified tombstones (the only source of name resolution for deleted variables — AUDIT_SPEC §7). */
   readonly tombstones: readonly VerifiedTombstone[];
   /** The verified environment meta-statement (the envMeta material for manifest issuance). */
-  readonly environment: VerifiedMetaEvidence;
+  readonly environment: VerifiedEnvironmentStatement;
   /** The verified manifest (required on the wire — an omission is refused at decode, same as the with-values pull). */
   readonly manifest: VerifiedManifest;
   /**
@@ -644,7 +645,7 @@ interface MetadataPullWire {
 
 /** The verified intermediate value of a metadata-only pull (pullWithBoundedResync's TVerified). */
 interface VerifiedMetadataValue {
-  readonly environment: VerifiedMetaEvidence;
+  readonly environment: VerifiedEnvironmentStatement;
   readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
   readonly manifest: VerifiedManifest;
@@ -659,7 +660,7 @@ function verifyAllMetadata(
 ): Effect.Effect<
   | {
       readonly kind: "ok";
-      readonly environment: VerifiedMetaEvidence;
+      readonly environment: VerifiedEnvironmentStatement;
       readonly variables: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
       readonly manifest: VerifiedManifest;

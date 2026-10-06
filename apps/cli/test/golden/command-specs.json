@@ -62,6 +62,8 @@
     "positionals": [],
     "subcommands": [
       "create",
+      "rename",
+      "rm",
       "rotate",
       "diff"
     ]
@@ -71,6 +73,26 @@
       "server",
       "project",
       "name"
+    ],
+    "positionals": [
+      "environment-id"
+    ]
+  },
+  "env rename": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "environment-id",
+      "new-name"
+    ]
+  },
+  "env rm": {
+    "flags": [
+      "server",
+      "project",
+      "force"
     ],
     "positionals": [
       "environment-id"

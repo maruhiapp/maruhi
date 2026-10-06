@@ -1,0 +1,64 @@
+---
+title: Environments
+description: Create, rename, and delete the environments of a project. A rename changes only the display name; a deletion is permanent, destroys every value in the environment, and leaves a signed record behind.
+sidebar:
+  order: 15
+---
+
+An environment (`dev`, `staging`, `prod`, …) holds a set of variables and has its own encryption key. Each one has an **ID**, fixed when it is created and part of how its values are encrypted, and a **display name** that can change.
+
+| Task                         | Command                                     | Who can run it                        |
+| ---------------------------- | ------------------------------------------- | ------------------------------------- |
+| Create an environment        | `maruhi env create <environment-id>`        | member or above, scope `all`          |
+| Change its display name      | `maruhi env rename <environment-id> <name>` | member or above, environment in scope |
+| Delete it and all its values | `maruhi env rm <environment-id>`            | admin or owner, environment in scope  |
+
+Every change to a name or to the environment's state is a statement signed by your device key. Other members' CLIs verify it against the project's chain before they trust a name, so the server cannot forge a rename or any other statement on its own.
+
+## Create
+
+```sh
+maruhi env create staging --name Staging
+```
+
+`--name` sets the display name; without it the name is the ID. The ID can contain letters, digits, `_` and `-`, starts with a letter or digit, and can never be used again in the same project, even after the environment is deleted.
+
+## Rename
+
+```sh
+maruhi env rename staging "Pre-production"
+```
+
+```text
+Renamed environment staging from Staging to Pre-production (metaVersion=2)
+```
+
+Only the display name changes. The ID, every value and every key stay as they are, so nothing is re-encrypted and `--env staging` keeps working. Names are normalized to Unicode NFC before signing, are at most 256 characters, and must be unique among the environments that are not deleted ("Another environment in this project is already named …").
+
+If someone else changes the environment at the same moment, the CLI fetches the new state, verifies it, signs again, and retries a few times before giving up. It reports success only after the new name shows up in the verified listing.
+
+## Delete
+
+```sh
+maruhi env rm staging
+```
+
+```text
+You are about to delete environment staging (Pre-production): every variable in it, every stored value version and every wrapped DEK is deleted immediately and cannot be recovered; only its signed deletion record remains. Deletion is terminal — the environment cannot be restored and its ID can never be reused
+Type the environment ID to confirm the permanent deletion: staging
+Deleted environment staging (Pre-production; metaVersion=3). Its variables, values and DEK wraps are gone; a signed deletion record remains, and the ID staging can never be reused
+```
+
+Deleting needs the admin or owner role. You confirm by typing the environment ID. Without a terminal (CI, scripts, or an AI agent) the command refuses unless you pass `--force`, which skips the prompt but still prints what is being deleted.
+
+What happens on the server, at once:
+
+- Every variable in the environment is deleted, with every stored version of its value and the metadata of variables deleted earlier.
+- Every wrapped copy of the environment's keys (its DEKs, for every member and every epoch) is deleted.
+- The environment stays in the project's environment list as a **tombstone**: its signed deletion record, which keeps the last display name. Clients verify that record's signature and author when they read it. Detecting a server that later hides the deletion or brings the environment back is not in place yet: it arrives when environment deletion moves onto the project's chain.
+- The ID is never reused: the project's chain still records that the environment was created. The display name is freed and can be given to another environment.
+- The audit log records the deletion of the environment and of each variable it held.
+
+Afterwards, commands that read the environment, such as `maruhi pull`, fail with "Environment not found", and running `maruhi env rm` again reports that it is already deleted. If the environment was your `defaultEnvironment`, point it somewhere else with `maruhi config set defaultEnvironment <id>`.
+
+Deleting removes the ciphertext the server holds; it does not take back values that were already pulled or synced to a deploy target. If the environment held credentials that should stop working, rotate them at their issuer — see [Rotating upstream credentials](/docs/rotation).

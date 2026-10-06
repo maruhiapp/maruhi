@@ -61,6 +61,11 @@ export interface VerifiedMetaEvidence {
   readonly authorKeyFingerprintHex: string;
 }
 
+/** A verified environment meta statement: the evidence plus its display name (the only verified source of an environment's name — §4.2). */
+export interface VerifiedEnvironmentStatement extends VerifiedMetaEvidence {
+  readonly name: string;
+}
+
 /** A verified tombstone (a deleted statement). */
 export interface VerifiedTombstone extends VerifiedMetaEvidence {
   readonly variableId: string;

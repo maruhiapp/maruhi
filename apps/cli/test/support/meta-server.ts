@@ -1,5 +1,6 @@
 // Test "honest in-memory environment" handlers that accept meta operations
-// (declaration create, activation, removal) and advance the state. Lets the
+// (declaration create, activation, removal, and the environment's own rename
+// / deletion) and advance the state. Lets the
 // schema import (serial registration of many variables — pins down the O(N)
 // round trips) and var rm (transition to tombstone + the 1-E′ confirmation)
 // tests run without hand-editing the echo base on every acceptance.
@@ -24,12 +25,19 @@ import type { MockHandler, MockRequest } from "./server.ts";
 
 /** The environment state the mock advances (exposed for assertions). */
 export interface MetaEnvironmentState {
+  /** The environment's latest statement (advanced by rename / deletion). */
+  envStatement: WireDistributedEnvironmentStatement;
+  /** true once a deletion was accepted (the pulls answer 404; the list keeps the tombstone — §12-4). */
+  environmentDeleted: boolean;
   variables: WireDistributedVariableStatement[];
   tombstones: WireDistributedVariableStatement[];
   /** The latest accepted manifest (null = still serving the initial form). */
   manifest: WireDistributedManifest | null;
   /** Accepted meta-operation requests (for assertions — with kind). */
-  mutations: { kind: "create" | "activate" | "remove"; request: MockRequest }[];
+  mutations: {
+    kind: "create" | "activate" | "remove" | "rename-environment" | "remove-environment";
+    request: MockRequest;
+  }[];
 }
 
 export interface MetaEnvironmentServerInput {
@@ -44,6 +52,8 @@ export interface MetaEnvironmentServerInput {
   readonly schemaPolicy?: "disabled" | "enabled" | "locked";
   /** Accepts removals (DELETE) without advancing state (reproduces the 1-E′ failure path). */
   readonly ignoreRemovals?: boolean;
+  /** Accepts environment renames / deletions without advancing state (the 1-E′ failure path). */
+  readonly ignoreEnvironmentMutations?: boolean;
 }
 
 interface MutationBody {
@@ -71,12 +81,19 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
   readonly handlers: readonly MockHandler[];
 } {
   const state: MetaEnvironmentState = {
+    envStatement: input.envStatement,
+    environmentDeleted: false,
     variables: [...(input.initialVariables ?? [])],
     tombstones: [...(input.initialTombstones ?? [])],
     manifest: null,
     mutations: [],
   };
-  const base = `/projects/${input.chain.projectId}/environments/${input.environmentId}`;
+  const list = `/projects/${input.chain.projectId}/environments`;
+  const base = `${list}/${input.environmentId}`;
+  const notFound = {
+    status: 404,
+    json: { _tag: "EnvironmentNotFound", environmentId: input.environmentId },
+  };
   const activatePattern = new RegExp(`^${base}/variables/([^/]+)/activate$`);
   const removePattern = new RegExp(`^${base}/variables/([^/]+)$`);
 
@@ -101,6 +118,9 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {
         return null;
       }
+      if (state.environmentDeleted) {
+        return notFound;
+      }
       const manifest =
         state.manifest ??
         (await manifestFor({
@@ -109,7 +129,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           epoch: 1,
           issuer: input.owner,
           head: headOf(input.chain, input.chain.entries.length),
-          envStatement: input.envStatement,
+          envStatement: state.envStatement,
           statements: [...state.variables, ...state.tombstones],
         }));
       return {
@@ -117,7 +137,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
         json: {
           environmentId: input.environmentId,
           currentEpoch: 1,
-          statement: input.envStatement,
+          statement: state.envStatement,
           variables: state.variables,
           deletedVariables: state.tombstones,
           manifest,
@@ -171,6 +191,66 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           accepted,
         ];
         state.manifest = distributed(body.manifest, input.owner, "issuer");
+      }
+      return { status: 204, bodyText: "" };
+    },
+    // The value pull of a deleted environment (§12-4 — 404; a live one is left to other handlers)
+    (request) =>
+      request.method === "GET" && request.path === `${base}/pull` && state.environmentDeleted
+        ? notFound
+        : null,
+    // The environment list (deleted environments stay listed with their tombstone statement — §12-4)
+    (request) =>
+      request.method === "GET" && request.path === list
+        ? {
+            status: 200,
+            json: {
+              environments: [
+                {
+                  environmentId: input.environmentId,
+                  currentEpoch: 1,
+                  statement: state.envStatement,
+                },
+              ],
+              schemaPolicy: input.schemaPolicy ?? "enabled",
+            },
+          }
+        : null,
+    // Environment rename (statement + manifest — §12-4)
+    (request) => {
+      if (request.method !== "PATCH" || request.path !== base) {
+        return null;
+      }
+      if (state.environmentDeleted) {
+        return notFound;
+      }
+      state.mutations.push({ kind: "rename-environment", request });
+      if (input.ignoreEnvironmentMutations !== true) {
+        const body = request.body as {
+          readonly statement: WireDistributedEnvironmentStatement;
+          readonly manifest: WireDistributedManifest;
+        };
+        state.envStatement = distributed(body.statement, input.owner, "author");
+        state.manifest = distributed(body.manifest, input.owner, "issuer");
+      }
+      return { status: 204, bodyText: "" };
+    },
+    // Environment deletion (tombstone + cascade — §12-4)
+    (request) => {
+      if (request.method !== "DELETE" || request.path !== base) {
+        return null;
+      }
+      if (state.environmentDeleted) {
+        return notFound;
+      }
+      state.mutations.push({ kind: "remove-environment", request });
+      if (input.ignoreEnvironmentMutations !== true) {
+        const body = request.body as { readonly statement: WireDistributedEnvironmentStatement };
+        state.envStatement = distributed(body.statement, input.owner, "author");
+        state.environmentDeleted = true;
+        state.variables = [];
+        state.tombstones = [];
+        state.manifest = null;
       }
       return { status: 204, bodyText: "" };
     },

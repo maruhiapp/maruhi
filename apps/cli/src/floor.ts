@@ -178,7 +178,7 @@ export interface FloorIntent {
   readonly epoch: number;
   /** The compound's effect-check material (the §5.2 commitment of one's own entry on the chain). A meta op = null. */
   readonly dekCommitmentHex: string | null;
-  /** The matching coordinate of a meta op (variable creation). A compound = null. */
+  /** The matching coordinate of a meta op (variable creation). A compound, or a meta op on the environment's own statement (env rename), = null. */
   readonly variableId: string | null;
   readonly manifestVersion: number;
   readonly manifestSigHashHex: string;
