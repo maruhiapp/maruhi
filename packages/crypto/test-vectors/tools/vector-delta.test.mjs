@@ -534,6 +534,10 @@ function chainSnapshot(src, vectors) {
 const runChain = (src, vectors) =>
   analyze(chainSnapshot(CHAIN_SRC, chainVectors()), chainSnapshot(src, vectors), runtimeForm);
 
+/** An `Operation` union declaring the CHAIN_SRC ops, then `rest`. */
+const declared = (rest) =>
+  `type Operation =\n  | { readonly op: "genesis" }\n  | { readonly op: "approve" }\n  | { readonly op: "withdraw" }${rest}`;
+
 const DELETE_OP_REASON = "new chain op(s) / src case label(s): delete_environment";
 const DELETE_ORDER_REASON = 'new field order(s): delete_environment: ["environment_id"]';
 
@@ -541,6 +545,41 @@ describe("chain ops (signed bytes led by the bare suite)", () => {
   it("reads string case labels from src, fallthrough included, comments excluded", () => {
     const facts = sourceFacts(`${CHAIN_SRC}// case "ghost": in a comment\nconst s = "case";\n`);
     expect([...facts.caseLabels].toSorted()).toEqual(["approve", "genesis", "withdraw"]);
+  });
+
+  it("reads the ops a type declares under `op:` / `inner_op:`, union members included", () => {
+    const facts = sourceFacts(`type Operation =
+  | { readonly op: "genesis"; readonly payload: G }
+  | { readonly op?: "approve" | "withdraw"; readonly inner_op: "propose" };
+const role: Role = "admin" | "member";
+const x = { stop: "not-an-op", op: "rotate_epoch" };
+`);
+    expect([...facts.caseLabels].toSorted()).toEqual([
+      "approve",
+      "genesis",
+      "propose",
+      "rotate_epoch",
+      "withdraw",
+    ]);
+  });
+
+  it("R3: a new op whose dispatch shows no string label (constant, default, table)", () => {
+    const base = declared(";\n") + CHAIN_SRC;
+    const withConstant =
+      declared('\n  | { readonly op: "delete_environment" };\n') +
+      CHAIN_SRC.replace(
+        '    case "approve":',
+        `    case DELETE_ENVIRONMENT: {
+      return encodeLengthPrefixed([operation.payload.environmentId]);
+    }
+    case "approve":`,
+      );
+    const result = analyze(
+      chainSnapshot(base, chainVectors()),
+      chainSnapshot(withConstant, chainVectors()),
+      runtimeForm,
+    );
+    expect(result.reasons.R3).toEqual([DELETE_OP_REASON]);
   });
 
   it("gives a suite-led encoding a shape of its own", () => {

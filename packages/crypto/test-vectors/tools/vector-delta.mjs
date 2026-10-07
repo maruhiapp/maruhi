@@ -177,10 +177,17 @@ function normalizeDomain(domain) {
  * `<suite>/var-meta-sig-v*`.
  *
  * A string `case` label is a member of a closed set the crypto code
- * dispatches on. The one such switch is the chain payload canonicalization
- * (§6.1): its labels are the chain ops, the domain separation of a chain
- * entry (its signed bytes begin with the bare suite, so no domain string
- * shows it), and tsc keeps that switch exhaustive. Any new label counts.
+ * dispatches on. The string switches are on the chain op (§6.1 payload
+ * canonicalization, the approval dispatch of chain verification): their
+ * labels are the chain ops, the domain separation of a chain entry (its
+ * signed bytes begin with the bare suite, so no domain string shows it).
+ * Any new label counts.
+ *
+ * The labels depend on how the dispatch is written (a constant, a default
+ * branch or a table hides a label), so the `op` values the types declare
+ * count too: a string after an `op:` / `inner_op:` property (the
+ * `ChainOperation` union the canonicalization switches on — tsc requires a
+ * new op there), together with the `| "…"` members that follow it.
  */
 export function sourceFacts(src) {
   const tokens = scanTokens(src);
@@ -189,6 +196,7 @@ export function sourceFacts(src) {
   const suites = new Set();
   const primitives = new Set();
   const caseLabels = new Set();
+  let opRun = false; // the previous token was a string declared as an `op`
   for (const [i, { t, v }] of tokens.entries()) {
     if (t === "str") {
       const text = v.slice(1, -1);
@@ -197,15 +205,20 @@ export function sourceFacts(src) {
       if (ALGORITHM_LITERAL.test(text)) primitives.add(`algorithm ${text}`);
       const before = tokens[i - 1];
       const after = tokens[i + 1];
-      if (
+      const isCase =
         before?.t === "code" &&
         /(?:^|[^\w$])case$/.test(before.v) &&
         after?.t === "code" &&
-        after.v.startsWith(":")
-      ) {
-        caseLabels.add(text);
-      }
-    } else if (t === "tpl") {
+        after.v.startsWith(":");
+      const isOp =
+        before?.t === "code" &&
+        (/(?:^|[^\w$])(?:inner_)?op\??:$/.test(before.v) || (opRun && before.v === "|"));
+      if (isCase || isOp) caseLabels.add(text);
+      opRun = isOp;
+      continue;
+    }
+    if (t !== "code" || v !== "|") opRun = false;
+    if (t === "tpl") {
       const m = /^`\$\{[^}]*\}\/([a-z0-9][a-z0-9/-]*)(\$\{)?/.exec(v);
       if (m !== null) domains.add(`<suite>/${m[1]}${m[2] === undefined ? "" : "*"}`);
     }
@@ -861,9 +874,10 @@ function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
  * The risk class and its reasons (highest class wins):
  * R3 — the encoding surface grows: a new domain string, suite, signed-bytes
  *      shape (domain- or suite-led), field order (a chain op's payload order
- *      included), chain op (a src string case label or a vector `op` /
- *      `inner_op`) or primitive, a runtime dependency change, or a surviving
- *      vector whose bytes changed without being rebased.
+ *      included), chain op (a src string case label or `op:` declaration,
+ *      or a vector `op` / `inner_op`) or primitive, a runtime dependency
+ *      change, or a surviving vector whose bytes changed without being
+ *      rebased.
  * R2 — the surface is kept but behavior moves: a surviving vector's expected
  *      outcome changed, a SUPPORTED_* set did anything but shrink, a
  *      negative was removed while the surface it exercised remains, or code /
@@ -1012,7 +1026,7 @@ function surfaceSection(result) {
     `- src removed: ${inline(domains.srcRemoved)}`,
     `- vectors added: ${inline(domains.vectorAdded)}`,
     `- vectors removed: ${inline(domains.vectorRemoved)}\n`,
-    "### Chain ops (src string `case` labels, vector `op` / `inner_op`)\n",
+    "### Chain ops (src string `case` labels and `op:` declarations, vector `op` / `inner_op`)\n",
     `- new (in no base src or base vector): ${inline(ops.new)}`,
     `- src added: ${inline(ops.srcAdded)}; removed: ${inline(ops.srcRemoved)}`,
     `- vectors added: ${inline(ops.vectorAdded)}; removed: ${inline(ops.vectorRemoved)}\n`,
