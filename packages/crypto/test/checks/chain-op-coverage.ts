@@ -9,7 +9,10 @@
 //     entry's payload_bytes_hex (the same for a propose's inner payload). The
 //     chain.ts canonicalization checks pin payload_bytes_hex to
 //     canonicalChainPayloadBytes, so together the declared field order and the
-//     implementation's encoding are one.
+//     implementation's encoding are one. The vectors also pin the order
+//     itself: for every op, swapping any two fields of the declared order
+//     breaks the re-encoding of some positive payload (no pair of fields is
+//     left that every vector happens to fill identically).
 // (2) Direct positive coverage: at least one accepted entry carries the op —
 //     the canonical chain, a valid_appends entry, or an extended_chains entry
 //     (their acceptance is pinned by chain.ts and chain-negative.ts).
@@ -96,8 +99,8 @@ const fieldOrders = chainVectors.canonicalization.payload_field_order as Readonl
 function encodeInFieldOrder(
   op: string,
   payload: Readonly<Record<string, unknown>>,
+  order: readonly string[] | undefined = fieldOrders[op],
 ): Uint8Array | string {
-  const order = fieldOrders[op];
   if (order === undefined) {
     return `no payload_field_order for ${op}`;
   }
@@ -189,6 +192,71 @@ function reencodeMismatches(entry: VectorEntry): readonly string[] {
   return inner === undefined ? found : [...found, `${label} inner: ${inner}`];
 }
 
+/** One positive payload of an op with the bytes the vectors sign for it. */
+interface PayloadSample {
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly bytesHex: unknown;
+}
+
+/** The positive payloads per op: each entry's payload, plus each propose's inner payload. */
+function payloadSamples(entries: readonly VectorEntry[]): ReadonlyMap<string, PayloadSample[]> {
+  const samples = new Map<string, PayloadSample[]>();
+  const add = (op: string, sample: PayloadSample): void => {
+    samples.set(op, [...(samples.get(op) ?? []), sample]);
+  };
+  for (const entry of entries) {
+    add(entry.op, { payload: entry.payload, bytesHex: entry.payload_bytes_hex });
+    const innerOp = entry.payload["inner_op"];
+    const innerPayload = entry.payload["inner_payload"];
+    if (entry.op === "propose" && typeof innerOp === "string" && typeof innerPayload === "object") {
+      add(innerOp, {
+        payload: innerPayload as Readonly<Record<string, unknown>>,
+        bytesHex: entry.payload["inner_payload_lp_hex"],
+      });
+    }
+  }
+  return samples;
+}
+
+/** The declared order with the fields at `i` and `j` swapped. */
+function swapped(order: readonly string[], i: number, j: number): readonly string[] {
+  return order.map((field, k) => (k === i ? order[j]! : k === j ? order[i]! : field));
+}
+
+/**
+ * The field pairs of an op's declared order that no positive payload tells
+ * apart: swapping them still re-encodes every sample to its signed bytes, so
+ * the vectors do not pin that part of the order.
+ */
+function unpinnedPairs(op: string, samples: readonly PayloadSample[]): readonly string[] {
+  const order = fieldOrders[op] ?? [];
+  const unpinned: string[] = [];
+  for (let i = 0; i < order.length; i += 1) {
+    for (let j = i + 1; j < order.length; j += 1) {
+      const swap = swapped(order, i, j);
+      const pinned = samples.some((sample) => {
+        const bytes = encodeInFieldOrder(op, sample.payload, swap);
+        return typeof bytes === "string" || toHex(bytes) !== sample.bytesHex;
+      });
+      if (!pinned) unpinned.push(`${op}: ${order[i]} / ${order[j]}`);
+    }
+  }
+  return unpinned;
+}
+
+/** Every op's order is pinned by the vectors: swapping any two fields breaks some positive payload. */
+function fieldOrderPinnedChecks(c: Checks, entries: readonly VectorEntry[]): void {
+  const samples = payloadSamples(entries);
+  for (const op of keysOf(CHAIN_OPS)) {
+    const unpinned = unpinnedPairs(op, samples.get(op) ?? []);
+    c.push(
+      `chain op coverage: ${op}'s payload_field_order is pinned (no field swap re-encodes every positive payload)`,
+      unpinned.length === 0,
+      unpinned.join("; "),
+    );
+  }
+}
+
 function fieldOrderChecks(c: Checks, entries: readonly VectorEntry[]): void {
   const ops = new Set<string>(keysOf(CHAIN_OPS));
   for (const op of keysOf(CHAIN_OPS)) {
@@ -271,6 +339,7 @@ export async function chainOpCoverageChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const entries = positiveEntries();
   fieldOrderChecks(c, entries);
+  fieldOrderPinnedChecks(c, entries);
   directCoverageChecks(c, entries);
   await appliedProposalChecks(c);
   return c.results;
