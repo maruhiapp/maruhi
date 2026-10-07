@@ -123,6 +123,24 @@ export const CreateEnvironmentEntrySchema = Schema.Struct({
 });
 
 /**
+ * `delete_environment` entry (CRYPTO_SPEC §6.2 — 2026-10-07): the deleted
+ * environment only. Submitted only through the composite deletion endpoint
+ * (AUTH_SPEC §12-4 — the entry plus the data deletion, atomically); the
+ * generic append rejects it (§6). Exported for that endpoint's payload
+ * schema. The id uses the same acceptance-policy format as creation (the
+ * URL-coordinate match check compares it with the path)
+ */
+const DeleteEnvironmentPayloadSchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+});
+
+export const DeleteEnvironmentEntrySchema = Schema.Struct({
+  ...entryBaseFields,
+  op: Schema.Literal("delete_environment"),
+  payload: DeleteEnvironmentPayloadSchema,
+});
+
+/**
  * `rotate_epoch` entry: carries the new-epoch DEK commitment (§5.2).
  * Submitted only through the composite rotation endpoint
  * (AUTH_SPEC §12-4). Exported for that endpoint's payload schema.
@@ -297,6 +315,12 @@ const ProposableOperationSchema = Schema.Union([
     op: Schema.Literal("create_environment"),
     payload: CreateEnvironmentPayloadSchema,
   }),
+  // Structurally an inner op, never a policy target (`approval-not-required`
+  // — CRYPTO_SPEC §6.2; verifyChain decides)
+  Schema.Struct({
+    op: Schema.Literal("delete_environment"),
+    payload: DeleteEnvironmentPayloadSchema,
+  }),
   Schema.Struct({ op: Schema.Literal("rotate_epoch"), payload: RotateEpochPayloadSchema }),
   Schema.Struct({ op: Schema.Literal("grant_server"), payload: GrantServerPayloadSchema }),
   Schema.Struct({ op: Schema.Literal("revoke_server"), payload: RevokeServerPayloadSchema }),
@@ -356,6 +380,8 @@ export const ChainEntrySchema = Schema.Union([
   RemoveMemberEntrySchema,
   ChangeRoleEntrySchema,
   CreateEnvironmentEntrySchema,
+  // Environment deletion on the chain (CRYPTO_SPEC §6.2 — 2026-10-07)
+  DeleteEnvironmentEntrySchema,
   RotateEpochEntrySchema,
   GrantServerEntrySchema,
   RevokeServerEntrySchema,

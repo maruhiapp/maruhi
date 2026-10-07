@@ -91,7 +91,7 @@ export const envRenameConfig = {
 
 export const envListConfig = {
   ...projectFlags(),
-  all: singleFlag("all", "Also list deleted environments (kept as signed deletion records)"),
+  all: singleFlag("all", "Also list deleted environments (recorded on the project chain)"),
   json: singleFlag(
     "json",
     "Print the environments as JSON (ID, name, status, current epoch, whether your scope covers it)",
@@ -263,7 +263,7 @@ const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
   );
 });
 
-/** `maruhi env rm <id> [--force]` (the deletion statement — a tombstone; §12-4). */
+/** `maruhi env rm <id> [--force]` (the delete_environment chain entry — §12-4 / CRYPTO_SPEC §6.2). */
 const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
   flags: CommonFlags & { readonly force: boolean },
   environmentId: EnvironmentId,
@@ -282,7 +282,7 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
   });
   yield* logWarnings(deleted.warnings);
   yield* io.log(
-    `Deleted environment ${environmentId} (${displayText(deleted.name)}; metaVersion=${deleted.metaVersion}). Its variables, values and DEK wraps are gone; a signed deletion record remains, and the ID ${environmentId} can never be reused`,
+    `Deleted environment ${environmentId} (${displayText(deleted.name)}; delete_environment at chain seq ${deleted.deletedAtSeq}). Its variables, values and DEK wraps are gone; a signed deletion record remains on the project chain, and the ID ${environmentId} can never be reused`,
   );
 });
 
@@ -464,7 +464,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused",
+      "Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only its signed delete_environment entry on the project chain remains, and the environment ID can never be reused",
     ),
   );
 

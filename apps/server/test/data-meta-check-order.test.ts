@@ -17,7 +17,6 @@ import {
   deleteEnvironmentRequest,
   MEMBER,
   OWNER,
-  renameEnvironmentRequest,
   requestJson,
 } from "./support/data-fixture.ts";
 import type { DataFixture } from "./support/data-fixture.ts";
@@ -65,22 +64,24 @@ function restoreView(view: View): void {
 }
 
 describe("predecessor-dependent meta checks run after the metaVersion CAS (§12-5)", () => {
-  it("an environment deletion signed before a concurrent rename is a 409, and succeeds over the fresh view", async () => {
+  it("an environment deletion signed over a stale head is a 409 (a concurrent deletion moved it), and re-signed at the fresh head it is the consensus rule's 422 (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const stale = captureView();
-    expect((await renameEnvironmentRequest(fixture, ENV, "Prod", MEMBER)).status).toBe(204);
-    const fresh = captureView();
-    // The stale deletion keeps the name "App" — a predecessor-match
-    // mismatch against "Prod", but the view is stale: the CAS answers first
-    restoreView(stale);
-    const conflict = await deleteEnvironmentRequest(fixture, ENV, OWNER);
-    expect(conflict.status).toBe(409);
-    await expect(conflict.json()).resolves.toMatchObject({
-      _tag: "MetaVersionConflict",
-      currentMetaVersion: 2,
-    });
-    restoreView(fresh);
+    const staleHead = fixture.head;
     expect((await deleteEnvironmentRequest(fixture, ENV, OWNER)).status).toBe(204);
+    // Signed over the head before the concurrent deletion: the CAS answers
+    // first (stale), never the environment's deleted state
+    const conflict = await deleteEnvironmentRequest(fixture, ENV, OWNER, {
+      parentHeadHashHex: staleHead.hashHex,
+    });
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({ _tag: "ChainHeadConflict" });
+    // Over the fresh head the deletion is wrong, not stale
+    const wrong = await deleteEnvironmentRequest(fixture, ENV, OWNER);
+    expect(wrong.status).toBe(422);
+    await expect(wrong.json()).resolves.toMatchObject({
+      _tag: "ChainEntryInvalid",
+      reason: "environment-deleted",
+    });
   });
 
   it("a variable deletion signed before a concurrent rename is a 409, and succeeds over the fresh view", async () => {

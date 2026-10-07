@@ -31,6 +31,7 @@ import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { backfillAllEnvironments, type MemberAddSummary } from "./member-add.ts";
 import {
@@ -45,7 +46,7 @@ import {
   sweepAfterMandate,
   targetedOpRejection,
 } from "./member.ts";
-import { type SweepRotate, verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
+import type { SweepRotate } from "./rotation-sweep.ts";
 import {
   compareCodePoints,
   describeScope,
@@ -414,36 +415,26 @@ export function scopeChangesOf(
  * they go to the note and are left to a re-run by a member whose scope
  * carries that environment.
  */
-const splitWidenedByActorScope = Effect.fn("member-change-role.splitWidenedByActorScope")(
-  function* (input: {
-    readonly client: MaruhiClient;
-    readonly verified: VerifiedProject;
-    readonly actorUserId: string;
-    readonly widened: readonly string[];
-  }): Effect.fn.Return<
-    { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] },
-    CliError
-  > {
-    // A verified-deleted environment is dropped from the widened part even
-    // if still in scope (never keep emitting an out-of-scope note for "an
-    // environment nobody can fill" — pullfrog's catch. Same set as
-    // backfillAllEnvironments). No widening means no query (don't dirty the
-    // exit with a pointless post-append request)
-    const deletedVerified =
-      input.widened.length === 0
-        ? new Set<string>()
-        : yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const live = input.widened.filter((environmentId) => !deletedVerified.has(environmentId));
-    const actor = input.verified.state.members.get(input.actorUserId);
-    const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
-    return {
-      widened: live.filter((environmentId) => scopeIncludesEnvironment(actorScope, environmentId)),
-      widenedOutOfScope: live.filter(
-        (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
-      ),
-    };
-  },
-);
+function splitWidenedByActorScope(input: {
+  readonly verified: VerifiedProject;
+  readonly actorUserId: string;
+  readonly widened: readonly string[];
+}): { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] } {
+  // A chain-deleted environment is dropped from the widened part (never
+  // keep emitting an out-of-scope note for "an environment nobody can
+  // fill" — pullfrog's catch. Same set as backfillAllEnvironments; a
+  // deletion also prunes the id from every scope — CRYPTO_SPEC §6.2)
+  const deletedVerified = chainDeletedEnvironments(input.verified);
+  const live = input.widened.filter((environmentId) => !deletedVerified.has(environmentId));
+  const actor = input.verified.state.members.get(input.actorUserId);
+  const actorScope: MemberScope = actor?.scope ?? { kind: "listed", environmentIds: [] };
+  return {
+    widened: live.filter((environmentId) => scopeIncludesEnvironment(actorScope, environmentId)),
+    widenedOutOfScope: live.filter(
+      (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
+    ),
+  };
+}
 
 /** change_role's inner op (proposal-ization — the omitted side is already resolved against the target's state on the proposal-time view). */
 function changeRoleOperation(input: {
@@ -596,8 +587,7 @@ export const fulfilRoleChange = Effect.fn("member-change-role.fulfilRoleChange")
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.fn.Return<RoleChangeFulfilment, CliError, R> {
   const change = scopeChangesOf(input.verified, input.target);
-  const { widened, widenedOutOfScope } = yield* splitWidenedByActorScope({
-    client: input.client,
+  const { widened, widenedOutOfScope } = splitWidenedByActorScope({
     verified: input.verified,
     actorUserId: input.signerUserId,
     widened: change.widened,

@@ -37,7 +37,7 @@ import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { describeScope, outOfScopeMessage } from "./scope.ts";
+import { deletedEnvironmentMessage, describeScope, outOfScopeMessage } from "./scope.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
 export interface DekRecipient {
@@ -147,7 +147,27 @@ function verifyAndUnwrapOne(input: {
   });
 }
 
-/** Chain-derived environment state (§6.2). Distributing a not-yet-created environment contradicts the chain in the server response. */
+/**
+ * The environments deleted on the verified chain (`delete_environment` —
+ * CRYPTO_SPEC §6.2). The chain is the only authority for deletion: no
+ * server listing or statement is consulted, so this needs no request and
+ * cannot be withheld.
+ */
+export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<string> {
+  const deleted = new Set<string>();
+  for (const [environmentId, environment] of verified.state.environments) {
+    if (environment.deletedAtSeq !== null) {
+      deleted.add(environmentId);
+    }
+  }
+  return deleted;
+}
+
+/**
+ * Chain-derived environment state (§6.2) of a live environment. Distributing
+ * a not-yet-created environment contradicts the chain in the server
+ * response; a deleted one is never read, written or rotated (§6.3).
+ */
 export function requireChainEnvironment(
   verified: VerifiedProject,
   environmentId: string,
@@ -158,6 +178,11 @@ export function requireChainEnvironment(
       cliError(
         `Environment ${environmentId} does not exist on the chain (no create_environment observed). It may have just been created — if re-running does not resolve this, the server response contradicts the chain`,
       ),
+    );
+  }
+  if (environment.deletedAtSeq !== null) {
+    return Effect.fail(
+      cliError(deletedEnvironmentMessage(environmentId, environment.deletedAtSeq)),
     );
   }
   return Effect.succeed(environment);

@@ -447,10 +447,10 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
 // pull)
 // ---------------------------------------------------------------------------
 
+/** One listed environment (the server lists live environments only; a deleted one is on the chain — AUTH_SPEC §12-7). */
 interface EnvironmentRow extends Record<string, unknown> {
   id: string;
   name: string;
-  status: string;
   epoch: number;
 }
 
@@ -458,7 +458,6 @@ function toEnvironmentRow(env: EnvironmentSummary): EnvironmentRow {
   return {
     id: env.environmentId,
     name: env.statement.name,
-    status: env.statement.status,
     epoch: env.currentEpoch,
   };
 }
@@ -552,14 +551,7 @@ function buildEnvironmentColumns(
       key: "name",
       header: "Environment",
       width: proportional(1),
-      renderCell: (row: EnvironmentRow) => (
-        <HStack gap={2} align="center">
-          <Text size="sm" hasStrikethrough={row.status === "deleted"}>
-            {row.name}
-          </Text>
-          {row.status === "deleted" ? <Token label="deleted" size="sm" color="gray" /> : null}
-        </HStack>
-      ),
+      renderCell: (row: EnvironmentRow) => <Text size="sm">{row.name}</Text>,
     },
     {
       key: "id",
@@ -581,17 +573,16 @@ function buildEnvironmentColumns(
       key: "names",
       header: "Variables",
       width: pixel(130),
-      renderCell: (row: EnvironmentRow) =>
-        row.status === "deleted" ? null : (
-          <Button
-            label={row.id === selectedEnvironmentId ? "Hide names" : "Variable names"}
-            variant="ghost"
-            size="sm"
-            onClick={() => onToggle(row.id)}
-            aria-expanded={row.id === selectedEnvironmentId}
-            aria-controls={row.id === selectedEnvironmentId ? variablesRegionId : undefined}
-          />
-        ),
+      renderCell: (row: EnvironmentRow) => (
+        <Button
+          label={row.id === selectedEnvironmentId ? "Hide names" : "Variable names"}
+          variant="ghost"
+          size="sm"
+          onClick={() => onToggle(row.id)}
+          aria-expanded={row.id === selectedEnvironmentId}
+          aria-controls={row.id === selectedEnvironmentId ? variablesRegionId : undefined}
+        />
+      ),
     },
   ];
 }

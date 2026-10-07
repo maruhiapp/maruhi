@@ -89,7 +89,6 @@ const attemptRename = Effect.fn("env-rename.attemptRename")(function* (
     state,
     environmentId: input.environmentId,
     name,
-    status: "active",
     authorUserId: input.signerUserId,
     signingKey,
   });

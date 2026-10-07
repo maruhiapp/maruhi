@@ -146,6 +146,22 @@ function payloadTamperVariants(): readonly TamperVariant[] {
     ),
     ...scopeAndApprovalTamperVariants(),
     ...deviceTamperVariants(),
+    ...deletionTamperVariants(),
+  ];
+}
+
+/** Payload-tampered variant for environment deletion (2026-10-07 — seq 20 of the derived chain environment-deleted). */
+function deletionTamperVariants(): readonly TamperVariant[] {
+  const chain = "environment-deleted";
+  const eDelete = extendedEntryOfOp(chain, 20, "delete_environment");
+  return [
+    // The deleted environment is signed (a server cannot redirect a deletion)
+    {
+      name: "delete-env-tampered-environment-id",
+      entry: { ...eDelete, payload: { environmentId: "env-dev-0002" } },
+      expect: "bad-signature",
+      chain,
+    },
   ];
 }
 
@@ -514,6 +530,11 @@ const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "propose-inner-payload-flat",
   "add-device-scope-flat-concat",
   "revoke-device-fp-flat-concat",
+  // 2026-10-07: a deletion's bytes relabeled as remove_member (same
+  // one-field payload — the op name is the domain separation) and under
+  // another suite (based on the derived chain environment-deleted)
+  "delete-env-op-confusion",
+  "delete-env-suite-mismatch",
 ];
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
@@ -628,13 +649,32 @@ async function extendedChainChecks(c: Checks): Promise<void> {
     const result = await verifyChain(chain);
     c.push(
       `chain extended: ${name} verifies`,
-      result.ok &&
-        membersMatch(result.value, extended.expected_members) &&
-        checkpointsMatch(result.value, extended.expected_checkpoints) &&
-        policyMatchesVector(result.value.approvalPolicy, extended.expected_policy) &&
-        pendingMatchesVector(result.value.pendingProposals, extended.expected_pending),
+      result.ok && extendedStateMatches(result.value, extended),
     );
   }
+}
+
+/** Whether an extended chain's derived state matches every expectation its vector carries (an optional axis only when present). */
+function extendedStateMatches(
+  state: ChainState,
+  extended: (typeof vectorExtendedChains)[string],
+): boolean {
+  return [
+    membersMatch(state, extended.expected_members),
+    checkpointsMatch(state, extended.expected_checkpoints),
+    policyMatchesVector(state.approvalPolicy, extended.expected_policy),
+    pendingMatchesVector(state.pendingProposals, extended.expected_pending),
+    optionalMatch(extended.expected_environments, (expected) => environmentsMatch(state, expected)),
+    deletedEnvironmentsMatch(state, extended.expected_deleted_environments),
+    optionalMatch(extended.expected_server_grants, (expected) =>
+      serverGrantsMatch(state, expected),
+    ),
+  ].every(Boolean);
+}
+
+/** An optional expectation: absent passes, present must match. */
+function optionalMatch<T>(expected: T | undefined, match: (expected: T) => boolean): boolean {
+  return expected === undefined || match(expected);
 }
 
 async function framingChecks(c: Checks): Promise<void> {
@@ -847,6 +887,27 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
   );
 }
 
+/**
+ * Whether the derived deletions match the expectation (environment_id →
+ * delete_environment seq — §6.2, 2026-10-07). An absent expectation means
+ * no environment is deleted.
+ */
+function deletedEnvironmentsMatch(
+  state: ChainState,
+  expected: Readonly<Record<string, number>> | undefined,
+): boolean {
+  const deleted = [...state.environments].filter(
+    ([, environment]) => environment.deletedAtSeq !== null,
+  );
+  const wanted = Object.entries(expected ?? {});
+  return (
+    deleted.length === wanted.length &&
+    wanted.every(
+      ([environmentId, seq]) => state.environments.get(environmentId)?.deletedAtSeq === seq,
+    )
+  );
+}
+
 /** Whether the derived active-grant set matches the expectation (including scope + lease_policy). */
 function serverGrantsMatch(
   state: ChainState,
@@ -871,6 +932,7 @@ async function validAppendVectorCheck(
     result.ok &&
       membersMatch(result.value, append.expected_members) &&
       environmentsMatch(result.value, append.expected_environments) &&
+      deletedEnvironmentsMatch(result.value, append.expected_deleted_environments) &&
       serverGrantsMatch(result.value, append.expected_server_grants) &&
       checkpointsMatch(result.value, append.expected_checkpoints) &&
       policyMatchesVector(result.value.approvalPolicy, append.expected_policy) &&

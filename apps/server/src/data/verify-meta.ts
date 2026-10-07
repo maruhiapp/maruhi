@@ -95,9 +95,10 @@ const ensureLayoutShape = (
  *    calling principal (rejects carrying in a statement signed by someone else)
  * 2. The exact pair of the declared head (hash + seq) exists on the chain being
  *    verified
- * 3. The author held the required role at the declared head (only environment
- *    deletion needs admin; everything else member — the §12-3 double check),
- *    and the bound key then equals the key at acceptance time
+ * 3. The author held the required role at the declared head (member — the
+ *    §12-3 double check; an environment deletion is the chain op
+ *    delete_environment, not a statement), and the bound key then equals the
+ *    key at acceptance time
  * 4. metaVersion 1 has an empty prev; > 1 matches the signed-bytes hash of the
  *    stored immediately-preceding statement, and is rejected if the predecessor
  *    is deleted (§4.2 — re-activation is forbidden)
@@ -261,7 +262,7 @@ export const ensureDescriptionPolicy = (
  *
  * - `reissue`: a rename or schema re-issuance (variable or environment)
  * - `activate`: declared → active (the activation composite)
- * - `delete`: a variable or environment deletion
+ * - `delete`: a variable deletion
  */
 export type MetaOperation = "reissue" | "activate" | "delete";
 

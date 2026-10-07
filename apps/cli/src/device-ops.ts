@@ -47,6 +47,7 @@ import { appendEntry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { capWithinSignerCap, describeCap, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -59,7 +60,6 @@ import {
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
-  verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import { compareCodePoints, requireScopeEnvironmentsExist, scopeContains } from "./scope.ts";
 
@@ -345,13 +345,12 @@ export interface DeviceBackfillOutcome {
  * decided by the same function — the structure keeps "the set we should
  * have delivered" and "the set we check" identical.
  */
-export const deviceEnvironmentsOf = Effect.fn("device-ops.deviceEnvironmentsOf")(function* (input: {
-  readonly client: MaruhiClient;
+export function deviceEnvironmentsOf(input: {
   readonly verified: VerifiedProject;
   readonly targetMember: ChainMember;
   readonly targetDevice: ChainDevice;
-}): Effect.fn.Return<readonly string[], CliError> {
-  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+}): readonly string[] {
+  const deletedVerified = chainDeletedEnvironments(input.verified);
   const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
   return [...input.verified.state.environments.keys()]
     .filter(
@@ -359,7 +358,7 @@ export const deviceEnvironmentsOf = Effect.fn("device-ops.deviceEnvironmentsOf")
         !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
     )
     .toSorted(compareCodePoints);
-});
+}
 
 /**
  * Backfills every epoch of every environment in the target device's effective
@@ -376,7 +375,7 @@ export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(functio
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<DeviceBackfillOutcome, CliError> {
-  const environments = yield* deviceEnvironmentsOf(input);
+  const environments = deviceEnvironmentsOf(input);
   const aggregate = yield* backfillEachEnvironment(environments, (environmentId) =>
     backfillEnvironmentFor({
       client: input.client,
@@ -436,7 +435,7 @@ export const sweepAfterDeviceRevoke = Effect.fn("device-ops.sweepAfterDeviceRevo
   const canRotate = permission !== null && ROLE_RANK[permission.role] >= ROLE_RANK.member;
   const actorScope: MemberScope =
     canRotate && permission !== null ? permission.scope : { kind: "listed", environmentIds: [] };
-  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const deletedVerified = chainDeletedEnvironments(input.verified);
   const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
     verified: input.verified,
     all: baselinesOf(mandates),

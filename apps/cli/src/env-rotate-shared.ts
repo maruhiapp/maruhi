@@ -92,6 +92,7 @@ export const ensureRotatable = Effect.fn("env-rotate-shared.ensureRotatable")(fu
   const { member } = yield* requireWritingMember({
     verified,
     environmentId,
+    target: "existing",
     signerUserId,
     signingKeyPair,
     operation: "rotate the epoch",

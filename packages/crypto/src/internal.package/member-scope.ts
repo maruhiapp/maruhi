@@ -104,6 +104,21 @@ export function scopeIncludesEnvironment(scope: MemberScope, environmentId: stri
   return scope.kind === "all" || scope.environmentIds.includes(environmentId);
 }
 
+/**
+ * A scope without a deleted environment (`delete_environment` — §6.2): a
+ * `listed` scope stays `listed`, possibly empty; `all` is unchanged. The one
+ * pruning rule shared by the verification state and the history index.
+ */
+export function scopeWithout(scope: MemberScope, environmentId: string): MemberScope {
+  if (scope.kind === "all" || !scope.environmentIds.includes(environmentId)) {
+    return scope;
+  }
+  return {
+    kind: "listed",
+    environmentIds: scope.environmentIds.filter((id) => id !== environmentId),
+  };
+}
+
 /** A scope viewed as an environment set. */
 export function scopeAsEnvironmentSet(scope: MemberScope): EnvironmentSet {
   return scope.kind === "all"

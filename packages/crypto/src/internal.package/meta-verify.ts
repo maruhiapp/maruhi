@@ -12,8 +12,8 @@
 //   3. Authorization time (membership, key binding, and role at the declared
 //      head — including rejection across tenure boundaries. Role levels:
 //      variable create / rename / delete and environment create / rename =
-//      member or above; only environment delete = admin or above — §4.2 /
-//      AUTH_SPEC §12-3)
+//      member or above — §4.2 / AUTH_SPEC §12-3. Environment deletion is the
+//      chain op delete_environment, not a statement — §6.2)
 //   6. Chaining integrity (only when a predecessor is passed: prev match +
 //      rejection of re-statement after deletion — §4.2's "no re-activation
 //      after deleted" — plus layout v3's transition rules: no
@@ -105,12 +105,12 @@ function metaInvalid(reason: MetaInvalidReason): {
   return { ok: false, error: { kind: "MetaStatementInvalid", reason } };
 }
 
-/** §4.2 / §12-3 role levels: only environment delete is admin; everything else is member. */
-function requiredRoleRank(context: MetaStatementContext): number {
-  return context.target.kind === "environment" && context.status === "deleted"
-    ? ROLE_RANK.admin
-    : ROLE_RANK.member;
-}
+/**
+ * §4.2 / §12-3 role level: every statement is member or above. Environment
+ * deletion is the chain op delete_environment (admin — §6.2, 2026-10-07),
+ * not a statement, so no statement needs a higher level
+ */
+const REQUIRED_ROLE_RANK = ROLE_RANK.member;
 
 // 2-3. Reason-code mapping of head binding / authorization time (§6.3-1 to
 // -3). The check itself is headAuthorizationReason (validate.ts — shared
@@ -134,9 +134,9 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
     chainHeadHashHex: context.chainHeadHashHex,
     actorUserId: context.authorUserId,
     actorKeyFingerprintHex: input.authorKeyFingerprintHex,
-    requiredRoleRank: requiredRoleRank(context),
+    requiredRoleRank: REQUIRED_ROLE_RANK,
     reasons: HEAD_AUTHORIZATION_REASONS,
-    // 3′. Scope (§6.3 — 2026-09-14 ES): environment meta (rename / delete)
+    // 3′. Scope (§6.3 — 2026-09-14 ES): environment meta (create / rename)
     // and variable meta are all environment-targeting. A statement bundled
     // into a creation compound holds vacuously since the creator's scope is
     // all

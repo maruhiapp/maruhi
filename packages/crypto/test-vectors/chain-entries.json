@@ -39,7 +39,8 @@
         "scope_kind",
         "scope_environments_lp_hex"
       ],
-      "revoke_device": ["target_user_id", "device_fingerprints_lp_hex"]
+      "revoke_device": ["target_user_id", "device_fingerprints_lp_hex"],
+      "delete_environment": ["environment_id"]
     },
     "member_scope": "the last 2 fields of add_member / change_role: scope_kind (\"all\" | \"listed\") and scope_environments_lp_hex (lowercase hex of the LP of the environment_id list — the same nested LP as grant_server's scope_environments. Order is signed. Generators SHOULD emit ascending; verifiers treat it as a set). Structural rules: all ⇒ the empty list is required · at most 256 elements · duplicate ids are invalid · an empty listed list is valid (§6.2 — 2026-09-14 ES). genesis has no scope and its creator is structurally all → needs review",
     "approval_policy": "set_approval_policy = LP(ops_lp_hex, required_approvals). ops_lp_hex = hex of the LP of the op-name list (nested LP. Order is signed. Generators SHOULD emit ascending; verifiers treat it as a set). ops ⊆ {grant_server, revoke_server, remove_member, change_role, add_member, set_approval_policy}, required_approvals is 0 (off) or ≥ 2 (§6.2 — 2026-09-14 PF1) → needs review",
@@ -51,6 +52,7 @@
     "lease_policy": "constraint = LP(claim_name, claim_value), element = LP(issuer_url, audience, LP(constraint...)), lease_policy_lp_hex = lower_hex(LP(element...)) (3-level nested LP — §6.2). The list order (of both elements and constraints) is part of the signed data. An empty list is the hex empty string = no lease path. Caps: 8 elements / 8 constraints per element / each string 1024 bytes (§6.1) → needs review",
     "dek_commitment": "dek_commitment_hex = lower_hex(SHA-256(LP(\"maruhi/v1/dek-commit\", project_id, environment_id, epoch, dek_hex))) (§5.2). project_id = the genesis entry hash. The form is lowercase hex 64 chars (the form check is at the payload structure stage — §6.2). Content matching is the receiver's §5.2 verification; chain verification checks the form only",
     "checkpoint_environments": "an environment entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex, values_digest_hex), environments_lp_hex = lower_hex(LP(entry...)) (the same nested LP as scope_environments — §6.2). The list order is part of the signed data (generators SHOULD emit environment_id in byte-ascending order — verification is not normative about order). A duplicate environment_id is invalid at payload-structure checking (invalid-payload). manifest_sig_hash_hex / values_digest_hex are lowercase hex 64 chars; audit_head_hash_hex is the empty string (no attestation) or lowercase hex 64 chars. Tuple contents (manifest, values, audit head) cannot be verified by chain verification; matching is done by the server's acceptance check (§6.4) and the client's distribution-time comparison (§6.3) → needs review",
+    "environment_deletion": "delete_environment = LP(environment_id) (§6.2 — 2026-10-07). Admin or above with the environment in the actor's effective scope, only after its create_environment (unknown-environment), at most once and never referenced by a later entry (environment-deleted — rotate / delete targets, checkpoint tuples, add_member / change_role / add_device scope lists, grant_server scope_environments; reuse of the id stays duplicate-environment). The derived state keeps the environment (expected_deleted_environments = environment_id → the deletion seq; absent = none deleted) and removes the id from every listed member / device / grant scope. Not a four-eyes target. The positive column is the valid appends delete-environment-* / regrant-after-environment-deleted and the derived chains environment-deleted (base 19) / environment-deleted-granted (base 9) → needs review",
     "env_values_digest": "values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m))), v_j = LP(variable_id, version, value_sig_hash_hex) (UTF-8 byte-ascending order of variable_id. Active variables only — tombstones are captured by the manifest side, §4.3). The empty set is also valid. Unit vectors are in the values_digests section → needs review"
   },
   "keys": {
@@ -4717,6 +4719,529 @@
       },
       "expected_pending": {},
       "note": "phone P (owner, listed{}) can create a device with the same cap (owner, listed{}) (the equality side of monotonicity — empty scope ⊆ empty scope)"
+    },
+    {
+      "name": "delete-environment-by-admin",
+      "entry": {
+        "seq": 13,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "da24caae007eb9f641db7f12844e70b97d872b2697beba145fdc4e34cce5ec1e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006412000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343132303030",
+        "signature_hex": "c3ed93a271e912aea04038f2e05a09e5f1c6751d6eab7a4bacbd64e324a7f564cf80cd545f1c12442a6132c0e4aa0706e128ebcb5d966d2d31a9bb832d98870b",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343132303030000000806333656439336132373165393132616561303430333866326530356130396535663163363735316436656162376134626163626436346533323461376635363463663830636435343566316331323434326136313332633065346161303730366531323865626362356439363664326433316139626238333264393838373062",
+        "entry_hash_hex": "7d83fbaf4de81148a80da71877e656b4c3a6fa2272496c8973e482e67b6c240c"
+      },
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "2",
+        "env-stage-0003": "1"
+      },
+      "expected_deleted_environments": {
+        "env-stage-0003": 13
+      },
+      "expected_server_grants": [],
+      "note": "an admin (scope all) deletes an environment created earlier (env-stage-0003, seq 11). The environment stays in the environment set (its epoch is still derivable) with deleted_at_seq 13 — a deleted id is never reusable (§6.2)"
+    },
+    {
+      "name": "delete-environment-prunes-grant-scope",
+      "entry": {
+        "seq": 10,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "97d5735cacf1b399ca54af7c3a6d218fd6d9e6865f521e48e1b7592346e3622a",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-dev-0002"
+        },
+        "timestamp_ms": 1754006409000,
+        "payload_bytes_hex": "0000000c656e762d6465762d30303032",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313000000040393764353733356361636631623339396361353461663763336136643231386664366439653638363566353231653438653162373539323334366533363232610000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343039303030",
+        "signature_hex": "f6075fe20973467a41221c4475f14857951d53e3b508913a21d4f9a7d2e3c9d4e7ea3dda7dd8a61133572acd2d2a1d43a52b0c98ee96fe7e024714b828d2600e",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313000000040393764353733356361636631623339396361353461663763336136643231386664366439653638363566353231653438653162373539323334366533363232610000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343039303030000000806636303735666532303937333436376134313232316334343735663134383537393531643533653362353038393133613231643466396137643265336339643465376561336464613764643861363131333335373261636432643261316434336135326230633938656539366665376530323437313462383238643236303065",
+        "entry_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475"
+      },
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "1"
+      },
+      "expected_deleted_environments": {
+        "env-dev-0002": 10
+      },
+      "expected_server_grants": [
+        {
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "scope_environments": ["env-prod-0001"],
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "grant_seq": 9
+        }
+      ],
+      "note": "deleting env-dev-0002 while the seq-9 grant discloses {prod, dev} removes the id from the grant's scope_environments (the grant itself and its grant_seq stay — §6.2's state transition)"
+    },
+    {
+      "name": "regrant-after-environment-deleted",
+      "chain": "environment-deleted-granted",
+      "entry": {
+        "seq": 11,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475",
+        "op": "grant_server",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "scope_environments": ["env-prod-0001"],
+          "scope_environments_lp_hex": "0000000d656e762d70726f642d30303031",
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "lease_policy_lp_hex": "000000a20000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000490000001a000000037265660000000f726566732f68656164732f6d61696e000000270000000a7265706f7369746f72790000001561636d652d64756d6d792f7769646765742d617070000000990000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000400000003c00000003737562000000317265706f3a61636d652d64756d6d792f7769646765742d6170703a7265663a726566732f68656164732f72656c65617365"
+        },
+        "timestamp_ms": 1754006410000,
+        "payload_bytes_hex": "000000403966643761643664636666343239386464336639366435623162326166393130613035333562313438386437663866616262333439613938323838306236313500000020346564663637356134303539343165613832303666393737653161653631396100000022303030303030306436353665373632643730373236663634326433303330333033310000028630303030303061323030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343930303030303031613030303030303033373236353636303030303030306637323635363637333266363836353631363437333266366436313639366530303030303032373030303030303061373236353730366637333639373436663732373930303030303031353631363336643635326436343735366436643739326637373639363436373635373432643631373037303030303030303939303030303030326236383734373437303733336132663266373436663662363536653265363136333734363936663665373332653637363937343638373536323735373336353732363336663665373436353665373432653633366636643030303030303232363837343734373037333361326632663664363137323735363836393264363436663637363636663666363432653635373836313664373036633635326536333666366430303030303034303030303030303363303030303030303337333735363230303030303033313732363537303666336136313633366436353264363437353664366437393266373736393634363736353734326436313730373033613732363536363361373236353636373332663638363536313634373332663732363536633635363137333635",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000003180000004039666437616436646366663432393864643366393664356231623261663931306130353335623134383864376638666162623334396139383238383062363135000000203465646636373561343035393431656138323036663937376531616536313961000000223030303030303064363536653736326437303732366636343264333033303330333100000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030",
+        "signature_hex": "6b52f03e8376d922e42c5a9fa465ada2b23ae2938fbfe18f3c5719015027b8d9d005b8d927cf4d055066193d79d225f6d57209fa9777069b42a283910afb4008",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000003180000004039666437616436646366663432393864643366393664356231623261663931306130353335623134383864376638666162623334396139383238383062363135000000203465646636373561343035393431656138323036663937376531616536313961000000223030303030303064363536653736326437303732366636343264333033303330333100000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030000000803662353266303365383337366439323265343263356139666134363561646132623233616532393338666266653138663363353731393031353032376238643964303035623864393237636634643035353036363139336437396432323566366435373230396661393737373036396234326132383339313061666234303038",
+        "entry_hash_hex": "0f30701a1f062c5af549f5e1b35ce3056e927d70e94e91629a31e7a14f5b6daa"
+      },
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "1"
+      },
+      "expected_deleted_environments": {
+        "env-dev-0002": 10
+      },
+      "expected_server_grants": [
+        {
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "scope_environments": ["env-prod-0001"],
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "grant_seq": 11
+        }
+      ],
+      "note": "after the deletion pruned the grant's scope to {prod}, a re-grant of {prod} is accepted (old ⊆ new). A verifier that kept the deleted id in the grant's scope would reject it as grant-scope-narrowed — and could never accept any re-grant, because naming the deleted id is environment-deleted"
+    },
+    {
+      "name": "delete-environment-under-policy",
+      "entry": {
+        "seq": 25,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "41a5a60e96949024c0a5d67757d8fd7edcd92fc2225ecc4ae7e6bebe5bac9cbd",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-dev-0002"
+        },
+        "timestamp_ms": 1754006424000,
+        "payload_bytes_hex": "0000000c656e762d6465762d30303032",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323500000040343161356136306539363934393032346330613564363737353764386664376564636439326663323232356563633461653765366265626535626163396362640000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343234303030",
+        "signature_hex": "7bb3d973f27acb7cfc8a78fe12655b8a678d7e9e4f579ade620b8f50f89180fe86dd3eca810dfab763578b9038257476a5312ca4176782529c42f1581cbcb507",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323500000040343161356136306539363934393032346330613564363737353764386664376564636439326663323232356563633461653765366265626535626163396362640000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343234303030000000803762623364393733663237616362376366633861373866653132363535623861363738643765396534663537396164653632306238663530663839313830666538366464336563613831306466616237363335373862393033383235373437366135333132636134313736373832353239633432663135383163626362353037",
+        "entry_hash_hex": "d4f48cdb0903c446fba10c3a8d0194fde374ac15ce6f63bc7b1cdfec4774bfcf"
+      },
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-devmember-0010": {
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": []
+          }
+        },
+        "user-devadmin-0011": {
+          "role": "admin",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-stage-0003"]
+          }
+        },
+        "user-prodreader-0012": {
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-prod-0001"]
+          }
+        },
+        "user-allmember-0013": {
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-owner-0014": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-owner-0015": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "2",
+        "env-stage-0003": "1"
+      },
+      "expected_server_grants": [],
+      "expected_policy": {
+        "ops": ["change_role", "grant_server", "remove_member", "set_approval_policy"],
+        "required_approvals": "2"
+      },
+      "expected_pending": {},
+      "note": "delete_environment is never a four-eyes target, so it is appended directly while the policy is active (§6.2). devmember-0010 (reader, listed{dev}) keeps an empty listed scope and devadmin-0011 becomes listed{stage}",
+      "expected_deleted_environments": {
+        "env-dev-0002": 25
+      }
+    },
+    {
+      "name": "delete-environment-prunes-device-scope",
+      "entry": {
+        "seq": 30,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "8888777dec00ed924acbe2b0ada1375309e6dd4e1b4d9c278d58f404e5441f77",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006429000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002333000000040383838383737376465633030656439323461636265326230616461313337353330396536646434653162346439633237386435386634303465353434316637370000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343239303030",
+        "signature_hex": "ab005231256e8e2a6c1a808f14a940054100ee8912f2b2265eb26f188de1c12df8abaeb6f96bd9b08554354240d12cd770389d7e1361e30d5c80cd5b04c24b0e",
+        "entry_bytes_hex": "000000096d61727568692f763100000002333000000040383838383737376465633030656439323461636265326230616461313337353330396536646434653162346439633237386435386634303465353434316637370000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343239303030000000806162303035323331323536653865326136633161383038663134613934303035343130306565383931326632623232363565623236663138386465316331326466386162616562366639366264396230383535343335343234306431326364373730333839643765313336316533306435633830636435623034633234623065",
+        "entry_hash_hex": "d9d817927dc4979c0aeeb1f664baf7459678616bac9d5b4c252df8134538e396"
+      },
+      "chain": "device-added",
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": {
+            "cebb7acb0fb521016531d3dd80e25e51": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 1
+            },
+            "bafad7e0314e665715c21073b052c3fd": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 25
+            },
+            "f3f1c4508e09e158b255be186d87f8ad": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "listed",
+                "environments": []
+              },
+              "added_seq": 26
+            }
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": {
+            "06f6220c286340e6d81c9ba0355cdcfe": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 6
+            }
+          }
+        },
+        "user-devmember-0010": {
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-dev-0002"]
+          },
+          "devices": {
+            "4f41d528425c5d06e05b29dc2adfc4ac": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 13
+            }
+          }
+        },
+        "user-devadmin-0011": {
+          "role": "admin",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-dev-0002"]
+          },
+          "devices": {
+            "d4c5f4d02633934c8f062abd823ddf6f": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 14
+            }
+          }
+        },
+        "user-prodreader-0012": {
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-prod-0001"]
+          },
+          "devices": {
+            "d3db4317e64cd79674b8dd1e9d1888a1": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 15
+            }
+          }
+        },
+        "user-allmember-0013": {
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": {
+            "935fc2095d08b79a13885ce830bdfac2": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 16
+            },
+            "f920b0f2e8dc88b9bbc6a34d92224368": {
+              "role_cap": "member",
+              "scope": {
+                "kind": "listed",
+                "environments": ["env-dev-0002"]
+              },
+              "added_seq": 27
+            }
+          }
+        },
+        "user-owner-0014": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": {
+            "92f78e630945a958d61388038a7abf00": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 18
+            },
+            "542b22ebe2d9d39aa5e423e6ea1d5d79": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 28
+            }
+          }
+        },
+        "user-owner-0015": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": {
+            "b30ab3db2743ba91dc2eed978350360f": {
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 19
+            },
+            "ba49455118006f34f0427f01f130a9c9": {
+              "role_cap": "reader",
+              "scope": {
+                "kind": "all"
+              },
+              "added_seq": 29
+            }
+          }
+        }
+      },
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "2",
+        "env-stage-0003": "1"
+      },
+      "expected_server_grants": [],
+      "expected_policy": {
+        "ops": ["change_role", "grant_server", "remove_member", "set_approval_policy"],
+        "required_approvals": "2"
+      },
+      "expected_pending": {},
+      "note": "deleting env-stage-0003 also removes it from device scopes: the CI box C of allmember-0013 (cap member, listed{dev, stage}) becomes listed{dev}, and devadmin-0011's member scope becomes listed{dev} (§6.2's state transition covers member and device scopes)",
+      "expected_deleted_environments": {
+        "env-stage-0003": 30
+      }
     }
   ],
   "extended_chains": {
@@ -11213,6 +11738,177 @@
           ]
         }
       }
+    },
+    "environment-deleted": {
+      "description": "A derived chain appending one delete_environment to the canonical chain seq 1-19 (policy off): the dev-dedicated admin devadmin-0011 (admin, listed{dev, stage}) deletes env-stage-0003 at seq 20 (the permissive side — admin or above with the environment in scope). The derived state keeps env-stage-0003 in the environment set at epoch 1 with deleted_at_seq 20, and the id leaves every listed scope: devmember-0010 and devadmin-0011 become listed{dev} (§6.2's state transition). The precondition chain of the reference-after-deletion negatives",
+      "base_seq": 19,
+      "entries": [
+        {
+          "seq": 20,
+          "suite": "maruhi/v1",
+          "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+          "op": "delete_environment",
+          "actor": {
+            "user_id": "user-devadmin-0011",
+            "key_fingerprint_hex": "d4c5f4d02633934c8f062abd823ddf6f"
+          },
+          "payload": {
+            "environment_id": "env-stage-0003"
+          },
+          "timestamp_ms": 1754006419000,
+          "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+          "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030",
+          "signature_hex": "e31bab8e1c8152db3fac297361b9e40b6b4af5742ba18c6726700772929ffe921d17564f6881d14ab30b9f9155d5984e89a16275643cc2139fbfadad3634560e",
+          "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030000000806533316261623865316338313532646233666163323937333631623965343062366234616635373432626131386336373236373030373732393239666665393231643137353634663638383164313461623330623966393135356435393834653839613136323735363433636332313339666266616461643336333435363065",
+          "entry_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6"
+        }
+      ],
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-devmember-0010": {
+          "role": "member",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-dev-0002"]
+          }
+        },
+        "user-devadmin-0011": {
+          "role": "admin",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-dev-0002"]
+          }
+        },
+        "user-prodreader-0012": {
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-prod-0001"]
+          }
+        },
+        "user-allmember-0013": {
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-owner-0014": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-owner-0015": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_policy": null,
+      "expected_pending": {},
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "2",
+        "env-stage-0003": "1"
+      },
+      "expected_deleted_environments": {
+        "env-stage-0003": 20
+      },
+      "expected_server_grants": []
+    },
+    "environment-deleted-granted": {
+      "description": "A derived chain appending one delete_environment to the canonical chain seq 1-9: admin-0003 deletes env-dev-0002 at seq 10 while the server grant of seq 9 discloses {prod, dev}. The grant's scope_environments loses the id (§6.2's state transition — its grant_seq stays 9), so a later re-grant of {prod} is a widening-or-equal, not a narrowing",
+      "base_seq": 9,
+      "entries": [
+        {
+          "seq": 10,
+          "suite": "maruhi/v1",
+          "prev_hash_hex": "97d5735cacf1b399ca54af7c3a6d218fd6d9e6865f521e48e1b7592346e3622a",
+          "op": "delete_environment",
+          "actor": {
+            "user_id": "user-admin-0003",
+            "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+          },
+          "payload": {
+            "environment_id": "env-dev-0002"
+          },
+          "timestamp_ms": 1754006409000,
+          "payload_bytes_hex": "0000000c656e762d6465762d30303032",
+          "signed_bytes_hex": "000000096d61727568692f763100000002313000000040393764353733356361636631623339396361353461663763336136643231386664366439653638363566353231653438653162373539323334366533363232610000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343039303030",
+          "signature_hex": "f6075fe20973467a41221c4475f14857951d53e3b508913a21d4f9a7d2e3c9d4e7ea3dda7dd8a61133572acd2d2a1d43a52b0c98ee96fe7e024714b828d2600e",
+          "entry_bytes_hex": "000000096d61727568692f763100000002313000000040393764353733356361636631623339396361353461663763336136643231386664366439653638363566353231653438653162373539323334366533363232610000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000100000000c656e762d6465762d303030320000000d31373534303036343039303030000000806636303735666532303937333436376134313232316334343735663134383537393531643533653362353038393133613231643466396137643265336339643465376561336464613764643861363131333335373261636432643261316434336135326230633938656539366665376530323437313462383238643236303065",
+          "entry_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475"
+        }
+      ],
+      "expected_members": {
+        "user-owner-0001": {
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          }
+        },
+        "user-admin-0003": {
+          "role": "admin",
+          "scope": {
+            "kind": "all"
+          }
+        }
+      },
+      "expected_policy": null,
+      "expected_pending": {},
+      "expected_environments": {
+        "env-prod-0001": "2",
+        "env-dev-0002": "1"
+      },
+      "expected_deleted_environments": {
+        "env-dev-0002": 10
+      },
+      "expected_server_grants": [
+        {
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "scope_environments": ["env-prod-0001"],
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "grant_seq": 9
+        }
+      ]
     },
     "checkpoint-boundary-create": {
       "description": "the boundary checkpoint of the environment-creation compound (AUTH_SPEC §12-4: create = H+1, checkpoint = H+2. Here, on seq 4 — right after the canonical chain's seq-3 create_environment — a checkpoint binding manifest-v1-create's real hash is placed). The comparison target for manifest-v1-create's positive (the checkpoint-binding route of §4.3 (2))",
@@ -19797,6 +20493,977 @@
       "must_fail": true,
       "note": "at quorum (alive votes = (0014, K14) + (0015, K15) = 2), if the proposing device D1n is already revoked (seq 39) the result is proposal-void (judged by the proposing device's validity — the device vocabulary of the proposer's membership and key FP)",
       "chain": "proposer-device-revoked"
+    },
+    {
+      "name": "authz-delete-env-member",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-allmember-0013",
+          "key_fingerprint_hex": "935fc2095d08b79a13885ce830bdfac2"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030",
+        "signature_hex": "e6623724cc30489714f7603f180f01be9e046fd96f4324a0ecf5f41a0a7fe341635146cc37b59634d39bf2763b93523ebbc78e982f715892d50efad2b7631807",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030000000806536363233373234636333303438393731346637363033663138306630316265396530343666643936663433323461306563663566343161306137666533343136333531343663633337623539363334643339626632373633623933353233656262633738653938326637313538393264353065666164326237363331383037",
+        "entry_hash_hex": "3656c9bf7ea7de44117dd03abb7755242278baa888cceaa9e9ec63fbc3eabae3"
+      },
+      "verify_key_hex": "6095e94b3b1d9094dedc681b17261fe81877ea1fc0299d073fb15e11167b2e6c",
+      "expected_reason": "insufficient-role",
+      "must_fail": true,
+      "note": "delete_environment is admin or above (§6.2 — the level the data-plane deletion had). A member with scope all is refused"
+    },
+    {
+      "name": "authz-delete-env-reader",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-prodreader-0012",
+          "key_fingerprint_hex": "d3db4317e64cd79674b8dd1e9d1888a1"
+        },
+        "payload": {
+          "environment_id": "env-prod-0001"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000000d656e762d70726f642d30303031",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000014757365722d70726f647265616465722d30303132000000206433646234333137653634636437393637346238646431653964313838386131000000110000000d656e762d70726f642d303030310000000d31373534303036343139303030",
+        "signature_hex": "fdb2e7809e71c940638654ccee826ef854065c75212bd546b72463706b718cec072abf6725d4483fd3ad191d36a2da12a739b23f83717ce43b9e7d9212604808",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000014757365722d70726f647265616465722d30303132000000206433646234333137653634636437393637346238646431653964313838386131000000110000000d656e762d70726f642d303030310000000d31373534303036343139303030000000806664623265373830396537316339343036333836353463636565383236656638353430363563373532313262643534366237323436333730366237313863656330373261626636373235643434383366643361643139316433366132646131326137333962323366383337313763653433623965376439323132363034383038",
+        "entry_hash_hex": "9ad6b04590318e0c9b5a22f7e2d8d869f52c4fe383999ec50022ef4b6f0865aa"
+      },
+      "verify_key_hex": "f28bf89cddc6b57fe6a39a8ebee874067fc1dc68ae84a1914125ed5beb8ea806",
+      "expected_reason": "insufficient-role",
+      "must_fail": true,
+      "note": "a reader cannot delete even an environment in its own scope"
+    },
+    {
+      "name": "authz-delete-env-out-of-scope",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-devadmin-0011",
+          "key_fingerprint_hex": "d4c5f4d02633934c8f062abd823ddf6f"
+        },
+        "payload": {
+          "environment_id": "env-prod-0001"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000000d656e762d70726f642d30303031",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000110000000d656e762d70726f642d303030310000000d31373534303036343139303030",
+        "signature_hex": "308cfc6f15c4340bf470569b883197e12c815418e72e974debfc53bbbc0700809fe4bcf7918d2f254c96a6aec891eaa31768de9278d6f1125f70f28805c7120b",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000110000000d656e762d70726f642d303030310000000d31373534303036343139303030000000803330386366633666313563343334306266343730353639623838333139376531326338313534313865373265393734646562666335336262626330373030383039666534626366373931386432663235346339366136616563383931656161333137363864653932373864366631313235663730663238383035633731323062",
+        "entry_hash_hex": "b8f25227c36d23cf0b4a1fbe3d50bef1853177f992675f174b316ad23d94c096"
+      },
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "expected_reason": "environment-out-of-scope",
+      "must_fail": true,
+      "note": "the dev-dedicated admin (listed{dev, stage}) cannot delete env-prod-0001, which is outside its scope (environment-targeted ops — §6.2)"
+    },
+    {
+      "name": "authz-delete-env-before-create",
+      "kind": "authorization",
+      "entry": {
+        "seq": 3,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "cd6d844321dfe08fa12214bec035f0930318a45ee4d4b96625c2609ca9d40f75",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "environment_id": "env-prod-0001"
+        },
+        "timestamp_ms": 1754006402000,
+        "payload_bytes_hex": "0000000d656e762d70726f642d30303031",
+        "signed_bytes_hex": "000000096d61727568692f7631000000013300000040636436643834343332316466653038666131323231346265633033356630393330333138613435656534643462393636323563323630396361396434306637350000001264656c6574655f656e7669726f6e6d656e740000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000110000000d656e762d70726f642d303030310000000d31373534303036343032303030",
+        "signature_hex": "c7b27a62d347d4b73f87371127932ddf00107f9db92a5049276c6b3856506f0418126b659bd50fb403f65db5551746dd1b0ed5b2edf1fa9982adabee7aa5ec0c",
+        "entry_bytes_hex": "000000096d61727568692f7631000000013300000040636436643834343332316466653038666131323231346265633033356630393330333138613435656534643462393636323563323630396361396434306637350000001264656c6574655f656e7669726f6e6d656e740000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000110000000d656e762d70726f642d303030310000000d31373534303036343032303030000000806337623237613632643334376434623733663837333731313237393332646466303031303766396462393261353034393237366336623338353635303666303431383132366236353962643530666234303366363564623535353137343664643162306564356232656466316661393938326164616265653761613565633063",
+        "entry_hash_hex": "da05270e7705cd923ef0fadcba36e13590a430844ffebaa5340b69ea6eb7c00d"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "unknown-environment",
+      "must_fail": true,
+      "note": "deleting env-prod-0001 at seq 3, before its create_environment (canonical seq 3) exists, is unknown-environment (a deletion needs a preceding creation)"
+    },
+    {
+      "name": "authz-delete-env-unknown",
+      "kind": "authorization",
+      "entry": {
+        "seq": 13,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "da24caae007eb9f641db7f12844e70b97d872b2697beba145fdc4e34cce5ec1e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-ghost-9999"
+        },
+        "timestamp_ms": 1754006412000,
+        "payload_bytes_hex": "0000000e656e762d67686f73742d39393939",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d67686f73742d393939390000000d31373534303036343132303030",
+        "signature_hex": "ac5981b7f0675ce6bf3963f5f3ccf4db1b5da13d8696fc66c0ccf2758b21c584a468e61d146690db28d304378fd38b2a6dff21d349300db1c343ea392fb5890c",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d67686f73742d393939390000000d31373534303036343132303030000000806163353938316237663036373563653662663339363366356633636366346462316235646131336438363936666336366330636366323735386232316335383461343638653631643134363639306462323864333034333738666433386232613664666632316433343933303064623163333433656133393266623538393063",
+        "entry_hash_hex": "77a0620217135ae1b498f0280dcac22a20fcf4ffe2d7dc539b5e02075b8cf3f0"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "unknown-environment",
+      "must_fail": true,
+      "note": "deleting an id no create_environment ever named is unknown-environment"
+    },
+    {
+      "name": "authz-delete-env-role-precedes-unknown",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-allmember-0013",
+          "key_fingerprint_hex": "935fc2095d08b79a13885ce830bdfac2"
+        },
+        "payload": {
+          "environment_id": "env-ghost-9999"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000000e656e762d67686f73742d39393939",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000120000000e656e762d67686f73742d393939390000000d31373534303036343139303030",
+        "signature_hex": "8c3bdf102d2db113c1f820a44adb5285ec057200f4be5efe930f8170d7645c03762b09f550771227798781d55dfec4f77fed1501262105eeee1882cfc20cdc0e",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000120000000e656e762d67686f73742d393939390000000d31373534303036343139303030000000803863336264663130326432646231313363316638323061343461646235323835656330353732303066346265356566653933306638313730643736343563303337363262303966353530373731323237373938373831643535646665633466373766656431353031323632313035656565653138383263666332306364633065",
+        "entry_hash_hex": "a9f659e7a6366c5c1513cd77bf462a4758cd795541dea6b36c5b4e76776784ba"
+      },
+      "verify_key_hex": "6095e94b3b1d9094dedc681b17261fe81877ea1fc0299d073fb15e11167b2e6c",
+      "expected_reason": "insufficient-role",
+      "must_fail": true,
+      "note": "an insufficient-role × unknown-environment compound violation is judged by the role rule first (delete_environment: role → unknown-environment)"
+    },
+    {
+      "name": "authz-delete-env-unknown-precedes-out-of-scope",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-devadmin-0011",
+          "key_fingerprint_hex": "d4c5f4d02633934c8f062abd823ddf6f"
+        },
+        "payload": {
+          "environment_id": "env-ghost-9999"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000000e656e762d67686f73742d39393939",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d67686f73742d393939390000000d31373534303036343139303030",
+        "signature_hex": "643443ac496f4e9285e7974b0d99fa080de68898bbf06df73b46c82161b56ce07cc96bb4ac922f7437d9b9c344092689a99147a50723f7f8bc150420260b5808",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d67686f73742d393939390000000d31373534303036343139303030000000803634333434336163343936663465393238356537393734623064393966613038306465363838393862626630366466373362343663383231363162353663653037636339366262346163393232663734333764396239633334343039323638396139393134376135303732336637663862633135303432303236306235383038",
+        "entry_hash_hex": "a518142b18f6c6ae668614a4036175a3887778a4b659b47bf0b87b571ab66365"
+      },
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "expected_reason": "unknown-environment",
+      "must_fail": true,
+      "note": "an unknown-environment × out-of-scope compound violation is judged as unknown-environment first (delete_environment: unknown-environment → environment-deleted → environment-out-of-scope)"
+    },
+    {
+      "name": "delete-env-id-empty",
+      "kind": "authorization",
+      "entry": {
+        "seq": 13,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "da24caae007eb9f641db7f12844e70b97d872b2697beba145fdc4e34cce5ec1e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": ""
+        },
+        "timestamp_ms": 1754006412000,
+        "payload_bytes_hex": "00000000",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d3030303300000020303666363232306332383633343065366438316339626130333535636463666500000004000000000000000d31373534303036343132303030",
+        "signature_hex": "81923b9ccd3467e93a9e697f3db0f8e460189bee9ff0e09945be5084ef81e0119b1dcef1f64b29714a1a121f0ce96407a8e5f6fac4b5fa212bf56473fd64ae0b",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313300000040646132346361616530303765623966363431646237663132383434653730623937643837326232363937626562613134356664633465333463636535656331650000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d3030303300000020303666363232306332383633343065366438316339626130333535636463666500000004000000000000000d31373534303036343132303030000000803831393233623963636433343637653933613965363937663364623066386534363031383962656539666630653039393435626535303834656638316530313139623164636566316636346232393731346131613132316630636539363430376138653566366661633462356661323132626635363437336664363461653062",
+        "entry_hash_hex": "de096d95d37f52938513077d6b3d25854876515d090b58898d751c52bbce297a"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "invalid-payload",
+      "must_fail": true,
+      "note": "environment_id must be a non-empty string (§6.2 structure check — before authorization)"
+    },
+    {
+      "name": "delete-env-format-precedes-role",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-prodreader-0012",
+          "key_fingerprint_hex": "d3db4317e64cd79674b8dd1e9d1888a1"
+        },
+        "payload": {
+          "environment_id": ""
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "00000000",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000014757365722d70726f647265616465722d3030313200000020643364623433313765363463643739363734623864643165396431383838613100000004000000000000000d31373534303036343139303030",
+        "signature_hex": "372eb806415e907d58a86f4120acaaeaa95d1810e049b90009f3d342e8361cb2515fb511f5e529e1c5c5a5247bec9293c488bbf74f99341b3255a86a8d3bf006",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000014757365722d70726f647265616465722d3030313200000020643364623433313765363463643739363734623864643165396431383838613100000004000000000000000d31373534303036343139303030000000803337326562383036343135653930376435386138366634313230616361616561613935643138313065303439623930303039663364333432653833363163623235313566623531316635653532396531633563356135323437626563393239336334383862626637346639393334316233323535613836613864336266303036",
+        "entry_hash_hex": "d21cf5d4b218e7eb457f83dfba836d4000b088dde3e82005a774eebc57bab145"
+      },
+      "verify_key_hex": "f28bf89cddc6b57fe6a39a8ebee874067fc1dc68ae84a1914125ed5beb8ea806",
+      "expected_reason": "invalid-payload",
+      "must_fail": true,
+      "note": "a structure violation × insufficient-role compound violation is judged by the structure check first (check-stage order: structure → authorization)"
+    },
+    {
+      "name": "authz-propose-delete-env-not-required",
+      "kind": "authorization",
+      "entry": {
+        "seq": 25,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "41a5a60e96949024c0a5d67757d8fd7edcd92fc2225ecc4ae7e6bebe5bac9cbd",
+        "op": "propose",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "inner_op": "delete_environment",
+          "inner_payload": {
+            "environment_id": "env-dev-0002"
+          },
+          "inner_payload_lp_hex": "0000000c656e762d6465762d30303032",
+          "expires_at_ms": "1754611200000"
+        },
+        "timestamp_ms": 1754006424000,
+        "payload_bytes_hex": "0000001264656c6574655f656e7669726f6e6d656e740000002030303030303030633635366537363264363436353736326433303330333033320000000d31373534363131323030303030",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323500000040343161356136306539363934393032346330613564363737353764386664376564636439326663323232356563633461653765366265626535626163396362640000000770726f706f73650000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000004b0000001264656c6574655f656e7669726f6e6d656e740000002030303030303030633635366537363264363436353736326433303330333033320000000d313735343631313230303030300000000d31373534303036343234303030",
+        "signature_hex": "6ca4fa86ca13ea4bfe49734b300163575f20d0994ce897335ccb43f00240bca52a1ddbc892845a2f262759912406afbd985cc334ba807d3ca06cfdc342fd2f0e",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323500000040343161356136306539363934393032346330613564363737353764386664376564636439326663323232356563633461653765366265626535626163396362640000000770726f706f73650000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000004b0000001264656c6574655f656e7669726f6e6d656e740000002030303030303030633635366537363264363436353736326433303330333033320000000d313735343631313230303030300000000d31373534303036343234303030000000803663613466613836636131336561346266653439373334623330303136333537356632306430393934636538393733333563636234336630303234306263613532613164646263383932383435613266323632373539393132343036616662643938356363333334626138303764336361303663666463333432666432663065",
+        "entry_hash_hex": "017f627f9c6627f58b2bffd86ad6dca78840e0bae7406bd430193008c196f694"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "approval-not-required",
+      "must_fail": true,
+      "note": "delete_environment can never be a policy target, so its propose is approval-not-required (§6.2 four-eyes)"
+    },
+    {
+      "name": "policy-ops-delete-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 20,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "op": "set_approval_policy",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "ops": ["delete_environment"],
+          "ops_lp_hex": "0000001264656c6574655f656e7669726f6e6d656e74",
+          "required_approvals": "2"
+        },
+        "timestamp_ms": 1754006419000,
+        "payload_bytes_hex": "0000002c30303030303031323634363536633635373436353566363536653736363937323666366536643635366537340000000132",
+        "signed_bytes_hex": "000000096d61727568692f76310000000232300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000137365745f617070726f76616c5f706f6c6963790000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000350000002c303030303030313236343635366336353734363535663635366537363639373236663665366436353665373400000001320000000d31373534303036343139303030",
+        "signature_hex": "42ee3bc6950e7e6abced9a1088156c54af562b1a6aaaa66e193d8d72a58d72c1abab745f1cf64886084f8e7f04f81e9d306bc1072c18cb9e7508fd3a13e4dc09",
+        "entry_bytes_hex": "000000096d61727568692f76310000000232300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000137365745f617070726f76616c5f706f6c6963790000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000350000002c303030303030313236343635366336353734363535663635366537363639373236663665366436353665373400000001320000000d31373534303036343139303030000000803432656533626336393530653765366162636564396131303838313536633534616635363262316136616161613636653139336438643732613538643732633161626162373435663163663634383836303834663865376630346638316539643330366263313037326331386362396537353038666433613133653464633039",
+        "entry_hash_hex": "e7518390b2ef084e20a8440e711200156cb7b6357dc5a9a44b694cb47bc32c3e"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "invalid-payload",
+      "must_fail": true,
+      "note": "ops cannot name delete_environment (it is outside the closed set of targetable ops — §6.2). Rejected at the structural stage"
+    },
+    {
+      "name": "authz-delete-env-twice",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030",
+        "signature_hex": "96497c64a30c4144cae602f433856a817abfa67862bd2dd32501d359bd6ccb5ef0358feb9ba1168f99ecd9a2b10a77f5baac010f952e6cedd53a7a1fdd95f603",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030000000803936343937633634613330633431343463616536303266343333383536613831376162666136373836326264326464333235303164333539626436636362356566303335386665623962613131363866393965636439613262313061373766356261616330313066393532653663656464353361376131666464393566363033",
+        "entry_hash_hex": "099e9bc5f535abddcc4eb589d1226247448fdc6ad2e260501b3194b6c3f111a9"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a second deletion of the same environment is environment-deleted (at most once — §6.2)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-delete-env-deleted-precedes-out-of-scope",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-devadmin-0011",
+          "key_fingerprint_hex": "d4c5f4d02633934c8f062abd823ddf6f"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030",
+        "signature_hex": "392c2b32b5593a8444f7af7979f3a87f72e3ead2afce6573691f1c55311e1eeadda2b6c0e88298778915f0d31910730b28f9a40da767c11da42bdcbc446ac60f",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030000000803339326332623332623535393361383434346637616637393739663361383766373265336561643261666365363537333639316631633535333131653165656164646132623663306538383239383737383931356630643331393130373330623238663961343064613736376331316461343262646362633434366163363066",
+        "entry_hash_hex": "ab8dbc78093273152aa18e7d8e8d141f264ad81d8d607afb6c6048a47b4d1510"
+      },
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "devadmin-0011's scope lost env-stage-0003 at the deletion, so a second deletion by it is both deleted and out of scope — judged as environment-deleted first",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-delete-env-role-precedes-deleted",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "delete_environment",
+        "actor": {
+          "user_id": "user-devmember-0010",
+          "key_fingerprint_hex": "4f41d528425c5d06e05b29dc2adfc4ac"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d30303033",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e7400000013757365722d6465766d656d6265722d30303130000000203466343164353238343235633564303665303562323964633261646663346163000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030",
+        "signature_hex": "ed56232e0ca214c0d01329323579dceb561f8b14577f4300f05d9b7ba0de23260c58d540726e1a7cc178305446d95eb59532f32968a1b6e7ca2bb8de0193a509",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000001264656c6574655f656e7669726f6e6d656e7400000013757365722d6465766d656d6265722d30303130000000203466343164353238343235633564303665303562323964633261646663346163000000120000000e656e762d73746167652d303030330000000d31373534303036343230303030000000806564353632333265306361323134633064303133323933323335373964636562353631663862313435373766343330306630356439623762613064653233323630633538643534303732366531613763633137383330353434366439356562353935333266333239363861316236653763613262623864653031393361353039",
+        "entry_hash_hex": "c55c48ec8a7c0a7aed21aa6618ebb4c139b74aacb2f2b882635810ecd3543fbb"
+      },
+      "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
+      "expected_reason": "insufficient-role",
+      "must_fail": true,
+      "note": "an insufficient-role × environment-deleted compound violation is judged by the role rule first",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-rotate-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "rotate_epoch",
+        "actor": {
+          "user_id": "user-allmember-0013",
+          "key_fingerprint_hex": "935fc2095d08b79a13885ce830bdfac2"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003",
+          "new_epoch": "2",
+          "reason": "scheduled",
+          "dek_commitment_hex": "a57c69f20515b518ee8e3b8eb836ad077036bbb080fab6a4c6ab5634e03d0407"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d303030330000000132000000097363686564756c65640000004061353763363966323035313562353138656538653362386562383336616430373730333662626230383066616236613463366162353633346530336430343037",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000c726f746174655f65706f636800000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000680000000e656e762d73746167652d303030330000000132000000097363686564756c656400000040613537633639663230353135623531386565386533623865623833366164303737303336626262303830666162366134633661623536333465303364303430370000000d31373534303036343230303030",
+        "signature_hex": "6a989a87eba478135af7251b29ccc418bb8aa2b6404739804bbf79ab4758350e47321abb8dabe835e1b01380e29dd32a1f37437ccfe786346b10409b01a09c07",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000c726f746174655f65706f636800000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000680000000e656e762d73746167652d303030330000000132000000097363686564756c656400000040613537633639663230353135623531386565386533623865623833366164303737303336626262303830666162366134633661623536333465303364303430370000000d31373534303036343230303030000000803661393839613837656261343738313335616637323531623239636363343138626238616132623634303437333938303462626637396162343735383335306534373332316162623864616265383335653162303133383065323964643332613166333734333763636665373836333436623130343039623031613039633037",
+        "entry_hash_hex": "a8941b8d9e440b065bc5e4492fd69ba1cfb2bffe7aa489d86293f8dbfe2c4632"
+      },
+      "verify_key_hex": "6095e94b3b1d9094dedc681b17261fe81877ea1fc0299d073fb15e11167b2e6c",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a rotate_epoch naming a deleted environment is environment-deleted (no later entry may reference it — there is nothing left to protect)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-rotate-deleted-precedes-out-of-scope",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "rotate_epoch",
+        "actor": {
+          "user_id": "user-devmember-0010",
+          "key_fingerprint_hex": "4f41d528425c5d06e05b29dc2adfc4ac"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003",
+          "new_epoch": "2",
+          "reason": "scheduled",
+          "dek_commitment_hex": "a57c69f20515b518ee8e3b8eb836ad077036bbb080fab6a4c6ab5634e03d0407"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d303030330000000132000000097363686564756c65640000004061353763363966323035313562353138656538653362386562383336616430373730333662626230383066616236613463366162353633346530336430343037",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000c726f746174655f65706f636800000013757365722d6465766d656d6265722d30303130000000203466343164353238343235633564303665303562323964633261646663346163000000680000000e656e762d73746167652d303030330000000132000000097363686564756c656400000040613537633639663230353135623531386565386533623865623833366164303737303336626262303830666162366134633661623536333465303364303430370000000d31373534303036343230303030",
+        "signature_hex": "67afddb2d9b478c08a88d6f0de90898440372e6620fe6084388d2805f074b5889749c5a5cb5ee8756e4e18b5859aaa799aec81d579ef907987fa3a2fec452d0d",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000c726f746174655f65706f636800000013757365722d6465766d656d6265722d30303130000000203466343164353238343235633564303665303562323964633261646663346163000000680000000e656e762d73746167652d303030330000000132000000097363686564756c656400000040613537633639663230353135623531386565386533623865623833366164303737303336626262303830666162366134633661623536333465303364303430370000000d31373534303036343230303030000000803637616664646232643962343738633038613838643666306465393038393834343033373265363632306665363038343338386432383035663037346235383839373439633561356362356565383735366534653138623538353961616137393961656338316435373965663930373938376661336132666563343532643064",
+        "entry_hash_hex": "24301c9e5c4b93a012ddb7bea002aee71172be42b108add37bf5b692df5eafeb"
+      },
+      "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "devmember-0010's scope lost the id at the deletion — the rotate is judged as environment-deleted before environment-out-of-scope",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-checkpoint-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "checkpoint",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environments": [
+            {
+              "environment_id": "env-stage-0003",
+              "epoch": "1",
+              "manifest_version": "1",
+              "manifest_sig_hash_hex": "d0af2dd69caf48f483144d9524820bfddcf86ebbb2b7d988d11cfdbb73410552",
+              "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01"
+            }
+          ],
+          "environments_lp_hex": "000000a40000000e656e762d73746167652d303030330000000131000000013100000040643061663264643639636166343866343833313434643935323438323062666464636638366562626232623764393838643131636664626237333431303535320000004064353861323839666363646538663265613363313034623039333738313336666264333138653033353636393035323162633566633434623462343337623031",
+          "audit_head_hash_hex": ""
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000015030303030303061343030303030303065363536653736326437333734363136373635326433303330333033333030303030303031333130303030303030313331303030303030343036343330363136363332363436343336333936333631363633343338363633343338333333313334333436343339333533323334333833323330363236363634363436333636333833363635363236323632333236323337363433393338333836343331333136333636363436323632333733333334333133303335333533323030303030303430363433353338363133323338333936363633363336343635333836363332363536313333363333313330333436323330333933333337333833313333333636363632363433333331333836353330333333353336333633393330333533323331363236333335363636333334333436323334363233343333333736323330333100000000",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e740000000f757365722d61646d696e2d303030330000002030366636323230633238363334306536643831633962613033353563646366650000015800000150303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030",
+        "signature_hex": "9e651119e4d02619545396a095d42c7e7dc341cf97a4c10655d460301774b8e9218af539855e86728cf1f8282c3835942bb383221fee559498f75ba23112b808",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e740000000f757365722d61646d696e2d303030330000002030366636323230633238363334306536643831633962613033353563646366650000015800000150303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030000000803965363531313139653464303236313935343533393661303935643432633765376463333431636639376134633130363535643436303330313737346238653932313861663533393835356538363732386366316638323832633338333539343262623338333232316665653535393439386637356261323331313262383038",
+        "entry_hash_hex": "ec7ada8ba9021a4517f1603f4d691dd9b9ea0d8fe9118cdfc5890200959de09b"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a checkpoint tuple for a deleted environment is invalid (the former acceptance-policy refusal became a consensus rule — §6.2 / §6.4)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-checkpoint-unknown-precedes-deleted",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "checkpoint",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "environments": [
+            {
+              "environment_id": "env-ghost-9999",
+              "epoch": "1",
+              "manifest_version": "1",
+              "manifest_sig_hash_hex": "28ecf649b7285a56b2ccdf674c38433fe56f2ceece476c5577fbebc57337b454",
+              "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01"
+            },
+            {
+              "environment_id": "env-stage-0003",
+              "epoch": "1",
+              "manifest_version": "1",
+              "manifest_sig_hash_hex": "d0af2dd69caf48f483144d9524820bfddcf86ebbb2b7d988d11cfdbb73410552",
+              "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01"
+            }
+          ],
+          "environments_lp_hex": "000000a40000000e656e762d67686f73742d393939390000000131000000013100000040323865636636343962373238356135366232636364663637346333383433336665353666326365656365343736633535373766626562633537333337623435340000004064353861323839666363646538663265613363313034623039333738313336666264333138653033353636393035323162633566633434623462343337623031000000a40000000e656e762d73746167652d303030330000000131000000013100000040643061663264643639636166343866343833313434643935323438323062666464636638366562626232623764393838643131636664626237333431303535320000004064353861323839666363646538663265613363313034623039333738313336666264333138653033353636393035323162633566633434623462343337623031",
+          "audit_head_hash_hex": ""
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "000002a030303030303061343030303030303065363536653736326436373638366637333734326433393339333933393030303030303031333130303030303030313331303030303030343033323338363536333636333633343339363233373332333833353631333533363632333236333633363436363336333733343633333333383334333333333636363533353336363633323633363536353633363533343337333636333335333533373337363636323635363236333335333733333333333736323334333533343030303030303430363433353338363133323338333936363633363336343635333836363332363536313333363333313330333436323330333933333337333833313333333636363632363433333331333836353330333333353336333633393330333533323331363236333335363636333334333436323334363233343333333736323330333130303030303061343030303030303065363536653736326437333734363136373635326433303330333033333030303030303031333130303030303030313331303030303030343036343330363136363332363436343336333936333631363633343338363633343338333333313334333436343339333533323334333833323330363236363634363436333636333833363635363236323632333236323337363433393338333836343331333136333636363436323632333733333334333133303335333533323030303030303430363433353338363133323338333936363633363336343635333836363332363536313333363333313330333436323330333933333337333833313333333636363632363433333331333836353330333333353336333633393330333533323331363236333335363636333334333436323334363233343333333736323330333100000000",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000002a8000002a0303030303030613430303030303030653635366537363264363736383666373337343264333933393339333930303030303030313331303030303030303133313030303030303430333233383635363336363336333433393632333733323338333536313335333636323332363336333634363633363337333436333333333833343333333336363635333533363636333236333635363536333635333433373336363333353335333733373636363236353632363333353337333333333337363233343335333430303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030",
+        "signature_hex": "dde85f5a220dd642b90b0d3209e2d6492ce0728d7e57ad704c8efdcb2c7b5aa970247294fd3de5ddf3c964ebf53c71ac046a83c3fa1a40217eaf0860d1853c0b",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e740000000f757365722d61646d696e2d30303033000000203036663632323063323836333430653664383163396261303335356364636665000002a8000002a0303030303030613430303030303030653635366537363264363736383666373337343264333933393339333930303030303030313331303030303030303133313030303030303430333233383635363336363336333433393632333733323338333536313335333636323332363336333634363633363337333436333333333833343333333336363635333533363636333236333635363536333635333433373336363333353335333733373636363236353632363333353337333333333337363233343335333430303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030000000806464653835663561323230646436343262393062306433323039653264363439326365303732386437653537616437303463386566646362326337623561613937303234373239346664336465356464663363393634656266353363373161633034366138336333666131613430323137656166303836306431383533633062",
+        "entry_hash_hex": "56218a9214bc1ac6696ba729a598b55a3932f7c04935fbdff7b1e11d8923f24a"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "unknown-environment",
+      "must_fail": true,
+      "note": "the checkpoint stages run across every tuple: unknown-environment (the ghost tuple) is judged before environment-deleted (the stage tuple)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-checkpoint-deleted-precedes-out-of-scope",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "checkpoint",
+        "actor": {
+          "user_id": "user-devmember-0010",
+          "key_fingerprint_hex": "4f41d528425c5d06e05b29dc2adfc4ac"
+        },
+        "payload": {
+          "environments": [
+            {
+              "environment_id": "env-stage-0003",
+              "epoch": "1",
+              "manifest_version": "1",
+              "manifest_sig_hash_hex": "d0af2dd69caf48f483144d9524820bfddcf86ebbb2b7d988d11cfdbb73410552",
+              "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01"
+            }
+          ],
+          "environments_lp_hex": "000000a40000000e656e762d73746167652d303030330000000131000000013100000040643061663264643639636166343866343833313434643935323438323062666464636638366562626232623764393838643131636664626237333431303535320000004064353861323839666363646538663265613363313034623039333738313336666264333138653033353636393035323162633566633434623462343337623031",
+          "audit_head_hash_hex": ""
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000015030303030303061343030303030303065363536653736326437333734363136373635326433303330333033333030303030303031333130303030303030313331303030303030343036343330363136363332363436343336333936333631363633343338363633343338333333313334333436343339333533323334333833323330363236363634363436333636333833363635363236323632333236323337363433393338333836343331333136333636363436323632333733333334333133303335333533323030303030303430363433353338363133323338333936363633363336343635333836363332363536313333363333313330333436323330333933333337333833313333333636363632363433333331333836353330333333353336333633393330333533323331363236333335363636333334333436323334363233343333333736323330333100000000",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e7400000013757365722d6465766d656d6265722d303031300000002034663431643532383432356335643036653035623239646332616466633461630000015800000150303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030",
+        "signature_hex": "befd1ab8ace2b9cbdc60f1dd6e98f90c80427a5db4399506a78e76242962de88d76c3db855d07d4c706fde2f4e172a66c3a3f75156f3347a1a61c02d89b7b90f",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a636865636b706f696e7400000013757365722d6465766d656d6265722d303031300000002034663431643532383432356335643036653035623239646332616466633461630000015800000150303030303030613430303030303030653635366537363264373337343631363736353264333033303330333330303030303030313331303030303030303133313030303030303430363433303631363633323634363433363339363336313636333433383636333433383333333133343334363433393335333233343338333233303632363636343634363336363338333636353632363236323332363233373634333933383338363433313331363336363634363236323337333333343331333033353335333230303030303034303634333533383631333233383339363636333633363436353338363633323635363133333633333133303334363233303339333333373338333133333336363636323634333333313338363533303333333533363336333933303335333233313632363333353636363333343334363233343632333433333337363233303331000000000000000d31373534303036343230303030000000806265666431616238616365326239636264633630663164643665393866393063383034323761356462343339393530366137386537363234323936326465383864373663336462383535643037643463373036666465326634653137326136366333613366373531353666333334376131613631633032643839623762393066",
+        "entry_hash_hex": "d0a33100f34b05af6046220f92dfa43bf0bd7660b3f0c51478d9980bff6c5675"
+      },
+      "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a member whose scope lost the deleted id gets environment-deleted before environment-out-of-scope",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-create-env-reuse-deleted-id",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "create_environment",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "environment_id": "env-stage-0003",
+          "dek_commitment_hex": "50a2a1dbe6f71c63eecddf7af790915c14f8ce96f53d845c9617542091e16be0"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "0000000e656e762d73746167652d303030330000004035306132613164626536663731633633656563646466376166373930393135633134663863653936663533643834356339363137353432303931653136626530",
+        "signed_bytes_hex": "000000096d61727568692f76310000000232310000004033333938346438326336313662616565616539303262376431653433393430656430353632343964393839663233623334363662313331643837623263326636000000126372656174655f656e7669726f6e6d656e740000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000560000000e656e762d73746167652d3030303300000040353061326131646265366637316336336565636464663761663739303931356331346638636539366635336438343563393631373534323039316531366265300000000d31373534303036343230303030",
+        "signature_hex": "c2c251559eda4e70375a8c3369398b3b4ab8a14ec611d789ee5690fbf08b7e6e3905f9dfc95d5026bd24796808a495084a97ce213ac2560034b5ea5869d7db03",
+        "entry_bytes_hex": "000000096d61727568692f76310000000232310000004033333938346438326336313662616565616539303262376431653433393430656430353632343964393839663233623334363662313331643837623263326636000000126372656174655f656e7669726f6e6d656e740000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000560000000e656e762d73746167652d3030303300000040353061326131646265366637316336336565636464663761663739303931356331346638636539366635336438343563393631373534323039316531366265300000000d31373534303036343230303030000000806332633235313535396564613465373033373561386333333639333938623362346162386131346563363131643738396565353639306662663038623765366533393035663964666339356435303236626432343739363830386134393530383461393763653231336163323536303033346235656135383639643764623033",
+        "entry_hash_hex": "cb90bfa313ff4b360faceddf2f3838c2e91e34ae0121c86888fd9cd157abeb33"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "duplicate-environment",
+      "must_fail": true,
+      "note": "re-creating a deleted environment's id is duplicate-environment (the id is never reusable — §6.2)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-add-member-scope-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "add_member",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "target_user_id": "user-newcomer-0005",
+          "enc_pub_hex": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
+          "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+          "role": "member",
+          "scope_kind": "listed",
+          "scope_environments": ["env-stage-0003"],
+          "scope_environments_lp_hex": "0000000e656e762d73746167652d30303033"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c697374656400000024303030303030306536353665373632643733373436313637363532643330333033303333",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000da00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030",
+        "signature_hex": "0988360b12716c6c93a68e45e15b27f247d2b61ac75e8b477b5131801e5e1e108cf6c853f302c5068e0a19fe93baee9f703b70343b1482f44e9950f78eec6204",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000da00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030000000803039383833363062313237313663366339336136386534356531356232376632343764326236316163373565386234373762353133313830316535653165313038636636633835336633303263353036386530613139666539336261656539663730336237303334336231343832663434653939353066373865656336323034",
+        "entry_hash_hex": "098a5e0bc4b1550b6f43e20a2a30d43f14ce0096502a4467bcf82a560c76520e"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a listed scope naming a deleted environment is environment-deleted (no new scope over an environment without a DEK)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-add-member-unknown-precedes-deleted",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "add_member",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "target_user_id": "user-newcomer-0005",
+          "enc_pub_hex": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
+          "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+          "role": "member",
+          "scope_kind": "listed",
+          "scope_environments": ["env-stage-0003", "env-ghost-9999"],
+          "scope_environments_lp_hex": "0000000e656e762d73746167652d303030330000000e656e762d67686f73742d39393939"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c697374656400000048303030303030306536353665373632643733373436313637363532643330333033303333303030303030306536353665373632643637363836663733373432643339333933393339",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000fe00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c6973746564000000483030303030303065363536653736326437333734363136373635326433303330333033333030303030303065363536653736326436373638366637333734326433393339333933390000000d31373534303036343230303030",
+        "signature_hex": "277e810ebbb65cd69a6fb805abe0747b1a566b00878f301b9a02e35495830fc1f725fffc59cc6e48cea7016db9945ab57c05c4420d1db421968bd97f5edc2707",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000fe00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000066d656d626572000000066c6973746564000000483030303030303065363536653736326437333734363136373635326433303330333033333030303030303065363536653736326436373638366637333734326433393339333933390000000d31373534303036343230303030000000803237376538313065626262363563643639613666623830356162653037343762316135363662303038373866333031623961303265333534393538333066633166373235666666633539636336653438636561373031366462393934356162353763303563343432306431646234323139363862643937663565646332373037",
+        "entry_hash_hex": "f52aab629cd9f21ec6b188930dd6cfe544bb11eff400fc29ac4d312dee833c26"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "unknown-environment",
+      "must_fail": true,
+      "note": "the scope checks are stage-wise: with a deleted id listed before an unknown one, unknown-environment is still judged first (an implementation checking id by id would report environment-deleted)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-add-member-deleted-precedes-scope-role-mismatch",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "add_member",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "target_user_id": "user-newcomer-0005",
+          "enc_pub_hex": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
+          "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+          "role": "owner",
+          "scope_kind": "listed",
+          "scope_environments": ["env-stage-0003"],
+          "scope_environments_lp_hex": "0000000e656e762d73746167652d30303033"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "00000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000056f776e6572000000066c697374656400000024303030303030306536353665373632643733373436313637363532643330333033303333",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000d900000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000056f776e6572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030",
+        "signature_hex": "396d7bd50cced21ed1c10df757715c8162bc207880c46ee239edeb8c93565269f07c4659bef8417786c229b23ed1c71d7f7831413f59d738127af11df3664502",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f6d656d6265720000000f757365722d6f776e65722d30303031000000206365626237616362306662353231303136353331643364643830653235653531000000d900000012757365722d6e6577636f6d65722d3030303500000040333465343264346166356566393461303761336138343230316238383964346364316137343363623237623131623661313034333861386665623865353834370000004032353433623932666631303935353131343736616463383336396462366464633933333636356131313937386464613134303465653130363663613935353964000000056f776e6572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030000000803339366437626435306363656432316564316331306466373537373135633831363262633230373838306334366565323339656465623863393335363532363966303763343635396265663834313737383663323239623233656431633731643766373833313431336635396437333831323761663131646633363634353032",
+        "entry_hash_hex": "f7db074361faa80b6294174d41d7750c63609bcc86d224b0bce08615642251c1"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "an environment-deleted × scope-role-mismatch compound violation is judged as environment-deleted first (add_member: unknown-environment → environment-deleted → scope-role-mismatch)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-change-role-scope-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "change_role",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "target_user_id": "user-devmember-0010",
+          "new_role": "member",
+          "scope_kind": "listed",
+          "scope_environments": ["env-dev-0002", "env-stage-0003"],
+          "scope_environments_lp_hex": "0000000c656e762d6465762d303030320000000e656e762d73746167652d30303033"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "00000013757365722d6465766d656d6265722d30303130000000066d656d626572000000066c6973746564000000443030303030303063363536653736326436343635373632643330333033303332303030303030306536353665373632643733373436313637363532643330333033303333",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000b6368616e67655f726f6c650000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000007300000013757365722d6465766d656d6265722d30303130000000066d656d626572000000066c69737465640000004430303030303030633635366537363264363436353736326433303330333033323030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030",
+        "signature_hex": "e5fff6125d3aba9c17eb50b4d832f91be3c44ce7f7bbab754d5f0343190f447c84634dd59c79f323a19d481bf3caef4c98606881b481f619037a69595c7ed20f",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000b6368616e67655f726f6c650000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000007300000013757365722d6465766d656d6265722d30303130000000066d656d626572000000066c69737465640000004430303030303030633635366537363264363436353736326433303330333033323030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030000000806535666666363132356433616261396331376562353062346438333266393162653363343463653766376262616237353464356630333433313930663434376338343633346464353963373966333233613139643438316266336361656634633938363036383831623438316636313930333761363935393563376564323066",
+        "entry_hash_hex": "5a4179f2da9023aa7d287ba673f35747a5b19c7e3c44edbc4fe84c1d9c819b70"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a change_role whose new scope still names the deleted id is environment-deleted (the pruned state already dropped it — the generator lists live ids only)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-add-device-scope-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 21,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "op": "add_device",
+        "actor": {
+          "user_id": "user-allmember-0013",
+          "key_fingerprint_hex": "935fc2095d08b79a13885ce830bdfac2"
+        },
+        "payload": {
+          "enc_pub_hex": "1349ac6a06c18c9fb1cc6f15b1907ca645b45fe524716d690bb29f354dffa76e",
+          "sig_pub_hex": "2e47a725582b809413327ac25576f09b68cdceb5efe978441acc0d0f2067d810",
+          "role_cap": "member",
+          "scope_kind": "listed",
+          "scope_environments": ["env-stage-0003"],
+          "scope_environments_lp_hex": "0000000e656e762d73746167652d30303033"
+        },
+        "timestamp_ms": 1754006420000,
+        "payload_bytes_hex": "00000040313334396163366130366331386339666231636336663135623139303763613634356234356665353234373136643639306262323966333534646666613736650000004032653437613732353538326238303934313333323761633235353736663039623638636463656235656665393738343431616363306430663230363764383130000000066d656d626572000000066c697374656400000024303030303030306536353665373632643733373436313637363532643330333033303333",
+        "signed_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f64657669636500000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000c400000040313334396163366130366331386339666231636336663135623139303763613634356234356665353234373136643639306262323966333534646666613736650000004032653437613732353538326238303934313333323761633235353736663039623638636463656235656665393738343431616363306430663230363764383130000000066d656d626572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030",
+        "signature_hex": "8fb850f00a8aaf091e6e00bd71ea4611ac72ab35eb04310f11a3408a5e12a6b53d32dc9987592a4efa1ef60c676eef9f209e550dee65100e88da28fe60114704",
+        "entry_bytes_hex": "000000096d61727568692f763100000002323100000040333339383464383263363136626165656165393032623764316534333934306564303536323439643938396632336233343636623133316438376232633266360000000a6164645f64657669636500000013757365722d616c6c6d656d6265722d30303133000000203933356663323039356430386237396131333838356365383330626466616332000000c400000040313334396163366130366331386339666231636336663135623139303763613634356234356665353234373136643639306262323966333534646666613736650000004032653437613732353538326238303934313333323761633235353736663039623638636463656235656665393738343431616363306430663230363764383130000000066d656d626572000000066c6973746564000000243030303030303065363536653736326437333734363136373635326433303330333033330000000d31373534303036343230303030000000803866623835306630306138616166303931653665303062643731656134363131616337326162333565623034333130663131613334303861356531326136623533643332646339393837353932613465666131656636306336373665656639663230396535353064656536353130306538386461323866653630313134373034",
+        "entry_hash_hex": "3f60ef7e88ee858ce76533ec90ca00cbe801c2fe2be5b518d3a708a0e16822a5"
+      },
+      "verify_key_hex": "6095e94b3b1d9094dedc681b17261fe81877ea1fc0299d073fb15e11167b2e6c",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "an add_device whose scope names a deleted environment is environment-deleted",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "authz-grant-scope-deleted-environment",
+      "kind": "authorization",
+      "entry": {
+        "seq": 11,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475",
+        "op": "grant_server",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "scope_environments": ["env-prod-0001", "env-dev-0002"],
+          "scope_environments_lp_hex": "0000000d656e762d70726f642d303030310000000c656e762d6465762d30303032",
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "lease_policy_lp_hex": "000000a20000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000490000001a000000037265660000000f726566732f68656164732f6d61696e000000270000000a7265706f7369746f72790000001561636d652d64756d6d792f7769646765742d617070000000990000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000400000003c00000003737562000000317265706f3a61636d652d64756d6d792f7769646765742d6170703a7265663a726566732f68656164732f72656c65617365"
+        },
+        "timestamp_ms": 1754006410000,
+        "payload_bytes_hex": "0000004039666437616436646366663432393864643366393664356231623261663931306130353335623134383864376638666162623334396139383238383062363135000000203465646636373561343035393431656138323036663937376531616536313961000000423030303030303064363536653736326437303732366636343264333033303330333130303030303030633635366537363264363436353736326433303330333033320000028630303030303061323030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343930303030303031613030303030303033373236353636303030303030306637323635363637333266363836353631363437333266366436313639366530303030303032373030303030303061373236353730366637333639373436663732373930303030303031353631363336643635326436343735366436643739326637373639363436373635373432643631373037303030303030303939303030303030326236383734373437303733336132663266373436663662363536653265363136333734363936663665373332653637363937343638373536323735373336353732363336663665373436353665373432653633366636643030303030303232363837343734373037333361326632663664363137323735363836393264363436663637363636663666363432653635373836313664373036633635326536333666366430303030303034303030303030303363303030303030303337333735363230303030303033313732363537303666336136313633366436353264363437353664366437393266373736393634363736353734326436313730373033613732363536363361373236353636373332663638363536313634373332663732363536633635363137333635",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000033800000040396664376164366463666634323938646433663936643562316232616639313061303533356231343838643766386661626233343961393832383830623631350000002034656466363735613430353934316561383230366639373765316165363139610000004230303030303030643635366537363264373037323666363432643330333033303331303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030",
+        "signature_hex": "0f8239bc059b7c533bd08d476b87a1b1b296386285da6adbc67d38e620157ad6d2aae447d3e065bb48be0c990557612204a9b58846a87404c020d1b0403bc203",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d303030310000002063656262376163623066623532313031363533316433646438306532356535310000033800000040396664376164366463666634323938646433663936643562316232616639313061303533356231343838643766386661626233343961393832383830623631350000002034656466363735613430353934316561383230366639373765316165363139610000004230303030303030643635366537363264373037323666363432643330333033303331303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030000000803066383233396263303539623763353333626430386434373662383761316231623239363338363238356461366164626336376433386536323031353761643664326161653434376433653036356262343862653063393930353537363132323034613962353838343661383734303463303230643162303430336263323033",
+        "entry_hash_hex": "0e479fc1da218739253c0caa28136646c031d44ce49350310ec8a040a2d631da"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a grant_server whose scope_environments names a deleted environment is environment-deleted",
+      "chain": "environment-deleted-granted"
+    },
+    {
+      "name": "authz-grant-role-precedes-deleted",
+      "kind": "authorization",
+      "entry": {
+        "seq": 11,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475",
+        "op": "grant_server",
+        "actor": {
+          "user_id": "user-admin-0003",
+          "key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe"
+        },
+        "payload": {
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "scope_environments": ["env-prod-0001", "env-dev-0002"],
+          "scope_environments_lp_hex": "0000000d656e762d70726f642d303030310000000c656e762d6465762d30303032",
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "lease_policy_lp_hex": "000000a20000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000490000001a000000037265660000000f726566732f68656164732f6d61696e000000270000000a7265706f7369746f72790000001561636d652d64756d6d792f7769646765742d617070000000990000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000400000003c00000003737562000000317265706f3a61636d652d64756d6d792f7769646765742d6170703a7265663a726566732f68656164732f72656c65617365"
+        },
+        "timestamp_ms": 1754006410000,
+        "payload_bytes_hex": "0000004039666437616436646366663432393864643366393664356231623261663931306130353335623134383864376638666162623334396139383238383062363135000000203465646636373561343035393431656138323036663937376531616536313961000000423030303030303064363536653736326437303732366636343264333033303330333130303030303030633635366537363264363436353736326433303330333033320000028630303030303061323030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343930303030303031613030303030303033373236353636303030303030306637323635363637333266363836353631363437333266366436313639366530303030303032373030303030303061373236353730366637333639373436663732373930303030303031353631363336643635326436343735366436643739326637373639363436373635373432643631373037303030303030303939303030303030326236383734373437303733336132663266373436663662363536653265363136333734363936663665373332653637363937343638373536323735373336353732363336663665373436353665373432653633366636643030303030303232363837343734373037333361326632663664363137323735363836393264363436663637363636663666363432653635373836313664373036633635326536333666366430303030303034303030303030303363303030303030303337333735363230303030303033313732363537303666336136313633366436353264363437353664366437393266373736393634363736353734326436313730373033613732363536363361373236353636373332663638363536313634373332663732363536633635363137333635",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d61646d696e2d303030330000002030366636323230633238363334306536643831633962613033353563646366650000033800000040396664376164366463666634323938646433663936643562316232616639313061303533356231343838643766386661626233343961393832383830623631350000002034656466363735613430353934316561383230366639373765316165363139610000004230303030303030643635366537363264373037323666363432643330333033303331303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030",
+        "signature_hex": "c9f65e71e80a0829a079f42fcf63ccd62e9a5e662275ab526f1644260939c95c3b4a2d755e1f96b523d8e3cb25cc74de5673413eef533de1ea2137c2e71fba04",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d61646d696e2d303030330000002030366636323230633238363334306536643831633962613033353563646366650000033800000040396664376164366463666634323938646433663936643562316232616639313061303533356231343838643766386661626233343961393832383830623631350000002034656466363735613430353934316561383230366639373765316165363139610000004230303030303030643635366537363264373037323666363432643330333033303331303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030000000806339663635653731653830613038323961303739663432666366363363636436326539613565363632323735616235323666313634343236303933396339356333623461326437353565316639366235323364386533636232356363373464653536373334313365656635333364653165613231333763326537316662613034",
+        "entry_hash_hex": "7570c87367582b766c009b783614acf8d8e9eec3ff88787e7a941b71e1b0b5bf"
+      },
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "insufficient-role",
+      "must_fail": true,
+      "note": "an insufficient-role × environment-deleted compound violation is judged by the role rule first",
+      "chain": "environment-deleted-granted"
+    },
+    {
+      "name": "authz-grant-deleted-precedes-narrowed",
+      "kind": "authorization",
+      "entry": {
+        "seq": 11,
+        "suite": "maruhi/v1",
+        "prev_hash_hex": "a531563c8c29fd3db9f1d2bcb9ae0a1e8cdf2bb784b82bad1d2fa1fd2c4f7475",
+        "op": "grant_server",
+        "actor": {
+          "user_id": "user-owner-0001",
+          "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51"
+        },
+        "payload": {
+          "server_enc_pub_hex": "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+          "server_key_fingerprint_hex": "4edf675a405941ea8206f977e1ae619a",
+          "scope_environments": ["env-dev-0002"],
+          "scope_environments_lp_hex": "0000000c656e762d6465762d30303032",
+          "lease_policy": [
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "ref",
+                  "claim_value": "refs/heads/main"
+                },
+                {
+                  "claim_name": "repository",
+                  "claim_value": "acme-dummy/widget-app"
+                }
+              ]
+            },
+            {
+              "issuer_url": "https://token.actions.githubusercontent.com",
+              "audience": "https://maruhi-dogfood.example.com",
+              "claim_constraints": [
+                {
+                  "claim_name": "sub",
+                  "claim_value": "repo:acme-dummy/widget-app:ref:refs/heads/release"
+                }
+              ]
+            }
+          ],
+          "lease_policy_lp_hex": "000000a20000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000490000001a000000037265660000000f726566732f68656164732f6d61696e000000270000000a7265706f7369746f72790000001561636d652d64756d6d792f7769646765742d617070000000990000002b68747470733a2f2f746f6b656e2e616374696f6e732e67697468756275736572636f6e74656e742e636f6d0000002268747470733a2f2f6d61727568692d646f67666f6f642e6578616d706c652e636f6d000000400000003c00000003737562000000317265706f3a61636d652d64756d6d792f7769646765742d6170703a7265663a726566732f68656164732f72656c65617365"
+        },
+        "timestamp_ms": 1754006410000,
+        "payload_bytes_hex": "00000040396664376164366463666634323938646433663936643562316232616639313061303533356231343838643766386661626233343961393832383830623631350000002034656466363735613430353934316561383230366639373765316165363139610000002030303030303030633635366537363264363436353736326433303330333033320000028630303030303061323030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343930303030303031613030303030303033373236353636303030303030306637323635363637333266363836353631363437333266366436313639366530303030303032373030303030303061373236353730366637333639373436663732373930303030303031353631363336643635326436343735366436643739326637373639363436373635373432643631373037303030303030303939303030303030326236383734373437303733336132663266373436663662363536653265363136333734363936663665373332653637363937343638373536323735373336353732363336663665373436353665373432653633366636643030303030303232363837343734373037333361326632663664363137323735363836393264363436663637363636663666363432653635373836313664373036633635326536333666366430303030303034303030303030303363303030303030303337333735363230303030303033313732363537303666336136313633366436353264363437353664366437393266373736393634363736353734326436313730373033613732363536363361373236353636373332663638363536313634373332663732363536633635363137333635",
+        "signed_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d3030303100000020636562623761636230666235323130313635333164336464383065323565353100000316000000403966643761643664636666343239386464336639366435623162326166393130613035333562313438386437663866616262333439613938323838306236313500000020346564663637356134303539343165613832303666393737653161653631396100000020303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030",
+        "signature_hex": "95c4f111441a4ce6a0c4a0ce91790a3b15a514fa48410f39608d9af38717af1b6b2c4a7b4563a002aa2e5fdd67ac2047349cbde7a85999ff741661e4446fed07",
+        "entry_bytes_hex": "000000096d61727568692f763100000002313100000040613533313536336338633239666433646239663164326263623961653061316538636466326262373834623832626164316432666131666432633466373437350000000c6772616e745f7365727665720000000f757365722d6f776e65722d3030303100000020636562623761636230666235323130313635333164336464383065323565353100000316000000403966643761643664636666343239386464336639366435623162326166393130613035333562313438386437663866616262333439613938323838306236313500000020346564663637356134303539343165613832303666393737653161653631396100000020303030303030306336353665373632643634363537363264333033303330333200000286303030303030613230303030303032623638373437343730373333613266326637343666366236353665326536313633373436393666366537333265363736393734363837353632373537333635373236333666366537343635366537343265363336663664303030303030323236383734373437303733336132663266366436313732373536383639326436343666363736363666366636343265363537383631366437303663363532653633366636643030303030303439303030303030316130303030303030333732363536363030303030303066373236353636373332663638363536313634373332663664363136393665303030303030323730303030303030613732363537303666373336393734366637323739303030303030313536313633366436353264363437353664366437393266373736393634363736353734326436313730373030303030303039393030303030303262363837343734373037333361326632663734366636623635366532653631363337343639366636653733326536373639373436383735363237353733363537323633366636653734363536653734326536333666366430303030303032323638373437343730373333613266326636643631373237353638363932643634366636373636366636663634326536353738363136643730366336353265363336663664303030303030343030303030303033633030303030303033373337353632303030303030333137323635373036663361363136333664363532643634373536643664373932663737363936343637363537343264363137303730336137323635363633613732363536363733326636383635363136343733326637323635366336353631373336350000000d31373534303036343130303030000000803935633466313131343431613463653661306334613063653931373930613362313561353134666134383431306633393630386439616633383731376166316236623263346137623435363361303032616132653566646436376163323034373334396362646537613835393939666637343136363165343434366665643037",
+        "entry_hash_hex": "f85cbb4803ccc6c30ebb35aef7a0786cd0aee9acf3b835451e3c43894f9a450d"
+      },
+      "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "expected_reason": "environment-deleted",
+      "must_fail": true,
+      "note": "a re-grant naming only the deleted id (which also drops prod — a narrowing) is judged as environment-deleted before the re-grant rule",
+      "chain": "environment-deleted-granted"
+    },
+    {
+      "name": "delete-env-tampered-environment-id",
+      "base_seq": 20,
+      "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000100000000c656e762d6465762d303030320000000d31373534303036343139303030",
+      "signature_hex": "e31bab8e1c8152db3fac297361b9e40b6b4af5742ba18c6726700772929ffe921d17564f6881d14ab30b9f9155d5984e89a16275643cc2139fbfadad3634560e",
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "must_fail": true,
+      "note": "substituting delete_environment's environment_id fails signature verification (the target is signed)",
+      "chain": "environment-deleted"
+    },
+    {
+      "name": "delete-env-op-confusion",
+      "chain": "environment-deleted",
+      "base_seq": 20,
+      "signed_bytes_hex": "000000096d61727568692f763100000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000000d72656d6f76655f6d656d62657200000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030",
+      "signature_hex": "e31bab8e1c8152db3fac297361b9e40b6b4af5742ba18c6726700772929ffe921d17564f6881d14ab30b9f9155d5984e89a16275643cc2139fbfadad3634560e",
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "must_fail": true,
+      "note": "the delete_environment signature over the same payload bytes relabeled as remove_member (whose payload is also one id) fails verification — the op name inside signed_bytes is the domain separation of chain entries (no separate domain string)"
+    },
+    {
+      "name": "delete-env-suite-mismatch",
+      "chain": "environment-deleted",
+      "base_seq": 20,
+      "signed_bytes_hex": "000000096d61727568692f763200000002323000000040613535353432396238653866303433653037653833663134393663623066613161613837303063306638616566353861663963656338623236613263616536650000001264656c6574655f656e7669726f6e6d656e7400000012757365722d64657661646d696e2d30303131000000206434633566346430323633333933346338663036326162643832336464663666000000120000000e656e762d73746167652d303030330000000d31373534303036343139303030",
+      "signature_hex": "e31bab8e1c8152db3fac297361b9e40b6b4af5742ba18c6726700772929ffe921d17564f6881d14ab30b9f9155d5984e89a16275643cc2139fbfadad3634560e",
+      "verify_key_hex": "0b68bb5c7c31309b73bab7d1b20f40902a0ae08c1b1fcc716ecc69daa9c7d660",
+      "must_fail": true,
+      "note": "the same signature over signed_bytes declaring another suite fails verification (the suite is signed)"
     }
   ],
   "values_digests": [

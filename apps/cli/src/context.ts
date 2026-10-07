@@ -28,10 +28,12 @@ import { toCliError } from "./failure.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
 import {
+  type DeletionFloorIntent,
   type FloorIntent,
   floorRecordGet,
   FloorStore,
   type FloorStoreShape,
+  type ManifestFloorIntent,
   type ProjectFloor,
 } from "./floor.ts";
 import { CliIo } from "./io.ts";
@@ -44,7 +46,7 @@ import type { ProxyAcceptStore } from "./proxy.package/index.ts";
 import type { SqlRunner } from "./rotate-connector.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
-import { requireEnvironmentInScope } from "./scope.ts";
+import { refuseChainDeletedEnvironment, requireEnvironmentInScope } from "./scope.ts";
 import {
   type CliSession,
   loadMasterKeys,
@@ -417,6 +419,11 @@ function intentEntryState(verified: VerifiedProject, intent: FloorIntent): Inten
 
 /** Whether the slot's entry is the intent's composite itself (op, coordinates, commitment). */
 function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
+  if (intent.op === "delete_environment") {
+    return (
+      entry.op === "delete_environment" && entry.payload.environmentId === intent.environmentId
+    );
+  }
   if (intent.op === "create_environment") {
     return (
       entry.op === "create_environment" &&
@@ -433,15 +440,15 @@ function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
 }
 
 /**
- * Startup reconciliation of unresolved composite intents (create / rotate —
- * 3-F). A composite's effect is confirmed by chain sync (§12-10 (3)), and the
- * command prologue fully verifies the chain every run, so it can be resolved
- * here: if the intent's composite entry exists on the chain it was accepted —
- * promote the self-issued manifest to the floor (recovering "floor commits
- * that span an error exit / crash"). If it does not exist it was not accepted
- * (the chain is fully synced = the complete source of truth). meta-op intents
- * leave no trace on the chain, so the next verified pull (values.ts)
- * reconciles them.
+ * Startup reconciliation of unresolved composite intents (create / rotate /
+ * delete — 3-F). A composite's effect is confirmed by chain sync (§12-10
+ * (3)), and the command prologue fully verifies the chain every run, so it
+ * can be resolved here: if the intent's composite entry exists on the chain
+ * it was accepted — promote the self-issued manifest to the floor
+ * (recovering "floor commits that span an error exit / crash"; a deletion
+ * issues none). If it does not exist it was not accepted (the chain is fully
+ * synced = the complete source of truth). meta-op intents leave no trace on
+ * the chain, so the next verified pull (values.ts) reconciles them.
  */
 const reconcileCompositeIntents = Effect.fn("context.reconcileCompositeIntents")(function* (input: {
   readonly store: FloorStoreShape;
@@ -450,10 +457,7 @@ const reconcileCompositeIntents = Effect.fn("context.reconcileCompositeIntents")
   readonly intents: readonly FloorIntent[];
 }): Effect.fn.Return<boolean, CliError, CliServices> {
   let resolved = false;
-  for (const intent of input.intents) {
-    if (intent.op === "meta-op" || intent.dekCommitmentHex === null) {
-      continue;
-    }
+  for (const intent of input.intents.filter(isChainReconcilable)) {
     const state = intentEntryState(input.verified, intent);
     if (state === "pending") {
       // An empty slot cannot be told apart: a crash before sending, or our
@@ -465,40 +469,83 @@ const reconcileCompositeIntents = Effect.fn("context.reconcileCompositeIntents")
       );
       continue;
     }
-    const environment = input.verified.state.environments.get(intent.environmentId);
-    if (state === "accepted") {
-      // Confirmed as accepted — promote the self-issued manifest to the floor (joining a verified fact)
-      yield* input.store.commitManifest(input.projectId, {
-        chainHead: {
-          seq: input.verified.state.headSeq,
-          hashHex: input.verified.state.headHashHex,
-        },
-        environmentId: intent.environmentId,
-        manifest: {
-          manifestVersion: intent.manifestVersion,
-          epoch: intent.epoch,
-          manifestSigHashHex: intent.manifestSigHashHex,
-        },
-      });
-      yield* input.store.resolveIntent(
-        input.projectId,
-        intent.id,
-        environment !== undefined && environment.currentEpoch === intent.epoch
-          ? "accepted"
-          : "accepted-superseded",
-      );
-      yield* logNote(
-        `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
-      );
-    } else {
-      yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
-      yield* logNote(
-        `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
-      );
-    }
+    yield* intent.op === "delete_environment"
+      ? settleDeletionIntent(input, intent, state)
+      : settleManifestIntent(input, intent, state);
     resolved = true;
   }
   return resolved;
+});
+
+/** The intents the chain alone can settle: composites with a chain entry (meta-op intents leave none — values.ts settles them). */
+function isChainReconcilable(intent: FloorIntent): boolean {
+  return intent.op === "delete_environment"
+    ? true
+    : intent.op !== "meta-op" && intent.dekCommitmentHex !== null;
+}
+
+interface IntentSettlementInput {
+  readonly store: FloorStoreShape;
+  readonly projectId: string;
+  readonly verified: VerifiedProject;
+}
+
+/** A deletion issues no manifest — only the intent closes. */
+function settleDeletionIntent(
+  input: IntentSettlementInput,
+  intent: DeletionFloorIntent,
+  state: Exclude<IntentEntryState, "pending">,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.andThen(
+    input.store.resolveIntent(
+      input.projectId,
+      intent.id,
+      state === "accepted" ? "accepted" : "not-accepted",
+    ),
+    logNote(
+      state === "accepted"
+        ? `an earlier delete_environment for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain`
+        : `an earlier delete_environment for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted`,
+    ),
+  );
+}
+
+/** A creation / rotation composite: an accepted one promotes its self-issued manifest to the floor (joining a verified fact). */
+const settleManifestIntent = Effect.fn("context.settleManifestIntent")(function* (
+  input: IntentSettlementInput,
+  intent: ManifestFloorIntent,
+  state: Exclude<IntentEntryState, "pending">,
+): Effect.fn.Return<void, CliError, CliServices> {
+  if (state !== "accepted") {
+    yield* input.store.resolveIntent(input.projectId, intent.id, "not-accepted");
+    yield* logNote(
+      `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is not on the verified chain — it was not accepted. No floor change`,
+    );
+    return;
+  }
+  yield* input.store.commitManifest(input.projectId, {
+    chainHead: {
+      seq: input.verified.state.headSeq,
+      hashHex: input.verified.state.headHashHex,
+    },
+    environmentId: intent.environmentId,
+    manifest: {
+      manifestVersion: intent.manifestVersion,
+      epoch: intent.epoch,
+      manifestSigHashHex: intent.manifestSigHashHex,
+    },
+  });
+  const environment = input.verified.state.environments.get(intent.environmentId);
+  yield* input.store.resolveIntent(
+    input.projectId,
+    intent.id,
+    environment !== undefined && environment.currentEpoch === intent.epoch
+      ? "accepted"
+      : "accepted-superseded",
+  );
+  yield* logNote(
+    `an earlier ${intent.op} for environment ${intent.environmentId} (interrupted before its confirmation) is confirmed as accepted on the chain. The local floor has been advanced with its manifest (manifestVersion ${intent.manifestVersion})`,
+  );
 });
 
 /**
@@ -680,7 +727,7 @@ const attachProject = Effect.fn("context.attachProject")(function* (
     }
   }
   if (options?.quietMandateWarning !== true) {
-    yield* warnUnconvergedMandates({ client: context.client, verified });
+    yield* warnUnconvergedMandates({ verified });
   }
   // Submission of the verified-head attestation (§6.3 head gossip —
   // SHOULD; only views that passed every reconciliation are attested.
@@ -830,6 +877,9 @@ export const openEnvironment = Effect.fn("context.openEnvironment")(function* (
   const config = yield* loadCliConfig;
   const environmentId = yield* resolveEnvironmentId(flags.env, config);
   const context = yield* openProjectWith(config, flags, options);
+  // A chain-deleted environment is refused first: its ID left every listed
+  // scope at the deletion, so the scope check would misreport it (§6.2)
+  yield* refuseChainDeletedEnvironment(context.verified, environmentId);
   // The check is **this device's effective scope** (person ∩ device — DK
   // K4-17). If the key at hand is not on the chain (unregistered / revoked),
   // guide to the registration path (approving the pending request, or
@@ -896,6 +946,7 @@ export const openMetadataEnvironment = Effect.fn("context.openMetadataEnvironmen
   const config = yield* loadCliConfig;
   const environmentId = yield* resolveEnvironmentId(flags.env, config);
   const context = yield* openMetadataProjectWith(config, flags);
+  yield* refuseChainDeletedEnvironment(context.verified, environmentId);
   const floorHandle = yield* floorHandleFor(context, environmentId);
   return { ...context, environmentId, floorHandle };
 });
@@ -938,6 +989,8 @@ export const openMetadataEnvironmentPair = Effect.fn("context.openMetadataEnviro
   ): Effect.fn.Return<EnvironmentPairContext, CliError, CliServices> {
     const config = yield* loadCliConfig;
     const context = yield* openMetadataProjectWith(config, flags);
+    yield* refuseChainDeletedEnvironment(context.verified, first);
+    yield* refuseChainDeletedEnvironment(context.verified, second);
     return {
       ...context,
       first: { environmentId: first, floorHandle: yield* floorHandleFor(context, first) },

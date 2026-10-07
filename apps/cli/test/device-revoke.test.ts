@@ -126,7 +126,7 @@ describe("maruhi device revoke", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: addDeviceOp(dev2) },
     ]);
-    // Environment-list GET is 500 → the post-acceptance sweep (verifying the deleted environment) fails
+    // The environment's rotation answers 404 while the chain shows it live → the post-acceptance sweep fails
     const { server, state } = await makeServer({
       built,
       withEnvironment: false,
@@ -146,7 +146,7 @@ describe("maruhi device revoke", () => {
     expect(state.appended.map((entry) => entry.op)).toEqual(["revoke_device"]);
     expect(env.logs.join("\n")).toContain(`revoked ${dev2.fingerprintHex}`);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("the rotation sweep after the revocation failed");
+    expect(errors).toContain(`rotation of environment ${ENV_ID} failed`);
     expect(errors).not.toContain(": revocation failed —");
     // The follow-up runs: the local record is revoked, the registry row is deleted
     const recorded = await readOwnDevices(env, server.origin);

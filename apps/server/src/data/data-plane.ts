@@ -162,8 +162,8 @@ export interface DistributedMetaStatementValue {
   readonly suite: WireSuite;
   readonly environmentId: string;
   readonly name: string;
-  /** An environment statement stays two-valued (declared is v3-only for variables — §4.2). */
-  readonly status: "active" | "deleted";
+  /** An environment statement is always active (deletion is the chain op delete_environment — §4.2 / §6.2). */
+  readonly status: "active";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
   readonly chainHeadHashHex: string;
@@ -258,7 +258,7 @@ export interface ValueInput {
 export interface EnvironmentSummaryValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
-  /** The latest environment meta statement (a deleted environment carries a deleted statement). */
+  /** The latest environment meta statement (always active — a deleted environment is not listed; its deletion is a chain entry). */
   readonly statement: DistributedMetaStatementValue;
 }
 
@@ -527,8 +527,7 @@ export type CheckpointMismatchReason =
   | "manifest-mismatch"
   | "values-digest-mismatch"
   | "audit-head-unknown"
-  | "audit-head-stale"
-  | "environment-deleted";
+  | "audit-head-stale";
 
 /**
  * The reasons a `propose` violates the acceptance policy (AUTH_SPEC
@@ -573,7 +572,7 @@ export type DataRejection =
   // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired)
   | {
       readonly kind: "composite-required";
-      readonly op: "create_environment" | "rotate_epoch";
+      readonly op: "create_environment" | "rotate_epoch" | "delete_environment";
     }
   // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
   // §6.4 — 2026-09-19 DK K3): at the acceptance of an `add_device`, the

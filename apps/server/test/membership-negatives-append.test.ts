@@ -99,6 +99,9 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "revoke-device-fp-bad-length",
   "policy-ops-add-device",
   "policy-ops-revoke-device",
+  // Environment deletion (2026-10-07): ops' closed-set literal rejects
+  // delete_environment at 400 first
+  "policy-ops-delete-environment",
 ]);
 
 type AuthzNegative = (typeof vectorAuthzNegatives)[number];
@@ -187,20 +190,28 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
  * (consensus rules on device ops) + 10 (device-derived-chain
  * prerequisites) = 150, wireSchema 8 + 7 (closed-set literals and
  * fixed-length hex on device ops) = 15
+ *
+ * 2026-10-07 (environment deletion on the chain — authz negatives +28):
+ * the delete_environment negatives (12) and the rotate / create negatives
+ * on a deleted environment (3) go through the composites (composite 27 +
+ * 15 = 42); the checkpoint tuples naming a deleted environment are the
+ * checkpoint branch (21 + 3 = 24); policy-ops-delete-environment is a
+ * closed-set literal (wireSchema 15 + 1 = 16); the scope / grant / propose
+ * references are consensus rules over a replayed deletion (150 + 9 = 159)
  */
 const EXPECTED_PARTITION = {
-  checkpoint: 21,
-  composite: 27,
+  checkpoint: 24,
+  composite: 42,
   structureBeforeSignature: 1,
-  wireSchema: 15,
-  consensus: 150,
+  wireSchema: 16,
+  consensus: 159,
 } as const;
 
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;
 
 /**
  * A negative's branch (the judgment order is fixed): checkpoint →
- * composite (create / rotate) → the four-eyes (PF1) 4 ops and
+ * composite (create / rotate / delete) → the four-eyes (PF1) 4 ops and
  * four-eyes-derived chains are replayed and accepted by the server
  * since K5; the device-key (DK) 2 ops and device-derived chains since
  * K3 (propose's acceptance policy does not reject fixed-timestamp
@@ -213,7 +224,7 @@ function bucketOf(negative: AuthzNegative): PartitionBucket {
   if (op === "checkpoint") {
     return "checkpoint";
   }
-  if (op === "create_environment" || op === "rotate_epoch") {
+  if (op === "create_environment" || op === "rotate_epoch" || op === "delete_environment") {
     return "composite";
   }
   if (UNSIGNABLE_STRUCTURE_NEGATIVES.has(negative.name)) {

@@ -56,10 +56,9 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  // Deleted environments are also listed with their deleted statement
-  // (the detection material for a denied deletion / unauthorized
-  // revival — §12-4; the client discriminates by the statement's
-  // status)
+  // Live environments only (§12-7 — 2026-10-07): a deleted environment's
+  // statements are deleted with its data, and the client derives deletion
+  // from the delete_environment entry on its verified chain
   listEnvironmentStatements: Effect.sync(() =>
     sql
       .exec(
@@ -68,6 +67,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
          JOIN environment_meta_statements ms
            ON ms.environment_id = e.environment_id
           AND ms.meta_version = e.latest_meta_version
+         WHERE e.deleted_at IS NULL
          ORDER BY e.created_at, e.environment_id`,
       )
       .toArray()

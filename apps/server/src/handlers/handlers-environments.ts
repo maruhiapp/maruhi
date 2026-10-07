@@ -147,22 +147,21 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
     .handle(
       "remove",
       Effect.fn("handlers-environments.remove")(function* ({ params, payload, endpoint }) {
-        // Environment deletion requires admin scope + chain role admin or
-        // above (§12-3). Deletion also requires a signed statement
-        // (status deleted) (§12-4)
-        yield* checkStatementCoordinates(payload.statement, {
-          environmentId: params.environmentId,
-        });
+        // The deletion composite (§12-4 — 2026-10-07): the
+        // delete_environment entry's actor must strictly equal the caller
+        // (§11-1); admin scope + chain role admin or above (§12-3). The URL
+        // / entry match, the CAS, the scope and the consensus rules are
+        // judged by the DO (deleteEnvironmentCompositeProgram)
+        yield* ensureCompositeActor(payload.entry);
         return yield* callProjectData<void>()({
           endpoint,
           projectId: params.projectId,
           permission: "admin",
           invoke: (stub, actor) =>
-            stub.deleteEnvironment(
-              actor,
-              params.environmentId,
-              toMetaStatementInput(payload.statement),
-            ),
+            stub.deleteEnvironment(actor, params.environmentId, {
+              parentHeadHashHex: payload.parentHeadHashHex,
+              entry: payload.entry,
+            }),
         });
       }, Effect.as(noContent)),
     ),

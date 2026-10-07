@@ -43,7 +43,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { outOfScopeMessage } from "./scope.ts";
+import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
 /**
  * A wrap recipient (recipient class — AUTH_SPEC §12-6). A member's
@@ -365,6 +365,14 @@ interface WritingMember {
 export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
+  /**
+   * Whether the operation acts on an environment the chain already holds
+   * (`existing`: a chain-deleted one is refused first — §6.2 pruned it from
+   * every listed scope, so the scope judgment would misreport it) or names a
+   * new one (`new`: env create, whose own check reports a burned ID as
+   * duplicate-environment). Required, so every caller decides.
+   */
+  readonly target: "existing" | "new";
   readonly signerUserId: string;
   /** The signing device's key (the computation point of effective permission — the person's (role, scope) is not passed to the check directly). */
   readonly signingKeyPair: SigningKeyPair;
@@ -387,6 +395,9 @@ export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(f
     return yield* Effect.fail(
       cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
     );
+  }
+  if (input.target === "existing") {
+    yield* refuseChainDeletedEnvironment(input.verified, input.environmentId);
   }
   const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
   const permission = effectivePermissionOf(member, device);

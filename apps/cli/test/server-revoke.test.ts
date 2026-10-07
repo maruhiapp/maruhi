@@ -30,6 +30,7 @@ import {
   type BuiltChain,
   checkpointSnapshotValuesOf,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
   genesisOp,
@@ -605,13 +606,16 @@ describe("maruhi server revoke", () => {
     expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });
 
-  it("a deleted environment is skipped only with a verified deletion statement; the rest are rotated", async () => {
+  it("an environment deleted on the verified chain is skipped; the rest are rotated", async () => {
     const GONE_ID = "env-gone-9";
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE_ID, dek2) },
       { actor: owner, operation: await grantServerOp([ENV_ID, GONE_ID], [], SERVER_ENC_PUB_A) },
+      // The deletion is a chain entry (CRYPTO_SPEC §6.2); it prunes GONE_ID
+      // from the grant's scope
+      { actor: owner, operation: deleteEnvironmentOp(GONE_ID) },
     ]);
     const listedStatements = [
       await environmentStatementFor({
@@ -620,17 +624,6 @@ describe("maruhi server revoke", () => {
         name: ENV_ID,
         author: owner,
         head: headOf(built, 1),
-      }),
-      // The signed deletion statement (§12-4 — deletion also needs an
-      // admin-level signature)
-      await environmentStatementFor({
-        projectId: built.projectId,
-        environmentId: GONE_ID,
-        name: GONE_ID,
-        author: owner,
-        head: headOf(built, 4),
-        status: "deleted",
-        metaVersion: 2,
       }),
     ];
     const state = await makeRevokeServer({
@@ -641,8 +634,8 @@ describe("maruhi server revoke", () => {
           deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)],
         },
         // GONE_ID has no environment fixture = pull / rotate would be
-        // 404 (same as a real server's tombstone). Pins that the
-        // verified deletion means they're never called
+        // 404 (same as a real server after the deletion). Pins that the
+        // chain deletion means they're never called
       },
       listedStatements,
     });
@@ -653,7 +646,7 @@ describe("maruhi server revoke", () => {
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_ID]);
     const logs = env.logs.join("\n");
     expect(logs).toContain(
-      `Skipped deleted environments (signed deletion statements verified): ${GONE_ID}`,
+      `Skipped deleted environments (delete_environment on the verified chain): ${GONE_ID}`,
     );
     expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
   });

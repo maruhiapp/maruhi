@@ -34,6 +34,7 @@ import {
   projectId,
   READER,
   requestJson,
+  unsignedDeleteEnvironmentBody,
   STRANGER,
 } from "./support/data-fixture.ts";
 import {
@@ -344,21 +345,14 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
 
     // Environment deletion requires the admin scope (403 under write.
     // The scope check precedes signature verification — §12-3 — so an
-    // unsigned dummy statement suffices)
+    // unsigned dummy entry suffices)
     const memberWrite = await cliToken(9001, writeScope);
-    const removal = await requestJson("DELETE", `/environments/${ENV}`, memberWrite, {
-      statement: {
-        suite: "maruhi/v1",
-        environmentId: ENV,
-        name: "App",
-        status: "deleted",
-        metaVersion: 2,
-        prevMetaSigHashHex: "cd".repeat(32),
-        chainHeadHashHex: fixture.head.hashHex,
-        chainHeadSeq: fixture.head.seq,
-        signatureHex: "00".repeat(64),
-      },
-    });
+    const removal = await requestJson(
+      "DELETE",
+      `/environments/${ENV}`,
+      memberWrite,
+      unsignedDeleteEnvironmentBody(fixture, ENV, OWNER),
+    );
     expect(removal.status).toBe(403);
     expect(((await removal.json()) as { reason: string }).reason).toBe("insufficient-permission");
   });

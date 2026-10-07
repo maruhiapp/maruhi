@@ -152,7 +152,11 @@ export interface FloorConflict {
 }
 
 /** The op kind of a security-critical mutation's intent record (§6.3 recording discipline (ii)). */
-export type FloorIntentOp = "create_environment" | "rotate_epoch" | "meta-op";
+export type FloorIntentOp =
+  | "create_environment"
+  | "rotate_epoch"
+  | "meta-op"
+  | "delete_environment";
 
 /** An intent's resolution (the effect-check result of §12-10 (3)). */
 export type FloorIntentOutcome =
@@ -169,10 +173,15 @@ export type FloorIntentOutcome =
  * material (compound = the DEK commitment, meta op = the variable ID).
  * An intent is not a verified fact and does not enter the join's lattice
  * — fold surfaces an unresolved intent as "needs reconciliation".
+ * A deletion issues no manifest, so its intent is the separate shape
+ * {@link DeletionFloorIntent}.
  */
-export interface FloorIntent {
+export type FloorIntent = ManifestFloorIntent | DeletionFloorIntent;
+
+/** An intent of a mutation that issues a manifest (environment creation / rotation composites, meta operations). */
+export interface ManifestFloorIntent {
   readonly id: string;
-  readonly op: FloorIntentOp;
+  readonly op: Exclude<FloorIntentOp, "delete_environment">;
   readonly environmentId: string;
   /** The epoch the compound establishes (create = 1 / rotate = new_epoch). A meta op = the current epoch at issuance. */
   readonly epoch: number;
@@ -185,8 +194,21 @@ export interface FloorIntent {
   readonly declaredHead: ChainHeadFloor;
 }
 
+/**
+ * The intent of an environment deletion composite (2026-10-07 — CRYPTO_SPEC
+ * §6.2 delete_environment): no manifest is issued, so the matching material
+ * is only the entry itself — the delete_environment of this environment in
+ * the slot after the declared head (the CAS fixes where it can land).
+ */
+export interface DeletionFloorIntent {
+  readonly id: string;
+  readonly op: "delete_environment";
+  readonly environmentId: string;
+  readonly declaredHead: ChainHeadFloor;
+}
+
 /** An intent record's input (the id is assigned by the store). */
-export type FloorIntentInput = Omit<FloorIntent, "id">;
+export type FloorIntentInput = Omit<ManifestFloorIntent, "id"> | Omit<DeletionFloorIntent, "id">;
 
 /** One project's floor = the observation log's fold result (a derived value). */
 export interface ProjectFloor {

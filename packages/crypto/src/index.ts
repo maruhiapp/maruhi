@@ -168,6 +168,7 @@ export {
   computeChainEntryHash,
   computeEnvValuesDigest,
   type CreateEnvironmentPayload,
+  type DeleteEnvironmentPayload,
   type DeviceCap,
   type DeviceStateAtSeq,
   type EffectivePermission,

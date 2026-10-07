@@ -198,7 +198,7 @@ SUBCOMMANDS
   create    Create an environment
   list      List the project's environments (ID, display name, status, current epoch, and whether your scope covers it; deleted ones only with --all)
   rename    Rename an environment's display name (the environment ID and every value stay as they are)
-  rm        Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused
+  rm        Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only its signed delete_environment entry on the project chain remains, and the environment ID can never be reused
   rotate    Rotate the environment's epoch DEK, or resume an incomplete re-encryption
   diff      Compare the variable-name sets of two environments (names only; no values)
 
@@ -231,7 +231,7 @@ USAGE
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
-  --all               Also list deleted environments (kept as signed deletion records)
+  --all               Also list deleted environments (recorded on the project chain)
   --json              Print the environments as JSON (ID, name, status, current epoch, whether your scope covers it)
 
 GLOBAL FLAGS
@@ -259,7 +259,7 @@ GLOBAL FLAGS
 
 $ maruhi env rm --help
 DESCRIPTION
-  Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused
+  Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only its signed delete_environment entry on the project chain remains, and the environment ID can never be reused
 
 USAGE
   maruhi env rm [flags] <environment-id>

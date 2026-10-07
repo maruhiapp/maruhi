@@ -58,6 +58,7 @@ const ensureCreatable = Effect.fn("env-create.ensureCreatable")(function* (
   const { member } = yield* requireWritingMember({
     verified,
     environmentId,
+    target: "new",
     signerUserId,
     signingKeyPair,
     operation: "create an environment",

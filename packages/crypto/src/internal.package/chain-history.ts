@@ -23,6 +23,10 @@
 //   is invalid at the revoke_device entry's own seq (2026-09-19 DK — §6.2
 //   "device validity intervals": a per-device validity interval sits inside
 //   the membership interval, and remove_member ends all devices at once)
+// - a delete_environment is a change point at its own seq (2026-10-07 —
+//   §6.2): each member span and device cap it pruned has a new interval
+//   from that seq (only the principals actually pruned), and the
+//   environment is deleted from that seq
 //
 // Timestamps are never used for authorization decisions (everything is
 // seq-based). A remove → re-add is kept as a separate tenure (deduplicating
@@ -38,7 +42,7 @@ import type {
   EnvironmentCheckpointState,
   Role,
 } from "./chain-types.ts";
-import type { MemberScope } from "./member-scope.ts";
+import { type MemberScope, scopeWithout } from "./member-scope.ts";
 
 /**
  * A member's chain-derived state at one inclusive seq (§6.3's declared-head
@@ -99,6 +103,8 @@ export interface EnvironmentStateAtSeq {
   readonly createdAtSeq: number;
   /** The epoch current at the queried seq (epoch N is current from its start seq). */
   readonly currentEpoch: number;
+  /** Seq of the `delete_environment` entry when it is at or before the queried seq, else null (§6.2). */
+  readonly deletedAtSeq: number | null;
 }
 
 /**
@@ -175,11 +181,17 @@ interface MemberSpan {
   readonly scope: MemberScope;
 }
 
-/** One device's validity interval inside a tenure (§6.2 — [addedSeq, revokedSeq)). */
+/**
+ * One device's validity interval inside a tenure (§6.2 — [addedSeq,
+ * revokedSeq)). `device.scope` is the cap the device was added with; a
+ * delete_environment that pruned the cap appends the pruned cap from its seq
+ * (inclusive) to `capChanges` (ascending).
+ */
 interface DeviceRecord {
   readonly device: ChainDevice;
   /** Seq of the revoke_device entry (device invalid at this seq — inclusive), or null while active. */
   revokedSeq: number | null;
+  readonly capChanges: { readonly fromSeq: number; readonly scope: MemberScope }[];
 }
 
 interface TenureRecord {
@@ -195,6 +207,8 @@ interface EnvironmentRecord {
   readonly createdAtSeq: number;
   /** Ascending [epoch, startSeq] pairs (epoch 1 = createdAtSeq). */
   readonly epochStarts: readonly (readonly [number, number])[];
+  /** Seq of the delete_environment entry, or null while live. */
+  readonly deletedAtSeq: number | null;
 }
 
 /** Per (environment, manifestVersion) checkpoint tuple, or a conflict marker. */
@@ -224,14 +238,69 @@ function deviceActiveAt(record: DeviceRecord, seq: number): boolean {
   return record.device.addedSeq <= seq && (record.revokedSeq === null || seq < record.revokedSeq);
 }
 
+/** The device as it stood at `seq`: its cap is the latest pruning at or before `seq`, else the cap it was added with. */
+function deviceAt(record: DeviceRecord, seq: number): ChainDevice {
+  let scope = record.device.scope;
+  for (const change of record.capChanges) {
+    if (change.fromSeq <= seq) {
+      scope = change.scope;
+    } else {
+      break;
+    }
+  }
+  return scope === record.device.scope ? record.device : { ...record.device, scope };
+}
+
 function activeDevicesAt(tenure: TenureRecord, seq: number): ReadonlyMap<string, ChainDevice> {
   const devices = new Map<string, ChainDevice>();
   for (const record of tenure.devices) {
     if (deviceActiveAt(record, seq)) {
-      devices.set(record.device.keyFingerprintHex, record.device);
+      devices.set(record.device.keyFingerprintHex, deviceAt(record, seq));
     }
   }
   return devices;
+}
+
+/** The epoch current at `seq` (epoch N is current from its start seq). */
+function epochAt(environment: EnvironmentRecord, seq: number): number | undefined {
+  let currentEpoch: number | undefined;
+  for (const [epoch, startSeq] of environment.epochStarts) {
+    if (startSeq > seq) {
+      break;
+    }
+    currentEpoch = epoch;
+  }
+  return currentEpoch;
+}
+
+/** The deletion seq when the environment is deleted at or before `seq`, else null. */
+function deletedAtOrBefore(environment: EnvironmentRecord, seq: number): number | null {
+  const deletedAtSeq = environment.deletedAtSeq;
+  return deletedAtSeq !== null && deletedAtSeq <= seq ? deletedAtSeq : null;
+}
+
+/**
+ * A delete_environment's change points on one open tenure (§6.2): a new
+ * span when the current scope lists the environment, and a cap change for
+ * each active device whose current cap lists it. `scopeWithout` returns the
+ * scope itself when it does not list the environment, so an unpruned
+ * principal gets no new interval.
+ */
+function pruneTenureAt(tenure: TenureRecord, environmentId: string, seq: number): void {
+  const span = tenure.spans[tenure.spans.length - 1];
+  if (span !== undefined) {
+    const scope = scopeWithout(span.scope, environmentId);
+    if (scope !== span.scope) {
+      tenure.spans.push({ fromSeq: seq, role: span.role, scope });
+    }
+  }
+  for (const record of tenure.devices) {
+    const cap = deviceAt(record, seq).scope;
+    const pruned = scopeWithout(cap, environmentId);
+    if (record.revokedSeq === null && pruned !== cap) {
+      record.capChanges.push({ fromSeq: seq, scope: pruned });
+    }
+  }
 }
 
 class ChainHistory implements ChainHistoryIndex {
@@ -313,9 +382,10 @@ class ChainHistory implements ChainHistoryIndex {
     if (span === undefined || record === undefined) {
       return undefined;
     }
+    const device = deviceAt(record, seq);
     return {
-      device: record.device,
-      permission: effectivePermissionOf(span, record.device),
+      device,
+      permission: effectivePermissionOf(span, device),
       tenureStartSeq: tenure.startSeq,
     };
   }
@@ -328,18 +398,15 @@ class ChainHistory implements ChainHistoryIndex {
     if (environment === undefined || seq < environment.createdAtSeq) {
       return undefined;
     }
-    let currentEpoch: number | undefined;
-    for (const [epoch, startSeq] of environment.epochStarts) {
-      if (startSeq <= seq) {
-        currentEpoch = epoch;
-      } else {
-        break;
-      }
-    }
+    const currentEpoch = epochAt(environment, seq);
     if (currentEpoch === undefined) {
       return undefined;
     }
-    return { createdAtSeq: environment.createdAtSeq, currentEpoch };
+    return {
+      createdAtSeq: environment.createdAtSeq,
+      currentEpoch,
+      deletedAtSeq: deletedAtOrBefore(environment, seq),
+    };
   }
 
   sigKeyByFingerprint(userId: string, keyFingerprintHex: string): string | undefined {
@@ -396,7 +463,7 @@ export class ChainHistoryBuilder {
   readonly #tenures = new Map<string, TenureRecord[]>();
   readonly #environmentStarts = new Map<
     string,
-    { createdAtSeq: number; epochStarts: [number, number][] }
+    { createdAtSeq: number; epochStarts: [number, number][]; deletedAtSeq: number | null }
   >();
   readonly #checkpointTuples = new Map<string, Map<number, CheckpointTupleRecord>>();
   readonly #latestCheckpoints = new Map<string, EnvironmentCheckpointState>();
@@ -425,7 +492,7 @@ export class ChainHistoryBuilder {
     const record: TenureRecord = {
       startSeq,
       endSeq: null,
-      devices: [{ device: firstDevice, revokedSeq: null }],
+      devices: [{ device: firstDevice, revokedSeq: null, capChanges: [] }],
       spans: [{ fromSeq: startSeq, role, scope }],
     };
     const tenures = this.#tenures.get(userId);
@@ -438,7 +505,7 @@ export class ChainHistoryBuilder {
 
   /** add_device: the device is active from `device.addedSeq` (inclusive — §6.2). */
   recordDeviceAdded(userId: string, device: ChainDevice): void {
-    this.#openTenure(userId)?.devices.push({ device, revokedSeq: null });
+    this.#openTenure(userId)?.devices.push({ device, revokedSeq: null, capChanges: [] });
   }
 
   /** revoke_device: each listed active device is invalid from `seq` (inclusive — §6.2). */
@@ -471,7 +538,32 @@ export class ChainHistoryBuilder {
     this.#environmentStarts.set(environmentId, {
       createdAtSeq: seq,
       epochStarts: [[1, seq]],
+      deletedAtSeq: null,
     });
+  }
+
+  /**
+   * delete_environment (§6.2 — 2026-10-07): the same pruning as the
+   * verification state, as change points at `seq` (inclusive) — a new span
+   * for each open tenure whose current scope lists the environment, and a
+   * cap change for each active device whose current cap lists it (only the
+   * principals actually pruned; `all` is never pruned). The environment is
+   * deleted from `seq`, and its latest-checkpoint baseline is dropped (the
+   * mirror of `ChainState.checkpoints`). Server grants have no history
+   * intervals here (the index serves member and device queries only).
+   */
+  recordEnvironmentDeleted(environmentId: string, seq: number): void {
+    const environment = this.#environmentStarts.get(environmentId);
+    if (environment !== undefined) {
+      environment.deletedAtSeq = seq;
+    }
+    this.#latestCheckpoints.delete(environmentId);
+    for (const userId of this.#tenures.keys()) {
+      const open = this.#openTenure(userId);
+      if (open !== undefined) {
+        pruneTenureAt(open, environmentId, seq);
+      }
+    }
   }
 
   recordEpochRotated(environmentId: string, newEpoch: number, seq: number): void {

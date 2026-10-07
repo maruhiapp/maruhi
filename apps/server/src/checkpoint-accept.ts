@@ -6,12 +6,13 @@
 //   no client-supplied accompanying data and no separate input to bundle in
 //   a composite). The consensus rules (form, role, audit admin,
 //   unknown-environment, strict epoch equality, checkpoint-regression) are
-//   carried by verifyChain (via chain-accept.ts); here lives the acceptance
+//   carried by verifyChain (via chain-accept.ts — since 2026-10-07 also
+//   environment-deleted, CRYPTO_SPEC §6.2); here lives the acceptance
 //   policy = **content matching against the stored state at acceptance time
 //   (before applying)** and the atomic snapshot store
 // - The mismatch vocabulary is CheckpointStateMismatch (422):
-//   environment-deleted / manifest-mismatch / values-digest-mismatch /
-//   audit-head-unknown / audit-head-stale. The boundary-bundled case
+//   manifest-mismatch / values-digest-mismatch / audit-head-unknown /
+//   audit-head-stale. The boundary-bundled case
 //   (composite-programs.ts — the matching reference is the composite's
 //   post-application state) also shares the values_digest and audit-head
 //   checks from here, structuring "the storage discipline is identical
@@ -23,9 +24,10 @@
 //   consensus rule's checkpoint-audit-role-insufficient (422)
 //   (session-27 §13-5 permission matrix (c))
 // - Every tuple's environment ∈ the caller's scope (AUTH_SPEC §12-3 —
-//   2026-09-15 ES K3): 403 insufficient-scope right after the role axis.
-//   Precedes the consensus rule environment-out-of-scope (422) (defense in
-//   depth on the same state)
+//   2026-09-15 ES K3): 403 insufficient-scope after the parent-head CAS
+//   (a concurrent delete_environment prunes listed scopes, so a stale view
+//   is a 409 — AUTH_SPEC §16-2, 2026-10-07). Precedes the consensus rule
+//   environment-out-of-scope (422) (defense in depth on the same state)
 
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
@@ -123,15 +125,16 @@ export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAudi
 );
 
 /**
- * Acceptance-time match of one environment tuple (§6.4): tombstone
- * (environment-deleted) → match against the latest manifest
- * (manifest-mismatch — notarizing a nonexistent earlier manifest_version
- * also falls here) → values_digest. On pass, returns the stored value
- * enumeration (material for the snapshot store). The environment's
- * existence on the chain is assumed already guaranteed by the consensus
- * rule (unknown-environment) — a chain-resident environment with no data
- * rows is a violation of composite-acceptance atomicity (storage
- * corruption), so it dies. So does a live environment with no stored
+ * Acceptance-time match of one environment tuple (§6.4): match against the
+ * latest manifest (manifest-mismatch — notarizing a nonexistent earlier
+ * manifest_version also falls here) → values_digest. On pass, returns the
+ * stored value enumeration (material for the snapshot store). The
+ * environment's existence and liveness on the chain are already guaranteed
+ * by the consensus rules (unknown-environment / environment-deleted —
+ * CRYPTO_SPEC §6.2) — a chain-live environment with no data row, or with a
+ * tombstoned row, is a violation of composite-acceptance atomicity (the
+ * deletion composite writes the tombstone with its chain entry — AUTH_SPEC
+ * §12-4), so it dies. So does a live environment with no stored
  * manifest: the creation composite writes it atomically, so its absence
  * is corruption, not a mismatch (AUTH_SPEC §12-5 (6) / §16-2 — the
  * server-fault discipline of every other surface).
@@ -139,16 +142,12 @@ export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAudi
 const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: CheckpointEnvironmentEntry) {
   const store = yield* DataStore;
   const environment = yield* store.findEnvironment(tuple.environmentId);
-  if (environment === null) {
+  if (environment === null || environment.deletedAtMs !== null) {
     return yield* Effect.die(
-      new Error("environment on the verified chain has no data row (composite atomicity)"),
+      new Error(
+        "environment live on the verified chain has no live data row (composite atomicity)",
+      ),
     );
-  }
-  if (environment.deletedAtMs !== null) {
-    return yield* rejectData({
-      kind: "checkpoint-state-mismatch",
-      reason: "environment-deleted",
-    });
   }
   const anchor = yield* store.environmentManifestAnchor(tuple.environmentId);
   if (anchor === null) {
@@ -193,14 +192,7 @@ export const standaloneCheckpointProgram = Effect.fn(
   if (entry.payload.auditHeadHashHex !== "") {
     yield* requireRole(state, callerUserId, "admin");
   }
-  // §12-3: every tuple's environment ∈ the caller's scope (403
-  // insufficient-scope — right after the role axis, before CAS /
-  // verifyChain. The consensus rule `environment-out-of-scope`'s 422
-  // remains as defense in depth — design record es-design.md §9 K3-G)
-  for (const tuple of entry.payload.environments) {
-    yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
-  }
-  // Stage 2 (design record §8 K3-1): repeat the same check with the
+  // Stage 2 (design record §8 K3-1): repeat the role check with the
   // effective permission of the device the entry's actor FP names (an FP
   // that is not one of the caller's valid devices is
   // actor-key-mismatch)
@@ -213,10 +205,18 @@ export const standaloneCheckpointProgram = Effect.fn(
     });
   }
   yield* ensureDevicePermission(device, entry.payload.auditHeadHashHex === "" ? "reader" : "admin");
+  yield* ensureParentHead(chain, parentHeadHashHex);
+  // §12-3: every tuple's environment ∈ the caller's scope, then the
+  // signing device's (403 insufficient-scope — before verifyChain; the
+  // consensus rule `environment-out-of-scope`'s 422 remains as defense in
+  // depth — design record es-design.md §9 K3-G). After the CAS: a
+  // concurrent delete_environment prunes listed scopes (CRYPTO_SPEC §6.2),
+  // so the scope depends on the chain the entry is appended onto, and a
+  // checkpoint signed over a stale view is a 409 (§12-5's check-order rule)
   for (const tuple of entry.payload.environments) {
+    yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
     yield* ensureDevicePermission(device, "reader", tuple.environmentId);
   }
-  yield* ensureParentHead(chain, parentHeadHashHex);
   // The 4 acceptance steps (size → capacity → verifyChain = §6.2's
   // consensus rules) are shared with the other paths
   const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);

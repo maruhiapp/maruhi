@@ -50,6 +50,8 @@ const CHAIN_INVALID_REASONS = [
   "unknown-device",
   "last-device-protected",
   "device-cap-exceeded",
+  // Environment deletion on the chain (CRYPTO_SPEC §6.2 — 2026-10-07)
+  "environment-deleted",
 ] as const satisfies readonly ChainInvalidReason[];
 
 // Static check in the reverse direction: if a reason code is added on
@@ -128,11 +130,12 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
 ) {}
 
 /**
- * 422: `create_environment` / `rotate_epoch` entries may only be submitted
- * through their composite endpoints (AUTH_SPEC §6 / §12-4) — the
- * generic chain append rejects them so the entry-plus-data atomicity cannot
- * be bypassed (it must not create the intermediate state "the epoch
- * exists but the wraps do not").
+ * 422: `create_environment` / `rotate_epoch` / `delete_environment` entries
+ * may only be submitted through their composite endpoints (AUTH_SPEC §6 /
+ * §12-4) — the generic chain append rejects them so the entry-plus-data
+ * atomicity cannot be bypassed (it must not create the intermediate state
+ * "the epoch exists but the wraps do not", nor "the chain says deleted but
+ * the data is still there").
  *
  * `checkpoint` is not a target of this error: a standalone (periodic)
  * checkpoint is accepted by the generic append with acceptance
@@ -141,7 +144,7 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
  */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
-  { op: Schema.Literals(["create_environment", "rotate_epoch"]) },
+  { op: Schema.Literals(["create_environment", "rotate_epoch", "delete_environment"]) },
   { httpApiStatus: 422 },
 ) {}
 

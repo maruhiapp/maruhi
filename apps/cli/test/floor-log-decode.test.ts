@@ -181,6 +181,21 @@ describe("decodeLogRecord — one valid line per r kind", () => {
     const record = withField(VALID.pull, ["environment", "manifest"], undefined);
     expect(decodeLogRecord(line(record))).toEqual(record);
   });
+
+  it("accepts an environment deletion intent (no manifest coordinates — CRYPTO_SPEC §6.2)", () => {
+    const deletion: FloorIntent = {
+      id: INTENT_ID,
+      op: "delete_environment",
+      environmentId: "prod",
+      declaredHead: head,
+    };
+    const record = { r: "intent", intent: deletion };
+    expect(decodeLogRecord(line(record))).toEqual(record);
+    // A deletion intent still binds the declared head (the slot it reconciles against)
+    expect(
+      decodeLogRecord(line(withField(record, ["intent", "declaredHead"], undefined))),
+    ).toBeNull();
+  });
 });
 
 describe("decodeLogRecord — accept / reject table", () => {

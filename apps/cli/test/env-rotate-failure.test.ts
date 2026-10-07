@@ -15,7 +15,13 @@
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { wrapDekFor } from "./support/crypto.ts";
+import {
+  buildChain,
+  createEnvironmentOp,
+  deleteEnvironmentOp,
+  genesisOp,
+  wrapDekFor,
+} from "./support/crypto.ts";
 import {
   chainBase,
   chainRotated,
@@ -280,6 +286,45 @@ describe("maruhi env rotate", () => {
     expect(floor?.intents).toEqual([]);
   });
 
+  it("a 404 from a concurrent delete_environment the view missed is reported as the deletion, not as a blocking server", async () => {
+    // An honest server answers a rotate signed over a view from before
+    // another admin's delete_environment with 409 (§12-4); a 404 is
+    // re-synced too (defense in depth), and the re-synced chain carries the
+    // deletion
+    const chainDeleted = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: deleteEnvironmentOp(ENV_ID) },
+    ]);
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({
+        status: 404,
+        json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID },
+      }),
+      chainAfterRotateAttempt: chainDeleted,
+    });
+    const env = await startEnv(state.handlers, owner);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "raced"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Environment ${ENV_ID} is deleted (delete_environment at chain seq 3)`,
+    );
+    expect(errors).not.toContain("malicious server");
+  });
+
   it("a rotate onto a deleted environment (404) is treated as a definite rejection — it never suggests re-running", async () => {
     // Rejected in the server's own error body = acceptance is definitively
     // known. No acceptance-check probe (a second chain fetch) is needed, and
@@ -318,14 +363,15 @@ describe("maruhi env rotate", () => {
     // §7's dedicated message comes out (never collapsed into the generic "environment not found")
     expect(env.errors).toEqual(
       expect.arrayContaining([
-        `maruhi: Rotation for environment ${ENV_ID} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+        `maruhi: Rotation for environment ${ENV_ID} was rejected with 404, yet the re-synced verified chain shows it as live (no delete_environment entry). A malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
       ]),
     );
     expect(errors).not.toContain("safe to simply re-run");
     expect(errors).not.toContain("was accepted");
-    // No chain re-fetch for the acceptance check (only the first sync's one)
+    // No acceptance probe: the first sync plus the one re-sync that checks
+    // whether the 404 is a delete_environment this view had not seen
     const chainCalls = server.requests.filter((request) => request.path.endsWith("/chain")).length;
-    expect(chainCalls - chainCallsBefore).toBe(1);
+    expect(chainCalls - chainCallsBefore).toBe(2);
   });
 
   it("when acceptance cannot be confirmed, it explicitly states the epoch may have advanced", async () => {

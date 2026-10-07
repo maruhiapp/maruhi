@@ -193,7 +193,7 @@ async function checkpointFor(environmentId: string, epoch: number): Promise<Chai
 }
 
 /** An environment meta-statement (unsigned dummy — the 403 settles before signature verification). */
-function unsignedEnvStatement(environmentId: string, name: string, status: "active" | "deleted") {
+function unsignedEnvStatement(environmentId: string, name: string, status: "active") {
   return {
     suite: "maruhi/v1",
     environmentId,
@@ -329,11 +329,9 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
     await setupListed();
     await seedMemberToken(fixture, DEVADMIN, 9011);
     await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [ENV]));
-    await expectScopeForbidden(
-      await requestJson("DELETE", `/environments/${OTHER}`, token(DEVADMIN), {
-        statement: unsignedEnvStatement(OTHER, "Other", "deleted"),
-      }),
-    );
+    // The deletion composite judges scope after the CAS (§12-4), so the
+    // entry is signed at the real head
+    await expectScopeForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEVADMIN));
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
         wraps: [
@@ -353,12 +351,7 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
   it("judgment order: role 403 → scope 403 → existence 404 (a nonexistent environment is also 403 for a listed principal; 404 for an `all` principal)", async () => {
     await setupListed();
     // role first: member DEV performs an admin operation (environment deletion) on something out of scope
-    await expectForbidden(
-      await requestJson("DELETE", `/environments/${OTHER}`, token(DEV), {
-        statement: unsignedEnvStatement(OTHER, "Other", "deleted"),
-      }),
-      "insufficient-role",
-    );
+    await expectForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEV), "insufficient-role");
     // scope precedes existence: an uncreated environment id cannot be in a listed scope
     await expectScopeForbidden(await requestJson("GET", `/environments/${GHOST}/pull`, token(DEV)));
     const ghostRotate = await rotateEnvironmentComposite(fixture, {
@@ -552,5 +545,55 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       { value: fresh },
     );
     expect(freshValue.status).toBe(200);
+  });
+});
+
+describe("a request signed over the view from before a delete_environment is stale (409), not out of scope (AUTH_SPEC §12-5's check-order rule)", () => {
+  let preDeletionHead: { seq: number; hashHex: string };
+
+  async function deleteEnv(): Promise<void> {
+    preDeletionHead = { ...fixture.head };
+    expect((await deleteEnvironmentRequest(fixture, ENV, OWNER)).status).toBe(204);
+  }
+
+  /** Runs `send` against the head from before ENV's deletion, then restores the fixture head. */
+  async function sendOverPreDeletionHead(send: () => Promise<Response>): Promise<Response> {
+    const current = fixture.head;
+    fixture.head = preDeletionHead;
+    try {
+      return await send();
+    } finally {
+      fixture.head = current;
+    }
+  }
+
+  async function expectStale(response: Response): Promise<void> {
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ _tag: "ChainHeadConflict" });
+  }
+
+  it("a rotate composite is a 409 for an all-scope and a listed-scope rotator (the deletion pruned the listed scope)", async () => {
+    await setupListed();
+    await deleteEnv();
+    for (const actorUserId of [MEMBER, DEV]) {
+      await expectStale(
+        await sendOverPreDeletionHead(() =>
+          rotateEnvironmentComposite(fixture, {
+            environmentId: ENV,
+            newEpoch: 2,
+            deks: [],
+            dekCommitmentHex: "ab".repeat(32),
+            actorUserId,
+          }),
+        ),
+      );
+    }
+  });
+
+  it("a standalone checkpoint naming the deleted environment is a 409 for a listed-scope signer", async () => {
+    await setupListed();
+    const checkpoint = await checkpointFor(ENV, 1);
+    await deleteEnv();
+    await expectStale(await sendOverPreDeletionHead(() => appendRaw(DEV, checkpoint)));
   });
 });

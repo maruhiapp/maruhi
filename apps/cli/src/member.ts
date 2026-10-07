@@ -38,6 +38,7 @@ import type { ProposedSummary } from "./approval.ts";
 import { appendEntry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
@@ -49,7 +50,6 @@ import {
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
-  verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -127,7 +127,7 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
   // the rotate targets (CRYPTO_SPEC §7 — even the actor cannot rotate
   // outside scope. Independent review S2). The always-on warning keeps
   // displaying them
-  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const deletedVerified = chainDeletedEnvironments(input.verified);
   const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
     verified: input.verified,
     all: baselinesOf(input.mandates),

@@ -277,17 +277,16 @@ export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedEr
  *   Refuses an issuance that did not re-obtain the attestation after a
  *   CAS conflict — the client refetches the attestation too and
  *   retries)
- * - `environment-deleted` — an entry for a deleted (tombstone)
- *   environment (consistency with the acceptance-time state cannot be
- *   defined — the chain does not observe deletion, so it cannot be a
- *   consensus rule; CRYPTO_SPEC §6.4)
+ *
+ * A tuple for a deleted environment is not a mismatch: since environment
+ * deletion moved onto the chain it fails chain verification itself
+ * (ChainEntryInvalid `environment-deleted` — CRYPTO_SPEC §6.2, 2026-10-07)
  */
 export const CheckpointMismatchReasonSchema = Schema.Literals([
   "manifest-mismatch",
   "values-digest-mismatch",
   "audit-head-unknown",
   "audit-head-stale",
-  "environment-deleted",
 ]);
 
 /**

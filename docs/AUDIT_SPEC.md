@@ -1,6 +1,6 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
-Version: 1.10-draft
+Version: 1.11-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of
 the PR containing a revision constitutes that approval. History: `git log`.
 
@@ -230,12 +230,12 @@ CRYPTO_SPEC §4 identifiers.
 
 | Event | Main attributes | Notes |
 |---|---|---|
-| `env.created` / `env.renamed` / `env.deleted` | environment_id, name snapshot, **actor_key_fingerprint** | Copies the author key FP of the meta statement (CRYPTO_SPEC §4.2) (2026-08-03. env.created is part of the 12-4 composite) |
+| `env.created` / `env.renamed` / `env.deleted` | environment_id, name snapshot, **actor_key_fingerprint** | Copies the author key FP of the meta statement (CRYPTO_SPEC §4.2) (2026-08-03. env.created is part of the 12-4 composite). **`env.deleted` copies the `delete_environment` entry's actor key FP** (2026-10-07 — the deletion carries no statement; it is part of the 12-4 deletion composite, written in the same transaction as the `chain.environment_deleted` mirror row) |
 | `var.created` ★ | variable_id, environment_id, variable-name snapshot, **actor_key_fingerprint** | Same as above + the writer signature of bundled version 1 (CRYPTO_SPEC §4.1). **Declared creation (no value — AUTH_SPEC §12-5. 2026-08-30) is also this event** (keeps the semantics that the existence interval starts at the acceptance of metaVersion 1): because no value signature exists, actor_key_fingerprint copies only the statement signature's author key FP, and the activation value push is recorded as `var.version_pushed` (version 1). An interval in which no version of a value exists at all is vacuous for rotation-needed detection (§4) (no readable value) and does not mislead detection |
 | `var.version_pushed` ★ | variable_id, environment_id, version, epoch, **actor_key_fingerprint** | A value update (does not include plaintext or ciphertext). Copies the key FP of the writer signature (CRYPTO_SPEC §4.1) (2026-08-03) |
 | `var.renamed` | variable_id, environment_id, new-name snapshot, **actor_key_fingerprint** | Copies the meta statement's author key FP (2026-08-03). **Only reissuances where the name actually changed** (2026-09-01 — a name-unchanged reissuance is `var.schema_reissued`. The branch is a byte comparison with the immediately preceding statement's name at acceptance). A reissuance that changes the name and the schema field simultaneously is also a single row of this event (the rename is the principal event — the name is the primary key of audit's main uses [name history, §4's existence intervals] — keeping the 1-operation-1-row recording discipline) |
 | `var.schema_reissued` | variable_id, environment_id, variable-name snapshot (unchanged), **actor_key_fingerprint** | **Meta-statement reissuance with unchanged name** (added 2026-09-01 — in substance setting/changing the schema field: the schema field is the only field besides name that a reissuance can change — AUTH_SPEC §12-5). **The firing condition is only the name being unchanged; whether the schema field actually changed does not matter** (a no-change reissuance, and a same-name reissuance v1 → v1 that had no schema field, are also this event — the acceptance surface does not check content change [CAS, signature, policy only]; adding a diff check would require a third event for no-change reissuance or leave a recording gap. It is also not rejected at acceptance [422]: dropping a validly signed write on content goes the same direction as silencing an operation that leaves attribution evidence; recording a harmless no-op fits audit's character). Copies the meta statement's author key FP. The schema field's **content** (type, required, description) is not copied into the payload (creates no injection surface or bloat via the log — the source of truth for the change is the statement history). **Note on past rows**: servers before this 2026-09-01 revision recorded this operation as `var.renamed` (audit is append-only and past rows are not revised — `var.renamed` from that period may include name-unchanged reissuances) |
-| `var.deleted` ★ | variable_id, environment_id, **actor_key_fingerprint** | Deleting does not erase past viewability (§4). Copies the deletion statement's author key FP (2026-08-03) |
+| `var.deleted` ★ | variable_id, environment_id, **actor_key_fingerprint** | Deleting does not erase past viewability (§4). Copies the deletion statement's author key FP (2026-08-03). A variable deleted by its environment's deletion (the 12-4 cascade) copies the `delete_environment` entry's actor key FP (2026-10-07) |
 | `var.read` ★ | environment_id, payload = { variables: [{ variableId, epoch, version }, …] } | Recorded for **ciphertext distribution** (pull / web fetch). **1 row per environment per with-values bulk pull** (2026-09-02 revision — aggregate form. Old form: 1 row per variable. The variable_id / epoch / version columns are NULL, and the payload enumerates the returned variables — recording rules below). **Metadata-only mode (AUTH_SPEC §12-7) distributes no ciphertext and is not recorded** (don't record as read what was not read — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id (recipient), **actor_key_fingerprint (signer key FP)** | DEK-wrap registration (AUTH_SPEC §12-6. **Includes the bundled part of composite requests — epoch 1 of environment creation, the new epoch of rotation (same §12-4. 2026-08-03)**). actor_key_fingerprint copies the signer key FP of the registration signature (CRYPTO_SPEC §5.1) (for cross-check against the signature. Session 07 ruling B) |
 | `dek.deleted` | environment_id, epoch, target_user_id (recipient) | Deletion of a poisoned wrap by an admin (AUTH_SPEC §12-6's repair path) |
@@ -318,9 +318,11 @@ CRYPTO_SPEC §4 identifiers.
   client signature**" — in addition to `dek.registered` (registration
   signature = CRYPTO_SPEC §5.1. 2026-08-02 session 09), `var.version_pushed` /
   `var.created` (value-write signature = same §4.1) and `var.renamed` /
-  `var.schema_reissued` / `var.deleted` / `env.created` / `env.renamed` /
-  `env.deleted` (meta-statement signature = same §4.2) copy the signer key FP
-  into the actor_key_fingerprint column. It records for cross-checking the
+  `var.schema_reissued` / `var.deleted` / `env.created` / `env.renamed`
+  (meta-statement signature = same §4.2) and `env.deleted` plus a cascaded
+  `var.deleted` (the `delete_environment` entry's signature = CRYPTO_SPEC
+  §6.2 — 2026-10-07) copy the signer key FP into the actor_key_fingerprint
+  column. It records for cross-checking the
   audit row (server-managed data) against the off-chain signature (client
   signature = unforgeable by the server), within §2's actor model (type=user's
   key_fingerprint). `dek.deleted` is a signature-less operation and still
@@ -403,6 +405,7 @@ server's acceptance time are carried.
 | `chain.member_removed` ★ | `remove_member` (target_user_id) |
 | `chain.role_changed` ★ | `change_role` (target_user_id, newRole, **scopeKind, scopeEnvironmentIds** — payload. ★ because **demotion / shrink is a detection trigger in §4.1**) |
 | `chain.environment_created` | `create_environment` (environment_id. dek_commitment is copied into the payload — CRYPTO_SPEC §6.2. 2026-08-03) |
+| `chain.environment_deleted` | `delete_environment` (environment_id. 2026-10-07 — CRYPTO_SPEC §6.2; accepted only in the AUTH_SPEC §12-4 deletion composite, whose `env.deleted` / `var.deleted` rows land in the same transaction) |
 | `chain.epoch_rotated` ★ | `rotate_epoch` (environment_id, new epoch, reason. dek_commitment is copied into the payload — 2026-08-03) |
 | `chain.server_granted` ★ | `grant_server`. **target_key_fingerprint carries the granted server key FP**; the scope (target environment set) is copied into the payload |
 | `chain.server_revoked` ★ | `revoke_server`. **target_key_fingerprint carries the revoked server key FP** |

@@ -409,10 +409,24 @@ export const appendRotation = Effect.fn("env-rotate-send.appendRotation")(functi
                     // per §7's discipline "never skip silently — interrupt
                     // and warn" — never collapse it into the generic
                     // "environment not found"
+                    // An honest server answers a view that missed a
+                    // concurrent delete_environment with the CAS's 409
+                    // (AUTH_SPEC §12-4 — existence is judged after it); a
+                    // 404 is still re-synced first (defense in depth —
+                    // CRYPTO_SPEC §7: a re-synced chain showing the
+                    // deletion settles it), and only a chain that still
+                    // shows the environment live makes it a refusal
                     EnvironmentNotFound: () =>
-                      Effect.fail(
-                        cliError(
-                          `Rotation for environment ${input.environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+                      resyncExtended(input.resync, state.verified).pipe(
+                        Effect.flatMap((fresh) =>
+                          requireChainEnvironment(fresh, input.environmentId),
+                        ),
+                        Effect.andThen(
+                          Effect.fail(
+                            cliError(
+                              `Rotation for environment ${input.environmentId} was rejected with 404, yet the re-synced verified chain shows it as live (no delete_environment entry). A malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+                            ),
+                          ),
                         ),
                       ),
                     // A CAS conflict on the bundled manifest (§12-5 (6))

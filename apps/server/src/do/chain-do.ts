@@ -59,6 +59,7 @@ import { MAX_DEVICES_PER_MEMBER } from "../policy.ts";
 import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
 import {
   createEnvironmentCompositeProgram,
+  deleteEnvironmentCompositeProgram,
   rotateEpochCompositeProgram,
 } from "../programs/composite-programs.ts";
 import type { AuditEventsQueryInput, AuditEventValue } from "../programs/programs-audit.ts";
@@ -69,7 +70,6 @@ import {
   registerDekWrapsProgram,
 } from "../programs/programs-dek.ts";
 import {
-  deleteEnvironmentProgram,
   listEnvironmentsProgram,
   pullEnvironmentMetadataProgram,
   pullEnvironmentProgram,
@@ -554,14 +554,19 @@ export const appendProgram = Effect.fn("chain-do.appendProgram")(function* (
   DataRejectedError,
   ChainStore | AuditStore | DataStore | StorageMeter
 > {
-  // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
-  // through the composite endpoint. The worker handler refuses ahead of
-  // it, but the same guard sits on the DO side — the authority of the
-  // acceptance decision — so that even if more call paths into the
-  // generic append appear later, the state "the epoch / environment is
-  // on the chain but the wraps / environment row are missing" can
-  // never be created (defense in layers)
-  if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
+  // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch /
+  // delete_environment go only through the composite endpoints. The worker
+  // handler refuses ahead of it, but the same guard sits on the DO side —
+  // the authority of the acceptance decision — so that even if more call
+  // paths into the generic append appear later, the state "the epoch /
+  // environment is on the chain but the wraps / environment row are
+  // missing" or "the chain says deleted but the data remains" can never be
+  // created (defense in layers)
+  if (
+    entry.op === "create_environment" ||
+    entry.op === "rotate_epoch" ||
+    entry.op === "delete_environment"
+  ) {
     return yield* rejectData({ kind: "composite-required", op: entry.op });
   }
   // A standalone (periodic) checkpoint (AUTH_SPEC §16-2): the generic
@@ -925,11 +930,17 @@ export class ProjectChainDO extends DurableObject<Env> {
   deleteEnvironment(
     actor: DataActor,
     environmentId: string,
-    statement: MetaStatementInput,
+    input: {
+      readonly parentHeadHashHex: string;
+      readonly entry: ChainEntry & { readonly op: "delete_environment" };
+    },
   ): Promise<DataOutcome<void>> {
+    // Composite acceptance (§12-4 — 2026-10-07): the delete_environment
+    // append (CAS + verifyChain) and the data deletion in the same permit
+    // and the same synchronous block
     return this.#runWrite(
       actor.userId,
-      deleteEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
+      deleteEnvironmentCompositeProgram(actor, environmentId, input, this.#stateCache),
     );
   }
 

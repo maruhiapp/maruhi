@@ -165,10 +165,11 @@ export type VariableVersionHistoryEntry = typeof VariableVersionHistoryEntrySche
 /** Whether it is in NFC is checked not by the Schema but by the server's 422 (NameNotNfc). */
 const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
-const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
 // Layout v3 of variable statements adds a third state, declared
-// (CRYPTO_SPEC §4.2 — declared, value not yet set; environment meta and
-// the v1 layout keep the traditional two values)
+// (CRYPTO_SPEC §4.2 — declared, value not yet set; the v1 layout keeps the
+// traditional two values). An environment statement is always active
+// (2026-10-07 — the environment's deletion is the chain op
+// delete_environment, not a statement)
 const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
 // metaVersion 1 is creation-only (status active, empty prev), so the
 // rename / delete request forms are pinned to metaVersion >= 2 (the
@@ -214,10 +215,10 @@ const deleteLifecycleFields = {
   metaVersion: MetaVersionAtLeast2,
   prevMetaSigHashHex: Sha256Hex,
 };
-// The distribution side carries every lifecycle (the self-describing
-// form of a stored statement)
-const anyLifecycleFields = {
-  status: MetaStatementStatusSchema,
+// The environment distribution side carries creation and rename (the
+// self-describing form of a stored statement — always active)
+const environmentLifecycleFields = {
+  status: Schema.Literal("active"),
   metaVersion: PositiveInt,
   prevMetaSigHashHex: PrevMetaSigHashHex,
 };
@@ -377,12 +378,6 @@ export const RenameEnvironmentMetaStatementSchema = Schema.Struct({
   ...renameLifecycleFields,
 });
 
-/** The statement of an environment deletion (admin at declared-head time — §12-3). */
-export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
-  ...envMetaBaseFields,
-  ...deleteLifecycleFields,
-});
-
 /**
  * A distributed variable metadata statement (AUTH_SPEC §12-2 / §12-7): the
  * stored statement plus the verification material — the author's user id and
@@ -418,7 +413,7 @@ export type DistributedVariableMetaStatement = typeof DistributedVariableMetaSta
 /** A distributed environment metadata statement (same shape, env kind). */
 export const DistributedEnvironmentMetaStatementSchema = Schema.Struct({
   ...envMetaBaseFields,
-  ...anyLifecycleFields,
+  ...environmentLifecycleFields,
   authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
 });

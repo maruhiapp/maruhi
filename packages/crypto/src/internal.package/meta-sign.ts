@@ -213,16 +213,19 @@ function coordinateFieldInvalid(context: MetaStatementContext): string | null {
 }
 
 // Layout-1 structure check: no schema fields exist and status is 2-valued
-// (declared is v3-only — ruling CS: v1 declared is InvalidInput as a
-// wire-shape structure violation. Vector v1-declared-status)
+// for a variable (declared is v3-only — ruling CS: v1 declared is
+// InvalidInput as a wire-shape structure violation. Vector
+// v1-declared-status) and active-only for the environment itself
+// (2026-10-07 — an environment's deletion is the chain op
+// delete_environment, §6.2, so no environment statement records one.
+// Vector env-status-deleted)
 function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
   if (context.schema !== undefined) {
     return "context schema";
   }
-  if (context.status !== "active" && context.status !== "deleted") {
-    return "context status";
-  }
-  return null;
+  const statuses: readonly string[] =
+    context.target.kind === "environment" ? ["active"] : ["active", "deleted"];
+  return statuses.includes(context.status) ? null : "context status";
 }
 
 // Layout-3 structure check: variable statements only (environment meta

@@ -563,31 +563,65 @@ export async function renameEnvironmentRequest(
   return response;
 }
 
-/** Environment deletion (DELETE with a status-deleted statement). On 204, advances the record. */
+/**
+ * An unsigned deletion-composite body (a zero signature over a well-formed
+ * delete_environment entry at the fixture head) — for checks that stand
+ * before signature verification (existence hiding, token scope, strict
+ * acceptance). The actor FP defaults to a dummy (a principal without a
+ * vector key).
+ */
+export function unsignedDeleteEnvironmentBody(
+  fixture: DataFixture,
+  environmentId: string,
+  actorUserId: string,
+  keyFingerprintHex = "ab".repeat(16),
+): { readonly parentHeadHashHex: string; readonly entry: Record<string, unknown> } {
+  return {
+    parentHeadHashHex: fixture.head.hashHex,
+    entry: {
+      suite: "maruhi/v1",
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      op: "delete_environment",
+      actor: { userId: actorUserId, keyFingerprintHex },
+      payload: { environmentId },
+      timestampMs: 1754006400000,
+      signatureHex: "00".repeat(64),
+    },
+  };
+}
+
+/**
+ * Environment deletion (the §12-4 deletion composite — a delete_environment
+ * chain entry appended onto the fixture head, 2026-10-07). On 204, advances
+ * the head. `parentHeadHashHex` overrides the CAS parent (stale-view tests);
+ * `entryEnvironmentId` signs an entry for another environment (the URL /
+ * entry consistency negative).
+ */
 export async function deleteEnvironmentRequest(
   fixture: DataFixture,
   environmentId: string,
   actorUserId: string,
+  options: { readonly parentHeadHashHex?: string; readonly entryEnvironmentId?: string } = {},
 ): Promise<Response> {
-  const last = fixture.envStatements.get(environmentId);
-  if (last === undefined) {
-    throw new Error(`no recorded statement for environment ${environmentId}`);
-  }
-  // A deleted statement's name keeps the immediately preceding active name (§4.2)
-  const statement = await nextEnvironmentStatement(fixture, {
-    environmentId,
-    name: last.statement.name,
-    status: "deleted",
-    authorUserId: actorUserId,
+  const parentHeadHashHex = options.parentHeadHashHex ?? fixture.head.hashHex;
+  const { entry, hash } = await signEntryAt({
+    seq: fixture.head.seq + 1,
+    prevHashHex: parentHeadHashHex,
+    actorUserId,
+    operation: {
+      op: "delete_environment",
+      payload: { environmentId: options.entryEnvironmentId ?? environmentId },
+    },
   });
   const response = await requestJson(
     "DELETE",
     `/environments/${environmentId}`,
     tokenOf(fixture.tokens, actorUserId),
-    { statement },
+    { parentHeadHashHex, entry },
   );
   if (response.status === 204) {
-    fixture.envStatements.set(environmentId, { statement, authorUserId: actorUserId });
+    fixture.head = { seq: entry.seq, hashHex: hash };
   }
   return response;
 }
