@@ -741,8 +741,8 @@ function voteDevice(state: MutableChainState, signer: ApprovalVote): ChainDevice
 export function ownerVotersOf(
   members: ReadonlyMap<string, ChainMember>,
   signers: readonly ApprovalVote[],
-): ReadonlySet<string> {
-  const voters = new Set<string>();
+): ReadonlySet<UserId> {
+  const voters = new Set<UserId>();
   for (const signer of signers) {
     const member = members.get(signer.userId);
     const device = member?.devices.get(signer.keyFingerprintHex);

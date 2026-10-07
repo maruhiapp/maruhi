@@ -94,7 +94,7 @@ declare const keyFingerprintBrand: unique symbol;
  * Minted only where that holds: this package's own fingerprint computation in
  * the chain verifier (the derived state of a verified chain), and the
  * format-checked mints of `@maruhi/core` (`KeyFingerprintHexSchema` at the
- * wire, `keyFingerprintHexOf` over computed fingerprint bytes).
+ * wire, `userKeyFingerprintHex` / `serverKeyFingerprintHex` over the keys).
  */
 export type KeyFingerprintHex = string & { readonly [keyFingerprintBrand]: "KeyFingerprintHex" };
 

@@ -8,10 +8,12 @@
 // string mints, and agreement with crypto's computation at the computed ones.
 
 import type {
+  approvalSignersOf,
   ApprovalVote,
   ChainActor,
   ChainDevice,
   GrantServerPayload,
+  ownerVotersOf,
   PendingProposal,
   RevokeDevicePayload,
   RevokeServerPayload,
@@ -79,6 +81,11 @@ describe("KeyFingerprintHex brand — chain positions (CRYPTO_SPEC §6.1 / §6.2
     expectTypeOf<ApprovalVote["keyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
     expectTypeOf<PendingProposal["proposerKeyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
     expectTypeOf<ServerGrant["serverKeyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
+    // The four-eyes recount a client reuses (#337) carries both identity brands
+    expectTypeOf<
+      ReturnType<typeof approvalSignersOf>[number]["keyFingerprintHex"]
+    >().toEqualTypeOf<KeyFingerprintHex>();
+    expectTypeOf<ReturnType<typeof ownerVotersOf>>().toEqualTypeOf<ReadonlySet<UserId>>();
     // A minted fingerprint reads as a string everywhere a string is enough
     expectTypeOf<KeyFingerprintHex>().toExtend<string>();
     expectTypeOf<string>().not.toExtend<KeyFingerprintHex>();
