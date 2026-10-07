@@ -13,7 +13,7 @@
 //     `listed ⊉ all`, listed-to-listed is subset)
 
 import type { ProjectId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
@@ -258,6 +258,7 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
         requireWritingMember({
           verified: view,
           environmentId: "env-dev",
+          target: "existing",
           signerUserId: user.userId,
           signingKeyPair: user.sigKeyPair,
           operation: "rotate the epoch",
@@ -268,4 +269,19 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
       expect(JSON.stringify(exit)).not.toContain("outside your environment scope");
     });
   }
+
+  it("requireWritingMember leaves a new-environment target to the creation check (a burned ID is duplicate-environment, not a deletion refusal)", async () => {
+    const exit = await Effect.runPromiseExit(
+      requireWritingMember({
+        verified: view,
+        environmentId: "env-dev",
+        target: "new",
+        signerUserId: owner.userId,
+        signingKeyPair: owner.sigKeyPair,
+        operation: "create an environment",
+        forbidden: "forbidden",
+      }),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+  });
 });

@@ -96,6 +96,7 @@ export function requireEnvironmentMetaAuthor(
     requireWritingMember({
       verified: input.verified,
       environmentId: input.environmentId,
+      target: "existing",
       signerUserId: input.signerUserId,
       signingKeyPair: input.signingKeyPair,
       ...requirement,
