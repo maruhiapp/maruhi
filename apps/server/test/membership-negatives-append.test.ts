@@ -204,7 +204,7 @@ const EXPECTED_PARTITION = {
   composite: 42,
   structureBeforeSignature: 1,
   wireSchema: 16,
-  consensus: 159,
+  consensus: 161,
 } as const;
 
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;

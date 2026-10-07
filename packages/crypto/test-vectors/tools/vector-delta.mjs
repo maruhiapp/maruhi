@@ -300,6 +300,29 @@ function entryKey(element, index) {
   return `#${index}`;
 }
 
+// Top-level keys whose value is a map of named fixture records: each member
+// is its own fixture entry (`file › map › key`), so adding a member reads as
+// added and editing one reads as that member's change, not as a change of
+// the whole map. An explicit list rather than structural detection: a
+// structural rule cannot tell a map of named records from one record whose
+// fields happen to be objects, and splitting such a record would turn a
+// byte change into an "added" part — a downward error. An unlisted map
+// keeps the coarse one-fixture-per-top-level-key identity, which errs
+// upward; a listed map's non-object members stay together as one entry
+// named after the key. Members are never rebase material (markRebased).
+//   extended_chains   chain-entries.json — derived chain name → chain doc
+//   keys              chain-entries.json — key owner → key record
+//   environment_deks  chain-entries.json — environment → per-epoch DEKs
+//   guardian_keypairs master-key-wrap.json — guardian → key pair
+//   extra_keys        env-manifest / metadata-signature / value-signature — signer → key
+const KEYED_FIXTURE_MAPS = new Set([
+  "extended_chains",
+  "keys",
+  "environment_deks",
+  "guardian_keypairs",
+  "extra_keys",
+]);
+
 /** All entries of one parsed vector file, keyed by a stable id. */
 export function collectEntries(file, json) {
   const entries = new Map();
@@ -328,7 +351,21 @@ export function collectEntries(file, json) {
   if (isPlainObject(json)) {
     for (const [key, value] of Object.entries(json)) {
       const rest = take(value, key);
-      if (rest !== undefined) addEntry("", key, { [key]: rest }, true);
+      if (rest === undefined) continue;
+      if (KEYED_FIXTURE_MAPS.has(key) && isPlainObject(rest)) {
+        // Always split a listed map, so its members keep their ids whatever
+        // its other members are: a split that flipped on one scalar sibling
+        // would remove every member at once and hand their hex to
+        // markRebased. The non-object members stay together as one entry
+        const scalars = {};
+        for (const [member, record] of Object.entries(rest)) {
+          if (isPlainObject(record)) addEntry(key, member, record, true);
+          else scalars[member] = record;
+        }
+        if (Object.keys(scalars).length > 0) addEntry("", key, { [key]: scalars }, true);
+      } else {
+        addEntry("", key, { [key]: rest }, true);
+      }
     }
   } else {
     take(json, "");
@@ -638,8 +675,9 @@ const lastSegment = (id) => id.split(" › ").at(-1);
  * A changed entry is "rebased" when its old version referenced material only
  * removed (or likewise changed) non-negative entries had: a removed
  * positive of the same file named through a reference key, or a long hex
- * value of a removed positive / fixture that no unchanged entry carries.
- * Such an entry had to move with the deletion. It cannot hide an encoding
+ * value of a removed positive / top-level fixture that no unchanged entry
+ * carries (a removed keyed-map member never counts: a rename would explain
+ * a re-key). Such an entry had to move with the deletion. It cannot hide an encoding
  * change on its own: that would also move the unchanged vectors of the same
  * encoding. Removed negatives never explain a byte change.
  */
@@ -649,6 +687,9 @@ function markRebased(baseEntries, headEntries, removed, changedEntries) {
   for (const id of removed) {
     const entry = baseEntries.get(id);
     if (entry.negative) continue;
+    // A keyed-map member is not rebase material: a rename (remove X, add
+    // X-2) would otherwise explain a re-key of every vector it signs
+    if (entry.fixture && entry.arrayPath !== "") continue;
     if (!entry.fixture) removedNames.add(`${entry.file}|${lastSegment(id)}`);
     for (const v of referenceValues(entry.value)) if (HEX.test(v)) removedValues.add(v);
   }
