@@ -109,7 +109,7 @@ export interface MetaAuthorInfo {
 
 /**
  * The verification anchor of a stored statement: the server-recomputed
- * signed_bytes hash and status. The input of the next metaVersion's
+ * signed_bytes hash, name and status. The input of the next metaVersion's
  * prev check and of the post-deletion re-statement rejection (the §12-5
  * meta rules). layoutVersion is the stored actual value (the anchor of
  * the layout-monotonicity check — CRYPTO_SPEC §4.2); schema is the v3
@@ -119,6 +119,8 @@ export interface MetaAuthorInfo {
  */
 export interface MetaAnchor {
   readonly signedBytesHashHex: string;
+  /** The predecessor's name (the name-preservation checks of deletion and activation — §12-5). */
+  readonly name: string;
   readonly status: MetaStatementStatusInput;
   readonly layoutVersion: number;
   readonly schema: MetaVariableSchemaInput | null;

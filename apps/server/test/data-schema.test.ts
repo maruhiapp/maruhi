@@ -319,7 +319,7 @@ describe("declared creation and activation (§12-5)", () => {
     expect(push.status).toBe(200);
   });
 
-  it("the activation composite on an active variable is 422 payload-mismatch (status — an explicit guard, independent of the version value)", async () => {
+  it("the activation composite on an active variable is 422 payload-mismatch (status) once it passes the CAS, and a stale-view 409 before (§12-5's check order)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableV3Request({
       variableId: VAR,
@@ -327,26 +327,35 @@ describe("declared creation and activation (§12-5)", () => {
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
-    // The same 422 must result both with version 1 (a shape that fails
-    // the CAS) and with latest + 1 (a shape that passes it) — the
-    // target judgment must not depend on the value CAS (with a
-    // version-1-only helper, "cannot target an active variable" could
-    // not be verified)
-    for (const version of [1, 2]) {
-      const response = await activateVariableRequest({
-        variableId: VAR,
-        actorUserId: MEMBER,
-        dek,
-        plaintext: "postgres://beta",
-        version,
-        prevValueSigHashHex: version === 1 ? "" : await storedValueSigHash(VAR, 1),
-      });
-      expect(response.status, `version ${version}`).toBe(422);
-      await expect(response.json()).resolves.toMatchObject({
-        _tag: "PayloadMismatch",
-        field: "status",
-      });
-    }
+    // Version 1 is a view in which the variable is still unactivated (a
+    // stale view — the value CAS answers 409); latest + 1 passes both
+    // CASes, so the target judgment against the predecessor (an active
+    // variable is not an activation target) answers 422 — the explicit
+    // guard, independent of the value CAS (with a version-1-only helper,
+    // "cannot target an active variable" could not be verified)
+    const stale = await activateVariableRequest({
+      variableId: VAR,
+      actorUserId: MEMBER,
+      dek,
+      plaintext: "postgres://beta",
+      version: 1,
+      prevValueSigHashHex: "",
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ _tag: "VersionConflict" });
+    const response = await activateVariableRequest({
+      variableId: VAR,
+      actorUserId: MEMBER,
+      dek,
+      plaintext: "postgres://beta",
+      version: 2,
+      prevValueSigHashHex: await storedValueSigHash(VAR, 1),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "PayloadMismatch",
+      field: "status",
+    });
   });
 
   it("an active v1 variable cannot be promoted to v3 via the activation path (the activation target is only a declared)", async () => {

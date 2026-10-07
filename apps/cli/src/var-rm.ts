@@ -34,7 +34,7 @@ import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
-import { confirmPermanentDeletion } from "./deletion-confirm.ts";
+import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
@@ -52,6 +52,7 @@ import {
   requireVerifiedEnvironment,
   resolveSchemaTarget,
   type SchemaSetState,
+  type SchemaTargetKey,
 } from "./schema.package/index.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -78,18 +79,26 @@ interface VarRmSummary {
   readonly warnings: readonly string[];
 }
 
-/** Resolves the target (distinguishing deleted / nonexistent uses the pre-call state). */
+/**
+ * Resolves the target (distinguishing deleted / nonexistent uses the
+ * pre-call state): by the typed name first, by the confirmed variable ID on
+ * a conflict retry. `name` is the name the user typed (the wording of the
+ * determinate errors).
+ */
 const resolveDeletionTarget = Effect.fn("var-rm.resolveDeletionTarget")(function* (
   input: VarRmInput,
   verified: VerifiedProject,
+  key: SchemaTargetKey,
   name: string,
 ): Effect.fn.Return<SchemaSetState & { readonly target: VerifiedVariableStatement }, CliError> {
-  const state = yield* resolveSchemaTarget(input, verified, name);
+  const state = yield* resolveSchemaTarget(input, verified, key);
   const target = state.target;
   if (target !== null) {
     return { ...state, target };
   }
-  if (state.tombstones.some((tombstone) => tombstone.name === name)) {
+  const isKeyed = (tombstone: { readonly name: string; readonly variableId: string }) =>
+    typeof key === "string" ? tombstone.name === key : tombstone.variableId === key.variableId;
+  if (state.tombstones.some(isKeyed)) {
     // Deletion is terminal (§4.2) — rm on an already-deleted
     // name reaches "the desired state" but the call's
     // precondition (this run deletes it) does not hold, so make
@@ -287,7 +296,7 @@ type DeletionConflict = { readonly kind: "re-resolve" };
 /** The retryable classification of a CAS conflict (§12-5). Anything else = null (a determinate error). */
 function classifyDeletionConflict(error: DeletionAttemptError): DeletionConflict | null {
   if (error instanceof MetaVersionConflictError || error instanceof ManifestVersionConflictError) {
-    // A concurrent meta operation re-resolves from the name
+    // A concurrent meta operation re-resolves the confirmed ID
     // (§12-5's retry = refetch → verify → re-sign both the
     // statement and the manifest). Losing to a concurrent deletion
     // surfaces from re-resolution as the determinate "already
@@ -310,28 +319,29 @@ export const varRmOp = Effect.fn("var-rm.varRmOp")(function* (
 ): Effect.fn.Return<VarRmSummary, CliError, CliIo | Stdio.Stdio> {
   // Normalization's agent is the client before signing (§4.2 / §12-1)
   const name = input.name.normalize("NFC");
-  const initial = yield* resolveDeletionTarget(input, input.verified, name);
+  const initial = yield* resolveDeletionTarget(input, input.verified, name, name);
   // The confirmation happens exactly once before signing,
   // sending, and the retry loop. What the confirmation binds is
-  // **variableId** (not the name): re-resolution happens by
-  // name, so a concurrent deletion + a fresh creation of the
-  // same name can put a different variable under that name —
-  // that shape is stopped by the recover below as a typed error
-  // (never delete an unconfirmed variable)
+  // **variableId** (not the name — an ID never changes and is
+  // never reused), so a conflict retry re-resolves by that ID: a
+  // concurrent rename keeps the confirmed target (said in one
+  // line, no re-prompt), a concurrent deletion surfaces as the
+  // determinate "already deleted" error, and another variable
+  // taking the name can never become the target
   yield* ensureDeletionConfirmed(input, initial.target, name);
-  const confirmedVariableId = initial.target.variableId;
+  const confirmed = { variableId: initial.target.variableId };
   const accepted = yield* retryOnConflict(initial, {
     maxAttempts: MAX_ATTEMPTS,
     attempt: (state) => attemptDeletion(input, state),
     classify: classifyDeletionConflict,
     recover: (state) =>
-      resolveDeletionTarget(input, state.verified, name).pipe(
-        Effect.filterOrFail(
-          (next) => next.target.variableId === confirmedVariableId,
-          () =>
-            cliError(
-              `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run \`maruhi var rm\` to confirm against the current state`,
-            ),
+      resolveDeletionTarget(input, state.verified, confirmed, name).pipe(
+        Effect.tap((next) =>
+          noteConcurrentRename({
+            subject: "The variable you confirmed",
+            seenName: name,
+            currentName: next.target.name,
+          }),
         ),
       ),
     exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,

@@ -96,7 +96,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
       environmentAnchorOf(
         sql
           .exec(
-            `SELECT signed_bytes_hash_hex, status FROM environment_meta_statements
+            `SELECT signed_bytes_hash_hex, name, status FROM environment_meta_statements
              WHERE environment_id = ? AND meta_version = ?`,
             environmentId,
             metaVersion,

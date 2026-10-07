@@ -379,7 +379,7 @@ const verifyAll = Effect.fn("values.verifyAll")(function* (
  * entry at or below the floor's seq matches). A re-verification that is
  * still future is refused with divergedMessage.
  */
-const pullWithBoundedResync = Effect.fn("values.pullWithBoundedResync")(function* <
+export const pullWithBoundedResync = Effect.fn("values.pullWithBoundedResync")(function* <
   TWire,
   TVerified,
 >(input: {

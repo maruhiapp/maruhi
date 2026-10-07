@@ -420,6 +420,26 @@ describe("maruhi env rm", () => {
       metaVersion: 3,
     });
     expect(env.logs.join("\n")).toContain("Deleted environment dev (Renamed; metaVersion=3)");
+    // The name the confirmation showed changed: one line says so (the
+    // confirmation binds the ID, so there is no second prompt)
+    expect(env.errors.join("\n")).toContain(
+      "Note: Environment dev was renamed concurrently from Development to Renamed; deleting it under its new name (the confirmation binds the ID, not the name)",
+    );
+    expect(env.prompts).toHaveLength(0);
+  });
+
+  it("prints no rename notice when a conflict re-resolves the same name", async () => {
+    const { env, requests } = await startEnv({
+      before: () => [
+        conflictOnce("DELETE", {
+          status: 409,
+          json: { _tag: "MetaVersionConflict", currentMetaVersion: 1 },
+        }),
+      ],
+    });
+    expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
+    expect(environmentCalls(requests(), "DELETE")).toHaveLength(2);
+    expect(env.errors.join("\n")).not.toContain("renamed concurrently");
   });
 
   it("renders a MetaStatementRejected refusal and does not retry it", async () => {
@@ -438,7 +458,7 @@ describe("maruhi env rm", () => {
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(1);
   });
 
-  it("renders a name payload-mismatch as a statement refusal, not an AAD mismatch", async () => {
+  it("renders a name payload-mismatch as a statement refusal (a hard stop — the server judges it after the CAS), not an AAD mismatch", async () => {
     const { env, requests } = await startEnv({
       before: () => [
         conflictOnce("DELETE", { status: 422, json: { _tag: "PayloadMismatch", field: "name" } }),

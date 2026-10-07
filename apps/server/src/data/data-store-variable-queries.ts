@@ -51,8 +51,8 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
       variableAnchorOf(
         sql
           .exec(
-            `SELECT signed_bytes_hash_hex, status, layout_version, var_type, required, description,
-                    max_age_days
+            `SELECT signed_bytes_hash_hex, name, status, layout_version, var_type, required,
+                    description, max_age_days
              FROM variable_meta_statements
              WHERE environment_id = ? AND variable_id = ? AND meta_version = ?`,
             environmentId,

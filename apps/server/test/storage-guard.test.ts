@@ -569,7 +569,9 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
       expect(Exit.isSuccess(await run(listMyDekWrapsProgram(actor(READER), ENV, cache)))).toBe(
         true,
       );
-      // (b) deletions — pass the guard and are rejected for another reason (dummy input)
+      // (b) deletions — pass the guard and are rejected for another reason (dummy input:
+      // the variable statement's metaVersion 1 fails the CAS; the environment
+      // statement passes it and fails the post-CAS name-preservation check)
       expect(
         rejectionOf(
           await run(
@@ -583,7 +585,7 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
             ),
           ),
         ),
-      ).toEqual({ kind: "payload-mismatch", field: "name" });
+      ).toEqual({ kind: "meta-version-conflict", currentMetaVersion: 1 });
       expect(
         rejectionOf(
           await run(

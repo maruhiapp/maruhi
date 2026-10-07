@@ -308,11 +308,20 @@ export interface SchemaSetState {
 }
 
 /**
- * Name → meta-operation target resolution (via verified statements —
- * §12-2) and assembling the composite's manifest issuance material.
+ * The key a meta-operation target resolves by: the name the user typed, or
+ * the variable ID of a target already confirmed (var rm's conflict retry —
+ * an ID never changes and is never reused, so a concurrent rename keeps the
+ * confirmed target).
+ */
+export type SchemaTargetKey = string | { readonly variableId: string };
+
+/**
+ * Name (or ID) → meta-operation target resolution (via verified statements
+ * — §12-2) and assembling the composite's manifest issuance material.
  * Shared by schema set (this module) and var rm (var-rm.ts) (if the
  * resolution rule split across two implementations, only one side would
- * lose the same-name-duplicate refusal — equivocation detection).
+ * lose the same-name-duplicate refusal — equivocation detection; it applies
+ * to the resolved name whichever key resolved it).
  */
 export const resolveSchemaTarget = Effect.fn("schema.resolveSchemaTarget")(function* (
   input: {
@@ -322,20 +331,26 @@ export const resolveSchemaTarget = Effect.fn("schema.resolveSchemaTarget")(funct
     readonly floor: FloorHandle;
   },
   verified: VerifiedProject,
-  name: string,
+  key: SchemaTargetKey,
 ): Effect.fn.Return<SchemaSetState, CliError> {
   const metadata = yield* pullVerifiedEnvironmentMetadata({ ...input, verified });
-  const matches = metadata.variables.filter((variable) => variable.name === name);
-  if (matches.length > 1) {
+  const target =
+    typeof key === "string"
+      ? metadata.variables.find((variable) => variable.name === key)
+      : metadata.variables.find((variable) => variable.variableId === key.variableId);
+  if (
+    target !== undefined &&
+    metadata.variables.filter((variable) => variable.name === target.name).length > 1
+  ) {
     return yield* Effect.fail(
       cliError(
-        `Multiple live statements with the same name passed verification (server equivocation): ${displayText(name)}. Refusing to resolve the schema target`,
+        `Multiple live statements with the same name passed verification (server equivocation): ${displayText(target.name)}. Refusing to resolve the schema target`,
       ),
     );
   }
   return {
     verified: metadata.verified,
-    target: matches[0] ?? null,
+    target: target ?? null,
     tombstones: metadata.tombstones,
     manifestBase: manifestIssueBaseOf(metadata),
     advisorySchemaPolicy: metadata.advisorySchemaPolicy,

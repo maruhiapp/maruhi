@@ -255,18 +255,31 @@ export const ensureDescriptionPolicy = (
 };
 
 /**
- * §12-5: a delete statement's schema fields and layout must match the previous
- * statement byte-exactly (the acceptance check for the same convention as
- * name's "preserve the previous active name" — the crypto layer intentionally
- * does not check this; without it, a validly-signed modified deletion
- * [status = deleted with rewritten schema fields] would be accepted). A
- * mismatch is rejected with the same payload-mismatch as name (with the
- * mismatched field name).
+ * The lifecycle operation a meta statement performs. Each route fixes it (the
+ * wire schema already pins the route's status), and it selects the
+ * predecessor-match rule ({@link predecessorMismatch}).
+ *
+ * - `reissue`: a rename or schema re-issuance (variable or environment)
+ * - `activate`: declared → active (the activation composite)
+ * - `delete`: a variable or environment deletion
+ */
+export type MetaOperation = "reissue" | "activate" | "delete";
+
+/**
+ * §12-5: a delete statement's name, schema fields and layout must match the
+ * previous statement byte-exactly (the crypto layer intentionally does not
+ * check this; without it, a validly-signed modified deletion [status =
+ * deleted with a rewritten name or schema fields] would be accepted). The
+ * first mismatched field is named.
  */
 function deletePreservationMismatch(
   anchor: MetaAnchor,
   statement: MetaStatementInput,
 ): string | null {
+  // A deleted statement's name preserves the previous active name (§4.2)
+  if (statement.name !== anchor.name) {
+    return "name";
+  }
   if (statementLayoutVersion(statement) !== anchor.layoutVersion) {
     return "layoutVersion";
   }
@@ -284,6 +297,41 @@ function deletePreservationMismatch(
     ["maxAgeDays", (declared.maxAgeDays ?? null) === (stored.maxAgeDays ?? null)],
   ];
   return comparisons.find(([, same]) => !same)?.[0] ?? null;
+}
+
+/**
+ * The predecessor-match checks of §12-5, judged against the stored
+ * immediately-preceding statement (the anchor). They depend on the
+ * predecessor, so {@link acceptMetaStatement} runs them only after the
+ * metaVersion CAS: a statement signed over a stale view is a 409 (the
+ * client retries over a re-verified view), never a 422 (AUTH_SPEC §12-5's
+ * check order). Returns the first mismatched field, or null.
+ *
+ * - `reissue`: status is unchanged (declared → active is only the
+ *   activation composite; active → declared is forbidden)
+ * - `activate`: the predecessor is declared (the activation target is only
+ *   a declared variable — the value CAS cannot double as that check, since
+ *   version N+1 to an active variable would pass it) and the name is
+ *   unchanged (activation does not double as a rename: the "name change ⇔
+ *   var.renamed row" correspondence stays with the rename path)
+ * - `delete`: name, schema fields and layout are preserved
+ */
+function predecessorMismatch(
+  operation: MetaOperation,
+  anchor: MetaAnchor,
+  statement: MetaStatementInput,
+): string | null {
+  switch (operation) {
+    case "reissue":
+      return statement.status === anchor.status ? null : "status";
+    case "activate":
+      if (anchor.status !== "declared") {
+        return "status";
+      }
+      return statement.name === anchor.name ? null : "name";
+    case "delete":
+      return deletePreservationMismatch(anchor, statement);
+  }
 }
 
 /** CAS on metaVersion (§12-5): only declared == latest + 1. The 409 returns the latest number only. */
@@ -315,17 +363,22 @@ const ensureMetaQuota = (
  * The meta acceptance pipeline shared by rename / schema reissue / delete /
  * activation (§12-5): metaVersion bound → CAS (409 returns the latest number
  * only) → fetch the stored predecessor statement's anchor (it always exists
- * after CAS passes — absence is a defect) → acceptance-surface schema checks (the
- * description acceptance policy, the delete statement's schema-field/layout
- * predecessor match) → signature verification
+ * after CAS passes — absence is a defect) → the operation's predecessor-match
+ * checks → the description acceptance policy → signature verification
  * (predecessor included — prev chaining, rejecting re-statement after delete,
  * transition rules, layout monotonicity).
+ *
+ * Every check that depends on the predecessor lives here, after the CAS
+ * (AUTH_SPEC §12-5's check order): a program runs only predecessor-independent
+ * checks before calling it, so a stale-but-honest statement is always a 409
+ * and a 422 always means a malformed or forged statement.
  * On success, returns the server-recomputed signed_bytes hash.
  */
 export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(function* (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly target: MetaStatementTarget;
+  readonly operation: MetaOperation;
   readonly latestMetaVersion: number;
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
@@ -347,22 +400,17 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
   if (anchor === null) {
     return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
   }
-  if (input.target.kind === "variable" && input.statement.status === "deleted") {
-    // The delete statement's schema fields and layout must match the
-    // predecessor (§12-5). The description acceptance policy does **not**
-    // apply to deletes: the delete rule is byte-exact preservation of the
-    // stored value, and that value was already checked at acceptance.
-    // Applying it would make existing v3 variables undeletable after a
-    // self-host lowers the limit (a collision with §12-8's "limits never
-    // block deletion" principle. This also removes the path where an
-    // out-of-contract description-rejected would surface as a 500: a
-    // modified description is caught first by this check's payload-mismatch)
-    const field = deletePreservationMismatch(anchor, input.statement);
-    if (field !== null) {
-      return yield* rejectData({ kind: "payload-mismatch", field });
-    }
-  } else {
-    // The description acceptance policy (§12-8 — v1 statements are out of scope)
+  const mismatched = predecessorMismatch(input.operation, anchor, input.statement);
+  if (mismatched !== null) {
+    return yield* rejectData({ kind: "payload-mismatch", field: mismatched });
+  }
+  // The description acceptance policy (§12-8 — v1 statements are out of
+  // scope) does **not** apply to deletes: the delete rule is byte-exact
+  // preservation of the stored value (checked above), and that value was
+  // already checked at acceptance. Applying it would make existing v3
+  // variables undeletable after a self-host lowers the limit (a collision
+  // with §12-8's "limits never block deletion" principle)
+  if (input.operation !== "delete") {
     yield* ensureDescriptionPolicy(input.statement);
   }
   return yield* ensureMetaStatementSignature({
