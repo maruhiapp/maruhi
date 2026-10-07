@@ -89,11 +89,11 @@ Risk classes — the highest matching class wins, and a rule that cannot tell pi
 | R0 | comments / docs only | only docs, prose leaves, and comment / formatting-only code edits |
 | R1 | deletion / narrowing | a narrowing — positives removed, negatives removed together with the surface they exercised (see below), or a `SUPPORTED_*` set shrunk — and nothing of R2 / R3: no surviving vector changed bytes except rebased ones, no new domain string, supported sets only shrink. Implementation changes that carry out the narrowing and added entries on existing shapes are admitted |
 | R2 | logic change keeping the encodings | a surviving vector's expected outcome changed, a `SUPPORTED_*` set did anything but shrink, a negative was removed while the surface it exercised remains, or code / config / vectors changed with no narrowing |
+| R3 | new signed bytes / primitive / domain | a new domain string or suite, a new signed-bytes shape or field order, a new primitive or `hpke` member, a runtime dependency change, or a surviving vector whose bytes changed without being rebased |
 
 Removing a positive can only narrow what is accepted; removing a negative can widen it (the rejection and the check behind it may leave together). So a removed negative counts as narrowing only when the surface it exercised left head too: a signed-bytes shape no head positive has, a domain with no head positive shape left (a retired layout keeps negatives over its domain, so mere presence does not count), a suite gone from head, a removed `SUPPORTED_*` member it names (a leaf whose key words all appear in the constant's name, e.g. `layout_version` in `SUPPORTED_META_LAYOUT_VERSIONS`), or derivation from a removed positive that itself exercised retired surface (its name, or a long hex value no head entry carries — e.g. a v2 signature replayed under the v1 domain). The report shows what retired each removed negative, or **surface remains**.
 
 The `*` of a src domain pattern (`name-v${layout}` → `name-v*`) stands for a layout number only: it covers `name-v3`, never `name-vault` or `name-v2-hybrid`.
-| R3 | new signed bytes / primitive / domain | a new domain string or suite, a new signed-bytes shape or field order, a new primitive or `hpke` member, a runtime dependency change, or a surviving vector whose bytes changed without being rebased |
 
 How the owner uses the summary:
 
