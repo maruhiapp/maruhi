@@ -1,6 +1,6 @@
 # maruhi authentication & identity specification (AUTH_SPEC)
 
-Version: 0.32-draft
+Version: 0.33-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of the PR containing a revision constitutes that approval. History: `git log`.
 
 Authentication is implemented directly against GitHub OAuth (no authentication framework or external IdP service is used).
@@ -740,7 +740,7 @@ The API surface of CRYPTO_SPEC §9.1 (workload leases). A workload without long-
 - `POST /projects/:projectId/environments/:environmentId/lease`. Request = `{ oidcToken, ephemeralPubHex }` (an ephemeral X25519 public key, 32 bytes hex. The workload generates it in memory and discards it when the job ends)
 - Response = the whole chain + the current epoch + all active variables' latest versions (EncryptedPayload + writer info) + the latest meta statements (with author info) + **the latest `EnvironmentManifest` (with issuer info) + tombstone statements + the checkpoint-time value-snapshot enumeration (the same material as §12-7 — 2026-08-18)** + **lease-wrapped DEKs (for all epochs used by the latest values in the response + the current epoch)**. The same verification-material bundling discipline as the with-values bulk pull (§12-7), plus **the bundled chain** for a recipient that isn't a member (the chain-fetch API returns 404 to non-members per §11-2, so the lease response is the only distribution path). **Other members' head declarations (§16) aren't bundled** (CRYPTO_SPEC §6.6 — a malicious server can attach past declarations to an old view, so it adds no detection and only grows the misrecognition of "verified"). **The `manifest` field is required (2026-10-06 — W4-Z2): the same discipline as §12-7 — a server with no stored row answers a server fault, never a response that omits it**
 - The lease wrap follows CRYPTO_SPEC §9.1 (claims_digest bound in info). **Not stored** (doesn't enter dek_wraps — same §9.1)
-- The receiving workload's verification obligation is CRYPTO_SPEC §9.1 (chain verification, repository anchor, commitment cross-check, value-signature verification, manifest and checkpoint-consistency verification — 2026-08-18)
+- The receiving workload's verification obligation is CRYPTO_SPEC §9.1 (chain verification, repository anchor, commitment cross-check, value-signature verification, manifest and checkpoint-consistency verification — 2026-08-18, and the lease authorization check against the verified chain's active grants — 2026-10-07). The workload's check does not replace this section's server-side authorization: lease_policy is evaluated only here (CRYPTO_SPEC §9.1)
 
 ### 14-3. Judgment order and errors
 
