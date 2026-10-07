@@ -14,7 +14,6 @@
 import { route } from "@funstack/router/server";
 
 const HOME_PATH = "/";
-const ABOUT_PATH = "/about";
 const DASHBOARD_PATH = "/dashboard";
 const ACCOUNT_AUDIT_PATH = "/dashboard/account";
 const TOKENS_PATH = "/dashboard/tokens";
@@ -23,9 +22,6 @@ const PROJECT_PATH = "/dashboard/projects/:projectId";
 
 /** S1 landing (static, unauthenticated). */
 export const homeRoute = route({ id: "home", path: HOME_PATH });
-
-/** About page (static). */
-export const aboutRoute = route({ id: "about", path: ABOUT_PATH });
 
 /** S3 login / S4 project list (auth-state adaptive). */
 export const dashboardRoute = route({ id: "dashboard", path: DASHBOARD_PATH });
@@ -61,7 +57,6 @@ export const dashboardShellRoute = route({ id: "dashboard-shell" });
  */
 export const spaPaths = {
   home: () => HOME_PATH,
-  about: () => ABOUT_PATH,
   dashboard: () => DASHBOARD_PATH,
   account: () => ACCOUNT_AUDIT_PATH,
   tokens: () => TOKENS_PATH,
@@ -81,7 +76,6 @@ export const spaPaths = {
  */
 export const SPA_ROUTES = [
   homeRoute,
-  aboutRoute,
   dashboardRoute,
   accountAuditRoute,
   tokensRoute,

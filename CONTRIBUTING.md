@@ -21,7 +21,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 ### Running locally
 
 - Dashboard: `bun run --filter @maruhi/web dev` (Vite, port 5173). The dev server answers 404 to requests without an `Accept: text/html` header, so add `-H "Accept: text/html"` when checking it with curl
-- Server: `cd apps/server && bun x cf dev`
+- Server: `cd apps/server && bun x cf dev`. Copy `apps/server/.dev.vars.example` to `apps/server/.dev.vars` first: it lists every secret the server reads, with dummy values only, and the server tests read the same example as their bindings (so a new secret is added there)
 - Docs site: `bun run --filter @maruhi/site dev`
 - CLI: `cd apps/cli && bun src/bin.ts --help`
 

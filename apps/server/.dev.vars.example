@@ -1,3 +1,20 @@
-# Dummy values for local development only (CLAUDE.md: do not place real secrets)
+# Dummy values for local development only (CLAUDE.md: do not place real secrets).
+# Copy to .dev.vars for `bun x cf dev`; replace the GitHub pair with a dev OAuth App's
+# values to sign in for real. In production every entry is a Workers Secret
+# (docs/SELF_HOSTING.md).
+#
+# This file is also the single source of the server tests' dummy bindings
+# (vitest.config.ts reads the KEY=value lines; test-only overrides are layered on top),
+# so every secret src/worker-env.ts reads is listed here.
+
+# The GitHub OAuth App (AUTH_SPEC §3-2). Unset = 503 SetupIncomplete on the auth endpoints
 GITHUB_CLIENT_ID=dummy-github-client-id
 GITHUB_CLIENT_SECRET=dummy-github-client-secret
+
+# The deployment keypair's IKM: 32 bytes hex (CRYPTO_SPEC §9). Unset = a pure E2EE
+# deployment with no selective disclosure
+SERVER_ENC_KEY_IKM=b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0
+
+# Hosted only: the tripwire-notification webhook (docs/notes/hosted-ops.md §2-B).
+# Unset = never sends
+# OPS_ALERT_WEBHOOK_URL=https://ops-webhook.example/dummy

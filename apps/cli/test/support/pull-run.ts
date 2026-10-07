@@ -1,23 +1,19 @@
 import { afterEach, beforeAll } from "vitest";
 
 import {
-  buildChain,
   type BuiltChain,
-  createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
-  genesisOp,
   headOf,
   makeTestUser,
   manifestFor,
-  rotateEpochOp,
+  rotatedEnvironmentFor,
   statementFor,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  wrapDekFor,
 } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { type MockHandler, MockServer, onRequest } from "./server.ts";
@@ -104,16 +100,13 @@ beforeAll(async () => {
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
   // The chain carries the real DEK's commitment (§5.2 — real data down to the pull comparison)
-  const built = await buildChain([
-    { actor: owner, operation: genesisOp(owner) },
-    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-  ]);
+  const { chain: built, wraps } = await rotatedEnvironmentFor({
+    owner,
+    environmentId: ENV_ID,
+    dek1,
+    dek2,
+  });
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  const wraps = [
-    await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
-    await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
-  ];
   // The latest version's epoch differs per variable (§12-7): ALPHA is epoch 2,
   // BETA stays at epoch 1, never re-encrypted after the rotation.
   // The value signature (§4.1) declares the head where each epoch was current (inclusive):

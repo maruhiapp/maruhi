@@ -75,7 +75,6 @@ describe("SPA route space vs run_worker_first (ruling BZ)", () => {
     const declaredPaths = new Set(SPA_ROUTES.map((r) => r.path));
     const built = [
       spaPaths.home(),
-      spaPaths.about(),
       spaPaths.dashboard(),
       spaPaths.account(),
       spaPaths.tokens(),
@@ -92,7 +91,6 @@ describe("SPA route space vs run_worker_first (ruling BZ)", () => {
     expect(declaredPaths.has(spaPaths.tokens())).toBe(true);
     expect(declaredPaths.has(spaPaths.devices())).toBe(true);
     expect(declaredPaths.has(spaPaths.home())).toBe(true);
-    expect(declaredPaths.has(spaPaths.about())).toBe(true);
     expect(declaredPaths.has(spaPaths.project(":projectId"))).toBe(true);
   });
 });

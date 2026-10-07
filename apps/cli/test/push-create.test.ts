@@ -7,14 +7,13 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
-import { headOf, statementFor, variablesDigestOf } from "./support/crypto.ts";
+import { decryptWire, headOf, statementFor, variablesDigestOf } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandlerOf,
   chainV1,
   type CreateBody,
   type CreateEcho,
-  decryptWire,
   dek1,
   deksHandlerOf,
   distributedStatementOf,

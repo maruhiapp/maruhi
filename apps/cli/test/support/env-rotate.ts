@@ -2,7 +2,6 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
-  decryptVariable,
   signChainEntry,
   SUITE_ID,
   importEncryptionKeyPair,
@@ -38,30 +37,12 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
+  type WireRotateBody,
 } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./server.ts";
 
 export const ENV_ID = "dev";
-
-/** The body of the rotate composite request (api-schema's environments.rotate payload). */
-export interface RotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly WrappedDek[];
-  /** The bundled manifest (§12-4 — issuance form. issuer is what the caller contracts). */
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** The boundary checkpoint (H+2 — §12-4's mandatory bundle). */
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
 
 /** One variable of a pull response (verified statement + distribution-form value). */
 export interface PulledVariable {
@@ -217,7 +198,7 @@ export interface ServerOptions {
 
 export interface ServerState {
   readonly handlers: readonly MockHandler[];
-  readonly rotateBodies: RotateBody[];
+  readonly rotateBodies: WireRotateBody[];
   readonly pushes: {
     readonly variableId: string;
     readonly value: WireDistributedValue;
@@ -241,7 +222,7 @@ export function makeServer(options: ServerOptions): ServerState {
   const variables = options.variables;
   const deletedVariables = options.deletedVariables ?? [];
   const deks = options.deks;
-  const rotateBodies: RotateBody[] = [];
+  const rotateBodies: WireRotateBody[] = [];
   const pushes: {
     variableId: string;
     value: WireDistributedValue;
@@ -311,7 +292,7 @@ export function makeServer(options: ServerOptions): ServerState {
   };
 
   /** Acceptance: append the 2 entries — rotate + boundary checkpoint — and put the bundled wraps into the distribution set (§12-4). */
-  const acceptRotate = async (body: RotateBody): Promise<void> => {
+  const acceptRotate = async (body: WireRotateBody): Promise<void> => {
     if (options.dropCheckpointFromChain === true) {
       // A checkpoint-hiding server stores no snapshot either (models
       // consistent hiding — distributing an enumeration with no checkpoint on
@@ -477,7 +458,7 @@ export function makeServer(options: ServerOptions): ServerState {
       ) {
         return null;
       }
-      const body = request.body as RotateBody;
+      const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       if (options.chainAfterRotateAttempt !== undefined) {
         // Swap to the shape where another member appended first (or concurrently)
@@ -617,21 +598,8 @@ export async function verifyAndUnwrap(input: {
   return dek.value;
 }
 
-export async function decryptWire(dek: Uint8Array, value: WireDistributedValue): Promise<string> {
-  const result = await decryptVariable({
-    dek,
-    context: value.aad,
-    nonce: hexBytes(value.nonceHex),
-    ciphertext: hexBytes(value.ciphertextHex),
-  });
-  if (!result.ok) {
-    throw new Error("decrypt failed in test");
-  }
-  return new TextDecoder().decode(result.value);
-}
-
 /** Extracts the new-epoch DEK the runner generated, from the composite's bundled wraps. */
-export async function newEpochDekOf(body: RotateBody): Promise<Uint8Array> {
+export async function newEpochDekOf(body: WireRotateBody): Promise<Uint8Array> {
   const wrap = body.deks.find((candidate) => candidate.recipientUserId === owner.userId);
   if (wrap === undefined) {
     throw new Error("owner wrap missing");

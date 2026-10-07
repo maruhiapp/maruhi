@@ -20,29 +20,14 @@ import {
   type WireCheckpointSnapshot,
   type WireDistributedManifest,
   type WireRecipientDek,
+  type WireRotateBody,
 } from "./crypto.ts";
 import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
-
-export interface FourEyesRotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly WrappedDek[];
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
 
 export interface FourEyesServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
-  readonly rotateBodies: FourEyesRotateBody[];
+  readonly rotateBodies: WireRotateBody[];
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
   /** The current chain (for assertions after appends). */
@@ -74,7 +59,7 @@ export async function makeFourEyesServer(input: {
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
-  const rotateBodies: FourEyesRotateBody[] = [];
+  const rotateBodies: WireRotateBody[] = [];
   const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
@@ -184,7 +169,7 @@ export async function makeFourEyesServer(input: {
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      const body = request.body as FourEyesRotateBody;
+      const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       entries.push(body.entry, body.checkpoint);
       hashes.push(

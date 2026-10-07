@@ -5,8 +5,10 @@
 // @maruhi/crypto/test-support (shared with the server test support —
 // session-11 §5 ruling).
 
+import type { WrappedDek } from "@maruhi/api-schema";
 import type {
   ApprovalTargetOp,
+  ChainEntry,
   ChainOperation,
   EncryptionKeyPair,
   GrantServerPayload,
@@ -19,6 +21,7 @@ import {
   computeMetaSignedBytesHash,
   computeUserKeyFingerprint,
   computeVariablesDigest,
+  decryptVariable,
   encodeHex,
   encryptVariable,
   exportEncryptionPrivateKey,
@@ -327,6 +330,35 @@ export async function wrapDekFor(input: {
   };
 }
 
+/**
+ * The two-epoch environment shared by the pull / push fixtures: genesis →
+ * create_environment (epoch 1, `dek1`) → rotate_epoch (epoch 2, `dek2`), plus
+ * the owner's self-addressed wraps of both epochs (the chain carries the real
+ * DEK commitments — §5.2).
+ */
+export async function rotatedEnvironmentFor(input: {
+  readonly owner: TestUser;
+  readonly environmentId: string;
+  readonly dek1: Uint8Array;
+  readonly dek2: Uint8Array;
+}): Promise<{
+  readonly chain: BuiltChain;
+  readonly wraps: readonly [WireRecipientDek, WireRecipientDek];
+}> {
+  const { owner, environmentId, dek1, dek2 } = input;
+  const chain = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(environmentId, dek1) },
+    { actor: owner, operation: rotateEpochOp(environmentId, 2, dek2) },
+  ]);
+  const common = { projectId: chain.projectId, environmentId, recipient: owner, signer: owner };
+  const wraps = [
+    await wrapDekFor({ ...common, epoch: 1, dek: dek1 }),
+    await wrapDekFor({ ...common, epoch: 2, dek: dek2 }),
+  ] as const;
+  return { chain, wraps };
+}
+
 /** Wire representation of the EncryptedPayload shape (with the §4.1 signature block — §12-2). */
 export interface WireEncryptedPayload extends SharedWireEncryptedPayload {
   /** CLI tests always build wires of the canonical suite (the shared type is string — for verification negatives). */
@@ -517,6 +549,25 @@ export interface WireDistributedManifest {
   readonly signatureHex: string;
   readonly issuerUserId: string;
   readonly issuerKeyFingerprintHex: string;
+}
+
+/** The body of the rotate composite request (api-schema's environments.rotate payload). */
+export interface WireRotateBody {
+  readonly parentHeadHashHex: string;
+  readonly entry: ChainEntry & {
+    readonly op: "rotate_epoch";
+    readonly payload: {
+      readonly environmentId: string;
+      readonly newEpoch: number;
+      readonly reason: string;
+      readonly dekCommitmentHex: string;
+    };
+  };
+  readonly deks: readonly WrappedDek[];
+  /** The bundled manifest (§12-4 — issuance form; the issuer is the calling principal by contract). */
+  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  /** The boundary checkpoint (H+2 — §12-4's mandatory bundle). */
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 /** Distributed statement → signed-bytes hash (material for digests and envMeta). */
@@ -775,6 +826,20 @@ export async function encryptValueFor(input: {
     writerUserId: input.writer.userId,
     writerKeyFingerprintHex: input.writer.fingerprintHex,
   };
+}
+
+/** Decrypts a wire value (issuance or distributed form) with the given DEK. */
+export async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promise<string> {
+  const result = await decryptVariable({
+    dek,
+    context: value.aad,
+    nonce: hexBytes(value.nonceHex),
+    ciphertext: hexBytes(value.ciphertextHex),
+  });
+  if (!result.ok) {
+    throw new Error("decrypt failed in test");
+  }
+  return new TextDecoder().decode(result.value);
 }
 
 // ---------------------------------------------------------------------------

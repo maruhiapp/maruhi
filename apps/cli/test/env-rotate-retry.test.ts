@@ -16,11 +16,17 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { headOf, manifestFor, valueHashOf, wrapDekFor } from "./support/crypto.ts";
+import {
+  decryptWire,
+  headOf,
+  manifestFor,
+  valueHashOf,
+  wrapDekFor,
+  type WireRotateBody,
+} from "./support/crypto.ts";
 import {
   chainBase,
   chainRotated,
-  decryptWire,
   dek1,
   dek2,
   ENV_ID,
@@ -29,7 +35,6 @@ import {
   makeServer,
   newEpochDekOf,
   owner,
-  type RotateBody,
   startEnv,
   variableAt,
 } from "./support/env-rotate.ts";
@@ -429,7 +434,7 @@ describe("maruhi env rotate", () => {
     const entries: ChainEntry[] = [...chainBase.entries];
     const hashes: string[] = [...chainBase.hashes];
     let chainCalls = 0;
-    const rotateBodies: RotateBody[] = [];
+    const rotateBodies: WireRotateBody[] = [];
     const handlers: MockHandler[] = [
       onRequest("GET", `/projects/${projectId}/chain`, () => {
         // From the second sync on, the other member's rotate_epoch is stacked
@@ -471,7 +476,7 @@ describe("maruhi env rotate", () => {
         },
       })),
       onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/rotate`, (request) => {
-        rotateBodies.push(request.body as RotateBody);
+        rotateBodies.push(request.body as WireRotateBody);
         return {
           status: 409,
           json: {

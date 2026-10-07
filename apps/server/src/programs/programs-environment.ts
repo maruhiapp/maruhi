@@ -11,6 +11,7 @@
 // metadata-only pull are scope-agnostic (§12-3's table / §12-7).
 
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
+import type { ChainHistoryIndex, ChainMember, Role } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -40,6 +41,42 @@ import type { StateCache } from "../do/chain-store.ts";
 import { requireActiveEnvironment } from "../quotas.ts";
 import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";
 
+/**
+ * The environment-statement acceptance shared by rename and delete
+ * (§12-4): the statement's caps → CAS → signature (acceptMetaStatement),
+ * which resolves the signing device (design record §8 K3-1), then the
+ * second-stage authorization — that device's effective permission
+ * (`role` × environment ∈ effective scope).
+ */
+const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnvironmentStatement")(
+  function* (
+    access: {
+      readonly history: ChainHistoryIndex;
+      readonly member: ChainMember;
+      readonly projectId: string;
+    },
+    environment: { readonly environmentId: string; readonly latestMetaVersion: number },
+    statement: MetaStatementInput,
+    role: Role,
+  ) {
+    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
+      access.member,
+      (candidate) =>
+        acceptMetaStatement({
+          projectId: access.projectId,
+          environmentId: environment.environmentId,
+          target: { kind: "environment" },
+          latestMetaVersion: environment.latestMetaVersion,
+          history: access.history,
+          member: candidate,
+          statement,
+        }),
+    );
+    yield* ensureDevicePermission(author, role, environment.environmentId);
+    return { author, signedBytesHashHex };
+  },
+);
+
 export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEnvironmentProgram")(
   function* (
     actor: DataActor,
@@ -48,12 +85,7 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
     manifest: EnvManifestInput,
     cache: StateCache,
   ) {
-    const { history, member, projectId } = yield* requireEnvironmentAccess(
-      actor.userId,
-      "member",
-      environmentId,
-      cache,
-    );
+    const access = yield* requireEnvironmentAccess(actor.userId, "member", environmentId, cache);
     const environment = yield* requireActiveEnvironment(environmentId);
     // The DO storage-total guard (§12-8 — H2): renaming an
     // environment stacks a statement row + a manifest, so it is a
@@ -78,28 +110,20 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
     // verified under the same device after passing the stage-2
     // authorization (the device's effective permission — member ×
     // environment ∈ effective scope)
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "environment" },
-          latestMetaVersion: environment.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-        }),
+    const { author, signedBytesHashHex } = yield* acceptEnvironmentStatement(
+      access,
+      environment,
+      statement,
+      "member",
     );
-    yield* ensureDevicePermission(author, "member", environmentId);
     // Composite acceptance of the manifest (§12-4 / §12-5): an
     // environment rename bundles a manifest (manifestVersion + 1)
     // that copies in the new envMetaSigHashHex. The envMeta
     // expectation is post-rename = this very statement
     const acceptedManifest = yield* acceptManifestForMetaOp({
-      projectId,
+      projectId: access.projectId,
       environmentId,
-      history,
+      history: access.history,
       member: author,
       manifest,
       digestOverride: null,
@@ -138,35 +162,21 @@ export const deleteEnvironmentProgram = Effect.fn("programs-environment.deleteEn
     // admin / scope check at declared-head time is covered by
     // signature verification (§12-3's dual check — the required role
     // for env × deleted, 3′)
-    const { history, member, projectId } = yield* requireEnvironmentAccess(
-      actor.userId,
-      "admin",
-      environmentId,
-      cache,
-    );
+    const access = yield* requireEnvironmentAccess(actor.userId, "admin", environmentId, cache);
     const environment = yield* requireActiveEnvironment(environmentId);
     // deleted's name preserves the immediately-prior active name
     // (§4.2 — byte-exact)
     if (statement.name !== environment.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "environment" },
-          latestMetaVersion: environment.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-        }),
+    // Includes stage 2 (design record §8 K3-1): admin × environment ∈
+    // effective scope under the signing device's effective permission
+    const { author, signedBytesHashHex } = yield* acceptEnvironmentStatement(
+      access,
+      environment,
+      statement,
+      "admin",
     );
-    // Stage 2 (design record §8 K3-1): admin × environment ∈
-    // effective scope under the signing device's effective
-    // permission
-    yield* ensureDevicePermission(author, "admin", environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = yield* Clock.currentTimeMillis;

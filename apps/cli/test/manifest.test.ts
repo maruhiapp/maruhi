@@ -37,6 +37,7 @@ import {
   type WireDistributedVariableStatement,
   type WireRecipientDek,
   wrapDekFor,
+  type WireRotateBody,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
@@ -721,31 +722,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
 /* A rotate-accepting stub server (the rotate path's in-test peer)          */
 /* -------------------------------------------------------------------------- */
 
-interface RotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly {
-    readonly suite: "maruhi/v1";
-    readonly epoch: number;
-    readonly recipientUserId: string;
-    readonly recipientEncPubHex: string;
-    readonly encHex: string;
-    readonly ciphertextHex: string;
-    readonly signatureHex: string;
-  }[];
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** The boundary checkpoint (H+2 — the mandatory bundle of §12-4). */
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
-
 /**
  * A stub server that accepts the rotate composite and then distributes
  * the accepted manifest (the manifest is always bundled — required on
@@ -766,7 +742,7 @@ function makeRotateAcceptingServer(input: {
   readonly initialDeks?: readonly WireRecipientDek[];
 }): {
   readonly handlers: readonly MockHandler[];
-  readonly rotateBodies: RotateBody[];
+  readonly rotateBodies: WireRotateBody[];
   readonly pushes: string[];
 } {
   const built = input.built ?? chain1;
@@ -774,7 +750,7 @@ function makeRotateAcceptingServer(input: {
   const hashes: string[] = [...built.hashes];
   const deks: WireRecipientDek[] = [...(input.initialDeks ?? [wrap1])];
   const variables = input.variables ?? [];
-  const rotateBodies: RotateBody[] = [];
+  const rotateBodies: WireRotateBody[] = [];
   const pushes: string[] = [];
   let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest = input.initialManifest;
@@ -839,7 +815,7 @@ function makeRotateAcceptingServer(input: {
       ) {
         return null;
       }
-      const body = request.body as RotateBody;
+      const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       // Accepts the 2 entries rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);

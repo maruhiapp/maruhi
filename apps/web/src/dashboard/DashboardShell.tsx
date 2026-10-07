@@ -148,7 +148,7 @@ function useShellNav(destination: ShellDestination, project: CurrentProject | un
 }
 
 // The static shell's (Root.tsx) <title>. Restored when leaving the
-// dashboard (an SPA transition to the RSC Home / About)
+// dashboard (an SPA transition to the RSC Home)
 const BASE_DOCUMENT_TITLE = "maruhi";
 
 /**

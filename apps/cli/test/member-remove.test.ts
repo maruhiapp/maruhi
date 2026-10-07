@@ -44,6 +44,7 @@ import {
   type WireDistributedVariableStatement,
   type WireRecipientDek,
   wrapDekFor,
+  type WireRotateBody,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
@@ -70,24 +71,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-interface RotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly WrappedDek[];
-  /** The bundled manifest (§12-4 — issued form. issuer is contracted to be the calling principal). */
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** The boundary checkpoint (H+2 — §12-4's required bundle). */
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
-
 /** The wire form of one rotation flag (AUDIT_SPEC §3.3). */
 interface WireFlag {
   readonly environmentId: string;
@@ -102,7 +85,7 @@ interface WireFlag {
 interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
-  readonly rotateBodies: RotateBody[];
+  readonly rotateBodies: WireRotateBody[];
   /** dek_wraps registrations (the change-role widening backfill — §12-6). */
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
@@ -138,7 +121,7 @@ async function makeRemoveServer(input: {
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
-  const rotateBodies: RotateBody[] = [];
+  const rotateBodies: WireRotateBody[] = [];
   const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
@@ -323,7 +306,7 @@ async function makeRemoveServer(input: {
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      const body = request.body as RotateBody;
+      const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       // Two entries accepted: rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);

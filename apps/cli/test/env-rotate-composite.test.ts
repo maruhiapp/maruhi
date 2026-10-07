@@ -24,6 +24,7 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import {
+  decryptWire,
   addMemberOp,
   addScopedMemberOp,
   buildChain,
@@ -35,7 +36,6 @@ import {
 } from "./support/crypto.ts";
 import {
   chainBase,
-  decryptWire,
   dek1,
   ENV_ID,
   makeServer,

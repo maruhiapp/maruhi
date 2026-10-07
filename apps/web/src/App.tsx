@@ -13,7 +13,6 @@ import { DashboardLayout } from "./dashboard/DashboardShell.tsx";
 import { DevicesScreen } from "./dashboard/DevicesScreen.tsx";
 import { ProjectScreen } from "./dashboard/ProjectScreen.tsx";
 import {
-  aboutRoute,
   accountAuditRoute,
   dashboardRoute,
   dashboardShellRoute,
@@ -23,7 +22,6 @@ import {
   tokensRoute,
 } from "./dashboard/routes.ts";
 import { TokensScreen } from "./dashboard/TokensScreen.tsx";
-import { AboutPage } from "./pages/AboutPage.tsx";
 import { HomePage } from "./pages/HomePage.tsx";
 
 // routes.ts is the single catalog of route definitions (paths) (ruling
@@ -31,7 +29,6 @@ import { HomePage } from "./pages/HomePage.tsx";
 // intersect). This file only binds them
 const routes = [
   bindRoute(homeRoute, { component: <HomePage /> }),
-  bindRoute(aboutRoute, { component: <AboutPage /> }),
   // The authenticated screens sit under a pathless parent
   // (DashboardLayout: session + AppShell + SideNav + Outlet) so
   // navigations never remount the shell (routes.ts's dashboardShellRoute)

@@ -7,7 +7,11 @@
 // - Preliminary value-size check (§12-8 — resource protection precedes
 //   semantic checks; §12-3)
 
-import type { EncryptedPayload } from "@maruhi/api-schema";
+import type {
+  DistributedVariableMetaStatement,
+  EncryptedPayload,
+  EnvironmentManifest,
+} from "@maruhi/api-schema";
 import {
   ActivationRequiredError,
   AttestationRateLimitedError,
@@ -173,19 +177,12 @@ export function checkManifestCoordinates(
     : Effect.fail(new PayloadMismatchError({ field: "manifestEnvironmentId" }));
 }
 
-/** Wire manifest → the store input handed to the DO (coordinates already verified — §12-5). */
-export function toManifestInput(manifest: {
-  readonly suite: "maruhi/v1";
-  readonly epoch: number;
-  readonly manifestVersion: number;
-  readonly variablesDigestHex: string;
-  readonly envMetaVersion: number;
-  readonly envMetaSigHashHex: string;
-  readonly prevManifestSigHashHex: string;
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  readonly signatureHex: string;
-}): EnvManifestInput {
+/**
+ * Wire manifest → the store input handed to the DO (coordinates already
+ * verified — §12-5). The creation composite's narrower wire form
+ * (CreateEnvironmentManifestSchema) is assignable to the general one.
+ */
+export function toManifestInput(manifest: EnvironmentManifest): EnvManifestInput {
   return {
     suite: manifest.suite,
     epoch: manifest.epoch,
@@ -201,27 +198,26 @@ export function toManifestInput(manifest: {
 }
 
 /**
+ * The fields every wire request statement carries past the coordinate check
+ * (variable and environment, every lifecycle and layout): api-schema's
+ * self-describing statement form without the coordinates (already matched
+ * against the URL — checkStatementCoordinates) and the distribution-only
+ * author fields. Every request statement form of api-schema is assignable to
+ * it, so the converter cannot drift from the wire contract.
+ */
+type WireMetaStatement = Omit<
+  DistributedVariableMetaStatement,
+  "environmentId" | "variableId" | "authorUserId" | "authorKeyFingerprintHex"
+>;
+
+/**
  * Wire statement → the store input handed to the DO (coordinates already
  * verified). In layout v3 (§12-2) layoutVersion and the schema fields are
  * present as a set — the wire Schema forces the coupling, so the branch may
  * test their presence directly (missing schema fields fall earlier as a
  * Schema 400; a missing maxAgeDays is verify-meta.ts's 422).
  */
-export function toMetaStatementInput(statement: {
-  readonly suite: "maruhi/v1";
-  readonly name: string;
-  readonly status: "active" | "deleted" | "declared";
-  readonly metaVersion: number;
-  readonly prevMetaSigHashHex: string;
-  readonly layoutVersion?: number;
-  readonly varType?: "" | "string" | "number" | "boolean" | "url";
-  readonly required?: boolean;
-  readonly description?: string;
-  readonly maxAgeDays?: number | null;
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  readonly signatureHex: string;
-}): MetaStatementInput {
+export function toMetaStatementInput(statement: WireMetaStatement): MetaStatementInput {
   return {
     suite: statement.suite,
     name: statement.name,

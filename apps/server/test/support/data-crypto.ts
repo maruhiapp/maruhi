@@ -836,7 +836,7 @@ export async function createVariableStatement(input: {
  * to oneself with a fixed vector key and return the DEK (material for the
  * §5.2 commitment check and decryption).
  */
-export async function unwrapDistributedDek(input: {
+async function unwrapDistributedDek(input: {
   readonly recipientUserId: string;
   readonly wrapped: {
     readonly epoch: number;

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import {
+  decryptWire,
   encryptValueFor,
   headOf,
   valueHashOf,
@@ -18,7 +19,6 @@ import {
   chainV2,
   type CreateBody,
   type CreateEcho,
-  decryptWire,
   dek1,
   dek2,
   deksHandlerOf,
