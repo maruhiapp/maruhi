@@ -31,7 +31,7 @@
 // read from (an invitation's invitee — the add_member target; a guardian
 // group's ward and guardians; a handoff request's ward).
 
-import type { ProviderUserId, UserId } from "@maruhi/core";
+import type { AuthMethod, ProviderUserId, UserId } from "@maruhi/core";
 import {
   index,
   integer,
@@ -105,8 +105,8 @@ export const sessions = sqliteTable(
       .$type<UserId>()
       .notNull()
       .references(() => users.id),
-    /** 'github_oauth' (future: 'sso' etc.). Needed for the SSO-enforcement policy */
-    authMethod: text("auth_method").notNull(),
+    /** An auth-method kind name (core AUTH_METHODS — only issueSession writes it). Needed for the SSO-enforcement policy */
+    authMethod: text("auth_method").$type<AuthMethod>().notNull(),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
     lastUsedAt: integer("last_used_at").notNull(),

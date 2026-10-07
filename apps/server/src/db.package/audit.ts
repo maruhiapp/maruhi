@@ -16,8 +16,15 @@
 //   (+ the maruhi-issued token id) and the auth_method kind name. Provider
 //   IDs, logins, and emails must not enter this layer
 
-import type { AuditActor, UserId } from "@maruhi/core";
-import { auditPayloadWith } from "@maruhi/core";
+import type {
+  AUTH_FLOW_FAILURE_REASONS,
+  AuditActor,
+  AuthMethod,
+  SignupDenialReason,
+  UserId,
+  UserOrgAuditEventPayload,
+} from "@maruhi/core";
+import { assertUserOrgAuditPayload, auditPayloadWith } from "@maruhi/core";
 import { and, desc, eq, inArray, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -44,18 +51,26 @@ type Db = ReturnType<typeof drizzle>;
  */
 export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: UserId };
 
-/** Input for one audit-event row (columns are the common columns of schema.ts; unspecified = NULL). */
-export interface D1AuditEventInput {
-  readonly event: string;
+/**
+ * Input for one audit-event row (columns are the common columns of schema.ts;
+ * unspecified = NULL): the event with the payload AUDIT_SPEC §3.1–§3.2 lists
+ * for it (a discriminated union on the event name — packages/core
+ * audit-payloads.ts), plus the actor and the columns.
+ */
+export type D1AuditEventInput = UserOrgAuditEventPayload & {
   readonly actor: D1AuditActor;
   readonly targetUserId?: UserId;
   readonly orgId?: string;
   readonly projectId?: string;
-  readonly payload?: Readonly<Record<string, unknown>>;
-}
+};
 
-/** Mapping onto the inserted row. auth_method rides the payload, as on the DO side (§2). */
+/**
+ * Mapping onto the inserted row. The payload is checked against its event's
+ * schema first (a key the spec does not list is a defect); auth_method rides
+ * the payload, as on the DO side (§2).
+ */
 function rowOf(event: D1AuditEventInput, serverTs: number) {
+  assertUserOrgAuditPayload(event);
   const payload = auditPayloadWith(event.actor, event.payload);
   return {
     // The wire row identifier (AUDIT_SPEC §5.1 row_id — §7's opaque cursor)
@@ -85,21 +100,36 @@ export function userAuditInsert(db: Db, serverTs: number, event: D1AuditEventInp
  * count) each copied the column list by hand, they would silently diverge
  * when the row shape changes.
  * The caller owns the FROM, the WHERE (the guard condition), and the extra
- * column (invites' project_id).
+ * column (invites' project_id). The payload is checked like rowOf's; the one
+ * value read from the stored row — a same-name rotation's `replacedTokenId`
+ * — is added under its spec'd key only, never as free-form SQL.
  */
-export function guardedAuditSelectColumns(input: {
-  readonly event: string;
-  readonly actor: D1AuditActor;
-  readonly nowMs: number;
-  readonly targetUserId?: UserId | null;
-  readonly payload?: Readonly<Record<string, unknown>>;
-  /** A dynamic payload built from the stored row. When given, it takes precedence over the static payload. */
-  readonly payloadSql?: SQL<string | null>;
-}) {
+export function guardedAuditSelectColumns(
+  input: UserOrgAuditEventPayload & {
+    readonly actor: D1AuditActor;
+    readonly nowMs: number;
+    readonly targetUserId?: UserId | null;
+  } & (
+      | { readonly replacedTokenIdSql?: never }
+      | {
+          readonly event: "auth.token_created";
+          /**
+           * The id of the row the same batch deletes (AUDIT_SPEC §3.1 —
+           * `replacedTokenId`: the row that actually vanished, read in SQL).
+           */
+          readonly replacedTokenIdSql: SQL<string>;
+        }
+    ),
+) {
+  assertUserOrgAuditPayload(input);
   const payload = auditPayloadWith(input.actor, input.payload);
+  const stored = Object.keys(payload).length === 0 ? null : JSON.stringify(payload);
   const payloadSql =
-    input.payloadSql ??
-    sql<string | null>`${Object.keys(payload).length === 0 ? null : JSON.stringify(payload)}`;
+    input.replacedTokenIdSql === undefined
+      ? sql<string | null>`${stored}`
+      : sql<
+          string | null
+        >`json_patch(${stored ?? "{}"}, json_object('replacedTokenId', ${input.replacedTokenIdSql}))`;
   return {
     // The wire row identifier (AUDIT_SPEC §5.1 row_id). A guarded insert
     // produces at most one row, so a constant picked at statement-build
@@ -134,8 +164,15 @@ export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 
 interface LoginFailedBucket {
-  readonly authMethod: string;
-  readonly reason: string;
+  readonly authMethod: AuthMethod;
+  readonly reason: (typeof AUTH_FLOW_FAILURE_REASONS)[number];
+}
+
+/** The window's state a suppression marker records (AUDIT_SPEC §3.1 — the window length, the cap, the count). */
+interface SuppressionCounts {
+  readonly windowMs: number;
+  readonly limit: number;
+  readonly suppressedCount: number;
 }
 
 /** The mutable counter's primary key. No external ID / IP — only the classification the audit row itself carries. */
@@ -152,14 +189,14 @@ function loginFailedBucketKey(bucket: LoginFailedBucket): string {
  * flood). As on the individual rows, actor is type=user with no user_id
  * (no external provider ID or IP on an append-only actor — §1-2).
  */
-const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed";
+const LOGIN_FAILED_SUPPRESSED_EVENT = "auth.login_failed_suppressed" as const;
 
 /**
  * The suppression marker for auth.signup_denied (AUDIT_SPEC §3.1). Same
  * fixed-window / power-of-ten discipline as login_failed; the bucket is
  * event name + reason.
  */
-const SIGNUP_DENIED_SUPPRESSED_EVENT = "auth.signup_denied_suppressed";
+const SIGNUP_DENIED_SUPPRESSED_EVENT = "auth.signup_denied_suppressed" as const;
 
 /** Whether the count is one that leaves a suppression marker (1, 10, 100, … — see the doc above). */
 function isSuppressionMilestone(suppressedCount: number): boolean {
@@ -235,7 +272,7 @@ interface D1AuditRepoShape {
   readonly appendSignupDenied: (
     event: D1AuditEventInput,
     serverTs: number,
-    reason: string,
+    reason: SignupDenialReason,
   ) => Effect.Effect<void>;
   /**
    * The project_id-scoped read of invite.* (the §7 exception clause). The
@@ -364,9 +401,8 @@ async function appendWithFixedWindow(
   serverTs: number,
   spec: {
     readonly bucketKey: string;
-    readonly markerEvent: string;
-    /** The classification part of the marker payload (window length, cap, and suppressed count are added here). */
-    readonly markerBasePayload: Readonly<Record<string, unknown>>;
+    /** The suppression marker: the bucket's classification plus the window's state (built by the caller per event). */
+    readonly marker: (counts: SuppressionCounts) => D1AuditEventInput;
   },
 ): Promise<void> {
   const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
@@ -406,21 +442,20 @@ async function appendWithFixedWindow(
     // suppression's scale, and writes stay logarithmically bounded in the
     // count
     if (isSuppressionMilestone(suppressed)) {
-      await userAuditInsert(db, serverTs, {
-        event: spec.markerEvent,
-        actor: {},
-        // The individual row's payload is not carried (AUDIT_SPEC §3.1:
-        // a marker's payload is only the classification part, the window
-        // length, the cap, and the suppressed count). A marker describes
-        // the window's state, not this one request, so the last individual
-        // row does not represent it
-        payload: {
-          ...spec.markerBasePayload,
+      // The individual row's payload is not carried (AUDIT_SPEC §3.1: a
+      // marker's payload is only the classification part, the window
+      // length, the cap, and the suppressed count). A marker describes the
+      // window's state, not this one request, so the last individual row
+      // does not represent it
+      await userAuditInsert(
+        db,
+        serverTs,
+        spec.marker({
           windowMs: LOGIN_FAILED_WINDOW_MS,
           limit: LOGIN_FAILED_WINDOW_LIMIT,
           suppressedCount: suppressed,
-        },
-      });
+        }),
+      );
     }
     return;
   }
@@ -437,8 +472,11 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
       tryD1(() =>
         appendWithFixedWindow(db, event, serverTs, {
           bucketKey: loginFailedBucketKey(bucket),
-          markerEvent: LOGIN_FAILED_SUPPRESSED_EVENT,
-          markerBasePayload: { authMethod: bucket.authMethod, reason: bucket.reason },
+          marker: (counts) => ({
+            event: LOGIN_FAILED_SUPPRESSED_EVENT,
+            actor: {},
+            payload: { authMethod: bucket.authMethod, reason: bucket.reason, ...counts },
+          }),
         }),
       ).pipe(Effect.orDie),
     appendSignupDenied: (event, serverTs, reason) =>
@@ -447,8 +485,11 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
           // The bucket namespaces are separated by event name (cannot
           // collide with login_failed's [authMethod, reason] key)
           bucketKey: JSON.stringify(["auth.signup_denied", reason]),
-          markerEvent: SIGNUP_DENIED_SUPPRESSED_EVENT,
-          markerBasePayload: { authMethod: "github_oauth", reason },
+          marker: (counts) => ({
+            event: SIGNUP_DENIED_SUPPRESSED_EVENT,
+            actor: {},
+            payload: { authMethod: "github_oauth", reason, ...counts },
+          }),
         }),
       ).pipe(Effect.orDie),
     readProjectInviteEvents: (projectId, page) =>

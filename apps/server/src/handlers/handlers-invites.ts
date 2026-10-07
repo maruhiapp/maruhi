@@ -35,11 +35,15 @@ import {
   InviteSignatureInvalidError,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { auditActorOf, cryptoEffect, RequestAuth } from "@maruhi/core";
 import {
-  computeUserKeyFingerprint,
+  auditActorOf,
+  cryptoEffect,
+  type KeyFingerprintHex,
+  RequestAuth,
+  userKeyFingerprintHex,
+} from "@maruhi/core";
+import {
   decodeHex,
-  encodeHex,
   type InviteAcceptSignatureContext,
   SUITE_ID,
   verifyInviteAcceptSignature,
@@ -106,7 +110,7 @@ function toSummary(record: InvitationRecord) {
 const fingerprintOf = Effect.fn("handlers-invites.fingerprintOf")(function* (
   encPubHex: string,
   sigPubHex: string,
-): Effect.fn.Return<string> {
+): Effect.fn.Return<KeyFingerprintHex> {
   const encPub = decodeHex(encPubHex);
   const sigPub = decodeHex(sigPubHex);
   if (encPub === null || sigPub === null) {
@@ -114,10 +118,7 @@ const fingerprintOf = Effect.fn("handlers-invites.fingerprintOf")(function* (
   }
   // A wrapped crypto failure here stays a defect, like the throw the
   // pre-bridge code raised on a failed fingerprint computation
-  const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
-    Effect.orDie,
-  );
-  return encodeHex(fingerprint);
+  return yield* userKeyFingerprintHex(encPub, sigPub).pipe(Effect.orDie);
 });
 
 /**

@@ -1,7 +1,7 @@
 // Repository of project invitations (AUTH_SPEC §15 — invite records
 // and invite.* audit appended in the same batch).
 
-import type { UserId } from "@maruhi/core";
+import type { UserId, UserOrgAuditEventPayload } from "@maruhi/core";
 import { and, count, eq, gt, gte, inArray, min, or, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -16,7 +16,7 @@ import type {
   InviteScope,
   InviteStatus,
 } from "../invite-domain.ts";
-import { type D1AuditActor, guardedAuditSelectColumns } from "./audit.ts";
+import { type D1AuditActor, guardedAuditSelectColumns, INVITE_AUDIT_EVENTS } from "./audit.ts";
 import { D1FailureError, tryD1 } from "./errors.ts";
 import { invitations, orgAuditEvents } from "./schema.ts";
 
@@ -334,14 +334,17 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
    * invite.*'s read axis is chain role admin, not org admin (AUDIT_SPEC
    * §7).
    */
-  const guardedAuditInsert = (input: {
-    readonly inviteId: string;
-    readonly event: "invite.created" | "invite.accepted" | "invite.revoked";
-    readonly actor: D1AuditActor;
-    readonly targetUserId: UserId | null;
-    readonly payload: Readonly<Record<string, unknown>>;
-    readonly nowMs: number;
-  }) =>
+  const guardedAuditInsert = (
+    input: Extract<
+      UserOrgAuditEventPayload,
+      { readonly event: (typeof INVITE_AUDIT_EVENTS)[number] }
+    > & {
+      readonly inviteId: string;
+      readonly actor: D1AuditActor;
+      readonly targetUserId: UserId | null;
+      readonly nowMs: number;
+    },
+  ) =>
     db.insert(orgAuditEvents).select(
       db
         .select({

@@ -40,10 +40,16 @@
                 "importNames": [
                   "UserIdSchema",
                   "ProviderUserIdSchema",
+                  "KeyFingerprintHexSchema",
                   "decodeUserId",
-                  "decodeProviderUserId"
+                  "decodeProviderUserId",
+                  "decodeKeyFingerprintHex"
                 ],
-                "message": "UserId / ProviderUserId are minted only at a trust boundary (packages/core/src/identity.ts): a wire schema in packages/api-schema, a branded Drizzle column, or one of the hand-written mint sites listed in .oxlintrc.json. Read an id from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
+                "message": "UserId / ProviderUserId / KeyFingerprintHex are minted only at a trust boundary (packages/core/src/identity.ts): a wire schema in packages/api-schema, a branded Drizzle column, a fingerprint computed from keys (userKeyFingerprintHex / serverKeyFingerprintHex), or one of the hand-written mint sites listed in .oxlintrc.json. Read the value from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
+              },
+              {
+                "name": "@maruhi/crypto/test-support",
+                "message": "Test support only: its testUserId / testKeyFingerprintHex are unchecked casts for test data. Shipped code mints a brand only through the mints in packages/core/src/identity.ts"
               }
             ]
           }
@@ -59,8 +65,9 @@
       // The identity mint sites (packages/core/src/identity.ts): the wire
       // schemas, the CLI's user-id argument, generation, the provider API's
       // subject, the restore worker's and the keychain's parsers, and the
-      // DEK recipient class. The egress ban above is restated because an
-      // override replaces the rule's options
+      // DEK recipient class (a member's user id or a server key's
+      // fingerprint). The egress and test-support bans above are restated
+      // because an override replaces the rule's options
       "files": [
         "packages/api-schema/src/**",
         "apps/cli/src/commands/flags.ts",
@@ -83,6 +90,10 @@
               {
                 "name": "@effect/platform-bun/BunHttpClient",
                 "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              },
+              {
+                "name": "@maruhi/crypto/test-support",
+                "message": "Test support only: its testUserId / testKeyFingerprintHex are unchecked casts for test data. Shipped code mints a brand only through the mints in packages/core/src/identity.ts"
               }
             ]
           }

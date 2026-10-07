@@ -542,7 +542,8 @@ export const createEnvironmentCompositeProgram = Effect.fn(
     );
     // env.created records the statement author's key FP (AUDIT_SPEC §3.3)
     writeContext.audit.appendSync(
-      dataEvent(actor, writeContext.nowMs, "env.created", {
+      dataEvent(actor, writeContext.nowMs, {
+        event: "env.created",
         environmentId,
         payload: { name: input.statement.name },
         actorKeyFingerprintHex: member.keyFingerprintHex,
@@ -796,13 +797,15 @@ export const deleteEnvironmentCompositeProgram = Effect.fn(
     store.write.retireEnvironment(environmentId, nowMs);
     audit.appendManySync([
       ...variables.map((variable) =>
-        dataEvent(actor, nowMs, "var.deleted", {
+        dataEvent(actor, nowMs, {
+          event: "var.deleted",
           environmentId,
           variableId: variable.variableId,
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
       ),
-      dataEvent(actor, nowMs, "env.deleted", {
+      dataEvent(actor, nowMs, {
+        event: "env.deleted",
         environmentId,
         payload: { name: environment.name },
         actorKeyFingerprintHex: member.keyFingerprintHex,

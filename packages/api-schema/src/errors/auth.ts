@@ -3,6 +3,7 @@
 // Errors carry only identifiers and counters (no plaintext values, key
 // material, or external token values).
 
+import { AUTH_FLOW_FAILURE_REASONS } from "@maruhi/core";
 import { Schema } from "effect";
 
 /** 401: the request presented no valid session cookie or API token. */
@@ -52,12 +53,8 @@ export class ForbiddenError extends Schema.TaggedError<ForbiddenError>()(
   { httpApiStatus: 403 },
 ) {}
 
-/** Reason codes for a failed authentication flow (AUTH_SPEC §3 / §4). */
-export const AuthFlowFailureReasonSchema = Schema.Literals([
-  "state-mismatch",
-  "code-exchange-failed",
-  "github-token-invalid",
-]);
+/** Reason codes for a failed authentication flow (AUTH_SPEC §3 / §4 — core's AUTH_FLOW_FAILURE_REASONS). */
+export const AuthFlowFailureReasonSchema = Schema.Literals(AUTH_FLOW_FAILURE_REASONS);
 
 /**
  * 400: the web OAuth dance failed (state mismatch, code exchange rejection,

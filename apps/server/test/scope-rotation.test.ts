@@ -21,7 +21,7 @@
 //   - every variant's rotation.recommended carries trigger; pre-K3
 //     rows are backfilled from target
 
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import type { AuditRotationRead, SeqRange } from "../src/audit-store.ts";
@@ -619,7 +619,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         [{ seq: 5, environmentId: "env-a" }],
       ),
-      serverKeyFingerprintHex: "ab".repeat(16),
+      serverKeyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
       triggerChainSeq: 9,
       nowMs: 1,
     });
@@ -636,7 +636,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         [{ seq: 6, environmentId: "env-b" }],
       ),
-      serverKeyFingerprintHex: "ab".repeat(16),
+      serverKeyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
       triggerChainSeq: 7,
       nowMs: 1,
     });
@@ -657,7 +657,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         [],
       ),
-      serverKeyFingerprintHex: "ab".repeat(16),
+      serverKeyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
       triggerChainSeq: 7,
       nowMs: 1,
     });

@@ -1,5 +1,6 @@
+import type { KeyFingerprintHex } from "@maruhi/core";
 import { Option, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { ChainEntrySchema, ChainInvalidReasonSchema, maruhiApi } from "../src/index.ts";
 
@@ -103,6 +104,37 @@ describe("ChainEntrySchema", () => {
   it("rejects a payload that does not match the op", () => {
     const bad = { ...genesisEntry, payload: { targetUserId: "user-x" } };
     expect(Option.isNone(decodeEntry(bad))).toBe(true);
+  });
+
+  it("mints the KeyFingerprintHex brand in the actor and key positions (the wire is a mint site)", () => {
+    expectTypeOf<
+      (typeof ChainEntrySchema.Type)["actor"]["keyFingerprintHex"]
+    >().toEqualTypeOf<KeyFingerprintHex>();
+    const revokeDevice = decodeEntry({
+      ...genesisEntry,
+      seq: 2,
+      op: "revoke_device",
+      payload: { targetUserId: "user-member-0002", deviceFingerprintsHex: ["cd".repeat(16)] },
+    });
+    expect(Option.isSome(revokeDevice)).toBe(true);
+    if (Option.isSome(revokeDevice) && revokeDevice.value.op === "revoke_device") {
+      expectTypeOf(revokeDevice.value.payload.deviceFingerprintsHex).toEqualTypeOf<
+        readonly KeyFingerprintHex[]
+      >();
+    }
+  });
+
+  it("rejects a fingerprint that is not 16 bytes of lowercase hex", () => {
+    for (const keyFingerprintHex of ["AB".repeat(16), "ab".repeat(15), "octocat"]) {
+      const bad = { ...genesisEntry, actor: { ...genesisEntry.actor, keyFingerprintHex } };
+      expect(Option.isNone(decodeEntry(bad)), keyFingerprintHex).toBe(true);
+    }
+    const badRevoke = {
+      ...genesisEntry,
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex: "AB".repeat(16) },
+    };
+    expect(Option.isNone(decodeEntry(badRevoke))).toBe(true);
   });
 });
 

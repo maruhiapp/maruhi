@@ -17,6 +17,7 @@
 //
 // The permit-serialization premise is the same as the other programs-*.
 
+import { ROTATION_CONNECTORS } from "@maruhi/core";
 import type { ChainState } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -40,15 +41,7 @@ import { observeStorageLevel, StorageMeter } from "../storage-guard.ts";
 import type { LeaseRejection, LeaseTokenFacts } from "./programs-lease.ts";
 import { authorizeWorkload, recordDenied } from "./programs-lease.ts";
 
-/** The rotation connectors a proposal may name (the api-schema RotationConnectorSchema vocabulary). */
-const ROTATION_CONNECTORS = [
-  "aws-iam-access-key",
-  "cloudflare-api-token",
-  "postgres",
-  "mysql",
-  "exec",
-] as const;
-
+/** The rotation connectors a proposal may name (core's ROTATION_CONNECTORS — the single definition). */
 export type RotationConnector = (typeof ROTATION_CONNECTORS)[number];
 
 /** A proposed value sealed to one recipient device (the wire shape crossing the RPC boundary). */
@@ -576,15 +569,16 @@ export const resolveRotationProposalProgram = Effect.fn(
         actor,
         nowMs,
         resolution.outcome === "accepted"
-          ? "rotation.proposal_accepted"
-          : "rotation.proposal_rejected",
-        {
-          environmentId: proposal.environmentId,
-          payload: {
-            proposalId,
-            ...(resolution.outcome === "accepted" ? { versions: resolution.versions } : {}),
-          },
-        },
+          ? {
+              event: "rotation.proposal_accepted",
+              environmentId: proposal.environmentId,
+              payload: { proposalId, versions: resolution.versions },
+            }
+          : {
+              event: "rotation.proposal_rejected",
+              environmentId: proposal.environmentId,
+              payload: { proposalId },
+            },
       ),
     );
   });

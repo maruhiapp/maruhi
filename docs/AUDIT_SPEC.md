@@ -1,6 +1,6 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
-Version: 1.11-draft
+Version: 1.12-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of
 the PR containing a revision constitutes that approval. History: `git log`.
 
@@ -66,16 +66,17 @@ actor: {
 ## 3. Recorded events
 
 Event names are `domain.verb` form. ★ = an input to rotation-needed detection
-(§4).
+(§4). Payload keys are named in `code form` (camelCase); a session actor's
+auth_method rides every row's payload as `authMethod` (§2).
 
 ### 3.1 Auth events (user / session / token)
 
 | Event | Main attributes | Notes |
 |---|---|---|
 | `auth.login_succeeded` | auth_method | Web OAuth / CLI login (handoff) approval completed |
-| `auth.login_failed` | auth_method, reason kind | State mismatch, verification failure, etc. The presented external ID is **not recorded** |
-| `auth.signup_denied` | auth_method, reason kind (`policy-closed` / `invite-required` / `invite-invalid`) | signupPolicy-based rejection of new creation (AUTH_SPEC §3 — 2026-09-01 H1). GitHub auth succeeded, but the presented external ID is **not recorded** (§1-2 — no internal user_id exists at rejection time). The actor is type=user without user_id, same as `auth.login_failed` |
-| `auth.session_revoked` | target session id | Explicit logout / server-side revocation |
+| `auth.login_failed` | auth_method, reason kind (payload `{ authMethod, reason }`) | State mismatch, verification failure, etc. The presented external ID is **not recorded** |
+| `auth.signup_denied` | auth_method, reason kind (`policy-closed` / `invite-required` / `invite-invalid`) (payload `{ authMethod, reason }`) | signupPolicy-based rejection of new creation (AUTH_SPEC §3 — 2026-09-01 H1). GitHub auth succeeded, but the presented external ID is **not recorded** (§1-2 — no internal user_id exists at rejection time). The actor is type=user without user_id, same as `auth.login_failed` |
+| `auth.session_revoked` | target session id (payload `sessionId`) | Explicit logout / server-side revocation |
 | `auth.token_created` | token_id, name, scopes | |
 | `auth.token_revoked` | token_id | |
 | `auth.identity_linked` / `auth.identity_unlinked` | provider kind name only | provider_user_id / login are **not recorded** |
@@ -85,11 +86,11 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 | `auth.key_wrap_removed` | kind, wrapId / groupId | Removal from the ledger. actor = ward |
 | `auth.key_wrap_fetched` | kind, wrapId / groupId | Fetch of the wrap body of a passkey / guardian group (**monitor** — same rank as `auth.recovery_blob_fetched`). actor = ward |
 | `auth.guardian_designated` / `auth.guardian_released` | groupId, mode, shareIndex | Designation / release of a guardian. actor = ward, **target = guardian** (also appears on the guardian's own axis). One row per segment |
-| `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id + key FP), target = ward |
+| `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id), target = ward. No key FP: the fetch is a token-authenticated read that returns the segment wrapped to each of the guardian's devices, so no device key acts at fetch time; the device that acts is recorded when the segment is used (`auth.key_handoff_approved`'s `approverKeyFingerprintHex`) (2026-10-07) |
 | `auth.key_handoff_requested` | requestId | Creation of a handoff request. actor = ward |
-| `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
+| `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward; the payload carries `approverKeyFingerprintHex` (D1 rows have no actor key column) |
 | `auth.key_handoff_collected` | requestId, approvalCount | The requester obtained one or more approvals **for the first time** = the fact that a restoration happened (once per request; not recorded on each polling response — AUTH_SPEC §13-6 `collected_at`). actor = ward |
-| `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id` |
+| `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id`. A creation by a project import (AUTH_SPEC §11-6) carries `imported: true` instead |
 
 - **Recording rules for the 9 KL3 events (2026-09-12 — `auth.key_wrap_*` /
   `auth.guardian_*` / `auth.key_handoff_*`)**: visibility follows the user
@@ -97,15 +98,17 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
   guardian can trace in their own audit what they were designated for and what
   they approved; a ward can trace whom they designated and who approved). The
   identity rule (§1-2) is unchanged — guardians, wards, and approvers are all
-  internal user_id + key FP, and display snapshots like `wardLogin` exist only
+  internal user_ids (an approver also with the approving device's key FP),
+  and display snapshots like `wardLogin` exist only
   in API responses, never written to audit rows. They do not participate in
   rotation-needed detection (§4) (events outside any project). 429 / 404
   rejections are not recorded (AUTH_SPEC §13-10)
 - `auth.session_created` is not a separate event because it is 1:1 with
   `auth.login_succeeded`. A Web login's `auth.login_succeeded` copies the
-  session id into the payload (the same hash as the stored id — not the raw
+  session id into the payload as `sessionId` (the same hash as the stored id — not the raw
   value — AUTH_SPEC §10), allowing a cross-check against `auth.session_revoked`'s
-  target session id (2026-08-10)
+  target session id (2026-08-10). A CLI login (handoff) creates no session and
+  copies the flow id instead (`flowId` — AUTH_SPEC §4-1's public correlator)
 - `auth.session_revoked` is **explicit revocation only** (logout / server-side
   revocation). Cleanup of expired rows (on resolve, by cron) is not a
   revocation event and is not recorded (2026-08-10)
@@ -161,7 +164,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
   suppressed count (a few rows per window even under flood), and the row's
   density and last count reveal the suppression's scale. The payload carries
   only `auth_method`, `reason`, window length, cap, and the suppressed count at
-  that point (this path does not grow §1-2's forbidden information either —
+  that point (`{ authMethod, reason, windowMs, limit, suppressedCount }`) (this path does not grow §1-2's forbidden information either —
   external provider IDs, IPs). The actor is type=user with no user_id, same as
   the individual rows. "Auditable" here means, like `auth.login_failed`
   itself, **visibility in the operator view (direct D1 access)** — with no
@@ -204,14 +207,17 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 | `org.member_added` / `org.member_removed` | target_user_id, org role |
 | `org.member_role_changed` | target_user_id, old/new role |
 | `org.project_created` / `org.project_deleted` | project_id |
-| `invite.created` / `invite.revoked` | project_id, invite id, role (2026-08-12 — AUTH_SPEC §15) |
-| `invite.accepted` | project_id, invite id, target_user_id (acceptor), payload carries the accepting key FP. **2026-09-13 IV revision: acceptance involves a joint signature by the link key (AUTH_SPEC §15-2), but the payload is unchanged. The backing source (GitHub)'s login, the check result, the link public key, and the signature are not written (§1-2's identity rule. The check completes inside the client and is not reported to the server)** |
+| `invite.created` / `invite.revoked` | project_id, invite id, role (payload `{ inviteId, role }`. 2026-08-12 — AUTH_SPEC §15) |
+| `invite.accepted` | project_id, invite id, target_user_id (acceptor), payload carries the accepting key FP (`{ inviteId, inviteeKeyFingerprintHex }`). **2026-09-13 IV revision: acceptance involves a joint signature by the link key (AUTH_SPEC §15-2), but the payload is unchanged. The backing source (GitHub)'s login, the check result, the link public key, and the signature are not written (§1-2's identity rule. The check completes inside the client and is not reported to the server)** |
 
 org roles do not participate in project access (AUTH_SPEC §9-2), so org events
 do not participate in rotation-needed detection.
 
 - Personal-org auto-creation (AUTH_SPEC §9-1) is recorded as `org.created`
-  (payload `personal: true`) + an `org.member_added` of the self as owner. The
+  (payload `personal: true`) + an `org.member_added` of the self as owner (a
+  project import — AUTH_SPEC §11-6 — writes the same rows with `imported: true`
+  in the `org.created` payload, and marks its `org.project_created` the same
+  way). The
   org-name snapshot is **not** copied into the payload — a personal org's name
   derives from providerLogin and is §1-2's forbidden information (2026-08-10)
 - **Invite events (2026-08-12 drafting — AUTH_SPEC §15)**: invite records live
@@ -239,12 +245,12 @@ CRYPTO_SPEC §4 identifiers.
 | `var.read` ★ | environment_id, payload = { variables: [{ variableId, epoch, version }, …] } | Recorded for **ciphertext distribution** (pull / web fetch). **1 row per environment per with-values bulk pull** (2026-09-02 revision — aggregate form. Old form: 1 row per variable. The variable_id / epoch / version columns are NULL, and the payload enumerates the returned variables — recording rules below). **Metadata-only mode (AUTH_SPEC §12-7) distributes no ciphertext and is not recorded** (don't record as read what was not read — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id (recipient), **actor_key_fingerprint (signer key FP)** | DEK-wrap registration (AUTH_SPEC §12-6. **Includes the bundled part of composite requests — epoch 1 of environment creation, the new epoch of rotation (same §12-4. 2026-08-03)**). actor_key_fingerprint copies the signer key FP of the registration signature (CRYPTO_SPEC §5.1) (for cross-check against the signature. Session 07 ruling B) |
 | `dek.deleted` | environment_id, epoch, target_user_id (recipient) | Deletion of a poisoned wrap by an admin (AUTH_SPEC §12-6's repair path) |
-| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, **epoch = the exposure bound** (the environment's epoch at the end of the subject's last window on it — 2026-09-27 VH; §4.1 step 5. Displayed as the exposure epoch, not a value's epoch), payload = { basis, triggerChainSeq, **trigger** } | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
+| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, **epoch = the exposure bound** (the environment's epoch at the end of the subject's last window on it — 2026-09-27 VH; §4.1 step 5. Displayed as the exposure epoch, not a value's epoch), payload = { basis, triggerChainSeq, **trigger** } (+ `revokedDeviceKeyFingerprints` — the revoked FP set — on the revoke_device variant, §4.1) | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
 | `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). One row per (variable × environment) |
 | `rotation.proposed` | environment_id, payload = { proposalId, variableIds, claimsDigest, grantChainSeq, connector } | A sealed value proposal stored under a workload lease (AUTH_SPEC §14-5. 2026-10-02 PF7b). actor_type = system (the minter is a workload with no maruhi identity — attributed by the claims digest and the grant's chain seq, the same cross-check as `server.lease_issued`; no external identifier, no fact text, no ciphertext). Class 1 |
 | `rotation.proposal_accepted` / `rotation.proposal_rejected` | environment_id, payload = { proposalId, versions: [{ variableId, version }] } (accepted) / { proposalId } (rejected) | A member's resolution of a proposal (AUTH_SPEC §14-5): accepted = the member's own signed pushes (recorded as `var.version_pushed` as always) named by version; rejected = nothing was pushed. The actor is the resolving member (type=user — a resolution carries no signature, so no FP). The proposal's rows are deleted on resolution; these rows are its history. Class 1 |
 | `rotation.proposal_expired` | environment_id, payload = { proposalId, expiresAtMs } | A proposal nobody resolved before its expiry, appended when the server sweeps the row (on the next mint, pre-flight, resolution or member list — AUTH_SPEC §14-5; the payload carries the expiry instant, so the history is exact whatever the sweep's time). actor_type = system (no member acted). Together with `rotation.proposed` it closes the history of every proposal. Class 1 |
-| `project.schema_policy_changed` | payload = { old value, new value } | Change of the project setting `schemaPolicy` (AUTH_SPEC §12-11. 2026-08-30). The actor is the changer themself (type=user — a setting operation with no signature, so no FP). The setting value itself is distributed to all members advisory-ly in pull responses, so class 1 |
+| `project.schema_policy_changed` | payload = { previous, next } (the old value, the new value) | Change of the project setting `schemaPolicy` (AUTH_SPEC §12-11. 2026-08-30). The actor is the changer themself (type=user — a setting operation with no signature, so no FP). The setting value itself is distributed to all members advisory-ly in pull responses, so class 1 |
 | `project.exported` | payload = { chainHeadSeq, chainHeadHashHex } | The first page of a project export (AUTH_SPEC §11-6. 2026-10-02 PF3). The actor is the exporting owner (type=user). Appended before the export's watermarks are taken, so the exported audit log carries this row. An access record of the largest read a project has, so class 2 (like `var.read`) |
 
 - **`var.read`'s aggregate form (2026-09-02 owner decision — resolving open
@@ -404,12 +410,12 @@ server's acceptance time are carried.
 | `chain.member_added` ★ | `add_member` (target_user_id, role, **scopeKind, scopeEnvironmentIds** — payload. 2026-09-14 ES) |
 | `chain.member_removed` ★ | `remove_member` (target_user_id) |
 | `chain.role_changed` ★ | `change_role` (target_user_id, newRole, **scopeKind, scopeEnvironmentIds** — payload. ★ because **demotion / shrink is a detection trigger in §4.1**) |
-| `chain.environment_created` | `create_environment` (environment_id. dek_commitment is copied into the payload — CRYPTO_SPEC §6.2. 2026-08-03) |
+| `chain.environment_created` | `create_environment` (environment_id. dek_commitment is copied into the payload as `dekCommitmentHex` — CRYPTO_SPEC §6.2. 2026-08-03) |
 | `chain.environment_deleted` | `delete_environment` (environment_id. 2026-10-07 — CRYPTO_SPEC §6.2; accepted only in the AUTH_SPEC §12-4 deletion composite, whose `env.deleted` / `var.deleted` rows land in the same transaction) |
-| `chain.epoch_rotated` ★ | `rotate_epoch` (environment_id, new epoch, reason. dek_commitment is copied into the payload — 2026-08-03) |
+| `chain.epoch_rotated` ★ | `rotate_epoch` (environment_id, new epoch, reason. dek_commitment is copied into the payload — payload = { reason, dekCommitmentHex }. 2026-08-03) |
 | `chain.server_granted` ★ | `grant_server`. **target_key_fingerprint carries the granted server key FP**; the scope (target environment set) is copied into the payload |
 | `chain.server_revoked` ★ | `revoke_server`. **target_key_fingerprint carries the revoked server key FP** |
-| `chain.checkpointed` | `checkpoint` (CRYPTO_SPEC §6.2. 2026-08-18). The payload copies the notarized digests (per-environment epoch / manifest_version / manifest_sig_hash / values_digest and audit_head_hash). **The audit seq and row count are not copied even into the payload** (same reason as §7's non-disclosure of counts — the chain payload itself is designed not to contain seq. CRYPTO_SPEC §6.2) |
+| `chain.checkpointed` | `checkpoint` (CRYPTO_SPEC §6.2. 2026-08-18). The payload copies the notarized digests (per-environment epoch / manifest_version / manifest_sig_hash / values_digest and audit_head_hash — payload = { environments: [{ environmentId, epoch, manifestVersion, manifestSigHashHex, valuesDigestHex }], auditHeadHashHex }). **The audit seq and row count are not copied even into the payload** (same reason as §7's non-disclosure of counts — the chain payload itself is designed not to contain seq. CRYPTO_SPEC §6.2) |
 | **`chain.approval_policy_changed`** | `set_approval_policy` (payload = { ops, requiredApprovals }. 2026-09-14 PF1) |
 | **`chain.proposed`** | `propose` (payload = { innerOp, expiresAtMs }. The inner payload is not copied — the chain is the source of truth) |
 | **`chain.approved`** ★ | `approve` (payload = { proposalChainSeq, completed: boolean }) |
@@ -650,7 +656,18 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 
 - Frequent attributes are promoted to columns (for indexes); everything else
   is payload JSON. Columns are NULL-allowed, and per-event-kind required
-  attributes are enforced at the app layer (Effect Schema)
+  attributes are enforced at the app layer (Effect Schema). **For the payload
+  this is one schema per event, derived from §3
+  (`packages/core/src/audit-payloads.ts`, shared by both stores — §5.2's D1
+  side too)**: a payload holds exactly the attributes §3 lists for its event
+  (its table row and the notes on that event — plus a session actor's
+  `authMethod`, §2); an attribute that carries server vocabulary (a reason
+  code, a kind name, an op name) is a closed set, so free text is only
+  user-authored content (name snapshots) and identifiers; a free-text
+  attribute refuses a value typed as a provider subject at compile time; and
+  a key §3 does not list is refused at the append — a defect, so the write it
+  belongs to rolls back with it (§1-2's identity rule enforced on the
+  payload, not only on the actor columns. 2026-10-07)
 - **Audit-head cumulative hash (2026-08-18 session 27 drafting. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
   maintains a cumulative hash on each audit-row append — `h_n =
   lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))`

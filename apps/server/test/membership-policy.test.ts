@@ -4,7 +4,7 @@
 // was split out).
 
 import type { ChainEntry } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -42,7 +42,10 @@ describe("admission policy (§6.4 size limits)", () => {
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
       op: "remove_member",
-      actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: "ab".repeat(16) },
+      actor: {
+        userId: testUserId("user-owner-0001"),
+        keyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
+      },
       payload: { targetUserId: testUserId("u".repeat(1_200_000)) },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
@@ -93,7 +96,10 @@ describe("admission policy (§6.4 size limits)", () => {
       seq: 1,
       prevHashHex: "0".repeat(64),
       op: "genesis",
-      actor: { userId: testUserId("u".repeat(600_000)), keyFingerprintHex: "ab".repeat(16) },
+      actor: {
+        userId: testUserId("u".repeat(600_000)),
+        keyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
+      },
       payload: { encPubHex: "cd".repeat(32), sigPubHex: "ef".repeat(32) },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),

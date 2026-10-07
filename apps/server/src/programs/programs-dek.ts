@@ -173,7 +173,8 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
         // Using ref's class here is sound because the check phase
         // above already confirmed it matches the stored row's
         // recipient_class
-        dataEvent(actor, now, "dek.deleted", {
+        dataEvent(actor, now, {
+          event: "dek.deleted",
           environmentId,
           epoch: ref.epoch,
           ...dekRecipientTarget(ref.recipientClass, ref.recipientUserId),

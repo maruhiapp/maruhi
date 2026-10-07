@@ -10,9 +10,9 @@
 // in chain-accept.ts).
 
 import type { ChainMirrorSubject } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
+import { userKeyFingerprintHex } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
+import { decodeHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -46,10 +46,8 @@ const mirrorSubjectOf = Effect.fn("chain-commit.mirrorSubjectOf")(function* (
   if (enc === null || sig === null) {
     return yield* Effect.die(new Error("add_device payload keys are not valid hex"));
   }
-  const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
-    Effect.orDie,
-  );
-  return { addedDeviceKeyFingerprintHex: encodeHex(fingerprint) };
+  const fingerprint = yield* userKeyFingerprintHex(enc, sig).pipe(Effect.orDie);
+  return { addedDeviceKeyFingerprintHex: fingerprint };
 });
 
 export const commitAcceptedEntry = Effect.fn("chain-commit.commitAcceptedEntry")(function* (

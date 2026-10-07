@@ -20,6 +20,7 @@ export {
   type BuiltChain,
   hexBytes,
   type LazyChainOperation,
+  testKeyFingerprintHex,
   testUserId,
   unwrapResult,
   valueContextOf,

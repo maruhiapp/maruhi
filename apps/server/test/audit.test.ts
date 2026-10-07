@@ -8,10 +8,12 @@
 //   row
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { makeAuditStore } from "../src/audit-store.ts";
+import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
+import { dataEvent } from "../src/data/data-plane.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
@@ -168,8 +170,14 @@ function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]
 }
 
 /** Minimal event for the numbering-reset check (test input for audit-store.ts's reset-on-failure). */
-const seqTestEvent = (name: string) =>
-  ({ event: name, serverTs: 1, actorType: "user", actorUserId: OWNER }) as const;
+/** A valid non-mirror row for the numbering tests (var.deleted carries no payload), told apart by its variable_id. */
+const seqTestEvent = (tag: string): AuditEventInput => ({
+  event: "var.deleted",
+  serverTs: 1,
+  actorType: "user",
+  actorUserId: OWNER,
+  variableId: tag,
+});
 
 describe("chain mirror (§3.4)", () => {
   it("mirrors accepted chain entries with actor identity, chain_seq and both timestamps", async () => {
@@ -289,7 +297,7 @@ describe("chain mirror (§3.4)", () => {
     const serverEncPubHex = "ab".repeat(32);
     const fpResult = await computeServerKeyFingerprint(hexBytes(serverEncPubHex));
     if (!fpResult.ok) throw new Error("fingerprint failed");
-    const serverKeyFingerprintHex = encodeHex(fpResult.value);
+    const serverKeyFingerprintHex = testKeyFingerprintHex(encodeHex(fpResult.value));
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
       payload: {
@@ -485,9 +493,9 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       // chunk 1 too — here only the numbering cache's behavior is pinned
       store.appendSync(seqTestEvent("test.after"));
       const last = sql
-        .exec("SELECT seq, event FROM audit_events ORDER BY seq DESC LIMIT 1")
+        .exec("SELECT seq, variable_id FROM audit_events ORDER BY seq DESC LIMIT 1")
         .toArray()[0];
-      expect(last?.["event"]).toBe("test.after");
+      expect(last?.["variable_id"]).toBe("test.after");
       expect(last?.["seq"]).toBe(base + 10);
     });
     // Restore the DO to its initial state so the directly-inserted row does not survive past this test
@@ -502,7 +510,7 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       const before = Number(
         sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
       );
-      const invalid = { ...seqTestEvent("var.read"), chainSeq: 1 };
+      const invalid: AuditEventInput = { ...seqTestEvent("test.invalid"), chainSeq: 1 };
 
       expect(() => store.appendSync(invalid)).toThrow("chain_seq is reserved for chain.* events");
       // Even with a violation in the back half, the valid front-half rows
@@ -520,6 +528,76 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       );
       expect(after).toBe(before);
     });
+  });
+
+  it("refuses a payload key AUDIT_SPEC does not list, before numbering (the identity rule's payload gate)", async () => {
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const store = makeAuditStore(sql);
+      const maxSeq = () =>
+        Number(
+          sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
+        );
+      const before = maxSeq();
+      // Structural typing lets a wider object through (this compiles); the
+      // store's check refuses it ahead of sequencing and SQL
+      const snapshot = { name: "production", login: "octocat" };
+      const widened: AuditEventInput = {
+        event: "env.renamed",
+        serverTs: 1,
+        actorType: "user",
+        actorUserId: OWNER,
+        payload: snapshot,
+      };
+      expect(() => store.appendSync(widened)).toThrow(
+        "the env.renamed payload is not the AUDIT_SPEC §3 shape",
+      );
+      expect(() =>
+        store.appendManySync([
+          ...Array.from({ length: 6 }, (_e, index) => seqTestEvent(`test.before-widened${index}`)),
+          widened,
+        ]),
+      ).toThrow("the env.renamed payload is not the AUDIT_SPEC §3 shape");
+      expect(maxSeq()).toBe(before);
+    });
+  });
+
+  it("a user actor's dek.deleted carries no payload: the cause-naming one is the system's cleanup (§3.3)", () => {
+    const actor = { userId: OWNER };
+    const fields = { event: "dek.deleted", environmentId: "env-1", epoch: 1 } as const;
+    expect(dataEvent(actor, 1, fields).payload).toBeUndefined();
+    dataEvent(actor, 1, {
+      ...fields,
+      // @ts-expect-error -- the re-add cleanup payload is written by the system actor only
+      payload: { cause: "member-readded", triggerChainSeq: 2 },
+    });
+  });
+
+  it("merges a session actor's auth method into the stored payload (§2 / §5.1), and stores NULL for an empty one", async () => {
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const store = makeAuditStore(sql);
+      const lastPayload = () =>
+        sql.exec("SELECT payload FROM audit_events ORDER BY seq DESC LIMIT 1").toArray()[0]?.[
+          "payload"
+        ];
+      store.appendSync({
+        event: "env.renamed",
+        serverTs: 1,
+        actorType: "user",
+        actorUserId: OWNER,
+        actorAuthMethod: "github_oauth",
+        payload: { name: "production" },
+      });
+      expect(lastPayload()).toBe('{"name":"production","authMethod":"github_oauth"}');
+      store.appendSync({ ...seqTestEvent("test.session"), actorAuthMethod: "github_oauth" });
+      expect(lastPayload()).toBe('{"authMethod":"github_oauth"}');
+      store.appendSync(seqTestEvent("test.token"));
+      expect(lastPayload()).toBeNull();
+    });
+    await evictDurableObject(stub);
   });
 
   it("seq stays gapless across a chunk-split bulk append and a DO restart (§5.1)", async () => {

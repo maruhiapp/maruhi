@@ -6,8 +6,14 @@
 // RPC boundary as a DataOutcome discriminated union (the worker maps it
 // onto api-schema's typed errors).
 
-import type { AuditActor } from "@maruhi/core";
-import { auditPayloadWith, decodeUserId } from "@maruhi/core";
+import type {
+  AuditActor,
+  AuditEventColumns,
+  ChainMirrorEventName,
+  ProjectAuditEventName,
+  ProjectAuditEventPayload,
+} from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -15,6 +21,7 @@ import type {
   ChainMember,
   ChainState,
   EffectivePermission,
+  KeyFingerprintHex,
   Role,
 } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
@@ -776,7 +783,7 @@ export function roleAtLeast(role: Role, minimum: Role): boolean {
  */
 export interface MemberWithDevice extends ChainMember {
   readonly device: ChainDevice;
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   /** The signing device's effective permission (§6.2 — the input of the second-stage authorization). */
@@ -1084,40 +1091,68 @@ export function currentEpochOf(state: ChainState, environmentId: string): number
 }
 
 /**
- * Build the audit event of a data operation (AUDIT_SPEC §3.3). The
- * actor's auth_method rides the payload JSON rather than a column (§5.1:
- * only frequent attributes are promoted to columns).
- * The actor's key FP is in principle absent (the chain mirror's
- * exclusive remit), but **dek.registered alone is the exception** — the
- * signer FP of the registration signature (CRYPTO_SPEC §5.1) is recorded
- * into actorKeyFingerprintHex (AUDIT_SPEC §3.3 — for cross-checking the
- * audit row against the chain-external signature).
+ * The events a data operation's actor writes (AUDIT_SPEC §3.3) — never a
+ * chain mirror row (§3.4), a server access row (§3.5) or a row whose actor
+ * is the system (detection, a workload's proposal, an expiry sweep).
  */
-export function dataEvent(
-  actor: DataActor,
-  serverTs: number,
-  event: string,
-  fields: Pick<
-    AuditEventInput,
+type DataEventName = Exclude<
+  ProjectAuditEventName,
+  | ChainMirrorEventName
+  | `server.${string}`
+  | "rotation.recommended"
+  | "rotation.proposed"
+  | "rotation.proposal_expired"
+>;
+
+/**
+ * The payload a user actor writes for a data event: the event's own
+ * (audit-payloads.ts), except `dek.deleted`, whose cause-naming payload is
+ * the system actor's cleanup on a member's re-add (chain-accept.ts) — a
+ * user's deletion (the §12-6 repair path) writes none.
+ */
+type UserActorPayload<E extends DataEventName> = E extends "dek.deleted"
+  ? { readonly event: E; readonly payload?: never }
+  : Extract<ProjectAuditEventPayload, { readonly event: E }>;
+
+/** A data event's name, payload and columns — a discriminated union on the name. */
+export type DataEventFields = {
+  readonly [E in DataEventName]: Pick<
+    AuditEventColumns,
     | "environmentId"
     | "variableId"
     | "epoch"
     | "version"
     | "targetUserId"
     | "targetKeyFingerprintHex"
-    | "payload"
     | "actorKeyFingerprintHex"
-  >,
+  > &
+    UserActorPayload<E>;
+}[DataEventName];
+
+/**
+ * Build the audit event of a data operation (AUDIT_SPEC §3.3). The
+ * actor's auth_method rides the actor (`actorAuthMethod`) and the store
+ * merges it into the stored payload (§5.1: only frequent attributes are
+ * promoted to columns).
+ * The actor's key FP is in principle absent (the chain mirror's
+ * exclusive remit), but operations accompanied by a client signature
+ * (dek.registered, the value writes, the meta statements, the
+ * environment deletion) record the signer FP into actorKeyFingerprintHex
+ * (AUDIT_SPEC §3.3 — for cross-checking the audit row against the
+ * chain-external signature).
+ */
+export function dataEvent(
+  actor: DataActor,
+  serverTs: number,
+  fields: DataEventFields,
 ): AuditEventInput {
-  const payload = auditPayloadWith(actor, fields.payload);
   return {
     ...fields,
-    event,
     serverTs,
     actorType: "user",
     actorUserId: actor.userId,
     ...(actor.apiTokenId === undefined ? {} : { actorApiTokenId: actor.apiTokenId }),
-    ...(Object.keys(payload).length === 0 ? {} : { payload }),
+    ...(actor.authMethod === undefined ? {} : { actorAuthMethod: actor.authMethod }),
   };
 }
 
@@ -1126,14 +1161,17 @@ export function dataEvent(
  * position holds a member's user id, or the server key FP for recipient
  * class server (CRYPTO_SPEC §9). A server recipient has no user_id (the
  * §2 actor model), so its FP goes on target_key_fingerprint, never into
- * the user-id column. The class is what makes the position a user id, so
- * reading it by class is where the member's id is minted.
+ * the user-id column. The class is what makes the position a user id (or
+ * a server key fingerprint), so reading it by class is where the member's id
+ * — or the server key's fingerprint — is minted. A server recipient passed
+ * acceptance only as a valid grant's fingerprint (dek-wraps.ts), so the
+ * format check cannot fail on an accepted wrap.
  */
 export function dekRecipientTarget(
   recipientClass: DekRecipientClass,
   recipientUserId: string,
 ): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
   return recipientClass === "server"
-    ? { targetKeyFingerprintHex: recipientUserId }
+    ? { targetKeyFingerprintHex: decodeKeyFingerprintHex(recipientUserId) }
     : { targetUserId: decodeUserId(recipientUserId) };
 }

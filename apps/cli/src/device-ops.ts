@@ -257,8 +257,13 @@ const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (inp
       cliError(`${displayText(input.targetUserId)} is not a current member of this project`),
     );
   }
+  // The payload carries the target's own chain device FPs (the verified
+  // chain's values — the requested strings only select them)
   const revoking = input.fingerprintsHex
-    .filter((fingerprintHex) => target.devices.has(fingerprintHex))
+    .flatMap((fingerprintHex) => {
+      const device = target.devices.get(fingerprintHex);
+      return device === undefined ? [] : [device.keyFingerprintHex];
+    })
     .toSorted(compareCodePoints);
   if (revoking.length === 0) {
     return null;

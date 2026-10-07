@@ -30,6 +30,7 @@ import {
   signInviteLink,
   SUITE_ID,
 } from "@maruhi/crypto";
+import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, expect } from "vitest";
 
@@ -86,7 +87,7 @@ export async function makeInviteeKeys() {
     signingKey: sig.privateKey,
     encPubHex: encodeHex(encPub),
     sigPubHex: encodeHex(sigPub),
-    fingerprintHex: encodeHex(fingerprint.value),
+    fingerprintHex: testKeyFingerprintHex(encodeHex(fingerprint.value)),
   };
 }
 

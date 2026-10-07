@@ -93,7 +93,8 @@ export const dismissRotationFlagsProgram = Effect.fn(
   yield* Effect.sync(() => {
     audit.appendManySync(
       deduped.map((target) =>
-        dataEvent(actor, now, "rotation.dismissed", {
+        dataEvent(actor, now, {
+          event: "rotation.dismissed",
           environmentId: target.environmentId,
           variableId: target.variableId,
         }),

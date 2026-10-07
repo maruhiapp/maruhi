@@ -207,6 +207,7 @@ export {
   type SetApprovalPolicyPayload,
   signChainEntry,
   soleDeviceOf,
+  type KeyFingerprintHex,
   type UnsignedChainEntry,
   type UserId,
   verifyChain,

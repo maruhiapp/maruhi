@@ -16,6 +16,7 @@ import type {
   TokenServiceShape,
 } from "../src/auth.ts";
 import {
+  decodeKeyFingerprintHex,
   decodeProviderUserId,
   decodeUserId,
   type ProviderUserId,
@@ -29,7 +30,7 @@ const providerSubject: ProviderUserId = decodeProviderUserId("583231");
 /** The display login: a plain string (AUTH_SPEC §2 — a snapshot, never an identifier). */
 const providerLogin = "octocat";
 const internalUserId: UserId = decodeUserId("01J9Z3K4M5N6P7Q8R9S0T1V2W3");
-const FP = "ab".repeat(16);
+const FP = decodeKeyFingerprintHex("ab".repeat(16));
 
 describe("UserId brand (CLAUDE.md identity rule)", () => {
   it("refuses a provider identity in an audit-log actor or target", () => {
@@ -42,7 +43,7 @@ describe("UserId brand (CLAUDE.md identity rule)", () => {
     ];
     const rows: readonly AuditEventRecord[] = [
       // @ts-expect-error a provider subject is not an audit target
-      { event: "x", serverTs: 1, actorType: "user", targetUserId: providerSubject },
+      { event: "dek.deleted", serverTs: 1, actorType: "system", targetUserId: providerSubject },
     ];
     expect(actors).toHaveLength(3);
     expect(rows).toHaveLength(1);

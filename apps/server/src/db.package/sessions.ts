@@ -1,7 +1,7 @@
 // Repository of sessions (AUTH_SPEC §5 — the id is a hash; the raw
 // value never reaches this layer).
 
-import type { UserId } from "@maruhi/core";
+import type { AuthMethod, UserId } from "@maruhi/core";
 import { eq, lte } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -28,7 +28,7 @@ export interface SessionRepoShape {
   readonly insert: (
     idHash: string,
     userId: UserId,
-    authMethod: string,
+    authMethod: AuthMethod,
     nowMs: number,
     expiresAtMs: number,
   ) => Effect.Effect<void>;

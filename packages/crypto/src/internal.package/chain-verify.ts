@@ -54,6 +54,7 @@ import {
   type ChainState,
   type CheckpointEnvironmentEntry,
   type EnvironmentCheckpointState,
+  type KeyFingerprintHex,
   type PendingProposal,
   type ProposableOperation,
   type Role,
@@ -111,7 +112,7 @@ interface MutablePendingProposal {
   readonly proposalSeq: number;
   readonly proposalHashHex: string;
   readonly proposerUserId: UserId;
-  readonly proposerKeyFingerprintHex: string;
+  readonly proposerKeyFingerprintHex: KeyFingerprintHex;
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
@@ -210,12 +211,20 @@ function atLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
-async function userFingerprintHex(encPubHex: string, sigPubHex: string): Promise<string> {
+/**
+ * The fingerprint of a key pair on the chain (§3). This computation is the
+ * package's own mint of a {@link KeyFingerprintHex}: `encodeHex` of 16 digest
+ * bytes is 32 lowercase hex characters by construction, computed from the keys.
+ */
+async function userFingerprintHex(
+  encPubHex: string,
+  sigPubHex: string,
+): Promise<KeyFingerprintHex> {
   // Hex shape already verified before the call (32B each). FP = SHA-256(enc || sig)[:16]
   const enc = decodeHex(encPubHex) ?? new Uint8Array(0);
   const sig = decodeHex(sigPubHex) ?? new Uint8Array(0);
   const digest = await sha256(concatBytes(enc, sig));
-  return encodeHex(digest.slice(0, FINGERPRINT_BYTES));
+  return encodeHex(digest.slice(0, FINGERPRINT_BYTES)) as KeyFingerprintHex;
 }
 
 function checkFraming(
@@ -616,7 +625,7 @@ function unindexDeviceKeys(state: MutableChainState, device: ChainDevice): void 
 /** The first device key (genesis / add_member — cap is structurally (owner, all)). */
 function firstDeviceOf(
   keys: { readonly encPubHex: string; readonly sigPubHex: string },
-  keyFingerprintHex: string,
+  keyFingerprintHex: KeyFingerprintHex,
   addedSeq: number,
 ): ChainDevice {
   return {
@@ -732,8 +741,8 @@ function voteDevice(state: MutableChainState, signer: ApprovalVote): ChainDevice
 export function ownerVotersOf(
   members: ReadonlyMap<string, ChainMember>,
   signers: readonly ApprovalVote[],
-): ReadonlySet<string> {
-  const voters = new Set<string>();
+): ReadonlySet<UserId> {
+  const voters = new Set<UserId>();
   for (const signer of signers) {
     const member = members.get(signer.userId);
     const device = member?.devices.get(signer.keyFingerprintHex);

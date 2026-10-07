@@ -7,7 +7,7 @@
 // check against the real Schemas lives in e2e.test.ts (ruling BV).
 // This is a test-process-only module and never enters the shipped
 // bundle (only screenshots.ts and e2e.test.ts import it).
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 
 import type {
   AuditEvent,
@@ -29,7 +29,7 @@ const USER_E2E = testUserId("user_e2e");
 const USER_COLLEAGUE = testUserId("user_colleague");
 const USER_GHOST = testUserId("user_ghost");
 const SIG = "34".repeat(64);
-const FP = "56".repeat(16);
+const FP = testKeyFingerprintHex("56".repeat(16));
 const ROW_ID_1 = "78".repeat(16);
 const ROW_ID_2 = "9a".repeat(16);
 const ROW_ID_3 = "bc".repeat(16);
@@ -37,7 +37,7 @@ const ROW_ID_4 = "de".repeat(16);
 // Device keys (DK K5): D2 = phone (cap member / production), R =
 // reserve key (owner / all). The public keys are chosen not to collide
 // with the first key (HEX64) (chain-view's duplicate-member-key fold)
-export const FP_D2 = "d2".repeat(16);
+export const FP_D2 = testKeyFingerprintHex("d2".repeat(16));
 const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
 const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
 

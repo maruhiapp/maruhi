@@ -15,7 +15,7 @@
 // the checks — the type makes it impossible to accidentally pass the person's
 // raw (role, scope) to a check (design log dk-design.md §7 K2-4).
 
-import type { Role } from "./chain-types.ts";
+import type { KeyFingerprintHex, Role } from "./chain-types.ts";
 import { ALL_SCOPE, type MemberScope } from "./member-scope.ts";
 
 /** Role order used by every role comparison (the §6.2 role table). */
@@ -49,7 +49,7 @@ export const FIRST_DEVICE_CAP: DeviceCap = { roleCap: "owner", scope: ALL_SCOPE 
  * (§3: FP = SHA-256(enc ‖ sig)[:16] — the fingerprint names the device).
  */
 export interface ChainDevice extends DeviceCap {
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   /** Seq of the entry that put this key on the chain (genesis / add_member / add_device — inclusive). */

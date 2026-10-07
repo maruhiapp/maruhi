@@ -141,7 +141,8 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
       );
       acceptedManifest.writeSync(now);
       audit.appendSync(
-        dataEvent(actor, now, "env.renamed", {
+        dataEvent(actor, now, {
+          event: "env.renamed",
           environmentId,
           payload: { name: statement.name },
           actorKeyFingerprintHex: author.keyFingerprintHex,
@@ -254,7 +255,8 @@ export const pullEnvironmentProgram = Effect.fn("programs-environment.pullEnviro
     if (variables.length > 0) {
       yield* Effect.sync(() => {
         audit.appendSync(
-          dataEvent(actor, now, VAR_READ_EVENT, {
+          dataEvent(actor, now, {
+            event: VAR_READ_EVENT,
             environmentId,
             payload: auditReadPayload(
               variables.map((variable) => ({

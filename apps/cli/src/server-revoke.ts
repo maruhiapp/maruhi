@@ -27,6 +27,7 @@ import { ChainHeadConflictError } from "@maruhi/api-schema";
 import {
   type ChainEntry,
   isApprovalTarget,
+  type KeyFingerprintHex,
   type ProposableOperation,
   type SigningKeyPair,
 } from "@maruhi/crypto";
@@ -86,7 +87,7 @@ function requireOwner(
 function selectGrant(
   verified: VerifiedProject,
   fingerprintHex: string | null,
-): Effect.Effect<{ readonly serverKeyFingerprintHex: string } | null, CliError> {
+): Effect.Effect<{ readonly serverKeyFingerprintHex: KeyFingerprintHex } | null, CliError> {
   const grants = [...verified.state.serverGrants.values()];
   if (grants.length === 0) {
     return Effect.succeed(null);
@@ -119,7 +120,7 @@ function selectGrant(
 function signRevokeEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
-  readonly serverKeyFingerprintHex: string;
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
   return signEntryAtHead({

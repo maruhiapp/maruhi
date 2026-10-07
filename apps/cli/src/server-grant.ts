@@ -27,7 +27,7 @@
 // (AUTH_SPEC §14-3).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoEffect, type EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type KeyFingerprintHex, serverKeyFingerprintHex } from "@maruhi/core";
 import type {
   ChainEntry,
   LeasePolicyIssuer,
@@ -35,12 +35,7 @@ import type {
   ServerGrant,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import {
-  computeServerKeyFingerprint,
-  decodeHex,
-  encodeHex,
-  isApprovalTarget,
-} from "@maruhi/crypto";
+import { decodeHex, isApprovalTarget } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -66,7 +61,8 @@ const MAX_ATTEMPTS = 5;
 /** The server key's public face (`/auth/config` — AUTH_SPEC §4). */
 interface ServerKeyConfig {
   readonly serverEncPubHex: string;
-  readonly serverKeyFingerprintHex: string;
+  /** Recomputed from serverEncPubHex (equal to what `/auth/config` declared — checked on fetch). */
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
 interface GrantSummary {
@@ -196,13 +192,11 @@ const fetchServerKeyConfig = Effect.fn("server-grant.fetchServerKeyConfig")(func
   const mismatch = cliError(
     "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
   );
-  const computed = yield* cryptoEffect(() => computeServerKeyFingerprint(encPub)).pipe(
-    Effect.mapError(() => mismatch),
-  );
-  if (encodeHex(computed) !== fingerprintHex) {
+  const computed = yield* serverKeyFingerprintHex(encPub).pipe(Effect.mapError(() => mismatch));
+  if (computed !== fingerprintHex) {
     return yield* Effect.fail(mismatch);
   }
-  return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: fingerprintHex };
+  return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: computed };
 });
 
 /**

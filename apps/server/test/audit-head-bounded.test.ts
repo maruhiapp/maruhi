@@ -39,11 +39,11 @@ registerDataScenario();
 /** The maximum rows one bounded-extension call can process (chunk limit × 50 rows). */
 const ROWS_PER_CALL = MAX_HEAD_EXTENSION_CHUNKS_PER_CALL * 50;
 
-/** A seed row (any non-mirror event of §5.1; does not touch the chain_seq invariant). */
+/** A seed row (any non-mirror event of §5.1 with a valid payload — var.version_pushed may carry none; does not touch the chain_seq invariant). */
 function backlogEvent(): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000,
-    event: "var.read",
+    event: "var.version_pushed",
     actorType: "user",
     actorUserId: OWNER,
     environmentId: "env-backlog-0001",

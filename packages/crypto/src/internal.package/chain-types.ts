@@ -74,10 +74,34 @@ declare const userIdBrand: unique symbol;
  */
 export type UserId = string & { readonly [userIdBrand]: "UserId" };
 
+declare const keyFingerprintBrand: unique symbol;
+
+/**
+ * A key fingerprint (CRYPTO_SPEC §3): the first 16 bytes of
+ * `SHA-256(enc_pub ‖ sig_pub)` for a device key, or of `SHA-256(server_enc_pub)`
+ * for a server key (§9), as 32 lowercase hex characters — the other half of
+ * the identity rule's "internal user_id and key fingerprint only". A plain
+ * TypeScript nominal brand (this package is Effect-free): it has no runtime
+ * form, and no canonical byte, vector or verification rule depends on it.
+ *
+ * It records what a plain string cannot: the format (32 lowercase hex, so
+ * string equality is fingerprint equality) and the provenance (the value was
+ * computed from public keys, or decoded from a fingerprint field with that
+ * format check). A provider identity, a row id, a public key or any other
+ * string is a compile error wherever a fingerprint is required — the actor and
+ * key positions of a chain entry and of an audit row.
+ *
+ * Minted only where that holds: this package's own fingerprint computation in
+ * the chain verifier (the derived state of a verified chain), and the
+ * format-checked mints of `@maruhi/core` (`KeyFingerprintHexSchema` at the
+ * wire, `userKeyFingerprintHex` / `serverKeyFingerprintHex` over the keys).
+ */
+export type KeyFingerprintHex = string & { readonly [keyFingerprintBrand]: "KeyFingerprintHex" };
+
 /** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
   readonly userId: UserId;
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
 export interface GenesisPayload {
@@ -171,7 +195,7 @@ export interface LeasePolicyIssuer {
 
 export interface GrantServerPayload {
   readonly serverEncPubHex: string;
-  readonly serverKeyFingerprintHex: string;
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
   /**
    * Environments the server key is granted access to. Canonicalized as a
    * nested length-prefixed encoding whose lowercase-hex form is one payload
@@ -196,7 +220,7 @@ export interface GrantServerPayload {
 }
 
 export interface RevokeServerPayload {
-  readonly serverKeyFingerprintHex: string;
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -315,7 +339,7 @@ export interface AddDevicePayload extends ScopePayloadFields {
  */
 export interface RevokeDevicePayload {
   readonly targetUserId: UserId;
-  readonly deviceFingerprintsHex: readonly string[];
+  readonly deviceFingerprintsHex: readonly KeyFingerprintHex[];
 }
 
 /** Operation + payload, discriminated by `op`. */
@@ -383,7 +407,7 @@ export interface ApprovalPolicy {
  */
 export interface ApprovalVote {
   readonly userId: UserId;
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -400,7 +424,7 @@ export interface PendingProposal {
   readonly proposalHashHex: string;
   readonly proposerUserId: UserId;
   /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
-  readonly proposerKeyFingerprintHex: string;
+  readonly proposerKeyFingerprintHex: KeyFingerprintHex;
   /**
    * The proposer's role at proposal time. `owner` puts the proposal signature
    * into the signer set S (an owner's proposal is 1 vote — CRYPTO_SPEC §6.2); any other
@@ -415,7 +439,7 @@ export interface PendingProposal {
 
 /** An active server grant derived from a verified chain (CRYPTO_SPEC §9). */
 export interface ServerGrant {
-  readonly serverKeyFingerprintHex: string;
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
   readonly serverEncPubHex: string;
   /**
    * Seq of the `grant_server` entry that established this active grant — it

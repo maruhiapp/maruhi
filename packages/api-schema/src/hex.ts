@@ -39,7 +39,13 @@ export const EncPubHex = hexString(32);
 /** HPKE enc (the encapsulated sender ephemeral public key — CRYPTO_SPEC §5). */
 export const HpkeEncHex = hexString(32);
 
-/** Key fingerprint (16 bytes — CRYPTO_SPEC §3). */
+/**
+ * Key fingerprint (16 bytes — CRYPTO_SPEC §3), format only. A field whose
+ * value lands where the `KeyFingerprintHex` brand is required — a chain
+ * entry's actor or key positions, an audit row — decodes with core's
+ * `KeyFingerprintHexSchema` instead (the same format check, plus the brand —
+ * packages/core/src/identity.ts).
+ */
 export const KeyFingerprintHex = hexString(16);
 
 /** Chain entry signature (Ed25519 — CRYPTO_SPEC §6.1). */

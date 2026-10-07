@@ -58,6 +58,7 @@ export {
   type RotateEpochPayload,
   type ServerGrant,
   type SetApprovalPolicyPayload,
+  type KeyFingerprintHex,
   type UnsignedChainEntry,
   type UserId,
   type WithdrawPayload,

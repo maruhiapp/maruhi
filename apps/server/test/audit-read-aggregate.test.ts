@@ -146,22 +146,25 @@ function aggregatedRead(
   };
 }
 
-/** For density comparison: the pre-aggregation one-variable-per-row shape (the current server never writes it — the measurement's control). */
-function perVariableRead(
-  actorUserId: string,
-  environmentId: string,
-  variableId: string,
-): AuditEventInput {
-  return {
-    serverTs: 1_700_000_000_000,
-    event: "var.read",
-    actorType: "user",
-    actorUserId: testUserId(actorUserId),
-    environmentId,
-    variableId,
-    epoch: 1,
-    version: 1,
-  };
+/**
+ * For density comparison: the pre-aggregation one-variable-per-row shape —
+ * the measurement's control. The current schema refuses it (a `var.read`
+ * payload enumerates the variables — packages/core audit-payloads.ts), so the
+ * control is inserted with raw SQL in the store's column layout.
+ */
+function insertPerVariableReads(sql: SqlStorage, variableIds: readonly string[]): void {
+  const firstSeq =
+    1 + Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"]);
+  for (const [index, variableId] of variableIds.entries()) {
+    sql.exec(
+      "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, actor_user_id, environment_id, variable_id, epoch, version) VALUES (?, lower(hex(randomblob(16))), ?, 'var.read', 'user', ?, ?, ?, 1, 1)",
+      firstSeq + index,
+      1_700_000_000_000,
+      "user-reader",
+      "env-0001",
+      variableId,
+    );
+  }
 }
 
 describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 accounting)", () => {
@@ -175,16 +178,19 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
         { length: 100 },
         (_v, i) => `v${i.toString(16).padStart(24, "0")}`,
       );
-      const measure = (rows: readonly AuditEventInput[]): number => {
+      const measureWith = (write: () => void): number => {
         sql.exec("DELETE FROM audit_events");
         const base = sql.databaseSize;
-        store.appendManySync(rows);
+        write();
         return sql.databaseSize - base;
       };
+      const measure = (rows: readonly AuditEventInput[]): number =>
+        measureWith(() => store.appendManySync(rows));
       const LEGACY_ROWS = 20_000;
-      const legacy = measure(
-        Array.from({ length: LEGACY_ROWS }, (_r, i) =>
-          perVariableRead("user-reader", "env-0001", variables[i % 100] as string),
+      const legacy = measureWith(() =>
+        insertPerVariableReads(
+          sql,
+          Array.from({ length: LEGACY_ROWS }, (_r, i) => variables[i % 100] as string),
         ),
       );
       const AGG_ROWS = 200;
@@ -239,6 +245,7 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         actorUserId: OWNER,
         environmentId: E,
         variableId: "v1",
+        payload: { name: "V1" },
       },
       {
         serverTs: ts,
@@ -247,6 +254,7 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         actorUserId: OWNER,
         environmentId: E,
         variableId: "v2",
+        payload: { name: "V2" },
       },
       {
         serverTs: ts,
@@ -255,6 +263,7 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         actorUserId: OWNER,
         environmentId: E,
         variableId: "v3",
+        payload: { name: "V3" },
       },
       // Reads before the membership interval (not counted)
       aggregatedRead(TARGET, E, ["v3"]),
@@ -265,7 +274,7 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         actorUserId: OWNER,
         targetUserId: TARGET,
         chainSeq: 2,
-        payload: { role: "member" },
+        payload: { role: "member", scopeKind: "all", scopeEnvironmentIds: [] },
       },
       ...readsInside,
       {
@@ -456,6 +465,7 @@ describe("scan range of the variable_id filter (bounding the shared resource con
     actorUserId: OWNER,
     environmentId: E,
     variableId,
+    payload: { name: variableId.toUpperCase() },
   });
   const pushed = (variableId: string): AuditEventInput => ({
     serverTs: ts,

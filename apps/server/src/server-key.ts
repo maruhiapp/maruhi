@@ -26,15 +26,15 @@
 // server key is an optional feature and there is no reason to block
 // the login path.
 
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, serverKeyFingerprintHex } from "@maruhi/core";
 import {
-  computeServerKeyFingerprint,
   decodeHex,
   deriveEncryptionKeyPair,
   encodeHex,
   type EncryptionKeyPair,
   exportEncryptionPublicKey,
   importEncryptionPublicKey,
+  type KeyFingerprintHex,
   type LeaseWrapContext,
   unwrapDek,
   wrapLeaseDek,
@@ -48,7 +48,8 @@ const IKM_BYTES = 32;
 /** The public face of the deployment keypair (distributed by /auth/config — AUTH_SPEC §4). */
 export interface ServerKeyInfo {
   readonly serverEncPubHex: string;
-  readonly serverKeyFingerprintHex: string;
+  /** Computed from the derived public key (the actor FP of `server.*` audit rows — AUDIT_SPEC §3.5). */
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /** A stored server-addressed wrap (one row of dek_wraps — §12-6). */
@@ -133,11 +134,11 @@ const derive: (
     const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
       exportEncryptionPublicKey(pair.publicKey),
     ).pipe(Effect.orDie);
-    const fingerprint = yield* cryptoEffect(() => computeServerKeyFingerprint(publicKey));
+    const fingerprint = yield* serverKeyFingerprintHex(publicKey);
     return {
       info: {
         serverEncPubHex: encodeHex(publicKey),
-        serverKeyFingerprintHex: encodeHex(fingerprint),
+        serverKeyFingerprintHex: fingerprint,
       },
       keyPair: pair,
     };

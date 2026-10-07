@@ -3,7 +3,7 @@
 // expectedWrapRecipientCount.
 // See the top of data-dek.test.ts for how the suite is split.
 
-import type { ChainState } from "@maruhi/crypto";
+import type { ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   computeServerKeyFingerprint,
   encodeHex,
@@ -12,7 +12,7 @@ import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
@@ -46,15 +46,15 @@ registerDataScenario();
 // contents, so acceptance is judged on identification and signature only)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 
-async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<string> {
+async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<KeyFingerprintHex> {
   const fp = await computeServerKeyFingerprint(hexBytes(encPubHex));
   if (!fp.ok) throw new Error("server fingerprint failed");
-  return encodeHex(fp.value);
+  return testKeyFingerprintHex(encodeHex(fp.value));
 }
 
 describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   /** The owner appends a grant_server (the generic chain API — an admin op of AUTH_SPEC §6). */
-  async function grantServer(scope: readonly string[]): Promise<string> {
+  async function grantServer(scope: readonly string[]): Promise<KeyFingerprintHex> {
     const fpHex = await serverFingerprintHex();
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
@@ -534,7 +534,7 @@ const memberOf = (userId: string) =>
         [
           "33".repeat(16),
           {
-            keyFingerprintHex: "33".repeat(16),
+            keyFingerprintHex: testKeyFingerprintHex("33".repeat(16)),
             encPubHex: "11".repeat(32),
             sigPubHex: "22".repeat(32),
             roleCap: "owner" as const,
@@ -553,7 +553,7 @@ const grantOf = (
   [
     fingerprintHex,
     {
-      serverKeyFingerprintHex: fingerprintHex,
+      serverKeyFingerprintHex: testKeyFingerprintHex(fingerprintHex),
       serverEncPubHex,
       grantSeq: 1,
       scopeEnvironmentIds: scope,

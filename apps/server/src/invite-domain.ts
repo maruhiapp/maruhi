@@ -7,7 +7,7 @@
 // server, so it appears in no type. Only public values sit on the row
 // (issue document, signatures).
 
-import type { UserId } from "@maruhi/core";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 
 /** Chain roles grantable via an invite (owner is never granted through invites — §15-1). */
 export type InviteRole = "reader" | "member" | "admin";
@@ -80,8 +80,8 @@ export interface InviteAcceptInput {
   readonly inviteeSigPubHex: string;
   readonly acceptSignatureHex: string;
   readonly linkSignatureHex: string;
-  /** The acceptor key FP copied into the audit payload (AUDIT_SPEC §3.2). */
-  readonly inviteeKeyFingerprintHex: string;
+  /** The acceptor key FP copied into the audit payload (AUDIT_SPEC §3.2), computed from the accepting keys. */
+  readonly inviteeKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /** The target of the accepted → completed comparison at add_member acceptance (§15-2). */

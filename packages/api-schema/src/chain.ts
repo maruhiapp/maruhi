@@ -12,11 +12,11 @@
 // verifyChain's `invalid-payload` (a reason code pinned by test vectors),
 // so that a Schema 400 does not become a second refusal path.
 
-import { EnvironmentIdSchema, UserIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, KeyFingerprintHexSchema, UserIdSchema } from "@maruhi/core";
 import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
 import { Schema } from "effect";
 
-import { KeyFingerprintHex, PublicKeyHex, Sha256Hex, SignatureHex } from "./hex.ts";
+import { PublicKeyHex, Sha256Hex, SignatureHex } from "./hex.ts";
 
 /** Chain role (CRYPTO_SPEC §6.2). */
 export const RoleSchema = Schema.Literals(["owner", "admin", "member", "reader"]);
@@ -25,7 +25,9 @@ export const RoleSchema = Schema.Literals(["owner", "admin", "member", "reader"]
 export const ChainActorSchema = Schema.Struct({
   // userId is deliberately unbounded (verifyChain checks the §6.1 free-string limit)
   userId: UserIdSchema,
-  keyFingerprintHex: KeyFingerprintHex,
+  // Decoding mints the KeyFingerprintHex brand (the identity half the chain
+  // carries next to the user id — packages/core/src/identity.ts)
+  keyFingerprintHex: KeyFingerprintHexSchema,
 });
 
 const entryBaseFields = {
@@ -181,7 +183,7 @@ const LeasePolicyIssuerSchema = Schema.Struct({
 
 const GrantServerPayloadSchema = Schema.Struct({
   serverEncPubHex: PublicKeyHex,
-  serverKeyFingerprintHex: KeyFingerprintHex,
+  serverKeyFingerprintHex: KeyFingerprintHexSchema,
   scopeEnvironmentIds: Schema.Array(Schema.String),
   // The wire carries the structured list in as-signed order
   // (canonicalization = the 3-level nested LP lives on the crypto side —
@@ -196,7 +198,9 @@ const GrantServerEntrySchema = Schema.Struct({
   payload: GrantServerPayloadSchema,
 });
 
-const RevokeServerPayloadSchema = Schema.Struct({ serverKeyFingerprintHex: KeyFingerprintHex });
+const RevokeServerPayloadSchema = Schema.Struct({
+  serverKeyFingerprintHex: KeyFingerprintHexSchema,
+});
 
 const RevokeServerEntrySchema = Schema.Struct({
   ...entryBaseFields,
@@ -296,7 +300,7 @@ const AddDevicePayloadSchema = Schema.Struct({
  */
 const RevokeDevicePayloadSchema = Schema.Struct({
   targetUserId: UserIdSchema,
-  deviceFingerprintsHex: Schema.Array(KeyFingerprintHex),
+  deviceFingerprintsHex: Schema.Array(KeyFingerprintHexSchema),
 });
 
 /**

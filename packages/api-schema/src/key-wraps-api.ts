@@ -14,7 +14,7 @@
 //   (CRYPTO_SPEC §8.4 — the code is carried by a human). All the server
 //   learns is request_id (a value derived from E.pub)
 
-import { UserIdSchema } from "@maruhi/core";
+import { KeyFingerprintHexSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -260,8 +260,12 @@ export const HandoffLookupSchema = Schema.Struct({
 export const HandoffApprovalSchema = Schema.Struct({
   source: HandoffSourceSchema,
   shareIndex: ShareIndexSchema,
-  /** The approver's device-key FP (self-declared; the ward client matches it against the chain-derived FP) */
-  approverKeyFingerprintHex: KeyFingerprintHex,
+  /**
+   * The approver's device-key FP (self-declared; the ward client matches it
+   * against the chain-derived FP). Decoding mints the brand: the value lands in
+   * the `auth.key_handoff_approved` audit row (AUDIT_SPEC §3.1)
+   */
+  approverKeyFingerprintHex: KeyFingerprintHexSchema,
   encHex: HpkeEncHex,
   ciphertextHex: ShareCiphertextHex,
 });
