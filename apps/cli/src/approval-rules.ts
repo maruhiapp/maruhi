@@ -1,17 +1,12 @@
 // CLI-side pure functions for four-eyes (CRYPTO_SPEC §6.2 — PF1; design
 // record es-design.md §12 K6-F / G / K / O).
 //
-// - The target check is crypto's own `isApprovalTarget` (public since the
-//   K6-Q handoff — the consensus rule and the CLI share one definition);
-//   the CLI keeps no copy of it
-// - The vote re-tally `countOwnerVotes` is the CLI's second implementation
-//   of crypto's consensus rule (a private function in chain-verify.ts over
-//   the verifier's internal state). It is derived from the public API
-//   (`PendingProposal` / `ApprovalVote` / `ChainMember`) without copying the
-//   internals (the same shape as K4-I's inclusion predicate). A divergence
-//   is caught by the consensus rule's 422 as the final arbiter, and the
-//   differential test against `verifyChain` (approval-rules.test.ts) catches
-//   regressions
+// - The target check and the owner-vote tally are crypto's own
+//   `isApprovalTarget` / `approvalSignersOf` / `ownerVotersOf` (public since
+//   the K6-Q handoff — the consensus rule and the CLI share one definition);
+//   the CLI keeps no copy of either. The consensus rule's 422 stays the
+//   final arbiter, and the differential test against `verifyChain`
+//   (approval-rules.test.ts) pins the CLI's foretelling to it
 // - The vote count does not echo the record (`PendingProposal.approvals`)
 //   verbatim — **it is re-tallied under the current policy and current
 //   members** (the record keeps revoked votes — design record §8 K2
@@ -22,12 +17,14 @@
 
 import {
   type ApprovalPolicy,
+  approvalSignersOf,
   type ApprovalTargetOp,
   type ApprovalVote,
   canonicalChainPayloadBytes,
   type ChainMember,
   effectivePermissionOf,
   isApprovalTarget,
+  ownerVotersOf,
   type PendingProposal,
   type ProposableOperation,
 } from "@maruhi/crypto";
@@ -62,20 +59,6 @@ const MIN_PROPOSAL_REF_LENGTH = 8;
 // check is crypto's `isApprovalTarget`)
 // ---------------------------------------------------------------------------
 
-/**
- * Principle 2 (§6.2) signer set S = {proposers who proposed as owner} ∪
- * {actors of accepted approves}. Elements are (user_id, key FP at signing).
- * A proposer who proposed as admin does not enter S (they can append an
- * approve after being promoted — 2026-09-15 ruling ②).
- */
-export function signersOf(pending: PendingProposal): readonly ApprovalVote[] {
-  const proposer: readonly ApprovalVote[] =
-    pending.proposerRoleAtProposal === "owner"
-      ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
-      : [];
-  return [...proposer, ...pending.approvals];
-}
-
 /** Whether the vote's device is currently a valid device of that person (§6.2 "the device vocabulary of an approve vote" — 2026-09-19 DK). */
 function voteIsLive(members: ReadonlyMap<string, ChainMember>, signer: ApprovalVote): boolean {
   return members.get(signer.userId)?.devices.has(signer.keyFingerprintHex) === true;
@@ -95,45 +78,13 @@ function ownerOnAnyDevice(member: ChainMember): boolean {
   );
 }
 
-/**
- * Among S's elements, the distinct user_id whose FP is currently a valid
- * device of a current owner and whose device's effective role is owner
- * (another device of the same person is one vote — §6.2).
- */
-function countedVoters(
-  members: ReadonlyMap<string, ChainMember>,
-  signers: readonly ApprovalVote[],
-): readonly string[] {
-  const voters = new Set<string>();
-  for (const signer of signers) {
-    const member = members.get(signer.userId);
-    const device = member?.devices.get(signer.keyFingerprintHex);
-    if (
-      member !== undefined &&
-      device !== undefined &&
-      effectivePermissionOf(member, device).role === "owner"
-    ) {
-      voters.add(signer.userId);
-    }
-  }
-  return [...voters].toSorted();
-}
-
-/** Vote count = |S ∩ owners at apply time| (principle 2 — votes by voters who left, were demoted, or rotated keys are not counted). */
-export function countOwnerVotes(
-  members: ReadonlyMap<string, ChainMember>,
-  signers: readonly ApprovalVote[],
-): number {
-  return countedVoters(members, signers).length;
-}
-
 /** Whether the actor's user_id holds a live vote in S (a signature by a currently valid device) (the `duplicate-approval` foretell). */
 function hasVoted(
   members: ReadonlyMap<string, ChainMember>,
   pending: PendingProposal,
   member: ChainMember,
 ): boolean {
-  return signersOf(pending).some(
+  return approvalSignersOf(pending).some(
     (signer) => signer.userId === member.userId && voteIsLive(members, signer),
   );
 }
@@ -180,8 +131,7 @@ export function proposalViewOf(
   const members = verified.state.members;
   const target = isApprovalTarget(proposal.inner, policy);
   const required = policy === null ? null : policy.requiredApprovals;
-  const signers = signersOf(proposal);
-  const voters = countedVoters(members, signers);
+  const voters = [...ownerVotersOf(members, approvalSignersOf(proposal))].toSorted();
   const eligibleApprovers = [...members.values()]
     .filter((member) => ownerOnAnyDevice(member) && !hasVoted(members, proposal, member))
     .map((member) => member.userId)

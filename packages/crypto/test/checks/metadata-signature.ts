@@ -782,7 +782,7 @@ function isInvalidInput(result: CryptoResult<unknown>, field: string): boolean {
  * have no reference expected value, so they are pinned here (convention
  * 21's split).
  */
-async function layoutFieldSetChecks(c: Checks): Promise<void> {
+async function layoutFieldSetChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const v3 = byName.get("var-v3-create-expiring");
   const env = positives.find((vector) => vector.context.kind === "environment");
   if (v3 === undefined || env === undefined) {
@@ -827,12 +827,32 @@ async function layoutFieldSetChecks(c: Checks): Promise<void> {
         signatureHex: v3.signature_hex,
         authorPublicKey: pair.publicKey,
       }),
+      await verifyDistributedMetaStatement({
+        history,
+        context,
+        authorKeyFingerprintHex: "00".repeat(16),
+        signatureHex: v3.signature_hex,
+      }),
     ];
     c.push(
       `meta-sig layout field set: ${name} is refused by every entry point`,
       results.every((result) => isInvalidInput(result, field)),
     );
   }
+  // Layout selection precedes field-value validation: a context that both
+  // selects no layout and carries a bad coordinate reports the layout
+  // (parse the layout, then validate and encode under it)
+  const both: MetaStatementContext = {
+    ...contextOf(env.context),
+    layoutVersion: 3,
+    schema: v3Context.schema,
+    suite: "",
+  };
+  c.push(
+    "meta-sig layout field set: the layout is judged before the coordinates",
+    isInvalidInput(buildMetaSignedBytes(both), "context layoutVersion") &&
+      isInvalidInput(await computeMetaSignedBytesHash(both), "context layoutVersion"),
+  );
 }
 
 /**
@@ -984,7 +1004,7 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   await invalidInputChecks(c);
   await layoutInvalidInputChecks(c);
   await layoutSelectionChecks(c, history);
-  await layoutFieldSetChecks(c);
+  await layoutFieldSetChecks(c, history);
   layoutDomainSeparationChecks(c);
   await deletedPredecessorChecks(c, history);
   await roundtripChecks(c);

@@ -73,8 +73,10 @@ export {
   scopePayloadFieldsOf,
 } from "./member-scope.ts";
 export {
+  approvalSignersOf,
   isApprovalTarget,
   isApprovalTargetOp,
+  ownerVotersOf,
   verifyChain,
   verifyChainWithHistory,
 } from "./chain-verify.ts";

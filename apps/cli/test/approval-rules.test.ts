@@ -2,9 +2,9 @@
 // design note es-design.md §12 K6-F / G / K).
 //
 // Properties pinned down:
-//  1. The vote recount `countOwnerVotes` is the second implementation of
-//     crypto's consensus rule (K6-G); the target check is crypto's public
-//     `isApprovalTarget` (the CLI keeps no copy). **Differential test**: run
+//  1. The target check and the owner-vote tally are crypto's public
+//     `isApprovalTarget` / `ownerVotersOf` (K6-G — the CLI keeps no copy).
+//     **Differential test**: run
 //     the same chains through the public API's verifyChain and require the
 //     direct-append rejection (approval-required), stale votes (demotion /
 //     key rotation), and completion verdicts to agree with what the CLI
@@ -17,12 +17,11 @@
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
-import { isApprovalTarget, verifyChain } from "@maruhi/crypto";
+import { approvalSignersOf, isApprovalTarget, ownerVotersOf, verifyChain } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import {
-  countOwnerVotes,
   DEFAULT_PROPOSAL_LIFETIME_MS,
   describeInnerOperation,
   MAX_PROPOSAL_LIFETIME_MS,
@@ -30,7 +29,6 @@ import {
   proposalViewOf,
   proposalViews,
   resolveProposalRef,
-  signersOf,
   voteEligibility,
 } from "../src/approval-rules.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
@@ -129,7 +127,7 @@ describe("isApprovalTarget (crypto public API) — agrees with verifyChain (K6-G
   });
 });
 
-describe("countOwnerVotes / proposalViewOf — vote recount (principle 2) agrees with verifyChain", () => {
+describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees with verifyChain", () => {
   it("a demoted voter's vote is not counted (stays pending), and the next non-voting owner's approve completes it — matching the CLI's needed=0", async () => {
     const prefix = prefixWith(3, ["remove_member"]);
     const proposed = await buildChain([
@@ -151,7 +149,7 @@ describe("countOwnerVotes / proposalViewOf — vote recount (principle 2) agrees
     // owner2's vote remains in the record, but the recount counts only the
     // proposer's (owner's) single vote
     expect(pending.approvals.map((vote) => vote.userId)).toEqual([owner2.userId]);
-    expect(countOwnerVotes(demoted.state.members, signersOf(pending))).toBe(1);
+    expect(ownerVotersOf(demoted.state.members, approvalSignersOf(pending)).size).toBe(1);
     const view = proposalViewOf(demoted, pending, 0);
     expect(view.votes).toBe(1);
     expect(view.voters).toEqual([owner.userId]);
