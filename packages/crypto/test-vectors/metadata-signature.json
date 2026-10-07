@@ -1113,6 +1113,33 @@
       "note": "at head 6, user-admin-0003 is a reader (the change_role is seq 7). Creating / renaming / deleting a variable needs member-or-above at the declared-head time (§4.2 / §6.3-3)"
     },
     {
+      "name": "env-author-role-insufficient",
+      "kind": "authorization",
+      "chain": "canonical",
+      "context": {
+        "kind": "environment",
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "name": "Production Renamed",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "ac54882b82f36fa625591f789e91d6fc418299556f1d9df56ebbe7cb3a9c65b1",
+        "chain_head_seq": 6
+      },
+      "author_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000001250726f64756374696f6e2052656e616d6564000000066163746976650000000131000000000000000f757365722d61646d696e2d3030303300000040616335343838326238326633366661363235353931663738396539316436666334313832393935353666316439646635366562626537636233613963363562310000000136",
+      "signed_bytes_sha256_hex": "fc04dee9bbf55bbe01c63a3b7c466c7e504adee1855297e60331a1051e60d6dc",
+      "signature_hex": "2f47b4bc6bb24f036b51c7fe46a78697d7770849d34e07965a81fec904ad9430e8f57f319797a135d27d6f3f38e5137aae97a9c5afe104ea52c918b32c5b6208",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_reason": "author-role-insufficient-at-head",
+      "must_fail": true,
+      "note": "the environment-target side of the role check: at head 6, user-admin-0003 is a reader, and an environment meta statement (a rename) also needs member-or-above at the declared-head time (§4.2 / §6.3-3). An environment deletion is not a statement but the chain op delete_environment (§6.2)"
+    },
+    {
       "name": "key-from-other-tenure",
       "kind": "authorization",
       "chain": "tenure-extension",

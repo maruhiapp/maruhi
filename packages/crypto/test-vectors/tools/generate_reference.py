@@ -6057,6 +6057,15 @@ def gen_metadata_signature():
             "deleting a variable needs member-or-above at the declared-head time (§4.2 / §6.3-3)",
         ),
         rule_negative(
+            "env-author-role-insufficient", "environment", "env-prod-0001", None, "Production Renamed",
+            "active", 1, "", admin_id, head_hash(6), 6,
+            "author-role-insufficient-at-head",
+            "the environment-target side of the role check: at head 6, user-admin-0003 is a reader, and an "
+            "environment meta statement (a rename) also needs member-or-above at the declared-head time "
+            "(§4.2 / §6.3-3). An environment deletion is not a statement but the chain op "
+            "delete_environment (§6.2)",
+        ),
+        rule_negative(
             "key-from-other-tenure", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
             "active", 1, "", member_id,
             tenure_extension["entry"]["entry_hash_hex"], readd_seq,

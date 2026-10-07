@@ -773,6 +773,7 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
       "head-beyond-local-seq",
       "author-removed-at-head",
       "author-role-insufficient",
+      "env-author-role-insufficient",
       "env-status-deleted",
       "key-from-other-tenure",
       "author-unknown-in-history",
