@@ -103,10 +103,34 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   | { readonly kind: "future" },
   CliError
 > {
+  const listed = yield* indexListing(wire);
+  if ([...listed.keys()].some((environmentId) => !view.state.environments.has(environmentId))) {
+    return { kind: "future" } as const;
+  }
+  const joined: JoinedEnvironment[] = [];
+  for (const [environmentId, chainEnvironment] of view.state.environments) {
+    const statement = yield* joinedStatement(
+      view,
+      environmentId,
+      chainEnvironment,
+      listed.get(environmentId),
+    );
+    if (statement === "future") {
+      return { kind: "future" } as const;
+    }
+    joined.push({ environmentId, statement, chain: chainEnvironment });
+  }
+  return { kind: "ok", value: joined } as const;
+});
+
+/** The listed statements by environment ID (an ID listed twice is an inconsistent response). */
+function indexListing(
+  wire: ListWire,
+): Effect.Effect<ReadonlyMap<string, ListedStatement>, CliError> {
   const listed = new Map<string, ListedStatement>();
   for (const entry of wire.environments) {
     if (listed.has(entry.environmentId)) {
-      return yield* Effect.fail(
+      return Effect.fail(
         evidenceError(
           `The environment list carries environment ${displayText(entry.environmentId)} twice (an inconsistent server response)`,
         ),
@@ -114,37 +138,39 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
     }
     listed.set(entry.environmentId, entry.statement);
   }
-  if ([...listed.keys()].some((environmentId) => !view.state.environments.has(environmentId))) {
-    return { kind: "future" } as const;
-  }
-  const joined: JoinedEnvironment[] = [];
-  for (const [environmentId, chainEnvironment] of view.state.environments) {
-    const statement = listed.get(environmentId);
-    if (statement === undefined) {
-      if (chainEnvironment.deletedAtSeq !== null) {
-        joined.push({ environmentId, statement: null, chain: chainEnvironment });
-        continue;
-      }
-      return yield* Effect.fail(
-        evidenceError(
-          `The environment list omits environment ${displayText(environmentId)}, which the verified chain created (create_environment at seq ${chainEnvironment.createdAtSeq}) and has not deleted — the server withholds a live environment it must list`,
-        ),
-      );
+  return Effect.succeed(listed);
+}
+
+/**
+ * One chain environment's verified statement: a live one must be listed
+ * and verify; an unlisted deleted one has none (null). A listed deleted one
+ * is refused by verifyEnvironmentStatement (a resurrection).
+ */
+const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
+  view: VerifiedProject,
+  environmentId: string,
+  chainEnvironment: EnvironmentChainState,
+  statement: ListedStatement | undefined,
+): Effect.fn.Return<VerifiedEnvironmentStatement | null | "future", CliError> {
+  if (statement === undefined) {
+    if (chainEnvironment.deletedAtSeq !== null) {
+      return null;
     }
-    const outcome = yield* Effect.promise(() =>
-      verifyEnvironmentStatement(view, environmentId, statement),
+    return yield* Effect.fail(
+      evidenceError(
+        `The environment list omits environment ${displayText(environmentId)}, which the verified chain created (create_environment at seq ${chainEnvironment.createdAtSeq}) and has not deleted — the server withholds a live environment it must list`,
+      ),
     );
-    if (outcome.kind === "future") {
-      return { kind: "future" } as const;
-    }
-    if (outcome.kind === "rejected") {
-      return yield* Effect.fail(
-        outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
-      );
-    }
-    joined.push({ environmentId, statement: outcome.value, chain: chainEnvironment });
   }
-  return { kind: "ok", value: joined } as const;
+  const outcome = yield* Effect.promise(() =>
+    verifyEnvironmentStatement(view, environmentId, statement),
+  );
+  if (outcome.kind === "rejected") {
+    return yield* Effect.fail(
+      outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
+    );
+  }
+  return outcome.kind === "future" ? "future" : outcome.value;
 });
 
 /** The scope `inScope` is judged against: this machine's device (effective) or, failing that, the member's own. */

@@ -649,18 +649,32 @@ async function extendedChainChecks(c: Checks): Promise<void> {
     const result = await verifyChain(chain);
     c.push(
       `chain extended: ${name} verifies`,
-      result.ok &&
-        membersMatch(result.value, extended.expected_members) &&
-        checkpointsMatch(result.value, extended.expected_checkpoints) &&
-        policyMatchesVector(result.value.approvalPolicy, extended.expected_policy) &&
-        pendingMatchesVector(result.value.pendingProposals, extended.expected_pending) &&
-        (extended.expected_environments === undefined ||
-          environmentsMatch(result.value, extended.expected_environments)) &&
-        deletedEnvironmentsMatch(result.value, extended.expected_deleted_environments) &&
-        (extended.expected_server_grants === undefined ||
-          serverGrantsMatch(result.value, extended.expected_server_grants)),
+      result.ok && extendedStateMatches(result.value, extended),
     );
   }
+}
+
+/** Whether an extended chain's derived state matches every expectation its vector carries (an optional axis only when present). */
+function extendedStateMatches(
+  state: ChainState,
+  extended: (typeof vectorExtendedChains)[string],
+): boolean {
+  return [
+    membersMatch(state, extended.expected_members),
+    checkpointsMatch(state, extended.expected_checkpoints),
+    policyMatchesVector(state.approvalPolicy, extended.expected_policy),
+    pendingMatchesVector(state.pendingProposals, extended.expected_pending),
+    optionalMatch(extended.expected_environments, (expected) => environmentsMatch(state, expected)),
+    deletedEnvironmentsMatch(state, extended.expected_deleted_environments),
+    optionalMatch(extended.expected_server_grants, (expected) =>
+      serverGrantsMatch(state, expected),
+    ),
+  ].every(Boolean);
+}
+
+/** An optional expectation: absent passes, present must match. */
+function optionalMatch<T>(expected: T | undefined, match: (expected: T) => boolean): boolean {
+  return expected === undefined || match(expected);
 }
 
 async function framingChecks(c: Checks): Promise<void> {
