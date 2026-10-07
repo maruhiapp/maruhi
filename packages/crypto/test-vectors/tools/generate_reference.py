@@ -3246,6 +3246,13 @@ def gen_chain_entries():
         expected_environments=base_environments,
         expected_server_grants=[grant_state(grant_scope, grant_lease_policy, 26)],
     )
+    add_es(
+        "authz-approval-required-precedes-grant-scope-narrowed", 27,
+        grant_applied[-1]["entry_hash_hex"], "grant_server", owner_id,
+        grant_payload_for([PROD], grant_lease_policy), t0 + 26000, "approval-required",
+        "a direct re-grant under a policy naming grant_server × a narrowing of the active grant's scope ({prod, dev} → {prod}) compound violation is judged as approval-required first (grant_server: role → approval-required → grant-scope-narrowed)",
+        chain="proposal-grant-server-applied",
+    )
     revoke_applied = list(grant_applied) + extend(26, grant_applied[-1]["entry_hash_hex"], [
         ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(REVOKE_POLICY_OPS, 2), EXPIRES), t0 + 26000),  # 27
     ])

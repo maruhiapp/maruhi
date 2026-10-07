@@ -282,6 +282,7 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
       "authz-demote-owner-quorum-unreachable",
       "authz-propose-after-policy-off",
       "authz-approval-required-precedes-unknown-server-grant",
+      "authz-approval-required-precedes-grant-scope-narrowed",
       "add-device-tampered-role-cap",
       "add-device-scope-relabel-all",
       "add-device-scope-reorder",
