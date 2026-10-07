@@ -290,7 +290,7 @@ Each project lives in one Durable Object whose SQLite database has a hard
 platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`:
 the project stays readable, and while the platform still lets a bare `DELETE`
 through, every maruhi deletion also **inserts** rows in the same transaction
-(the tombstone statement and the audit events), so **maruhi's own deletes fail
+(the tombstone statement or the chain entry, and the audit events), so **maruhi's own deletes fail
 too** — a project at the ceiling cannot free space by itself, and the operator
 has no tool to reach into Durable Object storage either. The guard exists so a
 project never gets there. It reads the measured database size (`databaseSize`)

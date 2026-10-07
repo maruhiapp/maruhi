@@ -91,7 +91,7 @@ export const envRenameConfig = {
 
 export const envListConfig = {
   ...projectFlags(),
-  all: singleFlag("all", "Also list deleted environments (kept as signed deletion records)"),
+  all: singleFlag("all", "Also list deleted environments (recorded on the project chain)"),
   json: singleFlag(
     "json",
     "Print the environments as JSON (ID, name, status, current epoch, whether your scope covers it)",
@@ -464,7 +464,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only a signed deletion record (a tombstone) remains, and the environment ID can never be reused",
+      "Delete an environment permanently (admin or owner; asks for confirmation unless --force). Its variables, every stored value version and its DEK wraps are deleted immediately; only its signed delete_environment entry on the project chain remains, and the environment ID can never be reused",
     ),
   );
 
