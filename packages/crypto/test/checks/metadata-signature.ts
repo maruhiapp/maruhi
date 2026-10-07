@@ -888,6 +888,7 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
     canonical: history,
     "tenure-extension": await metaExtendedHistory(),
     "device-ops": await extendedVectorChainHistory("device-ops"),
+    "environment-deleted": await extendedVectorChainHistory("environment-deleted"),
   };
   const exercised = new Set<MetaInvalidReason>();
   await vectorChecks(c, histories);

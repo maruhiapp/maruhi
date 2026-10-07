@@ -6502,6 +6502,35 @@ def gen_metadata_signature():
         ),
     ]
 
+    # --- The deletion axis (2026-10-07 — §6.2: a delete_environment is a
+    #     change point of the history index; the scopes it pruned are
+    #     pruned from its seq on). The referenced chain is the derived chain
+    #     environment-deleted (the canonical prefix up to seq 19 +
+    #     user-devadmin-0011's deletion of env-stage-0003 at seq 20). The
+    #     meaning of existing positives/negatives is unchanged
+    ed_head_20 = chain["extended_chains"]["environment-deleted"]["entries"][0]["entry_hash_hex"]
+    vectors.append(
+        make_statement(
+            "listed-author-before-environment-deletion", "variable", "env-stage-0003",
+            "var-stage-scoped-0008", "STAGE_SCOPED", "active", 1, "", devmember_id, 19,
+            "on the environment-deleted chain, a statement on env-stage-0003 by user-devmember-0010 "
+            "(member listed{dev, stage}) declaring head 19 — before the deletion at seq 20 — passes: "
+            "the intervals before a deletion are unchanged",
+            chain_ref="environment-deleted",
+        )
+    )
+    rule_negatives.append(
+        rule_negative(
+            "author-scope-pruned-at-deletion", "variable", "env-stage-0003",
+            "var-stage-scoped-0008", "STAGE_SCOPED", "active", 1, "", devmember_id, ed_head_20, 20,
+            "author-environment-out-of-scope-at-head",
+            "the same author and environment declaring head 20 — the delete_environment's own seq — is "
+            "out of scope: the deletion pruned env-stage-0003 from user-devmember-0010's listed scope at "
+            "seq 20 (inclusive), and the declared-head-time scope check reads the pruned interval",
+            chain_ref="environment-deleted",
+        )
+    )
+
     write(
         "metadata-signature.json",
         {

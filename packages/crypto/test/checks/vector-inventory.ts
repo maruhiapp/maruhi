@@ -733,6 +733,7 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
       "var-v3-delete-keeps-max-age",
       "listed-author-in-scope",
       "second-device-author-in-scope",
+      "listed-author-before-environment-deletion",
     ],
   },
   {
@@ -788,6 +789,7 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
       "author-device-role-insufficient",
       "author-device-environment-out-of-scope",
       "env-author-device-environment-out-of-scope",
+      "author-scope-pruned-at-deletion",
       "layout-confusion-v3-as-v1",
       "layout-confusion-v1-as-v3",
       "tampered-var-type",

@@ -18,11 +18,15 @@ const read = (name) => JSON.parse(readFileSync(new URL(`../${name}`, import.meta
 // entries). The signing key is selected by (user_id, FP) (the FP points at
 // a device — device entries in `keys` carry a user_id field)
 const chainHeadHash = (chain, chainName, seq) => {
-  if (chainName === undefined || chainName === "canonical" || seq <= chain.entries.length) {
+  if (chainName === undefined || chainName === "canonical") {
     return chain.entries[seq - 1].entry_hash_hex;
   }
+  // A derived chain shares the canonical prefix only up to its base_seq
+  // (environment-deleted branches at 19, inside the canonical 24)
   const ext = chain.extended_chains[chainName];
-  return ext.entries[seq - ext.base_seq - 1].entry_hash_hex;
+  return seq <= ext.base_seq
+    ? chain.entries[seq - 1].entry_hash_hex
+    : ext.entries[seq - ext.base_seq - 1].entry_hash_hex;
 };
 const chainKeyFor = (chain, userId, fingerprintHex) =>
   Object.entries(chain.keys)

@@ -484,6 +484,30 @@
       "signature_hex": "1760ba7e02cac9fa63496c4e10bfe90e83fe8c4e4ea28d95df1893a25523ce755ab0e2e2b830348c81bc93ee72f8dc8144ab299075336e9ecc496ccf3ce61c0d",
       "note": "a second-device positive: a variable statement on an in-scope environment (env-dev-0002) by allmember-0013's CI box C (cap (member, listed{dev, stage})) passes",
       "chain": "device-ops"
+    },
+    {
+      "name": "listed-author-before-environment-deletion",
+      "context": {
+        "kind": "variable",
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-stage-0003",
+        "variable_id": "var-stage-scoped-0008",
+        "name": "STAGE_SCOPED",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-devmember-0010",
+        "chain_head_hash_hex": "a555429b8e8f043e07e83f1496cb0fa1aa8700c0f8aef58af9cec8b26a2cae6e",
+        "chain_head_seq": 19
+      },
+      "author_key_fingerprint_hex": "4f41d528425c5d06e05b29dc2adfc4ac",
+      "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000e656e762d73746167652d30303033000000157661722d73746167652d73636f7065642d303030380000000c53544147455f53434f5045440000000661637469766500000001310000000000000013757365722d6465766d656d6265722d303031300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000023139",
+      "signed_bytes_sha256_hex": "52a402e0dc28d06d63ec6c05d4351cd5023330d6ea42997c724a96946680c1cf",
+      "signature_hex": "349b3f13c5f6610eacc355dca4a324c2d987325bd23f31889f165c1fdc2d0be3ea1048a8a62f3bab58d6dc9e3a8ac9082122823d05fa43389a8aa6e50e9b0c0f",
+      "note": "on the environment-deleted chain, a statement on env-stage-0003 by user-devmember-0010 (member listed{dev, stage}) declaring head 19 — before the deletion at seq 20 — passes: the intervals before a deletion are unchanged",
+      "chain": "environment-deleted"
     }
   ],
   "rename_fork": {
@@ -1510,6 +1534,34 @@
       "expected_reason": "author-environment-out-of-scope-at-head",
       "must_fail": true,
       "note": "an environment meta statement (a rename) is also judged by the device's effective scope"
+    },
+    {
+      "name": "author-scope-pruned-at-deletion",
+      "kind": "authorization",
+      "chain": "environment-deleted",
+      "context": {
+        "kind": "variable",
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/var-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-stage-0003",
+        "variable_id": "var-stage-scoped-0008",
+        "name": "STAGE_SCOPED",
+        "status": "active",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": "user-devmember-0010",
+        "chain_head_hash_hex": "33984d82c616baeeae902b7d1e43940ed056249d989f23b3466b131d87b2c2f6",
+        "chain_head_seq": 20
+      },
+      "author_key_fingerprint_hex": "4f41d528425c5d06e05b29dc2adfc4ac",
+      "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000e656e762d73746167652d30303033000000157661722d73746167652d73636f7065642d303030380000000c53544147455f53434f5045440000000661637469766500000001310000000000000013757365722d6465766d656d6265722d303031300000004033333938346438326336313662616565616539303262376431653433393430656430353632343964393839663233623334363662313331643837623263326636000000023230",
+      "signed_bytes_sha256_hex": "023ae76d09b2c46707b7779c9632ef81a3a01840f16c8f74d7103982ef5ab2bb",
+      "signature_hex": "3ae80ce90eb50a4bb2e557bb6eb06b5554fd7becae8aecd173a98370f76009f2173877bcae54b7251c10f37efe1f6362f3660d407d0ebaa551bd90f414853b05",
+      "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
+      "expected_reason": "author-environment-out-of-scope-at-head",
+      "must_fail": true,
+      "note": "the same author and environment declaring head 20 — the delete_environment's own seq — is out of scope: the deletion pruned env-stage-0003 from user-devmember-0010's listed scope at seq 20 (inclusive), and the declared-head-time scope check reads the pruned interval"
     },
     {
       "name": "layout-confusion-v3-as-v1",
