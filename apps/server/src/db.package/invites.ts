@@ -1,6 +1,7 @@
 // Repository of project invitations (AUTH_SPEC §15 — invite records
 // and invite.* audit appended in the same batch).
 
+import type { UserId } from "@maruhi/core";
 import { and, count, eq, gt, gte, inArray, min, or, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -140,7 +141,7 @@ interface InvitationRow {
   readonly inviterUserId: string;
   readonly status: string;
   readonly expiresAt: number;
-  readonly inviteeUserId: string | null;
+  readonly inviteeUserId: UserId | null;
   readonly inviteeEncPub: string | null;
   readonly inviteeSigPub: string | null;
   readonly acceptSignature: string | null;
@@ -337,7 +338,7 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
     readonly inviteId: string;
     readonly event: "invite.created" | "invite.accepted" | "invite.revoked";
     readonly actor: D1AuditActor;
-    readonly targetUserId: string | null;
+    readonly targetUserId: UserId | null;
     readonly payload: Readonly<Record<string, unknown>>;
     readonly nowMs: number;
   }) =>

@@ -1,6 +1,8 @@
 // Unit test of chain-view (S5's display fold — not verification).
 // Inputs are fixtures conforming to api-schema's wire types (the types
 // are bound by tsc).
+import type { UserId } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { reportedDeviceCount } from "../../src/dashboard/chain-view-reported.ts";
@@ -17,7 +19,7 @@ function base(): {
   suite: string;
   seq: number;
   prevHashHex: string;
-  actor: { userId: string; keyFingerprintHex: string };
+  actor: { userId: UserId; keyFingerprintHex: string };
   timestampMs: number;
   signatureHex: string;
 } {
@@ -26,7 +28,7 @@ function base(): {
     suite: "maruhi/v1",
     seq: seqCounter,
     prevHashHex: HEX64,
-    actor: { userId: "user_owner", keyFingerprintHex: FP },
+    actor: { userId: testUserId("user_owner"), keyFingerprintHex: FP },
     timestampMs: 1_756_000_000_000 + seqCounter,
     signatureHex: SIG,
   };
@@ -43,7 +45,7 @@ function addMember(userId: string, role: "owner" | "admin" | "member" | "reader"
     ...base(),
     op: "add_member",
     payload: {
-      targetUserId: userId,
+      targetUserId: testUserId(userId),
       encPubHex: HEX64,
       sigPubHex: HEX64,
       role,
@@ -95,7 +97,7 @@ describe("deriveReportedView", () => {
       ...base(),
       op: "change_role",
       payload: {
-        targetUserId: "user_a",
+        targetUserId: testUserId("user_a"),
         newRole: "admin",
         scopeKind: "all",
         scopeEnvironmentIds: [],
@@ -105,7 +107,7 @@ describe("deriveReportedView", () => {
     const removeB: ChainEntry = {
       ...base(),
       op: "remove_member",
-      payload: { targetUserId: "user_b" },
+      payload: { targetUserId: testUserId("user_b") },
     };
     const view = deriveReportedView([genesis, add, change, addB, removeB]);
     expect(view.members.map((m) => [m.userId, m.role])).toEqual([
@@ -123,7 +125,7 @@ describe("deriveReportedView", () => {
       ...base(),
       op: "change_role",
       payload: {
-        targetUserId: "user_a",
+        targetUserId: testUserId("user_a"),
         newRole: "member",
         scopeKind: "listed",
         scopeEnvironmentIds: ["dev", "staging"],
@@ -145,7 +147,7 @@ describe("deriveReportedView", () => {
       ...base(),
       op: "change_role",
       payload: {
-        targetUserId: "user_ghost",
+        targetUserId: testUserId("user_ghost"),
         newRole: "admin",
         scopeKind: "all",
         scopeEnvironmentIds: [],
@@ -221,7 +223,7 @@ const HASH_P = "77".repeat(32);
 
 /** An entry in the shape of being signed by the given actor (as reported — the signature is not verified). */
 function signedBy(userId: string, fp: string): ReturnType<typeof base> {
-  return { ...base(), actor: { userId, keyFingerprintHex: fp } };
+  return { ...base(), actor: { userId: testUserId(userId), keyFingerprintHex: fp } };
 }
 
 function policyEntry(
@@ -240,7 +242,7 @@ function proposeRemove(userId: string, fp: string, target: string): ChainEntry {
     ...signedBy(userId, fp),
     op: "propose",
     payload: {
-      inner: { op: "remove_member", payload: { targetUserId: target } },
+      inner: { op: "remove_member", payload: { targetUserId: testUserId(target) } },
       expiresAtMs: 4_000_000_000_000,
     },
   };
@@ -342,7 +344,7 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
       ...signedBy("user_owner", FP),
       op: "change_role",
       payload: {
-        targetUserId: "user_a",
+        targetUserId: testUserId("user_a"),
         newRole: "admin",
         scopeKind: "all",
         scopeEnvironmentIds: [],
@@ -374,13 +376,13 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     const removeB: ChainEntry = {
       ...signedBy("user_owner", FP),
       op: "remove_member",
-      payload: { targetUserId: "user_b" },
+      payload: { targetUserId: testUserId("user_b") },
     };
     const readdB: ChainEntry = {
       ...signedBy("user_owner", FP),
       op: "add_member",
       payload: {
-        targetUserId: "user_b",
+        targetUserId: testUserId("user_b"),
         encPubHex: "cd".repeat(32),
         sigPubHex: "ef".repeat(32),
         role: "owner",
@@ -439,7 +441,7 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     const removeA: ChainEntry = {
       ...signedBy("user_owner", FP),
       op: "remove_member",
-      payload: { targetUserId: "user_a" },
+      payload: { targetUserId: testUserId("user_a") },
     };
     const readdA = addMember("user_a", "owner");
     const view = deriveReportedView(
@@ -572,7 +574,7 @@ function revokeDevice(
   return {
     ...signedBy(userId, signerFp),
     op: "revoke_device",
-    payload: { targetUserId: target, deviceFingerprintsHex: [...fps] },
+    payload: { targetUserId: testUserId(target), deviceFingerprintsHex: [...fps] },
   };
 }
 
@@ -672,7 +674,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const broken = {
       ...signedBy("user_owner", FP),
       op: "revoke_device",
-      payload: { targetUserId: "user_owner", deviceFingerprintsHex: "not-a-list" },
+      payload: { targetUserId: testUserId("user_owner"), deviceFingerprintsHex: "not-a-list" },
     } as unknown as ChainEntry;
     expect(count([...prefix, broken])).toBe(2);
   });
@@ -745,7 +747,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       ...base(),
       op: "add_member",
       payload: {
-        targetUserId: "user_a",
+        targetUserId: testUserId("user_a"),
         ...KEYS_A1,
         role: "owner",
         scopeKind: "all",
@@ -813,7 +815,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       ...base(),
       op: "add_member",
       payload: {
-        targetUserId: "user_b",
+        targetUserId: testUserId("user_b"),
         ...keys,
         role: "member",
         scopeKind: "all",
@@ -831,7 +833,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       {
         ...signedBy("user_owner", FP),
         op: "remove_member",
-        payload: { targetUserId: "user_b" },
+        payload: { targetUserId: testUserId("user_b") },
       } as ChainEntry,
       memberWith(KEYS_B2),
       addDevice("user_b", FP_X, KEYS_R),
@@ -926,7 +928,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       ...base(),
       op: "add_member",
       payload: {
-        targetUserId: "user_b",
+        targetUserId: testUserId("user_b"),
         role: "member",
         encPubHex: "ab".repeat(32),
         sigPubHex: "cd".repeat(64),
@@ -973,7 +975,11 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       genesis,
       add,
       addDevice("user_a", FP_A, KEYS_D3),
-      { ...signedBy("user_owner", FP), op: "remove_member", payload: { targetUserId: "user_a" } },
+      {
+        ...signedBy("user_owner", FP),
+        op: "remove_member",
+        payload: { targetUserId: testUserId("user_a") },
+      },
       addMember("user_a", "reader"),
     ]);
     expect(reportedDeviceCount(devicesOf(view, "user_a")!)).toBe(1);

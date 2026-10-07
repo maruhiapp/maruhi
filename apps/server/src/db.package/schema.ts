@@ -17,7 +17,21 @@
 //   the ban on two sources of truth, CRYPTO_SPEC §6.4)
 //
 // All times are INTEGER unix ms.
+//
+// The identity columns carry the branded domain types (`$type<UserId>()` /
+// `$type<ProviderUserId>()`): mapping a row is the repository service's
+// trust boundary, so a selected value arrives already minted and a
+// `.values()` insert refuses a plain string. Drizzle does not type-check the
+// columns of an INSERT…SELECT: the audit insert-selects take their user ids
+// from `guardedAuditSelectColumns` (typed input) or from a branded column.
+// Branded: users.id and the user_id columns of the
+// auth plumbing (linked_identities / sessions / api_tokens /
+// cli_login_flows), the provider_user_id lookup key, the audit log's
+// actor / target, and the columns an audit target or a chain entry is
+// read from (an invitation's invitee — the add_member target; a guardian
+// group's ward and guardians; a handoff request's ward).
 
+import type { ProviderUserId, UserId } from "@maruhi/core";
 import {
   index,
   integer,
@@ -29,7 +43,7 @@ import {
 
 export const users = sqliteTable("users", {
   /** The internal user_id (ULID). The principal identifier across the whole system */
-  id: text("id").primaryKey(),
+  id: text("id").$type<UserId>().primaryKey(),
   /** For display and notifications. Must not be used as an identifier. Only GitHub-verified ones are stored */
   email: text("email"),
   emailVerified: integer("email_verified").notNull().default(0),
@@ -41,12 +55,13 @@ export const linkedIdentities = sqliteTable(
   "linked_identities",
   {
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** 'github' (future: 'workos' etc.) */
     provider: text("provider").notNull(),
     /** GitHub's numeric ID as a string (not the login name — a login can change) */
-    providerUserId: text("provider_user_id").notNull(),
+    providerUserId: text("provider_user_id").$type<ProviderUserId>().notNull(),
     /** Display snapshot */
     providerLogin: text("provider_login"),
     linkedAt: integer("linked_at").notNull(),
@@ -87,6 +102,7 @@ export const sessions = sqliteTable(
     /** SHA-256 (hex) of the random 256-bit session value. The raw value is never stored */
     id: text("id").primaryKey(),
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** 'github_oauth' (future: 'sso' etc.). Needed for the SSO-enforcement policy */
@@ -103,6 +119,7 @@ export const apiTokens = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     name: text("name").notNull(),
@@ -212,6 +229,7 @@ export const cliLoginFlows = sqliteTable(
     /** The public correlator flowId (128-bit random, 32 lowercase hex chars) */
     id: text("id").primaryKey(),
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     status: text("status").notNull(),
@@ -283,6 +301,7 @@ export const guardianGroups = sqliteTable(
     id: text("id").primaryKey(),
     /** ward */
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** 'any' | 'all' */
@@ -316,6 +335,7 @@ export const guardianShares = sqliteTable(
     /** 1..n (a logical segment — one per guardian) */
     shareIndex: integer("share_index").notNull(),
     guardianUserId: text("guardian_user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** The seal target (a key the ward client has confirmed) */
@@ -400,6 +420,7 @@ export const keyHandoffRequests = sqliteTable(
     id: text("id").primaryKey(),
     /** The ward (the requester) */
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     createdAt: integer("created_at").notNull(),
@@ -535,7 +556,7 @@ export const invitations = sqliteTable(
     /** Issued + 7 days (§15-1 drafting value) */
     expiresAt: integer("expires_at").notNull(),
     // The acceptance block (status is accepted-or-later — §15-1)
-    inviteeUserId: text("invitee_user_id"),
+    inviteeUserId: text("invitee_user_id").$type<UserId>(),
     inviteeEncPub: text("invitee_enc_pub"),
     inviteeSigPub: text("invitee_sig_pub"),
     /** The acceptance signature of CRYPTO_SPEC §6.5 (hex). Input for the inviter client's independent verification */
@@ -585,10 +606,10 @@ const auditEventColumns = {
   event: text("event").notNull(),
   /** The §2 actor kind. On the D1 side, currently only 'user' (login_failed is a user with no user_id) */
   actorType: text("actor_type").notNull(),
-  actorUserId: text("actor_user_id"),
+  actorUserId: text("actor_user_id").$type<UserId>(),
   actorApiTokenId: text("actor_api_token_id"),
   /** The target of a member operation */
-  targetUserId: text("target_user_id"),
+  targetUserId: text("target_user_id").$type<UserId>(),
   orgId: text("org_id"),
   projectId: text("project_id"),
   /** JSON. Supplements such as auth_method and snapshots. Contains nothing §1-2/1-3 forbids */

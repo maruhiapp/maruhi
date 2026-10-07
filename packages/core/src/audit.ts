@@ -19,6 +19,7 @@
 import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
 import type { AuthenticatedPrincipal } from "./auth.ts";
+import type { UserId } from "./identity.ts";
 
 /**
  * A resolved audit actor (AUDIT_SPEC §2): the internal user id plus, depending
@@ -26,7 +27,7 @@ import type { AuthenticatedPrincipal } from "./auth.ts";
  * method name. Never carries provider identifiers (GitHub id, login, email).
  */
 export interface AuditActor {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly apiTokenId?: string;
   readonly authMethod?: string;
 }
@@ -81,10 +82,10 @@ export interface AuditEventRecord {
   readonly serverTs: number;
   readonly clientTs?: number;
   readonly actorType: "user" | "server" | "system";
-  readonly actorUserId?: string;
+  readonly actorUserId?: UserId;
   readonly actorKeyFingerprintHex?: string;
   readonly actorApiTokenId?: string;
-  readonly targetUserId?: string;
+  readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: string;
   readonly environmentId?: string;
   readonly variableId?: string;

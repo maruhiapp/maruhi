@@ -7,6 +7,7 @@
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -67,8 +68,8 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
       op: "remove_member",
-      actor: { userId: "user-stranger-0009", keyFingerprintHex: "ab".repeat(16) },
-      payload: { targetUserId: "user-owner-0001" },
+      actor: { userId: testUserId("user-stranger-0009"), keyFingerprintHex: "ab".repeat(16) },
+      payload: { targetUserId: testUserId("user-owner-0001") },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
     };
@@ -279,7 +280,7 @@ describe("CAS (the §6.4 optimistic lock)", () => {
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
       actorUserId: "user-owner-0001",
-      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+      operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
 
     // Setting the parent to the genesis hash (a head one step stale) is rejected and returns the current head
@@ -302,7 +303,7 @@ describe("CAS (the §6.4 optimistic lock)", () => {
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
       actorUserId: "user-owner-0001",
-      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+      operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
     // The format of the CAS comparison target is pinned as Sha256Hex
     // (64 lowercase hex chars): a malformed one never reaches the 409

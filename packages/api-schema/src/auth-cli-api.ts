@@ -18,7 +18,7 @@
 // authorization credential is a ticket, not a session (§4-1 (3); all four
 // surfaces are classified as unauthenticated surfaces).
 
-import { TokenScopeSchema } from "@maruhi/core";
+import { TokenScopeSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -82,7 +82,7 @@ export const CliPollApprovedSchema = Schema.Struct({
   status: Schema.Literal("approved"),
   token: Schema.String,
   tokenId: Schema.String,
-  userId: Schema.String,
+  userId: UserIdSchema,
   expiresAtMs: Schema.Number,
 });
 

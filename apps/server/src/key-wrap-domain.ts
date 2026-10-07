@@ -6,6 +6,8 @@
 // the server (hex strings); KEK material and plaintext segments never
 // appear.
 
+import type { UserId } from "@maruhi/core";
+
 /** The guardian group's threshold mode (CRYPTO_SPEC §8.3). */
 export type GuardianMode = "any" | "all";
 
@@ -28,7 +30,7 @@ export interface PasskeyWrapRecord {
 /** A class-G segment row (an HPKE Seal to the guardian's enc public key). */
 export interface GuardianShareRecord {
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
   readonly guardianKeyFingerprintHex: string;
   readonly encHex: string;
@@ -38,7 +40,7 @@ export interface GuardianShareRecord {
 /** A class-G group row (segments included). */
 export interface GuardianGroupRecord {
   readonly groupId: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly mode: GuardianMode;
   readonly wrap: MasterKeyWrapBlob;
   readonly createdAtMs: number;
@@ -47,7 +49,7 @@ export interface GuardianGroupRecord {
 
 /** The guardian's own segment as the guardian sees it (with ward info). **One row per device** (2026-09-19 DK). */
 export interface WardShareRecord {
-  readonly wardUserId: string;
+  readonly wardUserId: UserId;
   /** A display snapshot of linked_identities.provider_login (not an identifier) */
   readonly wardLogin: string | null;
   readonly groupId: string;
@@ -64,7 +66,7 @@ export interface WardShareRecord {
 /** A class-H handoff request (does not hold E.pub — request_id is a derivative of it). */
 export interface HandoffRequestRecord {
   readonly requestId: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
   readonly collectedAtMs: number | null;

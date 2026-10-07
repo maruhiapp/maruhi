@@ -16,7 +16,7 @@
 //   (+ the maruhi-issued token id) and the auth_method kind name. Provider
 //   IDs, logins, and emails must not enter this layer
 
-import type { AuditActor } from "@maruhi/core";
+import type { AuditActor, UserId } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
 import { and, desc, eq, inArray, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -42,13 +42,13 @@ type Db = ReturnType<typeof drizzle>;
  * a person exists but is not identified. type=system is for internal
  * processing with no principal, not for failed attempts from outside).
  */
-export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: string };
+export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: UserId };
 
 /** Input for one audit-event row (columns are the common columns of schema.ts; unspecified = NULL). */
 export interface D1AuditEventInput {
   readonly event: string;
   readonly actor: D1AuditActor;
-  readonly targetUserId?: string;
+  readonly targetUserId?: UserId;
   readonly orgId?: string;
   readonly projectId?: string;
   readonly payload?: Readonly<Record<string, unknown>>;
@@ -91,7 +91,7 @@ export function guardedAuditSelectColumns(input: {
   readonly event: string;
   readonly actor: D1AuditActor;
   readonly nowMs: number;
-  readonly targetUserId?: string | null;
+  readonly targetUserId?: UserId | null;
   readonly payload?: Readonly<Record<string, unknown>>;
   /** A dynamic payload built from the stored row. When given, it takes precedence over the static payload. */
   readonly payloadSql?: SQL<string | null>;
@@ -254,7 +254,7 @@ interface D1AuditRepoShape {
    * operator view's remit — L-4).
    */
   readonly readUserEventsFor: (
-    userId: string,
+    userId: UserId,
     page: D1AuditReadPage,
   ) => Effect.Effect<readonly D1StoredAuditEventRow[]>;
 }

@@ -19,6 +19,7 @@
 // {@link serializeStoredMasterKey}, unwrapping explicitly just before
 // serialization.
 
+import { decodeUserId, type UserId } from "@maruhi/core";
 import { Context, type Effect, Redacted } from "effect";
 
 import { escapeText } from "./display.ts";
@@ -76,7 +77,7 @@ export function isMasterKeyEntryName(name: string): boolean {
 /** The maruhi API token record stored in the keychain (AUTH_SPEC §4-5). */
 export interface StoredToken {
   readonly token: Redacted.Redacted<string>;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly tokenId: string;
   /**
    * Expiry fixed at issuance (AUTH_SPEC §6 — W3a). Non-sensitive metadata
@@ -461,7 +462,8 @@ export function parseStoredToken(json: string): StoredToken | null {
     ) {
       return {
         token: Redacted.make(value["token"], { label: "maruhi-token" }),
-        userId: value["userId"],
+        // The stored record is the token's persisted half: its user id is minted where it is read back
+        userId: decodeUserId(value["userId"]),
         tokenId: value["tokenId"],
         expiresAtMs: value["expiresAtMs"],
       };

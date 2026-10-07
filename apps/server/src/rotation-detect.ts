@@ -35,6 +35,8 @@
 //   a value the subject could read re-opens a resolved flag. A dismissal
 //   covers the flags effective when it is recorded and is sticky
 
+import type { UserId } from "@maruhi/core";
+
 import type {
   AuditEventInput,
   AuditRotationRead,
@@ -313,7 +315,7 @@ function recommendedEvent(input: {
   readonly basis: RotationBasis;
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
-  readonly targetUserId?: string;
+  readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: string;
   /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly string[];
@@ -355,7 +357,7 @@ function recommendedEvent(input: {
  */
 function detectForMember(input: {
   readonly read: AuditRotationRead;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
   readonly nowMs: number;
@@ -434,7 +436,7 @@ function detectForMember(input: {
  */
 export function detectMemberRemoval(input: {
   readonly read: AuditRotationRead;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly triggerChainSeq: number;
   readonly nowMs: number;
 }): readonly AuditEventInput[] {
@@ -473,7 +475,7 @@ const WRITER_ROLES: ReadonlySet<string> = new Set(["member", "admin", "owner"]);
  */
 export function detectRoleChange(input: {
   readonly read: AuditRotationRead;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly triggerChainSeq: number;
   readonly nowMs: number;
 }): readonly AuditEventInput[] {
@@ -580,7 +582,7 @@ function revokedDeviceSpans(
  */
 export function detectDeviceRevocation(input: {
   readonly read: AuditRotationRead;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly deviceFingerprintsHex: readonly string[];
   readonly triggerChainSeq: number;
   readonly nowMs: number;

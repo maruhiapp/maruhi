@@ -13,6 +13,7 @@
 
 import { Context, Data, Effect, Option, Schema } from "effect";
 
+import type { UserId } from "./identity.ts";
 import { ProjectIdSchema } from "./project.ts";
 
 // ---------------------------------------------------------------------------
@@ -103,10 +104,10 @@ export function parseTokenScopes(json: string): readonly TokenScope[] | null {
  * enforcement (AUTH_SPEC §9-2).
  */
 export type AuthenticatedPrincipal =
-  | { readonly kind: "session"; readonly userId: string; readonly authMethod: string }
+  | { readonly kind: "session"; readonly userId: UserId; readonly authMethod: string }
   | {
       readonly kind: "token";
-      readonly userId: string;
+      readonly userId: UserId;
       readonly tokenId: string;
       readonly scopes: readonly TokenScope[];
       /**
@@ -139,7 +140,7 @@ export interface IssuedSession {
 /** AUTH_SPEC §8: session issuance, verification, revocation (§5). */
 export interface SessionServiceShape {
   /** Issues a 256-bit session. Only the hash is stored in the DB; the raw value is returned only here. */
-  readonly issueSession: (userId: string, authMethod: string) => Effect.Effect<IssuedSession>;
+  readonly issueSession: (userId: UserId, authMethod: string) => Effect.Effect<IssuedSession>;
   /** Resolves a principal from a raw cookie value. Revoked, unknown, and expired are treated as anonymous. */
   readonly resolveSession: (rawValue: string) => Effect.Effect<Principal>;
   /** Revokes the session of a raw cookie value (logout). */
@@ -178,7 +179,7 @@ export interface TokenServiceShape {
    * the default / an explicit value and passes it in).
    */
   readonly issueToken: (
-    userId: string,
+    userId: UserId,
     name: string,
     scopes: readonly TokenScope[],
     ttlMs: number,

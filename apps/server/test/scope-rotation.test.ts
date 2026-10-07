@@ -21,6 +21,7 @@
 //   - every variant's rotation.recommended carries trigger; pre-K3
 //     rows are backfilled from target
 
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import type { AuditRotationRead, SeqRange } from "../src/audit-store.ts";
@@ -58,7 +59,7 @@ import { queryProjectDo, readAuditEvents } from "./support/project-do.ts";
 
 registerDataScenario();
 
-const DEV = "user-devmember-0010";
+const DEV = testUserId("user-devmember-0010");
 const OTHER = "env-other-0002";
 const VAR_ENV = "var-env-secret";
 const VAR_OTHER = "var-other-secret";
@@ -438,7 +439,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           { seq: 6, event: "var.created", environmentId: "env-b", variableId: "w" },
         ],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 9,
       nowMs: 1,
     });
@@ -481,7 +482,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           { seq: 9, environmentId: "env-b", variableId: "w" },
         ],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 11,
       nowMs: 1,
     });
@@ -511,7 +512,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         reads: [{ seq: 5, environmentId: "env-a", variableId: "v" }],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 9,
       nowMs: 1,
     });
@@ -550,7 +551,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
               : reads;
           },
         },
-        targetUserId: "u",
+        targetUserId: testUserId("u"),
         triggerChainSeq: 9,
         nowMs: 1,
       });
@@ -582,7 +583,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 7,
       nowMs: 1,
     });
@@ -599,7 +600,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 5,
       nowMs: 1,
     });
@@ -677,7 +678,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
         ],
         lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
       }),
-      targetUserId: "u",
+      targetUserId: testUserId("u"),
       triggerChainSeq: 5,
       nowMs: 1,
     });
@@ -695,7 +696,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           variableId: "v",
           version: null,
           epoch: 1,
-          targetUserId: "u",
+          targetUserId: testUserId("u"),
           targetKeyFingerprintHex: null,
           payload: { basis: "read", triggerChainSeq: 3 },
         },

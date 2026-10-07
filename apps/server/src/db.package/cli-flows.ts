@@ -1,6 +1,6 @@
 // Repository of the CLI login flow rows (AUTH_SPEC §4-1 (4)–(5)).
 
-import type { TokenScope } from "@maruhi/core";
+import type { TokenScope, UserId } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -48,7 +48,7 @@ type CliFlowDecision = "approved" | "denied";
 
 interface NewCliLoginFlow {
   readonly flowId: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly tokenName: string;
   readonly scopes: readonly TokenScope[];
   readonly expiresInDays: number;
@@ -61,7 +61,7 @@ interface NewCliLoginFlow {
 /** The shape the poll's row lookup (§4-1 (5)) sees. ticket_hash is excluded (the comparison happens inside the CAS). */
 interface CliLoginFlowRecord {
   readonly flowId: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly status: CliFlowStatus;
   readonly tokenName: string;
   readonly scopes: readonly TokenScope[];

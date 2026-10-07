@@ -4,6 +4,7 @@
 // was split out).
 
 import type { ChainEntry } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -41,8 +42,8 @@ describe("admission policy (§6.4 size limits)", () => {
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
       op: "remove_member",
-      actor: { userId: "user-owner-0001", keyFingerprintHex: "ab".repeat(16) },
-      payload: { targetUserId: "u".repeat(1_200_000) },
+      actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: "ab".repeat(16) },
+      payload: { targetUserId: testUserId("u".repeat(1_200_000)) },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
     };
@@ -92,7 +93,7 @@ describe("admission policy (§6.4 size limits)", () => {
       seq: 1,
       prevHashHex: "0".repeat(64),
       op: "genesis",
-      actor: { userId: "u".repeat(600_000), keyFingerprintHex: "ab".repeat(16) },
+      actor: { userId: testUserId("u".repeat(600_000)), keyFingerprintHex: "ab".repeat(16) },
       payload: { encPubHex: "cd".repeat(32), sigPubHex: "ef".repeat(32) },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
@@ -101,7 +102,10 @@ describe("admission policy (§6.4 size limits)", () => {
     // past 1 MiB
     const second: ChainEntry = {
       ...oversizedGenesis,
-      actor: { ...oversizedGenesis.actor, userId: "u".repeat(600_000) + "v".repeat(500_000) },
+      actor: {
+        ...oversizedGenesis.actor,
+        userId: testUserId("u".repeat(600_000) + "v".repeat(500_000)),
+      },
     };
     // The size pre-check runs before the actor match (403) — resource
     // protection comes first
@@ -134,7 +138,7 @@ describe("admission policy (§6.4 size limits)", () => {
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
       actorUserId: "user-owner-0001",
-      operation: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+      operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
     const response = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);
     expect(response.status).toBe(422);

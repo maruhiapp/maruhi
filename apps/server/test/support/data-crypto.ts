@@ -47,6 +47,7 @@ import {
   BASE_TIME_MS,
   buildChainWith,
   hexBytes,
+  testUserId,
   unwrapResult,
   valueContextOf,
   vectorKeys,
@@ -151,7 +152,7 @@ export async function signEntryAt(input: {
     suite: SUITE_ID,
     seq: input.seq,
     prevHashHex: input.prevHashHex,
-    actor: { userId: input.actorUserId, keyFingerprintHex: keys.key_fingerprint_hex },
+    actor: { userId: testUserId(input.actorUserId), keyFingerprintHex: keys.key_fingerprint_hex },
     timestampMs: BASE_TIME_MS + input.seq * 1000,
   };
   const entry = await signAs(input.actorUserId, unsigned);
@@ -191,7 +192,7 @@ export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChai
   return buildChainWith(
     steps.map((step) => ({
       actor: {
-        userId: step.actorUserId,
+        userId: testUserId(step.actorUserId),
         keyFingerprintHex: vectorKeyOf(step.actorUserId).key_fingerprint_hex,
       },
       operation: step.operation,
@@ -235,7 +236,7 @@ export function addMemberOperation(
   return {
     op: "add_member",
     payload: {
-      targetUserId,
+      targetUserId: testUserId(targetUserId),
       encPubHex: keys.enc_pub_hex,
       sigPubHex: keys.sig_pub_hex,
       role,
@@ -252,7 +253,7 @@ export function changeRoleOperation(
 ): ChainOperation {
   return {
     op: "change_role",
-    payload: { targetUserId, newRole, ...scopeFieldsOf(scope) },
+    payload: { targetUserId: testUserId(targetUserId), newRole, ...scopeFieldsOf(scope) },
   };
 }
 

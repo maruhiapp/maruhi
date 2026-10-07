@@ -16,6 +16,7 @@ import {
   type UnsignedChainEntry,
   verifyChain,
 } from "../../src/index.ts";
+import { testUserId } from "../support/fixture.ts";
 import {
   membersMatchVector,
   pendingMatchesVector,
@@ -215,7 +216,7 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       name: "revoke-device-tampered-target",
       entry: {
         ...eRevokeOther,
-        payload: { ...eRevokeOther.payload, targetUserId: "user-owner-0015" },
+        payload: { ...eRevokeOther.payload, targetUserId: testUserId("user-owner-0015") },
       },
       expect: "bad-signature",
       chain,
@@ -686,7 +687,7 @@ function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
     // prev is the vector's final-entry hash (already pinned by the
     // chain.ts positives)
     prevHashHex: "",
-    actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
+    actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: owner.key_fingerprint_hex },
     timestampMs: head.timestampMs + 1000,
   };
 }
@@ -722,7 +723,7 @@ function semanticCases(
         ...base,
         op: "add_member",
         payload: {
-          targetUserId: "user-admin-0003",
+          targetUserId: testUserId("user-admin-0003"),
           encPubHex: memberKeys.enc_pub_hex,
           sigPubHex: memberKeys.sig_pub_hex,
           role: "reader",
@@ -742,7 +743,7 @@ function semanticCases(
         ...base,
         op: "add_member",
         payload: {
-          targetUserId: "user-admin-0003",
+          targetUserId: testUserId("user-admin-0003"),
           encPubHex: ownerKeys.enc_pub_hex,
           sigPubHex: ownerKeys.sig_pub_hex,
           role: "reader",
@@ -754,7 +755,11 @@ function semanticCases(
     },
     {
       name: "remove_member unknown target",
-      entry: { ...base, op: "remove_member", payload: { targetUserId: "user-ghost-9999" } },
+      entry: {
+        ...base,
+        op: "remove_member",
+        payload: { targetUserId: testUserId("user-ghost-9999") },
+      },
       expect: "unknown-target",
     },
     {
@@ -777,7 +782,7 @@ async function appendRotation(
   const rotate = await signAs("user-admin-0003", {
     ...base,
     actor: {
-      userId: "user-admin-0003",
+      userId: testUserId("user-admin-0003"),
       keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
     },
     op: "rotate_epoch",
@@ -916,7 +921,7 @@ async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promi
     timestampMs: readdEntry.timestampMs + 1000,
     op: "add_member",
     payload: {
-      targetUserId: "user-clone-0004",
+      targetUserId: testUserId("user-clone-0004"),
       encPubHex: memberKeys.enc_pub_hex,
       sigPubHex: memberKeys.sig_pub_hex,
       role: "member",
@@ -983,7 +988,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
     seq: NEXT_SEQ + 1,
     prevHashHex: await computeChainEntryHash(create),
     actor: {
-      userId: "user-admin-0003",
+      userId: testUserId("user-admin-0003"),
       keyFingerprintHex: keysOf("user-admin-0003").key_fingerprint_hex,
     },
     op: "rotate_epoch",
@@ -1129,7 +1134,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       name: "actor fingerprint hex oversized",
       entry: {
         ...base,
-        actor: { userId: "user-owner-0001", keyFingerprintHex: "ab".repeat(500_000) },
+        actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: "ab".repeat(500_000) },
         op: "remove_member",
         payload: { targetUserId: "x" },
       },
@@ -1225,7 +1230,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "change_role",
-        payload: { targetUserId: "user-admin-0003", newRole: "member" },
+        payload: { targetUserId: testUserId("user-admin-0003"), newRole: "member" },
       },
     },
     {
@@ -1270,7 +1275,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         op: "propose",
         payload: {
-          inner: { op: "remove_member", payload: { targetUserId: "user-admin-0003" } },
+          inner: { op: "remove_member", payload: { targetUserId: testUserId("user-admin-0003") } },
           expiresAtMs: "0",
         },
       },
@@ -1318,7 +1323,10 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "revoke_device",
-        payload: { targetUserId: "user-owner-0001", deviceFingerprintsHex: "ab".repeat(16) },
+        payload: {
+          targetUserId: testUserId("user-owner-0001"),
+          deviceFingerprintsHex: "ab".repeat(16),
+        },
       },
     },
     {
@@ -1326,7 +1334,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "revoke_device",
-        payload: { targetUserId: "user-owner-0001", deviceFingerprintsHex: [42] },
+        payload: { targetUserId: testUserId("user-owner-0001"), deviceFingerprintsHex: [42] },
       },
     },
     // Unknown op: if the PAYLOAD_SHAPES table lookup is called without
@@ -1375,7 +1383,7 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
     suite: "maruhi/v1",
     seq: 10,
     prevHashHex: vectorEntries[8]?.entry_hash_hex ?? "",
-    actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
+    actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: owner.key_fingerprint_hex },
     timestampMs: eGrant.timestampMs + 500,
     op: "grant_server",
     payload: {
@@ -1413,7 +1421,7 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   }
   const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
   const adminActor = {
-    userId: "user-admin-0003",
+    userId: testUserId("user-admin-0003"),
     keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
   };
 

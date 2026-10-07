@@ -13,6 +13,7 @@
 // Both run under the DO's permit synchronously (one page = one
 // synchronous read; no permit across awaits).
 
+import type { UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -201,7 +202,7 @@ function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: stri
 
 /** The members of the companion and the chain head they were read at (the companion is bound to it — ruling H revision). */
 export interface ExportMembersValue {
-  readonly members: readonly string[];
+  readonly members: readonly UserId[];
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
 }
@@ -212,7 +213,7 @@ export const exportMembersProgram = (
   cache: StateCache,
 ): Effect.Effect<ExportMembersValue, DataRejectedError, ChainStore> =>
   Effect.map(requireMemberState(actor.userId, "owner", cache), ({ state }) => ({
-    members: [...state.members.keys()].toSorted(),
+    members: [...state.members.values()].map((member) => member.userId).toSorted(),
     chainHeadSeq: state.headSeq,
     chainHeadHashHex: state.headHashHex,
   }));

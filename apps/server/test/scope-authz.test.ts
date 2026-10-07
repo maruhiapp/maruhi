@@ -23,6 +23,7 @@
 //     folds into chain-head-state-mismatch (K3-B)
 
 import type { ChainOperation } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -80,8 +81,8 @@ import { queryProjectDo } from "./support/project-do.ts";
 registerDataScenario();
 
 /** A listed member (vector key — vectorKeyOf in data-crypto.ts). */
-const DEV = "user-devmember-0010";
-const DEVADMIN = "user-devadmin-0011";
+const DEV = testUserId("user-devmember-0010");
+const DEVADMIN = testUserId("user-devadmin-0011");
 const OTHER = "env-other-0002";
 const GHOST = "env-ghost-9999";
 

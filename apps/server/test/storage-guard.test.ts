@@ -30,6 +30,7 @@ import {
   variablesGroup,
 } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
@@ -106,7 +107,7 @@ import {
 
 registerDataScenario();
 
-const actor = (userId: string): DataActor => ({ userId });
+const actor = (userId: string): DataActor => ({ userId: testUserId(userId) });
 
 /** The services in-DO programs require (chain-do.ts's DoServices minus the lease-only ServerKey). */
 type DoProgram<A, E> = Effect.Effect<A, E, ChainStore | DataStore | AuditStore | StorageMeter>;

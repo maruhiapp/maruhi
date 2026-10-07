@@ -20,6 +20,7 @@ import {
 } from "../../src/index.ts";
 import { importSigningKeyPair, importSigningPublicKey } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
+import { testUserId } from "../support/fixture.ts";
 import { fromHex, toHex } from "./support.ts";
 
 export interface VectorEntry {
@@ -292,7 +293,7 @@ export function pendingMatchesVector(
       inner: decodeInner(proposal.inner_op, proposal.inner_payload),
       expiresAtMs: Number(proposal.expires_at_ms),
       approvals: proposal.approvals.map((vote) => ({
-        userId: vote.user_id,
+        userId: testUserId(vote.user_id),
         keyFingerprintHex: vote.key_fingerprint_hex,
       })),
     }),
@@ -436,7 +437,7 @@ const OPERATION_DECODERS: Readonly<
   add_member: (payload) => ({
     op: "add_member",
     payload: {
-      targetUserId: str(payload, "target_user_id"),
+      targetUserId: testUserId(str(payload, "target_user_id")),
       encPubHex: str(payload, "enc_pub_hex"),
       sigPubHex: str(payload, "sig_pub_hex"),
       role: str(payload, "role") as Role,
@@ -445,12 +446,12 @@ const OPERATION_DECODERS: Readonly<
   }),
   remove_member: (payload) => ({
     op: "remove_member",
-    payload: { targetUserId: str(payload, "target_user_id") },
+    payload: { targetUserId: testUserId(str(payload, "target_user_id")) },
   }),
   change_role: (payload) => ({
     op: "change_role",
     payload: {
-      targetUserId: str(payload, "target_user_id"),
+      targetUserId: testUserId(str(payload, "target_user_id")),
       newRole: str(payload, "new_role") as Role,
       ...scopeFields(payload),
     },
@@ -551,7 +552,7 @@ const OPERATION_DECODERS: Readonly<
   revoke_device: (payload) => ({
     op: "revoke_device",
     payload: {
-      targetUserId: str(payload, "target_user_id"),
+      targetUserId: testUserId(str(payload, "target_user_id")),
       deviceFingerprintsHex: payload["device_fingerprints"] as readonly string[],
     },
   }),
@@ -588,7 +589,7 @@ export function toTypedEntry(vector: VectorEntry): ChainEntry {
     seq: vector.seq,
     prevHashHex: vector.prev_hash_hex,
     actor: {
-      userId: vector.actor.user_id,
+      userId: testUserId(vector.actor.user_id),
       keyFingerprintHex: vector.actor.key_fingerprint_hex,
     },
     timestampMs: vector.timestamp_ms,

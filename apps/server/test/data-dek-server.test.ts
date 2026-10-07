@@ -12,6 +12,7 @@ import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
@@ -253,7 +254,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     await appendOperation(fixture, OWNER, {
       op: "add_member",
       payload: {
-        targetUserId: fpHex,
+        targetUserId: testUserId(fpHex),
         encPubHex: sockEncPubHex,
         sigPubHex: sockSigPubHex,
         role: "member",
@@ -312,13 +313,13 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     // [500])
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
-      payload: { targetUserId: fpHex },
+      payload: { targetUserId: testUserId(fpHex) },
     });
     const sameKeySigPair = await generateSigningKeyPair();
     await appendOperation(fixture, OWNER, {
       op: "add_member",
       payload: {
-        targetUserId: fpHex,
+        targetUserId: testUserId(fpHex),
         encPubHex: SERVER_ENC_PUB_HEX,
         sigPubHex: encodeHex(await exportSigningPublicKey(sameKeySigPair.publicKey)),
         role: "member",
@@ -369,7 +370,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     // the complete set satisfiable again, and the rotation goes through
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
-      payload: { targetUserId: fpHex },
+      payload: { targetUserId: testUserId(fpHex) },
     });
     const recovered = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -525,7 +526,7 @@ const memberOf = (userId: string) =>
   [
     userId,
     {
-      userId,
+      userId: testUserId(userId),
       role: "member",
       scope: { kind: "all" },
       // One initial key = one device (the cap is structurally (owner, all) — CRYPTO_SPEC §6.2 DK)

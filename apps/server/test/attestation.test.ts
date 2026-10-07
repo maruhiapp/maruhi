@@ -14,6 +14,7 @@
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -33,9 +34,9 @@ import { hexBytes, resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 const ORG = "org-attest-0001";
-const OWNER = "user-owner-0001";
-const MEMBER = "user-member-0002";
-const READER = "user-admin-0003"; // stays a reader since no change_role is appended
+const OWNER = testUserId("user-owner-0001");
+const MEMBER = testUserId("user-member-0002");
+const READER = testUserId("user-admin-0003"); // stays a reader since no change_role is appended
 const GITHUB_IDS: Record<string, number> = { [OWNER]: 9001, [MEMBER]: 9002, [READER]: 9003 };
 
 let tokens: Record<string, string> = {};

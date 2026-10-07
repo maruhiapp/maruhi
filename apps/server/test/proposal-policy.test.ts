@@ -4,6 +4,7 @@
 // appendProgram).
 
 import type { PendingProposal } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { MAX_PENDING_PROPOSALS, MAX_PROPOSAL_LIFETIME_MS } from "../src/policy.ts";
@@ -19,10 +20,10 @@ const NOW = 1_800_000_000_000;
 const pendingAt = (expiresAtMs: number): PendingProposal => ({
   proposalSeq: 1,
   proposalHashHex: "ab".repeat(32),
-  proposerUserId: "user-owner-0001",
+  proposerUserId: testUserId("user-owner-0001"),
   proposerKeyFingerprintHex: "cd".repeat(16),
   proposerRoleAtProposal: "owner",
-  inner: { op: "remove_member", payload: { targetUserId: "user-member-0002" } },
+  inner: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
   expiresAtMs,
   approvals: [],
 });

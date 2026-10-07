@@ -5,6 +5,7 @@
 // extensions (rotate_epoch / add_member) are all done through the API too.
 
 import type { ChainEntry, ChainOperation, EnvValuesDigestEntry } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { expect } from "vitest";
 
@@ -43,14 +44,14 @@ import {
 } from "./data-crypto.ts";
 import { queryProjectDo, resetProjectDo } from "./project-do.ts";
 
-export const OWNER = "user-owner-0001";
-export const MEMBER = "user-member-0002";
+export const OWNER = testUserId("user-owner-0001");
+export const MEMBER = testUserId("user-member-0002");
 // A member with the reader role. Its signing key borrows the third vector key
 // (user-admin-0003) (VECTOR_KEY_ALIASES in data-crypto.ts — binding between a
 // key and a user ID is done by the chain's add_member, so the key may be
 // independent of the key set's nominal owner)
-export const READER = "user-reader-0003";
-export const STRANGER = "user-stranger-0009";
+export const READER = testUserId("user-reader-0003");
+export const STRANGER = testUserId("user-stranger-0009");
 const DATA_ORG = "org-data-0001";
 
 const GITHUB_IDS: Record<string, number> = {

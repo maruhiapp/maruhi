@@ -10,6 +10,7 @@
 // - Identity rule (§1-2): provider IDs, logins, and emails must not appear
 //   in any row
 
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
 import { Context, Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -424,8 +425,8 @@ describe("session / token revocation (§3.1)", () => {
     const services = makeDbServices(env.DB);
     const tokens = Context.get(services, TokenRepo);
     await Effect.runPromise(
-      tokens.revokeById(tokenRow.id, tokenRow.user_id, Date.now(), {
-        userId: tokenRow.user_id,
+      tokens.revokeById(tokenRow.id, testUserId(tokenRow.user_id), Date.now(), {
+        userId: testUserId(tokenRow.user_id),
         apiTokenId: tokenRow.id,
       }),
     );
@@ -441,8 +442,8 @@ describe("session / token revocation (§3.1)", () => {
     }
     const tokens = Context.get(makeDbServices(env.DB), TokenRepo);
     await Effect.runPromise(
-      tokens.revokeById(tokenRow.id, "user-other", Date.now(), {
-        userId: "user-other",
+      tokens.revokeById(tokenRow.id, testUserId("user-other"), Date.now(), {
+        userId: testUserId("user-other"),
         apiTokenId: tokenRow.id,
       }),
     );
@@ -510,7 +511,7 @@ describe("recovery (§3.1 / AUTH_SPEC §13-5)", () => {
 
 describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
   const VECTOR_ORG = "org-vector-0001";
-  const OWNER = "user-owner-0001";
+  const OWNER = testUserId("user-owner-0001");
   const OWNER_GITHUB_ID = 987001;
 
   beforeEach(async () => {

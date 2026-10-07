@@ -10,6 +10,7 @@
 //     redacted save (`Redacted.toJSON()` returns "<redacted>", so stringifying a
 //     record as-is saves a redaction with no type error — the biggest trap)
 
+import { testUserId } from "@maruhi/crypto/test-support";
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -482,7 +483,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     );
     const session = {
       origin: maruhi.origin,
-      userId: "u1",
+      userId: testUserId("u1"),
       token: Redacted.make("maruhi_pat_stored"),
     };
     const exit = await Effect.runPromiseExit(
@@ -508,7 +509,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     env.keychain.set(entryName, masterRecordJson({ encSkHex: "zzzz" }));
     const session = {
       origin: maruhi.origin,
-      userId: "u1",
+      userId: testUserId("u1"),
       token: Redacted.make("maruhi_pat_stored"),
     };
     const exit = await Effect.runPromiseExit(
@@ -533,7 +534,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     env.keychain.set(entryName, masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }));
     const session = {
       origin: maruhi.origin,
-      userId: "u1",
+      userId: testUserId("u1"),
       token: Redacted.make("maruhi_pat_stored"),
     };
     const exit = await Effect.runPromiseExit(
@@ -590,7 +591,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     const keys = await Effect.runPromise(
       loadMasterKeys({
         origin: maruhi.origin,
-        userId: "user-0001",
+        userId: testUserId("user-0001"),
         token: Redacted.make("maruhi_pat_stored"),
       }).pipe(Effect.provide(env.layer)),
     );

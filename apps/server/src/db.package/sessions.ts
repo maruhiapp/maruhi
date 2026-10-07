@@ -1,6 +1,7 @@
 // Repository of sessions (AUTH_SPEC §5 — the id is a hash; the raw
 // value never reaches this layer).
 
+import type { UserId } from "@maruhi/core";
 import { eq, lte } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -26,7 +27,7 @@ type Db = ReturnType<typeof drizzle>;
 export interface SessionRepoShape {
   readonly insert: (
     idHash: string,
-    userId: string,
+    userId: UserId,
     authMethod: string,
     nowMs: number,
     expiresAtMs: number,

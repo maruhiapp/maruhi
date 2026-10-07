@@ -30,7 +30,7 @@
 //
 // Plaintext KEK, segments, and B exist only in local variables.
 
-import { cryptoEffect, fromCryptoResult } from "@maruhi/core";
+import { cryptoEffect, fromCryptoResult, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainMember,
@@ -175,14 +175,14 @@ function guardianInputRejection(input: {
 
 /** A chain-derived current member (a guardian candidate) and their current device set. */
 interface GuardianMember {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly devices: readonly ChainDevice[];
 }
 
 /** The registration form of a segment (wire — AUTH_SPEC §13-9 GuardianShare. One element per device). */
 interface SealedShare {
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
   readonly guardianKeyFingerprintHex: string;
   readonly encHex: string;
@@ -205,7 +205,7 @@ function resolveGuardians(input: {
       );
     }
     // A guardian's keys = all of the person's currently valid device keys (§8.3 — the same segment is sealed once per device)
-    return Effect.succeed({ userId, devices: devicesOf(member) });
+    return Effect.succeed({ userId: member.userId, devices: devicesOf(member) });
   });
 }
 
@@ -215,7 +215,7 @@ const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly device: ChainDevice;
   readonly share: Uint8Array;
 }): Effect.fn.Return<SealedShare, CliError> {

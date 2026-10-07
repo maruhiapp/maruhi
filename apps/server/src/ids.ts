@@ -5,10 +5,19 @@
 // protocols. Cryptographic operations (hashes) are delegated to
 // WebCrypto (CLAUDE.md: no hand-rolled primitives).
 
+import { decodeUserId, ulid, type UserId } from "@maruhi/core";
 import { encodeHex } from "@maruhi/crypto";
 
 // ULID is @maruhi/core's shared implementation (the same one used for the CLI's ledger id assignment)
 export { ulid } from "@maruhi/core";
+
+/**
+ * A fresh internal user id (AUTH_SPEC §2 — a ULID). Generation is a trust
+ * boundary of the UserId brand, so this is where a new one is minted.
+ */
+export function newUserId(nowMs: number): UserId {
+  return decodeUserId(ulid(nowMs));
+}
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 

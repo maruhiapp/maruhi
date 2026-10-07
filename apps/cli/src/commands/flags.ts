@@ -1,5 +1,6 @@
 // Shared flag/argument building blocks for the command declarations (discipline: see commands/index.ts).
 
+import { UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { Argument, Flag, Param } from "effect/cli";
 
@@ -15,7 +16,15 @@ import { RUN_COMMAND_REQUIRED } from "../run.ts";
  * accident of `maruhi push API_KEY --env "$ENV"` silently writing into the
  * default environment when ENV is unset.
  */
-export const NonBlank = Schema.String.check(Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE }));
+const nonBlank = Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE });
+export const NonBlank = Schema.String.check(nonBlank);
+
+/**
+ * A non-blank internal user id. A command argument is where a typed user
+ * id enters the CLI, so decoding it mints the UserId that a chain entry's
+ * target requires.
+ */
+export const NonBlankUserId = UserIdSchema.check(nonBlank);
 
 /**
  * One value-taking option. `atMost(1)` expresses **the refusal of a

@@ -12,6 +12,7 @@
 // scenario module).
 
 import type { ChainEntry } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -357,7 +358,7 @@ describe("the chain's incremental-load cache (chain-store.ts StateCache.chain)",
       seq: warm.headSeq + 1,
       prevHashHex: warm.headHashHex,
       actorUserId: "user-owner-0001",
-      operation: { op: "remove_member", payload: { targetUserId: target } },
+      operation: { op: "remove_member", payload: { targetUserId: testUserId(target) } },
     });
     const appended = await appendEntry(vectorProjectId, warm.headHashHex, entry);
     expect(appended.status).toBe(200);

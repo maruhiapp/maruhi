@@ -6,10 +6,12 @@
 // means as the signEntry function.
 
 import type {
+  ChainActor,
   ChainEntry,
   ChainOperation,
   CryptoResult,
   UnsignedChainEntry,
+  UserId,
   ValueSignatureContext,
 } from "../../src/index.ts";
 import {
@@ -28,6 +30,17 @@ export function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
     throw new Error(`${label}: ${JSON.stringify(result.error)}`);
   }
   return result.value;
+}
+
+/**
+ * Test-only mint of a {@link UserId} from a fixture literal or a test-vector
+ * `user_id` (the vectors' free-format ids — AUTH_SPEC §11-1). The package
+ * itself never mints one; production code mints only through
+ * `UserIdSchema` in `@maruhi/core`. Test data is the test suites' trust
+ * boundary, and this is the one cast that serves it.
+ */
+export function testUserId(value: string): UserId {
+  return value as UserId;
 }
 
 /** Hex inside tests is always well-formed (a null from decodeHex = an assembly bug = throw). */
@@ -49,7 +62,7 @@ export type LazyChainOperation = (projectId: string) => ChainOperation | Promise
 
 /** One step of buildChainWith (the caller supplies the actor identity and signing means). */
 export interface ChainBuildStep {
-  readonly actor: { readonly userId: string; readonly keyFingerprintHex: string };
+  readonly actor: ChainActor;
   readonly operation: ChainOperation | LazyChainOperation;
   readonly signEntry: (unsigned: UnsignedChainEntry) => Promise<ChainEntry>;
 }

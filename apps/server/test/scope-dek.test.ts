@@ -15,6 +15,7 @@
 //     structural rule (3))
 
 import type { ChainState, MemberScope } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
@@ -40,8 +41,8 @@ import { ENV, fixture, registerDataScenario, token } from "./support/data-scenar
 
 registerDataScenario();
 
-const DEV = "user-devmember-0010";
-const NOBODY = "user-prodreader-0012";
+const DEV = testUserId("user-devmember-0010");
+const NOBODY = testUserId("user-prodreader-0012");
 const OTHER = "env-other-0002";
 
 async function expectDekRejected(response: Response, reason: string): Promise<void> {
@@ -245,7 +246,7 @@ const memberOf = (userId: string, scope: MemberScope) =>
   [
     userId,
     {
-      userId,
+      userId: testUserId(userId),
       role: "member" as const,
       scope,
       // The single first key = one device (cap is structurally (owner, all)

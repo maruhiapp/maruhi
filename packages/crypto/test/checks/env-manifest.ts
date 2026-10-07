@@ -51,6 +51,7 @@ import {
   verifyEnvManifestSignature,
 } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
+import { testUserId } from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import {
   importVectorSigner,
@@ -671,7 +672,10 @@ async function falseAttestationHistory(
   if (!pair.ok) {
     return { ok: false, detail: "key import failed" };
   }
-  const actor = { userId: "user-member-0002", keyFingerprintHex: member.key_fingerprint_hex };
+  const actor = {
+    userId: testUserId("user-member-0002"),
+    keyFingerprintHex: member.key_fingerprint_hex,
+  };
   const signEntry = async (entry: UnsignedChainEntry): Promise<ChainEntry> => {
     const signed = await signChainEntry({ entry, signingKey: pair.value.privateKey });
     if (!signed.ok) {

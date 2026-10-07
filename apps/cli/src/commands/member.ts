@@ -1,5 +1,6 @@
 // `maruhi member` (discipline: see commands/index.ts).
 
+import type { UserId } from "@maruhi/core";
 import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -30,6 +31,7 @@ import { describeScope, scopeFromFlags } from "../scope.ts";
 import { sweepRotateFor } from "../sweep-rotate.ts";
 import {
   NonBlank,
+  NonBlankUserId,
   projectFlags,
   proposalFlags,
   scopeEnvFlag,
@@ -77,7 +79,7 @@ export const memberAddConfig = {
 const memberTargetArgument = () =>
   Argument.String("user-id").pipe(
     Argument.withDescription("Target user ID (see `maruhi member list`)"),
-    Argument.withSchema(NonBlank),
+    Argument.withSchema(NonBlankUserId),
   );
 
 export const memberRemoveConfig = {
@@ -186,7 +188,7 @@ export const reportMemberAdd = Effect.fn("commands-member.reportMemberAdd")(func
 
 /** `maruhi member remove <user-id>` (§7 — accompanied by the forced rotation of every environment). */
 const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(function* (
-  flags: CommonFlags & { readonly target: string; readonly expires?: string | undefined },
+  flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const io = yield* CliIo;
   const proposal = yield* proposalInputOf(flags.expires);
@@ -259,7 +261,7 @@ function unlessProposed<S>(
  */
 const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
-    readonly target: string;
+    readonly target: UserId;
     readonly role?: string | undefined;
     readonly env: readonly string[];
     readonly allEnvs: boolean;

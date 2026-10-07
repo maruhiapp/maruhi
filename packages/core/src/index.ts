@@ -34,6 +34,14 @@ export {
 export { type EgressRequestInit, egressHttpClientLayer } from "./egress.ts";
 export { ulid } from "./ids.ts";
 export {
+  decodeProviderUserId,
+  decodeUserId,
+  type ProviderUserId,
+  ProviderUserIdSchema,
+  type UserId,
+  UserIdSchema,
+} from "./identity.ts";
+export {
   type AuditActor,
   auditActorOf,
   type AuditEventRecord,

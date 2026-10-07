@@ -4,7 +4,7 @@
 // implementations). Drizzle types do not appear here (ADR-0006: confined
 // within the service boundary).
 
-import type { OrgRole, TokenScope } from "@maruhi/core";
+import type { OrgRole, ProviderUserId, TokenScope, UserId } from "@maruhi/core";
 
 /**
  * Provider-verified identity (the output of the AUTH_SPEC §3 / §4
@@ -13,14 +13,14 @@ import type { OrgRole, TokenScope } from "@maruhi/core";
  */
 export interface VerifiedIdentity {
   readonly provider: "github";
-  readonly providerUserId: string;
+  readonly providerUserId: ProviderUserId;
   readonly providerLogin: string | null;
   readonly verifiedEmail: string | null;
 }
 
 /** Result of getOrCreateUser (AUTH_SPEC §1-5: the single idempotent entry). */
 export interface ResolvedUser {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly created: boolean;
 }
 
@@ -49,7 +49,7 @@ export interface UserOrg {
 
 /** Domain representation of a session row (no raw value exists; id is a hash). */
 export interface SessionRecord {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly authMethod: string;
   readonly expiresAtMs: number;
 }
@@ -57,7 +57,7 @@ export interface SessionRecord {
 /** Domain representation of an API token row (no raw value exists). */
 export interface ApiTokenRecord {
   readonly id: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly tokenHash: string;
   readonly scopes: readonly TokenScope[];
   readonly expiresAtMs: number;

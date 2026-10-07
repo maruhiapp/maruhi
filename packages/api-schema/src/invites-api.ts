@@ -20,7 +20,7 @@
 //   401 / CSRF 403. The list GET writes no audit = holds no state, so it
 //   is outside §11-4's added-CSRF scope)
 
-import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -110,7 +110,7 @@ export const InviteIssuanceSchema = Schema.Struct({
 
 /** The acceptance block (status accepted or later — §15-1). */
 export const InviteAcceptanceSchema = Schema.Struct({
-  inviteeUserId: Schema.String,
+  inviteeUserId: UserIdSchema,
   inviteeEncPubHex: EncPubHex,
   inviteeSigPubHex: PublicKeyHex,
   /** The CRYPTO_SPEC §6.5 acceptance signature (the acceptor's chain sig key). The inviter client verifies it independently */

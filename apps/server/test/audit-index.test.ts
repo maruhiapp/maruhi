@@ -21,6 +21,7 @@
 // from duplicating the statements).
 
 import { auditReadPayload } from "@maruhi/core";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -95,7 +96,7 @@ function readEvent(index: number): AuditEventInput {
     serverTs: 1_700_000_000_000 + index,
     event: "var.read",
     actorType: "user",
-    actorUserId: "user-reader-0001",
+    actorUserId: testUserId("user-reader-0001"),
     environmentId: "env-density-0001",
     payload: auditReadPayload([
       { variableId: `var-density-${String(index % 100).padStart(4, "0")}`, epoch: 1, version: 1 },

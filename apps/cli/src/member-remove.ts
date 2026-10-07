@@ -2,6 +2,7 @@
 // forced rotation of every environment (§7 — the group's overview lives in
 // member.ts).
 
+import type { UserId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -39,7 +40,7 @@ import { describeScope, scopeContains } from "./scope.ts";
 interface MemberRemoveSummary extends MemberSweepOutcome {
   /** Whether it was appended to the chain (false = already deleted — resumes from mid-rotation). */
   readonly appended: boolean;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
 }
 
 /**
@@ -50,7 +51,7 @@ interface MemberRemoveSummary extends MemberSweepOutcome {
 const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly proposing: boolean;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<{ readonly alreadyRemoved: boolean }, CliError> {
@@ -85,7 +86,7 @@ const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (in
 function removalResumeRejection(
   verified: VerifiedProject,
   actor: ActorAuthority,
-  targetUserId: string,
+  targetUserId: UserId,
 ): string | null {
   const removedBefore = verified.applied.some(
     ({ operation }) =>
@@ -124,7 +125,7 @@ function removeRuleRejection(
 function signRemoveEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
   return signEntryAtHead({
@@ -139,7 +140,7 @@ function signRemoveEntry(input: {
 export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;

@@ -21,6 +21,7 @@
 //   the 2-query union
 
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -137,7 +138,7 @@ function aggregatedRead(
     serverTs: 1_700_000_000_000,
     event: "var.read",
     actorType: "user",
-    actorUserId,
+    actorUserId: testUserId(actorUserId),
     environmentId,
     payload: auditReadPayload(
       variableIds.map((variableId) => ({ variableId, epoch: 1, version: 1 })),
@@ -155,7 +156,7 @@ function perVariableRead(
     serverTs: 1_700_000_000_000,
     event: "var.read",
     actorType: "user",
-    actorUserId,
+    actorUserId: testUserId(actorUserId),
     environmentId,
     variableId,
     epoch: 1,
@@ -216,7 +217,7 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
 });
 
 describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the aggregated form)", () => {
-  const TARGET = "user-target-0001";
+  const TARGET = testUserId("user-target-0001");
   const E = "env-equiv-0001";
 
   /** A column sharing the membership interval (genesis through member_removed), the existence of variables V1–V3, and out-of-interval reads. */

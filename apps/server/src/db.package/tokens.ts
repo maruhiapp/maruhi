@@ -1,7 +1,7 @@
 // Repository of API tokens (AUTH_SPEC §6 — token_hash additionally
 // carries a timing-safe comparison at the service layer).
 
-import type { TokenScope } from "@maruhi/core";
+import type { TokenScope, UserId } from "@maruhi/core";
 import { parseTokenScopes } from "@maruhi/core";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -27,7 +27,7 @@ type Db = ReturnType<typeof drizzle>;
 
 export interface NewApiToken {
   readonly id: string;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly name: string;
   readonly tokenHash: string;
   readonly tokenPrefix: string;
@@ -58,7 +58,7 @@ export interface TokenRepoShape {
    * returned too (inventory targets — only verification drops them to
    * 401). Ascending created_at; ties by id.
    */
-  readonly listForUser: (userId: string) => Effect.Effect<readonly ApiTokenSummary[]>;
+  readonly listForUser: (userId: UserId) => Effect.Effect<readonly ApiTokenSummary[]>;
   /**
    * Explicit revocation. Enforces id × user ownership and records
    * auth.token_revoked (§3.1 / S8). actor is the principal that executed
@@ -69,7 +69,7 @@ export interface TokenRepoShape {
    */
   readonly revokeById: (
     id: string,
-    userId: string,
+    userId: UserId,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
