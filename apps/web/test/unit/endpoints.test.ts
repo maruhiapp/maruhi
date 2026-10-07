@@ -172,6 +172,19 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
     ).toEqual([]);
   });
 
+  it("keeps @maruhi/crypto out of bundle sources entirely (ADR-0018)", () => {
+    // ADR-0018: the web holds no keys or plaintext and ships no decrypt,
+    // wrap or verification code (decision 1, revision 2 item 4), so
+    // bundle source imports nothing from packages/crypto — not even
+    // types. Any quoted specifier counts: a static import, a re-export
+    // or a dynamic import(). Tests may use it (a devDependency)
+    const srcRoot = join(import.meta.dirname, "../../src");
+    expect(
+      findSourceOffenders(srcRoot, /["']@maruhi\/crypto(?:\/[^"']*)?["']/, new Set()),
+      "@maruhi/crypto referenced in bundle source — the web ships no crypto (ADR-0018)",
+    ).toEqual([]);
+  });
+
   it("keeps route() declarations inside the SPA route catalog (rulings BZ/CA)", () => {
     // SPA_ROUTES's authority rests on the discipline that "route()
     // declarations live only in routes.ts" (an inline route() in

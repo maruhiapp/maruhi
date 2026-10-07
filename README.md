@@ -134,6 +134,7 @@ From the stable release (`v0.1.0`) onward, `bun install -g maruhi` is enough.
 - [docs/CRYPTO_SPEC.md](docs/CRYPTO_SPEC.md) — crypto specification (sole source of truth)
 - [docs/AUTH_SPEC.md](docs/AUTH_SPEC.md) — authentication and identity specification
 - [docs/AUDIT_SPEC.md](docs/AUDIT_SPEC.md) — audit specification
+- [docs/REVIEWING.md](docs/REVIEWING.md) — guide for external security reviewers: the trust model, the invariants to attack, the spec-to-code map, and how to re-verify the test vectors
 - [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) — self-hosting guide
 - [docs/adr/](docs/adr/) — architecture decision records
 

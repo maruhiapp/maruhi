@@ -18,9 +18,9 @@
 //   without forceNewEpoch = resumes the incomplete, check-only
 //   otherwise) closes the "looks complete because the epoch merely
 //   advanced" pretense
-// A deleted environment is skipped only when a **verified deletion
-// statement** exists (never skipped silently on the server's 404
-// declaration alone — §7. If it cannot be verified it stays a
+// A deleted environment is skipped only when its **delete_environment
+// entry is on the verified chain** (never skipped silently on the server's
+// 404 declaration alone — §7. If it cannot be verified it stays a
 // target and surfaces as a rotate failure).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";

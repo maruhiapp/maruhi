@@ -13,8 +13,8 @@
 //     pretend-completion
 //  3. A CAS conflict that detects a concurrent revoke doesn't append —
 //     it proceeds to the rotation
-//  4. A deleted environment is skipped **only with a verified deletion
-//     statement**, and one environment's failure doesn't stop the rest
+//  4. A deleted environment is skipped **only with its delete_environment
+//     entry on the verified chain**, and one environment's failure doesn't stop the rest
 //     (exit 1 reports it — §7, never a silent skip)
 //  5. Authorization/selection branches: owner only, multiple grants
 //     require --fingerprint, nothing to revoke is an error
