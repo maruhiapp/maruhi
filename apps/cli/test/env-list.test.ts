@@ -222,7 +222,9 @@ describe("maruhi env list", () => {
     const forged = { ...prodStatement, name: "Production (forged)" };
     const env = await startEnv(owner, [devStatement, forged, oldTombstone]);
     expect(await runCli(["env", "list"], env.layer)).not.toBe(0);
-    expect(env.errors.join("\n")).toContain("env-prod");
+    expect(env.errors.join("\n")).toContain(
+      "Verification of environment env-prod's meta statement failed (reason=signature-invalid)",
+    );
     expect(env.logs).toEqual([]);
   });
 
