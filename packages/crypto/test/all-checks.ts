@@ -31,10 +31,14 @@ import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
 
 // Lower bound on the total check count (effectiveness of the tests): detects check
 // groups silently dropping out (removed from all-checks, early-returned, etc.) as an
-// explicit failure rather than a shrinking population. Adding checks never fails this
-// (lower bound only). A change that deliberately reduces checks lowers this value in
-// the same change
-const MIN_TOTAL_CHECKS = 1699;
+// explicit failure rather than a shrinking population. A change that deliberately
+// reduces checks lowers this value in the same change
+const MIN_TOTAL_CHECKS = 2774;
+// The floor must stay close to the population, or a dropped group hides in the slack
+// (it once sat at 1699 against 2774 checks). When the count outgrows the floor by more
+// than this fraction, the second meta check fails and the change raises the floor to
+// the reported count
+const MAX_FLOOR_SLACK = 0.05;
 
 export async function runAllChecks(): Promise<CheckResult[]> {
   // Each layer's checks are mutually independent — they only read shared fixed
@@ -68,10 +72,18 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await recoveryChecks());
   groups.push(await masterKeyWrapChecks());
   const results = groups.flat();
-  results.push({
-    name: `meta: total check count is at least ${MIN_TOTAL_CHECKS}`,
-    ok: results.length >= MIN_TOTAL_CHECKS,
-    detail: `actual ${results.length}`,
-  });
+  const total = results.length;
+  results.push(
+    {
+      name: `meta: total check count is at least ${MIN_TOTAL_CHECKS}`,
+      ok: total >= MIN_TOTAL_CHECKS,
+      detail: `actual ${total}`,
+    },
+    {
+      name: `meta: MIN_TOTAL_CHECKS is within ${MAX_FLOOR_SLACK * 100}% of the total check count`,
+      ok: total <= Math.floor(MIN_TOTAL_CHECKS * (1 + MAX_FLOOR_SLACK)),
+      detail: `actual ${total} — raise MIN_TOTAL_CHECKS to ${total}`,
+    },
+  );
   return results;
 }
