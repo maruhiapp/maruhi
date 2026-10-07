@@ -15,18 +15,21 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { FloorStore } from "../src/floor.ts";
-import { servedChainResponse } from "./support/chain-handler.ts";
+import { chainHandlerOf, servedChainResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  createEnvironmentOp,
   genesisOp,
+  grantServerOp,
   makeTestUser,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   built,
   deadOrigin,
+  ENV_ID,
   exportHeadOfChain,
   headOfChain,
   mirrorHandlers,
@@ -1306,5 +1309,31 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
           r.headers["authorization"] === "Bearer maruhi_pat_MirrorTokenValue0000000000000000000000",
       ),
     ).toBe(false);
+  });
+});
+
+describe("maruhi mirror promote's key follow-ups (PF2)", () => {
+  it("names another granted server key with the revoke command that takes it (`--fingerprint`)", async () => {
+    // The same genesis as `built` (entries are deterministic), plus a grant
+    // to a key that is not this deployment's
+    const granted = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, new Uint8Array(32).fill(7)) },
+      { actor: owner, operation: await grantServerOp([ENV_ID], [], "5a".repeat(32)) },
+    ]);
+    expect(granted.projectId).toBe(built.projectId);
+    const state = mirrorState(false);
+    const mirror = await start([chainHandlerOf(granted), ...mirrorHandlers(state)]);
+    const env = await makeTestEnv();
+    seedSession(env, mirror.origin, owner);
+    await seedConfig(env, { server: mirror.origin, defaultProject: built.projectId });
+    expect(await runCli(["mirror", "promote", "--server", mirror.origin], env.layer)).toBe(0);
+    const grantEntry = granted.entries[2];
+    if (grantEntry === undefined) throw new Error("the grant entry is missing");
+    const grantFp = (grantEntry.payload as { serverKeyFingerprintHex: string })
+      .serverKeyFingerprintHex;
+    expect(env.logs).toContain(
+      `Another server key is granted on this chain: ${grantFp} (environments ${ENV_ID}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke --fingerprint ${grantFp}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
+    );
   });
 });

@@ -28,6 +28,7 @@ import {
   replicaVerdict,
   statusEvidence,
 } from "../mirror.ts";
+import { noteServerDisclosure } from "../server-disclosure.ts";
 import { resolveServerOrigin } from "../session.ts";
 import { projectFlags, singleFlag, singleValued } from "./flags.ts";
 import { sameDeployment } from "./mirror-core.ts";
@@ -105,7 +106,13 @@ const verifiedViewOf = Effect.fn("commands-mirror.verifiedViewOf")(function* (
   const synced = yield* syncProject(source.client, projectId);
   const checked = yield* loadCheckedFloor(projectId, synced, syncProject(source.client, projectId));
   yield* checkInviteAnchor(projectId, checked.verified);
-  return yield* reconcileGossip(projectId, checked.verified, syncProject(source.client, projectId));
+  const verified = yield* reconcileGossip(
+    projectId,
+    checked.verified,
+    syncProject(source.client, projectId),
+  );
+  yield* noteServerDisclosure(verified);
+  return verified;
 });
 
 /**

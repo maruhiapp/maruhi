@@ -7,7 +7,7 @@ import { Command } from "effect/cli";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
 import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
 import { type PolicyRequest, setApprovalPolicyOp } from "../approval.ts";
-import { syncProject } from "../chain-sync.ts";
+import { syncProject, type VerifiedProject } from "../chain-sync.ts";
 import { issueCheckpoint } from "../checkpoint.ts";
 import {
   type CliServices,
@@ -37,6 +37,11 @@ import {
   showSchemaPolicyOp,
 } from "../project-schema-policy.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
+import {
+  formatServerDisclosureRow,
+  noteServerDisclosure,
+  serverDisclosures,
+} from "../server-disclosure.ts";
 import { loadMasterKeys } from "../session.ts";
 import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposalInputOf, reportProposed } from "./shared.ts";
@@ -162,6 +167,9 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
       `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq}${deleted})`,
     );
   }
+  // The disclosing server grants (§9's constant display — the grant
+  // fingerprints `server revoke --fingerprint` takes; chain-derived)
+  yield* reportServerDisclosures(verified);
   // The unconverged rotation duties (§7 — chain-derived, chain-deleted
   // environments excluded) are also part of verify (the always-on warning
   // — rotation-sweep.ts — detail display; no request)
@@ -174,6 +182,26 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
     yield* io.logError(
       `Unconverged rotation mandate: ${describeUnconvergedMandate(verified, mandate)} (holders of the old DEK may still be able to read current values)`,
     );
+  }
+});
+
+/** `project verify`'s server-grant lines (CRYPTO_SPEC §9 — "none" is said too: verify prints the whole state). */
+const reportServerDisclosures = Effect.fn("commands-project.reportServerDisclosures")(function* (
+  verified: VerifiedProject,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const disclosures = serverDisclosures(verified);
+  if (disclosures.length === 0) {
+    yield* io.log(
+      "Server grants: none (no environment is disclosed to the server — CRYPTO_SPEC §9)",
+    );
+    return;
+  }
+  yield* io.log(
+    `Server grants (${disclosures.length}) — the environments in scope are disclosed to the server (CRYPTO_SPEC §9):`,
+  );
+  for (const disclosure of disclosures) {
+    yield* io.log(`  ${formatServerDisclosureRow(disclosure)}`);
   }
 });
 
@@ -360,6 +388,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
         synced,
         syncProject(context.client, projectId),
       )).verified;
+      yield* noteServerDisclosure(verified);
       const result = yield* projectExportOp({
         client: context.client,
         projectId,

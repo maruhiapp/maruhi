@@ -1,6 +1,6 @@
 # maruhi Cryptography Specification (CRYPTO_SPEC)
 
-Version: 0.17-draft
+Version: 0.18-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of the PR containing a revision constitutes that approval. History: `git log`.
 
 This document is the single source of truth for maruhi's cryptographic design. No cryptographic operation not described here may be implemented.
@@ -609,7 +609,7 @@ A response-scope mechanism that "re-seals a share to the requester's ephemeral p
 - By default, no project's DEK is wrapped to the server (= pure E2EE)
 - When a project owner enables a server-driven feature (e.g. GitHub Actions sync), the client records `grant_server` on the chain and wraps the required epoch DEKs — per the grant scope (which may include a subset of environments) — to the server public key
 - Disabling is `revoke_server` + `rotate_epoch`
-- The UI / CLI constantly displays "this project is disclosed to the server"
+- The UI / CLI constantly displays "this project is disclosed to the server": while the **verified** chain carries an active grant whose scope names an environment, every CLI command that opens the project, the workload lease path (§9.1) included, states it with the project ID, the server-key fingerprint and the granted environments (the dashboard, which verifies no chain, lists the granted servers on the project overview as reported by the server); a revoked grant stops the display, while the rotation it mandates stays warned until it converges (§7) (2026-10-07 clarification)
 - **The server-key check at grant execution (drafted 2026-08-12)**: the grant_server execution UI / CLI word-displays (§3) the fingerprint of the server-distributed enc public key and requires an explicit confirmation of its agreement with the deployment's public config (AUTH_SPEC §4 — `/auth/config`'s `serverKeyFingerprintHex`). The authenticity confirmation required of member keys (§6.5) is not exempted only for the server key — a grant is the operation making the server "member N+1"
 - **The HPKE info for server-destined wraps (drafted 2026-08-12)**: for persistent wraps addressed to the server (§7's rotation, the post-grant backfill), §5's info uses **the server-key fingerprint (lowercase hex)** in the recipient_user_id position (the server has no user_id. Pinned by §11's vectors)
 - In the MVP (Phase 1) this feature itself isn't implemented (only the data structures are reserved as spec) — **implemented in Phase 2 together with §9.1 (drafted 2026-08-12. The acceptance surface is AUTH_SPEC §12-4 / §12-6 / §14)**

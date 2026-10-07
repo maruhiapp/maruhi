@@ -24,11 +24,11 @@ maruhi env list
 
 ```text
 Environments (2) — verified chain head seq=9:
-  dev	Development	active	epoch=1	in-scope=yes
-  prod	Production	active	epoch=3	in-scope=no
+  dev	Development	active	epoch=1	in-scope=yes	disclosed-to-server=no
+  prod	Production	active	epoch=3	in-scope=no	disclosed-to-server=yes
 ```
 
-One row per environment, sorted by ID: the ID, the display name, the status, the current epoch (it goes up by one with each `maruhi env rotate`), and whether your scope covers the environment, that is, whether this device can read its values. Deleted environments are hidden and counted in a note; `--all` lists them too, without a name (nothing of a deleted environment is served any more) and never as in scope. `--json` prints one document for scripts:
+One row per environment, sorted by ID: the ID, the display name, the status, the current epoch (it goes up by one with each `maruhi env rotate`), whether your scope covers the environment (whether this device can read its values), and whether a project owner disclosed it to the server with `maruhi server grant` (whether the server can decrypt its values too — see [GitHub Actions](/docs/github-actions#grant-a-lease-with-a-policy)). Deleted environments are hidden and counted in a note; `--all` lists them too, without a name (nothing of a deleted environment is served any more) and never as in scope. `--json` prints one document for scripts:
 
 ```json
 {
@@ -39,13 +39,14 @@ One row per environment, sorted by ID: the ID, the display name, the status, the
       "name": "Development",
       "status": "active",
       "currentEpoch": 1,
-      "inScope": true
+      "inScope": true,
+      "disclosedToServerKeyFingerprintsHex": []
     }
   ]
 }
 ```
 
-The list of environments comes from the project's chain, which records every creation and every deletion, so the server can neither leave an environment out nor bring a deleted one back, and hiding a deletion means rolling the chain back, which a client that has already seen it detects: if the server's listing omits a live environment, still serves a deleted one, or a name fails verification, the command fails instead of skipping it. The status and the epoch also come from the chain; the name comes from the latest signed statement the server lists. The scope column uses this device's scope, which is your scope narrowed to the device's cap. On a machine without a device key (a `MARUHI_TOKEN` run, for example) it uses your member scope, prints a note, and `scopeBasis` is `"member"`. No values are read, so the command needs no device key and also runs in CI or under an AI agent.
+The list of environments comes from the project's chain, which records every creation and every deletion, so the server can neither leave an environment out nor bring a deleted one back, and hiding a deletion means rolling the chain back, which a client that has already seen it detects: if the server's listing omits a live environment, still serves a deleted one, or a name fails verification, the command fails instead of skipping it. The status, the epoch and the disclosure also come from the chain (`disclosedToServerKeyFingerprintsHex` lists the fingerprints of the server keys whose active grant covers the environment, and is empty when none does); the name comes from the latest signed statement the server lists. The scope column uses this device's scope, which is your scope narrowed to the device's cap. On a machine without a device key (a `MARUHI_TOKEN` run, for example) it uses your member scope, prints a note, and `scopeBasis` is `"member"`. No values are read, so the command needs no device key and also runs in CI or under an AI agent.
 
 ## Create
 

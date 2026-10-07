@@ -449,6 +449,13 @@ describe("maruhi ci run (happy path)", () => {
     // Verification success goes to stderr (stdout is kept clear for the child process)
     expect(env.logs).toEqual([]);
     expect(env.errors.join("\n")).toContain("Lease verified");
+    // §9's constant display reaches the workload too (from the bundled chain)
+    expect(env.errors.join("\n")).toMatch(
+      new RegExp(
+        `^Note: project [0-9a-f]+ is disclosed to the server \\(CRYPTO_SPEC §9\\): server key [0-9a-f]{32} can decrypt the values of environment ${ENV_ID}$`,
+        "mu",
+      ),
+    );
     expectNoSecretLeak(env);
   });
 
