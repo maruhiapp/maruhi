@@ -300,6 +300,28 @@ function entryKey(element, index) {
   return `#${index}`;
 }
 
+// Top-level keys whose value is a map of named fixture records: each member
+// is its own fixture entry (`file › map › key`), so adding a member reads as
+// added and editing one reads as that member's change, not as a change of
+// the whole map. An explicit list rather than structural detection: a
+// structural rule cannot tell a map of named records from one record whose
+// fields happen to be objects, and splitting such a record would turn a
+// byte change into an "added" part — a downward error. An unlisted map, or
+// a listed key whose leftover is not a map of objects, keeps the coarse
+// one-fixture-per-top-level-key identity, which errs upward.
+//   extended_chains   chain-entries.json — derived chain name → chain doc
+//   keys              chain-entries.json — key owner → key record
+//   environment_deks  chain-entries.json — environment → per-epoch DEKs
+//   guardian_keypairs master-key-wrap.json — guardian → key pair
+//   extra_keys        env-manifest / metadata-signature / value-signature — signer → key
+const KEYED_FIXTURE_MAPS = new Set([
+  "extended_chains",
+  "keys",
+  "environment_deks",
+  "guardian_keypairs",
+  "extra_keys",
+]);
+
 /** All entries of one parsed vector file, keyed by a stable id. */
 export function collectEntries(file, json) {
   const entries = new Map();
@@ -328,7 +350,16 @@ export function collectEntries(file, json) {
   if (isPlainObject(json)) {
     for (const [key, value] of Object.entries(json)) {
       const rest = take(value, key);
-      if (rest !== undefined) addEntry("", key, { [key]: rest }, true);
+      if (rest === undefined) continue;
+      if (
+        KEYED_FIXTURE_MAPS.has(key) &&
+        isPlainObject(rest) &&
+        Object.values(rest).every(isPlainObject)
+      ) {
+        for (const [member, record] of Object.entries(rest)) addEntry(key, member, record, true);
+      } else {
+        addEntry("", key, { [key]: rest }, true);
+      }
     }
   } else {
     take(json, "");

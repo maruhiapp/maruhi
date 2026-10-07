@@ -665,3 +665,102 @@ const x = { stop: "not-an-op", op: "rotate_epoch" };
     expect(result.risk).toBe("R2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Keyed maps of named fixture records (chain-entries.json's extended_chains):
+// each member is its own fixture entry `file › map › key`
+
+/** A derived chain doc shaped like chain-entries.json's extended_chains members. */
+function derivedChain(op, payloadFields, description) {
+  return {
+    description,
+    base_seq: 2,
+    entries: [chainEntry(3, op, payloadFields)],
+    expected_members: { "user-owner-0001": { role: "owner" } },
+    expected_policy: null,
+  };
+}
+
+/** chainVectors() plus two derived chains in an `extended_chains` map. */
+function keyedVectors() {
+  return {
+    ...chainVectors(),
+    extended_chains: {
+      "chain-a": derivedChain("withdraw", ["ee".repeat(32)], "first derived chain"),
+      "chain-b": derivedChain("withdraw", ["ee".repeat(32)], "second derived chain"),
+    },
+  };
+}
+
+const runKeyed = (vectors) =>
+  analyze(chainSnapshot(CHAIN_SRC, keyedVectors()), chainSnapshot(CHAIN_SRC, vectors), runtimeForm);
+
+const runPair = (base, head) =>
+  analyze(chainSnapshot(CHAIN_SRC, base), chainSnapshot(CHAIN_SRC, head), runtimeForm);
+
+describe("keyed fixture maps", () => {
+  it("gives each member of a listed map its own fixture id", () => {
+    const result = runKeyed(keyedVectors());
+    expect(result.vectors.changed).toEqual([]);
+    expect(result.vectors.added).toEqual([]);
+    expect(result.risk).toBe("R0");
+  });
+
+  it("R2: a new chain is added, not a change of the map", () => {
+    const vectors = keyedVectors();
+    vectors.extended_chains["chain-c"] = derivedChain(
+      "approve",
+      ["ff".repeat(32)],
+      "third derived chain",
+    );
+    const result = runKeyed(vectors);
+    expect(result.vectors.added).toEqual([
+      "chain.json › extended_chains.chain-c.entries › seq=3",
+      "chain.json › extended_chains › chain-c",
+    ]);
+    expect(result.vectors.changed).toEqual([]);
+    expect(result.vectors.unexplained).toEqual([]);
+    expect(result.vectors.outcomeChanged).toEqual([]);
+    expect(result.reasons.R3).toEqual([]);
+    expect(result.risk).toBe("R2");
+  });
+
+  it("R2: an edited expected field is that chain's outcome change only", () => {
+    const vectors = keyedVectors();
+    vectors.extended_chains["chain-b"].expected_members["user-owner-0001"].role = "admin";
+    const result = runKeyed(vectors);
+    expect(result.vectors.changed.map((c) => [c.id, [...c.kinds]])).toEqual([
+      ["chain.json › extended_chains › chain-b", ["outcome"]],
+    ]);
+    expect(result.vectors.unexplained).toEqual([]);
+    expect(result.reasons.R3).toEqual([]);
+    expect(result.risk).toBe("R2");
+  });
+
+  it("R3: a data edit in one chain is that chain's unexplained byte change", () => {
+    const vectors = keyedVectors();
+    vectors.extended_chains["chain-a"].base_seq = 1;
+    const result = runKeyed(vectors);
+    expect(result.vectors.unexplained.map((c) => c.id)).toEqual([
+      "chain.json › extended_chains › chain-a",
+    ]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("keeps the coarse identity for an unlisted map (errs upward)", () => {
+    const base = { ...chainVectors(), derived_docs: keyedVectors().extended_chains };
+    const head = structuredClone(base);
+    head.derived_docs["chain-c"] = structuredClone(base.derived_docs["chain-a"]);
+    head.derived_docs["chain-c"].description = "a copy";
+    const result = runPair(base, head);
+    expect(result.vectors.changed.map((c) => c.id)).toEqual(["chain.json › derived_docs"]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("keeps the coarse identity when a listed key is not a map of records", () => {
+    const base = { ...chainVectors(), keys: { count: 1, owner: { sig_pub_hex: "aa".repeat(32) } } };
+    const head = structuredClone(base);
+    head.keys.owner.sig_pub_hex = "bb".repeat(32);
+    expect(runPair(base, head).vectors.changed.map((c) => c.id)).toEqual(["chain.json › keys"]);
+  });
+});
