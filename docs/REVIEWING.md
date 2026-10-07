@@ -178,8 +178,8 @@ In #336 the R3 comes from the two changed fixtures (`canonicalization` and
 delta reports no new signed-bytes shape: its shape rule keys on a leading
 `maruhi/vN/…` domain field, and chain-entry signed bytes begin with the bare
 suite (`maruhi/v1`). So today a new chain op is not counted as new surface by
-itself; read chain-op changes in `chain-verify.ts` and CRYPTO_SPEC §6.2
-directly.
+itself; read chain-op changes in `chain-canonical.ts` (payload encoding),
+`chain-verify.ts` and CRYPTO_SPEC §6.2 directly.
 
 > **TODO:** update this paragraph when `vector-delta.mjs` counts a new chain
 > op as new signed-bytes surface.

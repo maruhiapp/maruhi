@@ -5,7 +5,8 @@
 //   (a) every file cell resolves in its column's directory — a cell starting
 //       with `apps/`, `packages/` or `.` is from the repository root;
 //   (b) every § reference in a table resolves to a heading of the spec it
-//       names (a cell without a spec name means CRYPTO_SPEC).
+//       names (a cell without a spec name means CRYPTO_SPEC); a `-k` list
+//       item ref in CRYPTO / AUDIT must also name an existing item k.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -60,10 +61,21 @@ function sectionRefs(cell: string): [string, string][] {
   );
 }
 
+/** The body of section `id` of a spec: from its heading to the next heading. */
+function sectionBody(spec: string, id: string): string {
+  const text = readFileSync(join(repoRoot, "docs", `${spec}.md`), "utf8");
+  const escaped = id.replace(/\./g, "\\.");
+  const after = text.split(new RegExp(`^#{2,4} ${escaped}\\.? .*$`, "m"))[1] ?? "";
+  return after.split(/^#{2,4} /m)[0] ?? "";
+}
+
 function resolvesTo(spec: string, id: string): boolean {
-  const ids = HEADINGS[spec]!;
-  // A trailing `-k` is a list item inside the section in CRYPTO / AUDIT (§14.2-1)
-  return ids.has(id) || (spec !== "AUTH_SPEC" && ids.has(id.replace(/-\d+$/, "")));
+  if (HEADINGS[spec]!.has(id)) return true;
+  // A trailing `-k` is list item k inside the section in CRYPTO / AUDIT
+  // (§14.2-12): the section must exist and hold a `k. ` item
+  const item = /^(.+)-(\d+)$/.exec(id);
+  if (spec === "AUTH_SPEC" || item === null || !HEADINGS[spec]!.has(item[1]!)) return false;
+  return new RegExp(`^${item[2]}\\. `, "m").test(sectionBody(spec, item[1]!));
 }
 
 describe("docs/REVIEWING.md tables", () => {
