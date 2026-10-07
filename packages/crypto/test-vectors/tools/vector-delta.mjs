@@ -3,8 +3,8 @@
 // Compares packages/crypto between the merge-base and the PR head and
 // writes a Markdown report: how every test-vector entry moved (unchanged /
 // removed / added / changed, and for a changed one whether its expected
-// outcome changed), which domain-separation strings and SUPPORTED_*
-// constants changed in src, and a conservative risk class R0–R3. The
+// outcome changed), which domain-separation strings, chain ops and
+// SUPPORTED_* constants changed, and a conservative risk class R0–R3. The
 // classes and how to read the report are in ../README.md ("Reviewing a
 // crypto change").
 //
@@ -171,9 +171,16 @@ function normalizeDomain(domain) {
 }
 
 /**
- * Domain strings, suites, primitives and SUPPORTED_* constants in one
- * source file. A template like `${context.suite}/var-meta-sig-v${layout}`
- * yields the pattern `<suite>/var-meta-sig-v*`.
+ * Domain strings, suites, primitives, string `case` labels and SUPPORTED_*
+ * constants in one source file. A template like
+ * `${context.suite}/var-meta-sig-v${layout}` yields the pattern
+ * `<suite>/var-meta-sig-v*`.
+ *
+ * A string `case` label is a member of a closed set the crypto code
+ * dispatches on. The one such switch is the chain payload canonicalization
+ * (§6.1): its labels are the chain ops, the domain separation of a chain
+ * entry (its signed bytes begin with the bare suite, so no domain string
+ * shows it), and tsc keeps that switch exhaustive. Any new label counts.
  */
 export function sourceFacts(src) {
   const tokens = scanTokens(src);
@@ -181,12 +188,23 @@ export function sourceFacts(src) {
   const domains = new Set();
   const suites = new Set();
   const primitives = new Set();
-  for (const { t, v } of tokens) {
+  const caseLabels = new Set();
+  for (const [i, { t, v }] of tokens.entries()) {
     if (t === "str") {
       const text = v.slice(1, -1);
       if (DOMAIN_LITERAL.test(text)) domains.add(normalizeDomain(text));
       if (SUITE_LITERAL.test(text)) suites.add(text);
       if (ALGORITHM_LITERAL.test(text)) primitives.add(`algorithm ${text}`);
+      const before = tokens[i - 1];
+      const after = tokens[i + 1];
+      if (
+        before?.t === "code" &&
+        /(?:^|[^\w$])case$/.test(before.v) &&
+        after?.t === "code" &&
+        after.v.startsWith(":")
+      ) {
+        caseLabels.add(text);
+      }
     } else if (t === "tpl") {
       const m = /^`\$\{[^}]*\}\/([a-z0-9][a-z0-9/-]*)(\$\{)?/.exec(v);
       if (m !== null) domains.add(`<suite>/${m[1]}${m[2] === undefined ? "" : "*"}`);
@@ -222,7 +240,7 @@ export function sourceFacts(src) {
         : { parsed: true, values: literal[1].split(",").filter((x) => x !== "") },
     );
   }
-  return { domains, suites, primitives, supported };
+  return { domains, suites, primitives, caseLabels, supported };
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +366,13 @@ function changedKinds(entry, before, after) {
 
 /**
  * Parses `hex` as a §2.1 length-prefixed encoding whose first field is a
- * domain string; returns { domain, fields } or null.
+ * domain string or a bare suite; returns { domain, fields } or null.
+ *
+ * A bare suite leads the encodings whose domain separation is not a leading
+ * domain string: chain entries (§6.1 — the op is their fourth field) and
+ * the variable AAD (§4). Their shape is the suite and the field count only;
+ * a chain op and its payload order are surface through the chain-op and
+ * field-order facts.
  */
 export function lpShape(hex) {
   if (!HEX.test(hex) || hex.length < 16) return null;
@@ -366,18 +390,22 @@ export function lpShape(hex) {
   }
   if (fields.length < 2) return null;
   const domain = new TextDecoder().decode(fields[0]);
-  return DOMAIN_LITERAL.test(domain) ? { domain, fields: fields.length } : null;
+  return DOMAIN_LITERAL.test(domain) || SUITE_LITERAL.test(domain)
+    ? { domain, fields: fields.length }
+    : null;
 }
 
+const FACT_KEYS = ["domains", "suites", "shapes", "fieldOrders", "ops"];
+
 function emptyFacts() {
-  return { domains: new Set(), suites: new Set(), shapes: new Set(), fieldOrders: new Set() };
+  return Object.fromEntries(FACT_KEYS.map((key) => [key, new Set()]));
 }
 
 /**
- * Domains, suites, encoding shapes (domain + field count of every
- * length-prefixed hex value) and field orders seen in a set of entries, in
- * two layers: `accepted` from non-negative entries (positives and fixtures)
- * and `all` including negatives. Negatives are malformed or foreign on
+ * Domains, suites, encoding shapes (leading domain or suite + field count
+ * of every length-prefixed hex value), field orders and chain ops seen in
+ * a set of entries, in two layers: `accepted` from non-negative entries
+ * (positives and fixtures) and `all` including negatives. Negatives are malformed or foreign on
  * purpose, so they never vouch for a surface: every comparison that could
  * lower a class (what base already knew, what head retired) reads
  * `accepted`; only "what head now carries" reads `all`, which errs upward.
@@ -387,9 +415,9 @@ function vectorFacts(entries) {
   const all = emptyFacts();
   for (const entry of entries.values()) {
     const facts = entryFacts(entry);
-    collectFieldOrders(entry.value, "", facts.fieldOrders);
+    collectFieldOrders(entry.value, facts.fieldOrders);
     for (const target of entry.negative ? [all] : [all, accepted]) {
-      for (const key of ["domains", "suites", "shapes", "fieldOrders"]) {
+      for (const key of FACT_KEYS) {
         for (const x of facts[key]) target[key].add(x);
       }
     }
@@ -397,13 +425,20 @@ function vectorFacts(entries) {
   return { accepted, all };
 }
 
-/** Domains, suites and §2.1 shapes (negatives included) one entry carries. */
+// Keys whose value is the op of a chain entry being signed (§6.1 `op`, a
+// proposal's `inner_op` — §6.2). The op is a chain entry's domain
+// separation, but its signed bytes begin with the bare suite
+const OP_KEY = /(?:^|\.)(?:inner_)?op$/;
+
+/** Domains, suites, §2.1 shapes and chain ops (negatives included) one entry carries. */
 function entryFacts(entry) {
   const domains = new Set();
   const suites = new Set();
   const shapes = new Set();
-  for (const value of leaves(entry.value).values()) {
+  const ops = new Set();
+  for (const [path, value] of leaves(entry.value)) {
     if (typeof value !== "string") continue;
+    if (OP_KEY.test(path)) ops.add(value);
     if (SUITE_LITERAL.test(value)) suites.add(value);
     if (DOMAIN_LITERAL.test(value)) {
       domains.add(normalizeDomain(value));
@@ -411,12 +446,14 @@ function entryFacts(entry) {
     }
     const shape = lpShape(value);
     if (shape !== null) {
-      domains.add(normalizeDomain(shape.domain));
+      // A suite-led shape is labeled `<suite>`, which is no domain string
+      const label = SUITE_LITERAL.test(shape.domain) ? "<suite>" : normalizeDomain(shape.domain);
+      if (label !== "<suite>") domains.add(label);
       suites.add(shape.domain.split("/").slice(0, 2).join("/"));
-      shapes.add(`${normalizeDomain(shape.domain)} ×${shape.fields}`);
+      shapes.add(`${label} ×${shape.fields}`);
     }
   }
-  return { domains, suites, shapes, fieldOrders: new Set() };
+  return { domains, suites, shapes, fieldOrders: new Set(), ops };
 }
 
 const shapeDomain = (shape) => shape.slice(0, shape.lastIndexOf(" ×"));
@@ -452,12 +489,28 @@ function retiredBy(entry, retired) {
   ];
 }
 
-/** Field-order arrays (`*_order`: lists of field names) describe encodings. */
-function collectFieldOrders(node, key, out) {
-  if (Array.isArray(node) && key.endsWith("_order") && node.every((x) => typeof x === "string")) {
-    out.add(JSON.stringify(node));
+/**
+ * Field orders (lists of field names) describe encodings: a string list
+ * under a `*_order` key, directly or inside a map there. A map's keys name
+ * the structure each list orders and are part of its identity — in
+ * chain-entries.json `payload_field_order.<op>` is the chain op table the
+ * generator builds every payload from (verify_reference.mjs checks it
+ * against its own copy), so a new op is a new field order even when its
+ * list equals another op's. The `*_order` key itself is not part of it:
+ * renaming a declaration adds no encoding.
+ */
+function collectFieldOrders(node, out, member = null) {
+  if (Array.isArray(node)) {
+    if (member !== null && node.every((x) => typeof x === "string")) {
+      out.add(`${member === "" ? "" : `${member}: `}${JSON.stringify(node)}`);
+    }
   } else if (isPlainObject(node)) {
-    for (const [k, v] of Object.entries(node)) collectFieldOrders(v, k, out);
+    for (const [k, v] of Object.entries(node)) {
+      let inner = null;
+      if (member !== null) inner = member === "" ? k : `${member}.${k}`;
+      else if (k.endsWith("_order")) inner = "";
+      collectFieldOrders(v, out, inner);
+    }
   }
 }
 
@@ -743,6 +796,8 @@ function surfaceDelta(baseSrc, headSrc, vectors) {
   const head = vectors.headFacts;
   const primitivesBase = mergeFacts(baseSrc, (f) => f.primitives);
   const primitivesHead = mergeFacts(headSrc, (f) => f.primitives);
+  const opsBase = mergeFacts(baseSrc, (f) => f.caseLabels);
+  const opsHead = mergeFacts(headSrc, (f) => f.caseLabels);
   const suitesHeadAll = new Set([...srcSuitesHead, ...head.all.suites]);
   return {
     domains: {
@@ -768,18 +823,28 @@ function surfaceDelta(baseSrc, headSrc, vectors) {
       added: setDiff(primitivesHead, primitivesBase),
       removed: setDiff(primitivesBase, primitivesHead),
     },
+    ops: {
+      new: grown(opsBase, opsHead, layers(base, "ops"), layers(head, "ops")),
+      srcAdded: setDiff(opsHead, opsBase),
+      srcRemoved: setDiff(opsBase, opsHead),
+      vectorAdded: setDiff(head.all.ops, base.all.ops),
+      vectorRemoved: setDiff(base.all.ops, head.all.ops),
+    },
     supported: supportedDelta(baseSrc, headSrc),
   };
 }
 
 /** R3 reasons: the encoding surface grows. */
 function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
-  const { domains, shapes, fieldOrders, suites, primitives } = surface;
+  const { domains, shapes, fieldOrders, suites, primitives, ops } = surface;
   const out = [];
   if (domains.new.length > 0) out.push(`new domain string(s): ${domains.new.join(", ")}`);
   if (suites.added.length > 0) out.push(`new suite identifier(s): ${suites.added.join(", ")}`);
   if (shapes.added.length > 0) out.push(`new signed-bytes shape(s): ${shapes.added.join(", ")}`);
-  if (fieldOrders.added.length > 0) out.push(`${fieldOrders.added.length} new field order(s)`);
+  if (fieldOrders.added.length > 0) {
+    out.push(`new field order(s): ${fieldOrders.added.join("; ")}`);
+  }
+  if (ops.new.length > 0) out.push(`new chain op(s) / src case label(s): ${ops.new.join(", ")}`);
   if (primitives.added.length > 0) {
     out.push(`new primitive / library use: ${primitives.added.join(", ")}`);
   }
@@ -795,8 +860,10 @@ function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
 /**
  * The risk class and its reasons (highest class wins):
  * R3 — the encoding surface grows: a new domain string, suite, signed-bytes
- *      shape, field order or primitive, a runtime dependency change, or a
- *      surviving vector whose bytes changed without being rebased.
+ *      shape (domain- or suite-led), field order (a chain op's payload order
+ *      included), chain op (a src string case label or a vector `op` /
+ *      `inner_op`) or primitive, a runtime dependency change, or a surviving
+ *      vector whose bytes changed without being rebased.
  * R2 — the surface is kept but behavior moves: a surviving vector's expected
  *      outcome changed, a SUPPORTED_* set did anything but shrink, a
  *      negative was removed while the surface it exercised remains, or code /
@@ -937,7 +1004,7 @@ function vectorSection(v) {
 }
 
 function surfaceSection(result) {
-  const { domains, shapes, fieldOrders, suites, primitives } = result;
+  const { domains, shapes, fieldOrders, suites, primitives, ops } = result;
   return [
     "### Domain-separation strings\n",
     `- new (in no base src or base vector): ${inline(domains.new)}`,
@@ -945,6 +1012,10 @@ function surfaceSection(result) {
     `- src removed: ${inline(domains.srcRemoved)}`,
     `- vectors added: ${inline(domains.vectorAdded)}`,
     `- vectors removed: ${inline(domains.vectorRemoved)}\n`,
+    "### Chain ops (src string `case` labels, vector `op` / `inner_op`)\n",
+    `- new (in no base src or base vector): ${inline(ops.new)}`,
+    `- src added: ${inline(ops.srcAdded)}; removed: ${inline(ops.srcRemoved)}`,
+    `- vectors added: ${inline(ops.vectorAdded)}; removed: ${inline(ops.vectorRemoved)}\n`,
     "### SUPPORTED_* constants\n",
     list(
       result.supported,
@@ -953,7 +1024,8 @@ function surfaceSection(result) {
     "### Encodings, suites and primitives\n",
     `- signed-bytes shapes added: ${inline(shapes.added)}`,
     `- signed-bytes shapes removed: ${inline(shapes.removed)}`,
-    `- field orders added / removed: ${fieldOrders.added.length} / ${fieldOrders.removed.length}`,
+    `- field orders added: ${inline(fieldOrders.added)}`,
+    `- field orders removed: ${inline(fieldOrders.removed)}`,
     `- suites added: ${inline(suites.added)}; removed: ${inline(suites.removed)}`,
     `- primitives added: ${inline(primitives.added)}`,
     `- primitives removed: ${inline(primitives.removed)}`,

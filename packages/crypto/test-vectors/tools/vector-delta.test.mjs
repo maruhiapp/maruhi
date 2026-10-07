@@ -9,11 +9,11 @@ import { describe, expect, it } from "vitest";
 
 import { analyze, canonicalSource, lpShape, sourceFacts } from "./vector-delta.mjs";
 
-/** §2.1 length-prefixed encoding of UTF-8 fields, as lowercase hex. */
+/** §2.1 length-prefixed encoding of UTF-8 (or raw Buffer) fields, as lowercase hex. */
 function lp(fields) {
   return fields
     .map((f) => {
-      const body = Buffer.from(f, "utf8");
+      const body = Buffer.isBuffer(f) ? f : Buffer.from(f, "utf8");
       const length = Buffer.alloc(4);
       length.writeUInt32BE(body.length);
       return Buffer.concat([length, body]).toString("hex");
@@ -420,6 +420,15 @@ describe("analyze", () => {
     expect(run(BASE_SRC, malformed).shapes.added).toEqual([]);
   });
 
+  it("a renamed flat `*_order` key adds no field order (the #329 retirement)", () => {
+    const vectors = baseVectors();
+    delete vectors.thing_signed_fields_order;
+    vectors.retired_thing_signed_fields_order = ["domain", "a", "b"];
+    const result = run(BASE_SRC, vectors);
+    expect(result.fieldOrders.added).toEqual([]);
+    expect(result.reasons.R3.filter((r) => r.includes("field order"))).toEqual([]);
+  });
+
   it("R3: a new primitive or a runtime dependency change", () => {
     const src = BASE_SRC.replace(
       "HPKE.KEM_DHKEM_X25519_HKDF_SHA256",
@@ -431,5 +440,182 @@ describe("analyze", () => {
     });
     expect(deps.runtimeDependencyChange).toBe(true);
     expect(deps.risk).toBe("R3");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chain entries (CRYPTO_SPEC §6.1): signed bytes led by the bare suite with
+// the op as their fourth field, and the payload order per op in a `*_order`
+// map. Shaped like chain-canonical.ts and chain-entries.json
+
+const CHAIN_SRC = `// Canonical payload bytes (§6.1)
+import { encodeLengthPrefixed } from "./encoding.ts";
+
+export function payloadBytes(operation: Operation): Uint8Array {
+  switch (operation.op) {
+    case "genesis": {
+      const p = operation.payload;
+      return encodeLengthPrefixed([p.encPubHex, p.sigPubHex]);
+    }
+    case "approve":
+    case "withdraw": {
+      return encodeLengthPrefixed([operation.payload.proposalHashHex]);
+    }
+  }
+}
+`;
+
+/** CHAIN_SRC with a `delete_environment` case. */
+const DELETE_SRC = CHAIN_SRC.replace(
+  '    case "approve":',
+  `    case "delete_environment": {
+      return encodeLengthPrefixed([operation.payload.environmentId]);
+    }
+    case "approve":`,
+);
+
+/** A chain entry: its op, payload bytes and suite-led signed bytes. */
+function chainEntry(seq, op, payloadFields) {
+  const payloadHex = lp(payloadFields);
+  const signed = [
+    "maruhi/v1",
+    String(seq),
+    "00".repeat(32),
+    op,
+    "user-owner-0001",
+    "aa".repeat(16),
+    Buffer.from(payloadHex, "hex"),
+    "1754006400000",
+  ];
+  return {
+    seq,
+    suite: "maruhi/v1",
+    op,
+    payload_bytes_hex: payloadHex,
+    signed_bytes_hex: lp(signed),
+  };
+}
+
+function chainVectors() {
+  return {
+    description: "chain vectors",
+    canonicalization: {
+      signed_bytes:
+        "LP(suite, seq, prev_hash_hex, op, actor_user_id, actor_key_fingerprint_hex, payload_bytes, timestamp_ms)",
+      payload_field_order: {
+        genesis: ["enc_pub_hex", "sig_pub_hex"],
+        approve: ["proposal_hash_hex"],
+        withdraw: ["proposal_hash_hex"],
+      },
+    },
+    entries: [
+      chainEntry(1, "genesis", ["cc".repeat(32), "dd".repeat(32)]),
+      chainEntry(2, "approve", ["ee".repeat(32)]),
+    ],
+    negative: [
+      {
+        name: "unknown-op",
+        entry: chainEntry(3, "delete_environment", ["env-dev-0002"]),
+        must_fail: true,
+        expected_reason: "unknown-op",
+      },
+    ],
+  };
+}
+
+function chainSnapshot(src, vectors) {
+  return new Map([
+    ["src/chain.ts", src],
+    ["test-vectors/chain.json", `${JSON.stringify(vectors, null, 2)}\n`],
+    ["package.json", JSON.stringify({ dependencies: { hpke: "1.1.7" } })],
+  ]);
+}
+
+const runChain = (src, vectors) =>
+  analyze(chainSnapshot(CHAIN_SRC, chainVectors()), chainSnapshot(src, vectors), runtimeForm);
+
+const DELETE_OP_REASON = "new chain op(s) / src case label(s): delete_environment";
+const DELETE_ORDER_REASON = 'new field order(s): delete_environment: ["environment_id"]';
+
+describe("chain ops (signed bytes led by the bare suite)", () => {
+  it("reads string case labels from src, fallthrough included, comments excluded", () => {
+    const facts = sourceFacts(`${CHAIN_SRC}// case "ghost": in a comment\nconst s = "case";\n`);
+    expect([...facts.caseLabels].toSorted()).toEqual(["approve", "genesis", "withdraw"]);
+  });
+
+  it("gives a suite-led encoding a shape of its own", () => {
+    expect(lpShape(chainEntry(1, "genesis", ["a", "b"]).signed_bytes_hex)).toEqual({
+      domain: "maruhi/v1",
+      fields: 8,
+    });
+  });
+
+  it("R3: a new chain op (#336), named in the reasons", () => {
+    const vectors = chainVectors();
+    vectors.canonicalization.payload_field_order.delete_environment = ["environment_id"];
+    vectors.entries.push(chainEntry(3, "delete_environment", ["env-dev-0002"]));
+    const result = runChain(DELETE_SRC, vectors);
+    expect(result.risk).toBe("R3");
+    expect(result.reasons.R3).toContain(DELETE_ORDER_REASON);
+    expect(result.reasons.R3).toContain(DELETE_OP_REASON);
+    expect(result.ops.srcAdded).toEqual(["delete_environment"]);
+    // A base negative already carried the op; it never vouches for it
+    expect(result.ops.vectorAdded).toEqual([]);
+  });
+
+  it("R3: each source alone shows a new op, with no fixture changing bytes", () => {
+    // src only: the vectors untouched
+    expect(runChain(DELETE_SRC, chainVectors()).reasons.R3).toEqual([DELETE_OP_REASON]);
+    // an added positive entry only
+    const entryOnly = chainVectors();
+    entryOnly.entries.push(chainEntry(3, "delete_environment", ["env-dev-0002"]));
+    expect(runChain(CHAIN_SRC, entryOnly).reasons.R3).toEqual([DELETE_OP_REASON]);
+    // the order declared under a new key only (an added fixture, not a changed one)
+    const orderOnly = chainVectors();
+    orderOnly.deletion_field_order = { delete_environment: ["environment_id"] };
+    const result = runChain(CHAIN_SRC, orderOnly);
+    expect(result.vectors.unexplained).toEqual([]);
+    expect(result.reasons.R3).toEqual([DELETE_ORDER_REASON]);
+  });
+
+  it("R3: an existing op's payload order changed", () => {
+    const vectors = chainVectors();
+    vectors.canonicalization.payload_field_order.genesis = ["sig_pub_hex", "enc_pub_hex"];
+    const result = runChain(CHAIN_SRC, vectors);
+    expect(result.fieldOrders.added).toEqual(['genesis: ["sig_pub_hex","enc_pub_hex"]']);
+    expect(result.reasons.R3).toContain(
+      'new field order(s): genesis: ["sig_pub_hex","enc_pub_hex"]',
+    );
+    expect(result.risk).toBe("R3");
+  });
+
+  it("R3: an op's order equal to another op's is still a new order", () => {
+    const vectors = chainVectors();
+    vectors.canonicalization.payload_field_order.genesis = ["proposal_hash_hex"];
+    expect(runChain(CHAIN_SRC, vectors).fieldOrders.added).toEqual([
+      'genesis: ["proposal_hash_hex"]',
+    ]);
+  });
+
+  it("R3: a suite-led encoding with a new field count", () => {
+    const vectors = chainVectors();
+    const entry = chainEntry(3, "approve", ["ff".repeat(32)]);
+    entry.signed_bytes_hex += lp(["extra"]);
+    vectors.entries.push(entry);
+    const result = runChain(CHAIN_SRC, vectors);
+    expect(result.shapes.added).toEqual(["<suite> ×9"]);
+    expect(result.domains.new).toEqual([]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("no chain change: an added entry of a known op adds no R3 reason", () => {
+    const vectors = chainVectors();
+    vectors.entries.push(chainEntry(3, "withdraw", ["ee".repeat(32)]));
+    const result = runChain(CHAIN_SRC, vectors);
+    expect(result.ops.new).toEqual([]);
+    expect(result.fieldOrders.added).toEqual([]);
+    expect(result.shapes.added).toEqual([]);
+    expect(result.reasons.R3).toEqual([]);
+    expect(result.risk).toBe("R2");
   });
 });
