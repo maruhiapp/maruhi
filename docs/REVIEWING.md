@@ -173,16 +173,15 @@ bun run delta -- --base 04bef88 --head cddd176   # PR #329 → R1
 bun run delta -- --base 46868ba --head 3e464dc   # PR #336 → R3
 ```
 
-In #336 the R3 comes from the two changed fixtures (`canonicalization` and
-`extended_chains` in `chain-entries.json`), not from the new chain op. The
-delta reports no new signed-bytes shape: its shape rule keys on a leading
-`maruhi/vN/…` domain field, and chain-entry signed bytes begin with the bare
-suite (`maruhi/v1`). So today a new chain op is not counted as new surface by
-itself; read chain-op changes in `chain-canonical.ts` (payload encoding),
-`chain-verify.ts` and CRYPTO_SPEC §6.2 directly.
-
-> **TODO:** update this paragraph when `vector-delta.mjs` counts a new chain
-> op as new signed-bytes surface.
+In #336 the R3 names the new chain op itself: `new chain op(s)`
+(`delete_environment`, read from the `ChainOperation` union's `op:`
+declarations and the vectors' `op` values) and `new field order(s)`
+(`delete_environment: ["environment_id"]`, from `payload_field_order` in
+`chain-entries.json`), next to the two changed fixtures. Chain-entry signed
+bytes begin with the bare suite (`maruhi/v1`), so their shape is reported as
+`<suite> ×N`. A chain-op change still deserves a direct read of
+`chain-canonical.ts` (payload encoding), `chain-verify.ts` and CRYPTO_SPEC
+§6.2: the aid names what is new, not whether it is right.
 
 The aid covers `packages/crypto` only; for CRYPTO_SPEC it reports only whether
 the file changed. Check the spec diff against the vector delta yourself.
