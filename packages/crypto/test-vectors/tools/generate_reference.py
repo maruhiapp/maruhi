@@ -3270,6 +3270,13 @@ def gen_chain_entries():
         expected_environments=base_environments,
         expected_server_grants=[],
     )
+    add_es(
+        "authz-approval-required-precedes-unknown-server-grant", 31,
+        revoke_applied[-1]["entry_hash_hex"], "revoke_server", owner_id,
+        revoke_server_payload, t0 + 30000, "approval-required",
+        "a direct revoke_server under a policy naming revoke_server × a server key with no active grant (revoked at seq 30) compound violation is judged as approval-required first (revoke_server: role → approval-required → unknown-server-grant)",
+        chain="proposal-revoke-server-applied",
+    )
 
     # --- The permissive side (valid_appends). Cases with a chain
     #     specifier attach to the tail of that derived chain ---
