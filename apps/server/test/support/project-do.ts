@@ -15,6 +15,7 @@
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 
+import type { ProjectChainDO } from "../../src/do/chain-do.ts";
 import { PROJECT_DO_LOCAL_TABLES, PROJECT_DO_TABLES } from "../../src/do/do-schema.ts";
 
 /** Returns the given project's DO storage to empty and evicts the
@@ -48,6 +49,21 @@ export async function resetProjectDo(projectId: string): Promise<void> {
 export async function evictProjectDo(projectId: string): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   await evictDurableObject(stub);
+}
+
+/**
+ * Calls an RPC method on the project DO instance itself, bypassing the RPC
+ * transport: a defect then rejects with its own error (message, tag and
+ * fields intact), so a test can pin which defect fired, where the HTTP
+ * answer is the same 500 for any of them. workerd prints no "uncaught
+ * exception" line for this direct call (it does for the RPC path).
+ */
+export async function callProjectDo<T>(
+  projectId: string,
+  call: (instance: ProjectChainDO) => Promise<T>,
+): Promise<T> {
+  const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+  return await runInDurableObject(stub, (instance) => call(instance));
 }
 
 /** Direct queries against DO SQLite (for checking stored state and the

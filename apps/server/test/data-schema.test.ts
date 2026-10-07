@@ -46,7 +46,7 @@ import {
   VAR,
   varStatements,
 } from "./support/data-scenario.ts";
-import { queryProjectDo } from "./support/project-do.ts";
+import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
@@ -135,8 +135,15 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
       projectId,
       "INSERT INTO project_settings (id, schema_policy) VALUES (1, 'disabled')",
     );
+    // The rejected DO RPC makes workerd log an "uncaught exception" line
+    // even though the worker catches it — expected
     const response = await requestJson("GET", "/schema-policy", token(READER));
     expect(response.status).toBe(500);
+    // Any defect would answer the same 500; the direct call on the
+    // instance pins which one fires
+    await expect(
+      callProjectDo(projectId, (instance) => instance.schemaPolicyFor({ userId: READER })),
+    ).rejects.toThrow("unexpected schema_policy in stored project settings row");
   });
 
   it("advisory bundling (§12-7): the environment list, the valued pull, and the metadata-only pull all carry schemaPolicy (not verification material)", async () => {

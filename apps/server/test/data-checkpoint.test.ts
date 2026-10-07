@@ -56,7 +56,7 @@ import {
   token,
   wrapsFor,
 } from "./support/data-scenario.ts";
-import { queryProjectDo } from "./support/project-do.ts";
+import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -345,11 +345,20 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
       actorUserId: MEMBER,
       environments: [tuple],
     });
+    // The rejected DO RPC makes workerd log an "uncaught exception" line
+    // even though the worker catches it — expected
     expect(attempt.response.status).toBe(500);
     // The defect body carries no environment data
     const body = await attempt.response.text();
     expect(body).not.toContain(ENV);
     expect(body).not.toContain("manifestVersion");
+    // Any defect would answer the same 500; the direct call on the
+    // instance pins which one fires (append's checkpoint acceptance)
+    await expect(
+      callProjectDo(projectId, (instance) =>
+        instance.append(fixture.head.hashHex, attempt.entry, MEMBER),
+      ),
+    ).rejects.toThrow("environment manifest row missing");
     // Atomicity: nothing reaches the chain or the mirrors
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);

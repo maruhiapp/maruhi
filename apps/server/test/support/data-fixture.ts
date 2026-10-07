@@ -678,36 +678,37 @@ export async function createEnvironmentWith(
   });
 }
 
+/** The inputs of a composite rotation request (§12-4). */
+interface RotateCompositeInput {
+  readonly environmentId: string;
+  readonly newEpoch: number;
+  readonly deks: readonly WireWrappedDek[];
+  readonly dekCommitmentHex: string;
+  readonly actorUserId?: string;
+  readonly parentHeadHashHex?: string;
+  /** For URL-vs-entry-payload mismatch tests (default is the same environment as the entry). */
+  readonly urlEnvironmentId?: string;
+  /** Manifest override for composite-consistency negatives. */
+  readonly manifest?: WireEnvironmentManifest;
+  /** Boundary checkpoint override for composite-consistency negatives. */
+  readonly checkpoint?: ChainEntry;
+  /**
+   * Override of the values_digest material (default = the actual
+   * enumeration of the rows stored in the DO; used by concurrent-push
+   * mismatch negatives etc.).
+   */
+  readonly checkpointValues?: readonly EnvValuesDigestEntry[];
+  /** Audit-head notarization for the boundary checkpoint (§16-2 — default is empty = no notarization). */
+  readonly checkpointAuditHeadHashHex?: string;
+}
+
 /**
- * Assemble and send a composite rotation request (§12-4): rotate_epoch
- * entry (with the new epoch's commitment) + wrap set. On 200, advances the
- * head.
+ * Assemble the body of a composite rotation request (§12-4): rotate_epoch
+ * entry (with the new epoch's commitment) + wrap set + manifest + boundary
+ * checkpoint. Exported for tests that hand the same body to the DO method
+ * directly.
  */
-export async function rotateEnvironmentComposite(
-  fixture: DataFixture,
-  input: {
-    readonly environmentId: string;
-    readonly newEpoch: number;
-    readonly deks: readonly WireWrappedDek[];
-    readonly dekCommitmentHex: string;
-    readonly actorUserId?: string;
-    readonly parentHeadHashHex?: string;
-    /** For URL-vs-entry-payload mismatch tests (default is the same environment as the entry). */
-    readonly urlEnvironmentId?: string;
-    /** Manifest override for composite-consistency negatives. */
-    readonly manifest?: WireEnvironmentManifest;
-    /** Boundary checkpoint override for composite-consistency negatives. */
-    readonly checkpoint?: ChainEntry;
-    /**
-     * Override of the values_digest material (default = the actual
-     * enumeration of the rows stored in the DO; used by concurrent-push
-     * mismatch negatives etc.).
-     */
-    readonly checkpointValues?: readonly EnvValuesDigestEntry[];
-    /** Audit-head notarization for the boundary checkpoint (§16-2 — default is empty = no notarization). */
-    readonly checkpointAuditHeadHashHex?: string;
-  },
-): Promise<Response> {
+export async function rotateCompositeBody(fixture: DataFixture, input: RotateCompositeInput) {
   const actorUserId = input.actorUserId ?? MEMBER;
   const { entry, hash: entryHash } = await signEntryAt({
     seq: fixture.head.seq + 1,
@@ -757,17 +758,31 @@ export async function rotateEnvironmentComposite(
         ? {}
         : { auditHeadHashHex: input.checkpointAuditHeadHashHex }),
     }));
+  return {
+    parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
+    entry,
+    deks: input.deks,
+    manifest,
+    checkpoint,
+  };
+}
+
+/**
+ * Assemble (rotateCompositeBody) and send a composite rotation request
+ * (§12-4). On 200, advances the head.
+ */
+export async function rotateEnvironmentComposite(
+  fixture: DataFixture,
+  input: RotateCompositeInput,
+): Promise<Response> {
+  const actorUserId = input.actorUserId ?? MEMBER;
+  const last = fixture.manifests.get(input.environmentId);
+  const body = await rotateCompositeBody(fixture, input);
   const response = await requestJson(
     "POST",
     `/environments/${input.urlEnvironmentId ?? input.environmentId}/rotate`,
     tokenOf(fixture.tokens, actorUserId),
-    {
-      parentHeadHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
-      entry,
-      deks: input.deks,
-      manifest,
-      checkpoint,
-    },
+    body,
   );
   if (response.status === 200) {
     advanceHead(
@@ -775,7 +790,7 @@ export async function rotateEnvironmentComposite(
       (await response.clone().json()) as { headSeq: number; headHashHex: string },
     );
     fixture.manifests.set(input.environmentId, {
-      manifest,
+      manifest: body.manifest,
       issuerUserId: actorUserId,
       epoch: input.newEpoch,
       entries: last?.entries ?? [],

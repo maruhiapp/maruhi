@@ -46,8 +46,9 @@ import {
   requireFirst,
   workloadKeyPair,
 } from "./support/lease-scenario.ts";
-import { LEASE_AUDIENCE, makeOidcToken } from "./support/lease.ts";
-import { queryProjectDo } from "./support/project-do.ts";
+import { LEASE_AUDIENCE, LEASE_SUBJECT, makeOidcToken } from "./support/lease.ts";
+import { OIDC_ISSUER } from "./support/oidc-issuer.ts";
+import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -104,6 +105,8 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
+    // The rejected DO RPC makes workerd log an "uncaught exception" line
+    // even though the worker catches it — expected
     const response = await requestLease({
       oidcToken: await makeOidcToken(),
       ephemeralPubHex: workload.publicKeyHex,
@@ -113,6 +116,22 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     const body = await response.text();
     expect(body).not.toContain(ENV);
     expect(body).not.toContain("manifestVersion");
+    // Any defect would answer the same 500; the direct call on the
+    // instance pins which one fires (the facts the worker hands over
+    // for the default token, under a binding key of its own)
+    await expect(
+      callProjectDo(projectId, async (instance) =>
+        instance.issueLease(ENV, workload.publicKeyHex, {
+          issuer: OIDC_ISSUER,
+          subject: LEASE_SUBJECT,
+          audiences: [LEASE_AUDIENCE],
+          claims: { iss: OIDC_ISSUER, sub: LEASE_SUBJECT, aud: LEASE_AUDIENCE },
+          claimsDigestHex: await claimsDigestOf(),
+          bindingKeyHex: "b1".repeat(32),
+          bindingExpiresAtMs: Date.now() + 600_000,
+        }),
+      ),
+    ).rejects.toThrow("environment manifest row missing");
   });
 
   it("bundles the stored checkpoint-time value snapshot (§14-2)", async () => {

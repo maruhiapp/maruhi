@@ -249,6 +249,8 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
+      // Each rejected DO RPC below makes workerd log an "uncaught
+      // exception" line even though the worker catches it — expected
       const response = await listOk(bearer(token(OWNER)));
       // The corrupted candidate is omitted from the response, and
       // the rest (the real project) still enumerates
@@ -263,6 +265,12 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
         ],
       ]);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(broken);
+      // Only the class name crosses the RPC, and any ChainInvalid would
+      // log it; the direct call on the instance pins which one fires
+      // (the stored row's decode, at the inserted seq)
+      await expect(
+        runInDurableObject(stub, (instance) => instance.memberRoleFor(OWNER)),
+      ).rejects.toMatchObject({ _tag: "ChainInvalid", seq: 1, reason: "invalid-payload" });
       // The same rejection on a site with no recovery stays a defect
       // (Effect.orDie): 500, as before RpcCallError — the chain get
       // (handlers-membership.ts), callProjectData (the schema-policy

@@ -12,8 +12,11 @@
 // violation (a defect, never an omission or a v1 acceptance) / cascade
 // on environment deletion.
 
+import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
+import { toManifestInput, toMetaStatementInput } from "../src/data/data-http.ts";
+import type { DekWrapInput } from "../src/data/data-plane.ts";
 import {
   commitmentOf,
   digestOf,
@@ -38,6 +41,7 @@ import {
   READER,
   renameEnvironmentRequest,
   requestJson,
+  rotateCompositeBody,
   rotateEnvironmentComposite,
   rotateEnvironmentOk,
 } from "./support/data-fixture.ts";
@@ -60,7 +64,7 @@ import {
   varStatements,
   wrapsFor,
 } from "./support/data-scenario.ts";
-import { queryProjectDo } from "./support/project-do.ts";
+import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -496,6 +500,11 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
+    // Each rejected DO RPC below makes workerd log an "uncaught
+    // exception" line even though the worker catches it — expected.
+    // Any defect would answer the same 500, so after each HTTP surface
+    // the direct call on the instance pins which one fires
+    const missingRow = "environment manifest row missing";
 
     for (const path of [`/environments/${ENV}/pull`, `/environments/${ENV}/pull/metadata`]) {
       const response = await requestJson("GET", path, token(READER));
@@ -505,6 +514,14 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       expect(body).not.toContain(ENV);
       expect(body).not.toContain("manifestVersion");
     }
+    await expect(
+      callProjectDo(projectId, (instance) => instance.pullEnvironment({ userId: READER }, ENV)),
+    ).rejects.toThrow(missingRow);
+    await expect(
+      callProjectDo(projectId, (instance) =>
+        instance.pullEnvironmentMetadata({ userId: READER }, ENV),
+      ),
+    ).rejects.toThrow(missingRow);
 
     // A meta operation is refused the same way (the CAS's latest-0
     // state exists only inside the creation composite — never accepted
@@ -515,36 +532,46 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       status: "active",
       authorUserId: MEMBER,
     });
+    const metaManifest = await nextEnvironmentManifest(fixture, {
+      environmentId: ENV,
+      epoch: 1,
+      entries: [
+        {
+          variableId: VAR,
+          status: "active" as const,
+          metaVersion: statement.metaVersion,
+          metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
+        },
+      ],
+      envMeta: await envMetaOf(fixture, ENV),
+      issuerUserId: MEMBER,
+      head: fixture.head,
+    });
     const metaOp = await requestJson(
       "PATCH",
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
-      {
-        statement,
-        manifest: await nextEnvironmentManifest(fixture, {
-          environmentId: ENV,
-          epoch: 1,
-          entries: [
-            {
-              variableId: VAR,
-              status: "active" as const,
-              metaVersion: statement.metaVersion,
-              metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
-            },
-          ],
-          envMeta: await envMetaOf(fixture, ENV),
-          issuerUserId: MEMBER,
-          head: fixture.head,
-        }),
-      },
+      { statement, manifest: metaManifest },
     );
     expect(metaOp.status).toBe(500);
+    await expect(
+      callProjectDo(projectId, (instance) =>
+        instance.renameVariable(
+          { userId: MEMBER },
+          ENV,
+          VAR,
+          // The test wire types widen suite to string (the request Schema narrows it)
+          toMetaStatementInput(statement as Parameters<typeof toMetaStatementInput>[0]),
+          toManifestInput(metaManifest),
+        ),
+      ),
+    ).rejects.toThrow(missingRow);
 
     // So is the rotate composite (a single DEK for both the wrap and
     // the commitment — the member-directed wrap must open to the DEK
     // the chain's commitment names)
     const nextDek = makeDek();
-    const rotated = await rotateEnvironmentComposite(fixture, {
+    const rotation = {
       environmentId: ENV,
       newEpoch: 2,
       deks: await wrapDekForAll({
@@ -564,8 +591,21 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         issuerUserId: MEMBER,
         head: fixture.head,
       }),
-    });
+    };
+    const rotated = await rotateEnvironmentComposite(fixture, rotation);
     expect(rotated.status).toBe(500);
+    const rotateBody = await rotateCompositeBody(fixture, rotation);
+    await expect(
+      callProjectDo(projectId, (instance) =>
+        instance.rotateEpoch({ userId: MEMBER }, ENV, {
+          parentHeadHashHex: rotateBody.parentHeadHashHex,
+          entry: rotateBody.entry as ChainEntry & { readonly op: "rotate_epoch" },
+          deks: rotateBody.deks as readonly DekWrapInput[],
+          manifest: toManifestInput(rotateBody.manifest),
+          checkpoint: rotateBody.checkpoint as ChainEntry & { readonly op: "checkpoint" },
+        }),
+      ),
+    ).rejects.toThrow(missingRow);
 
     // Refused without writing: no manifest row, no meta statement
     // advance, and the chain does not move (the rotate's entry pair is
