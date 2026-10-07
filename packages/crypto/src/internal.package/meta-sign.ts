@@ -26,7 +26,8 @@
 // signed_bytes is computed, and the support-range check happens **before
 // signature verification**, rejecting overage as the typed error
 // UnsupportedMetaLayout (an honest failure mode that does not collapse
-// into signature-invalid — ruling CR).
+// into signature-invalid — ruling CR). The signed-bytes builder applies the
+// same layout selection: no layout falls back to another layout's encoding.
 // Numbers (meta_version / chain_head_seq) are base-10 stringified per §2.1,
 // and binaries (hashes) go onto the LP as lowercase hex strings.
 // name / description are bound as raw UTF-8 byte strings (byte-exact — NFC
@@ -212,44 +213,104 @@ function coordinateFieldInvalid(context: MetaStatementContext): string | null {
   return null;
 }
 
-// Layout-1 structure check: no schema fields exist and status is 2-valued
-// for a variable (declared is v3-only — ruling CS: v1 declared is
-// InvalidInput as a wire-shape structure violation. Vector
-// v1-declared-status) and active-only for the environment itself
-// (2026-10-07 — an environment's deletion is the chain op
-// delete_environment, §6.2, so no environment statement records one.
-// Vector env-status-deleted)
-function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
-  if (context.schema !== undefined) {
-    return "context schema";
+/**
+ * The signed layout a context selects (§4.2 layout selection): layout 1
+ * (variable or environment) or the variable schema layout 3, carrying the
+ * fields that layout encodes. Produced only by `selectMetaLayout`, so the
+ * encoder and the validator share one selection and the encoder never
+ * substitutes one layout for another.
+ */
+type MetaLayout =
+  | { readonly version: 1 }
+  | {
+      readonly version: 3;
+      readonly variableId: string;
+      readonly schema: MetaVariableSchema;
+    };
+
+/**
+ * Layout selection (CRYPTO_SPEC §4.2, ruling CR): the wire layoutVersion
+ * (omitted = 1) must be a positive integer (else InvalidInput), within
+ * SUPPORTED_META_LAYOUT_VERSIONS (else the typed UnsupportedMetaLayout —
+ * the retired 2 and a future 4+ alike), and the context must carry exactly
+ * that layout's field set: layout 3 is variable statements only with the
+ * schema fields present; layout 1 has no schema fields (else InvalidInput).
+ * Field values are not judged here — that is `contextInvalidField`.
+ */
+function selectMetaLayout(context: MetaStatementContext): CryptoResult<MetaLayout> {
+  if (
+    context.layoutVersion !== undefined &&
+    (!Number.isSafeInteger(context.layoutVersion) || context.layoutVersion < 1)
+  ) {
+    return invalidInput("context layoutVersion");
   }
+  const version = metaLayoutVersionOf(context);
+  if (SUPPORTED_META_LAYOUT_VERSIONS.includes(version)) {
+    if (version === 1) {
+      return layoutV1Of(context);
+    }
+    if (version === 3) {
+      return layoutV3Of(context);
+    }
+  }
+  // Outside the supported set — or listed as supported with no encoding
+  // here (fail-closed if the constant ever grows ahead of the encoder)
+  return { ok: false, error: { kind: "UnsupportedMetaLayout", layoutVersion: version } };
+}
+
+// Layout 1's field set: no schema fields
+function layoutV1Of(context: MetaStatementContext): CryptoResult<MetaLayout> {
+  return context.schema === undefined
+    ? { ok: true, value: { version: 1 } }
+    : invalidInput("context schema");
+}
+
+// Layout 3's field set: a variable statement (environment meta stays v1)
+// with the schema fields present
+function layoutV3Of(context: MetaStatementContext): CryptoResult<MetaLayout> {
+  if (context.target.kind !== "variable") {
+    return invalidInput("context layoutVersion");
+  }
+  return context.schema === undefined
+    ? invalidInput("context schema")
+    : {
+        ok: true,
+        value: { version: 3, variableId: context.target.variableId, schema: context.schema },
+      };
+}
+
+// Layout-1 structure check: status is 2-valued for a variable (declared is
+// v3-only — ruling CS: v1 declared is InvalidInput as a wire-shape
+// structure violation. Vector v1-declared-status) and active-only for the
+// environment itself (2026-10-07 — an environment's deletion is the chain
+// op delete_environment, §6.2, so no environment statement records one.
+// Vector env-status-deleted). The absence of schema fields is part of the
+// layout selection
+function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
   const statuses: readonly string[] =
     context.target.kind === "environment" ? ["active"] : ["active", "deleted"];
   return statuses.includes(context.status) ? null : "context status";
 }
 
-// Layout-3 structure check: variable statements only (environment meta
-// stays v1 — §4.2), schema fields mandatory, var_type a closed set,
+// Layout-3 structure check (the variable target and the presence of the
+// schema fields are part of the layout selection): var_type a closed set,
 // required mandatory-explicit and the empty string not allowed
 // (fail-closed — vector v3-empty-required), max_age_days mandatory and
 // well-formed ("" or 1..3650 — vectors v3-missing-max-age /
 // v3-max-age-leading-zero / v3-max-age-out-of-range), status 3-valued
-function layoutV3FieldInvalid(context: MetaStatementContext): string | null {
-  if (context.target.kind !== "variable") {
-    return "context layoutVersion";
-  }
-  if (context.schema === undefined) {
-    return "context schema";
-  }
-  if (!META_VAR_TYPES.includes(context.schema.varType)) {
+function layoutV3FieldInvalid(
+  context: MetaStatementContext,
+  schema: MetaVariableSchema,
+): string | null {
+  if (!META_VAR_TYPES.includes(schema.varType)) {
     return "context varType";
   }
-  if (context.schema.required !== "true" && context.schema.required !== "false") {
+  if (schema.required !== "true" && schema.required !== "false") {
     return "context required";
   }
   // The wire-derived context may lack the field despite the type
   // (fail-closed — the v3-missing-max-age vector)
-  const maxAge: unknown = context.schema.maxAgeDays;
+  const maxAge: unknown = schema.maxAgeDays;
   if (typeof maxAge !== "string" || !isMetaMaxAgeDays(maxAge)) {
     return "context maxAgeDays";
   }
@@ -257,23 +318,14 @@ function layoutV3FieldInvalid(context: MetaStatementContext): string | null {
   return statuses.includes(context.status) ? null : "context status";
 }
 
-// Layout-dependent structure check (precondition: the layout version is
-// within the supported range {1, 3}). The status vocabulary and the
-// presence of schema fields are decided by the layout
-function layoutFieldInvalid(context: MetaStatementContext): string | null {
-  return metaLayoutVersionOf(context) === 1
-    ? layoutV1FieldInvalid(context)
-    : layoutV3FieldInvalid(context);
-}
-
-// Structure validation of the signing target. The metaVersion ↔ prev
-// coupling (1 = empty / > 1 = 64-hex) is not checked here: the verify side
-// must be able to verify the signature of a "valid signature but
-// rule-violating" statement first (the vectors' rule negatives such as
-// v1-nonempty-prev), and the coupling is rejected with a reason code as a
-// verification rule (meta-verify.ts's prev-shape-mismatch) — the same
-// asymmetry as value-sign.ts.
-function contextInvalidField(context: MetaStatementContext): string | null {
+// Structure validation of the signing target under its selected layout.
+// The metaVersion ↔ prev coupling (1 = empty / > 1 = 64-hex) is not
+// checked here: the verify side must be able to verify the signature of a
+// "valid signature but rule-violating" statement first (the vectors' rule
+// negatives such as v1-nonempty-prev), and the coupling is rejected with a
+// reason code as a verification rule (meta-verify.ts's
+// prev-shape-mismatch) — the same asymmetry as value-sign.ts.
+function contextInvalidField(context: MetaStatementContext, layout: MetaLayout): string | null {
   const coordinate = coordinateFieldInvalid(context);
   if (coordinate !== null) {
     return coordinate;
@@ -284,9 +336,12 @@ function contextInvalidField(context: MetaStatementContext): string | null {
   if (context.name.length === 0) {
     return "context name";
   }
-  const layout = layoutFieldInvalid(context);
-  if (layout !== null) {
-    return layout;
+  const fields =
+    layout.version === 1
+      ? layoutV1FieldInvalid(context)
+      : layoutV3FieldInvalid(context, layout.schema);
+  if (fields !== null) {
+    return fields;
   }
   if (context.authorUserId.length === 0) {
     return "context authorUserId";
@@ -294,89 +349,108 @@ function contextInvalidField(context: MetaStatementContext): string | null {
   return numericFieldInvalid(context) ?? hexFieldInvalid(context);
 }
 
+// Layout selection followed by the structure validation of the selected
+// layout's fields — the gate every sign / verify / hash passes
+function checkedMetaLayout(context: MetaStatementContext): CryptoResult<MetaLayout> {
+  const selected = selectMetaLayout(context);
+  if (!selected.ok) {
+    return selected;
+  }
+  const field = contextInvalidField(context, selected.value);
+  return field === null ? selected : invalidInput(field);
+}
+
 /**
  * Validates a metadata-statement context (shared by sign / verify / hash).
- * The check order is fixed by CRYPTO_SPEC §4.2 (ruling CR): the layoutVersion
- * support range is inspected **before** any layout-dependent field validation
- * and before signature verification, so an unsupported layout surfaces as the
- * typed `UnsupportedMetaLayout` ("client update required") — never as an
+ * The check order is fixed by CRYPTO_SPEC §4.2 (ruling CR): the layout
+ * selection (the layoutVersion support range and the layout's field set) is
+ * inspected **before** any field-value validation and before signature
+ * verification, so an unsupported layout surfaces as the typed
+ * `UnsupportedMetaLayout` ("client update required") — never as an
  * `InvalidInput` about fields the verifier cannot understand, and never as a
  * signature failure indistinguishable from tampering.
  */
 export function metaContextRejection(context: MetaStatementContext): CryptoError | null {
-  if (
-    context.layoutVersion !== undefined &&
-    (!Number.isSafeInteger(context.layoutVersion) || context.layoutVersion < 1)
-  ) {
-    return { kind: "InvalidInput", field: "context layoutVersion" };
+  const checked = checkedMetaLayout(context);
+  return checked.ok ? null : checked.error;
+}
+
+// The LP encoding of one statement under its selected layout (§4.2). The
+// switch is exhaustive over MetaLayout, so no layout falls through to
+// another layout's encoding
+function encodeMetaSignedBytes(context: MetaStatementContext, layout: MetaLayout): Uint8Array {
+  switch (layout.version) {
+    case 3: {
+      // The schema fields right after status, under the layout's own
+      // domain string (a v3 signature never verifies under v1 and vice
+      // versa — §1 principle 6). The encoding is total over field values:
+      // a context missing max_age_days encodes it as the empty declaration
+      // (validation rejects it first)
+      const maxAge: unknown = layout.schema.maxAgeDays;
+      return encodeLengthPrefixed([
+        `${context.suite}/var-meta-sig-v3`,
+        context.projectId,
+        context.environmentId,
+        layout.variableId,
+        context.name,
+        context.status,
+        layout.schema.varType,
+        layout.schema.required,
+        layout.schema.description,
+        typeof maxAge === "string" ? maxAge : "",
+        context.metaVersion,
+        context.prevMetaSigHashHex,
+        context.authorUserId,
+        context.chainHeadHashHex,
+        context.chainHeadSeq,
+      ]);
+    }
+    case 1: {
+      const fields: LengthPrefixedField[] = [
+        context.target.kind === "variable"
+          ? `${context.suite}/var-meta-sig`
+          : `${context.suite}/env-meta-sig`,
+        context.projectId,
+        context.environmentId,
+      ];
+      if (context.target.kind === "variable") {
+        fields.push(context.target.variableId);
+      }
+      fields.push(
+        context.name,
+        context.status,
+        context.metaVersion,
+        context.prevMetaSigHashHex,
+        context.authorUserId,
+        context.chainHeadHashHex,
+        context.chainHeadSeq,
+      );
+      return encodeLengthPrefixed(fields);
+    }
   }
-  const layout = metaLayoutVersionOf(context);
-  if (!SUPPORTED_META_LAYOUT_VERSIONS.includes(layout)) {
-    return { kind: "UnsupportedMetaLayout", layoutVersion: layout };
-  }
-  const field = contextInvalidField(context);
-  return field === null ? null : { kind: "InvalidInput", field };
 }
 
 /**
  * Builds the canonical byte string signed for one metadata statement
- * (CRYPTO_SPEC §4.2). The domain string embeds the suite identifier, the
- * statement kind (var / env) and — for variable layout v3 — the layout
- * version, so a signature never transplants across suites, kinds or layouts
- * (layout confusion fails structurally as a signature mismatch — §1
- * principle 6). Callers must
- * validate the context first (sign / verify / hash below do); this builder
- * assumes valid input.
+ * (CRYPTO_SPEC §4.2) under the layout its wire `layoutVersion` selects. The
+ * domain string embeds the suite identifier, the statement kind (var / env)
+ * and — for variable layout v3 — the layout version, so a signature never
+ * transplants across suites, kinds or layouts (layout confusion fails
+ * structurally as a signature mismatch — §1 principle 6).
+ *
+ * Fail-closed on the layout: a layoutVersion outside the supported set is
+ * the typed `UnsupportedMetaLayout`, and a malformed layoutVersion or a
+ * field set that does not match the layout (layout 3 on an environment or
+ * without schema fields, layout 1 with schema fields) is `InvalidInput` —
+ * never another layout's bytes. Field values are not validated here (the
+ * encoding is total over them, so negative vectors can be reproduced);
+ * sign / verify / hash below apply the full validation.
  */
-export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array {
-  if (
-    metaLayoutVersionOf(context) === 3 &&
-    context.target.kind === "variable" &&
-    context.schema !== undefined
-  ) {
-    // The schema fields right after status, under the layout's own domain
-    // string (a v3 signature never verifies under v1 and vice versa — §1
-    // principle 6). The encoder is total: a context missing max_age_days
-    // encodes it as the empty declaration (validation rejects it first)
-    const maxAge: unknown = context.schema.maxAgeDays;
-    return encodeLengthPrefixed([
-      `${context.suite}/var-meta-sig-v3`,
-      context.projectId,
-      context.environmentId,
-      context.target.variableId,
-      context.name,
-      context.status,
-      context.schema.varType,
-      context.schema.required,
-      context.schema.description,
-      typeof maxAge === "string" ? maxAge : "",
-      context.metaVersion,
-      context.prevMetaSigHashHex,
-      context.authorUserId,
-      context.chainHeadHashHex,
-      context.chainHeadSeq,
-    ]);
-  }
-  const fields: LengthPrefixedField[] = [
-    context.target.kind === "variable"
-      ? `${context.suite}/var-meta-sig`
-      : `${context.suite}/env-meta-sig`,
-    context.projectId,
-    context.environmentId,
-  ];
-  if (context.target.kind === "variable") {
-    fields.push(context.target.variableId);
-  }
-  fields.push(
-    context.name,
-    context.status,
-    context.metaVersion,
-    context.prevMetaSigHashHex,
-    context.authorUserId,
-    context.chainHeadHashHex,
-    context.chainHeadSeq,
-  );
-  return encodeLengthPrefixed(fields);
+export function buildMetaSignedBytes(context: MetaStatementContext): CryptoResult<Uint8Array> {
+  const selected = selectMetaLayout(context);
+  return selected.ok
+    ? { ok: true, value: encodeMetaSignedBytes(context, selected.value) }
+    : selected;
 }
 
 /**
@@ -388,11 +462,14 @@ export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array 
 export async function computeMetaSignedBytesHash(
   context: MetaStatementContext,
 ): Promise<CryptoResult<string>> {
-  const rejection = metaContextRejection(context);
-  if (rejection !== null) {
-    return { ok: false, error: rejection };
+  const layout = checkedMetaLayout(context);
+  if (!layout.ok) {
+    return layout;
   }
-  return { ok: true, value: encodeHex(await sha256(buildMetaSignedBytes(context))) };
+  return {
+    ok: true,
+    value: encodeHex(await sha256(encodeMetaSignedBytes(context, layout.value))),
+  };
 }
 
 /**
@@ -412,9 +489,9 @@ export async function signMetaStatement(input: {
   readonly context: MetaStatementContext;
   readonly signingKey: CryptoKey;
 }): Promise<CryptoResult<string>> {
-  const rejection = metaContextRejection(input.context);
-  if (rejection !== null) {
-    return { ok: false, error: rejection };
+  const layout = checkedMetaLayout(input.context);
+  if (!layout.ok) {
+    return layout;
   }
   if ((input.context.metaVersion === 1) !== (input.context.prevMetaSigHashHex === "")) {
     return invalidInput("context prevMetaSigHashHex");
@@ -427,7 +504,7 @@ export async function signMetaStatement(input: {
       await crypto.subtle.sign(
         "Ed25519",
         input.signingKey,
-        buildMetaSignedBytes(input.context) as BufferSource,
+        encodeMetaSignedBytes(input.context, layout.value) as BufferSource,
       ),
     );
     return { ok: true, value: encodeHex(signature) };
@@ -447,12 +524,12 @@ export async function verifyMetaStatementSignature(input: {
   readonly signatureHex: string;
   readonly authorPublicKey: CryptoKey;
 }): Promise<CryptoResult<void>> {
-  const rejection = metaContextRejection(input.context);
-  if (rejection !== null) {
-    return { ok: false, error: rejection };
+  const layout = checkedMetaLayout(input.context);
+  if (!layout.ok) {
+    return layout;
   }
   return verifyEd25519Over(
-    buildMetaSignedBytes(input.context),
+    encodeMetaSignedBytes(input.context, layout.value),
     input.signatureHex,
     input.authorPublicKey,
     {
