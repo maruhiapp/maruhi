@@ -20,8 +20,11 @@
 //
 // The identity columns carry the branded domain types (`$type<UserId>()` /
 // `$type<ProviderUserId>()`): mapping a row is the repository service's
-// trust boundary, so a selected value arrives already minted and an insert
-// refuses a plain string. Branded: users.id and the user_id columns of the
+// trust boundary, so a selected value arrives already minted and a
+// `.values()` insert refuses a plain string. Drizzle does not type-check the
+// columns of an INSERT…SELECT: the audit insert-selects take their user ids
+// from `guardedAuditSelectColumns` (typed input) or from a branded column.
+// Branded: users.id and the user_id columns of the
 // auth plumbing (linked_identities / sessions / api_tokens /
 // cli_login_flows), the provider_user_id lookup key, the audit log's
 // actor / target, and the columns an audit target or a chain entry is

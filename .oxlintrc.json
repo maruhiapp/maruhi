@@ -34,6 +34,16 @@
               {
                 "name": "@effect/platform-bun/BunHttpClient",
                 "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              },
+              {
+                "name": "@maruhi/core",
+                "importNames": [
+                  "UserIdSchema",
+                  "ProviderUserIdSchema",
+                  "decodeUserId",
+                  "decodeProviderUserId"
+                ],
+                "message": "UserId / ProviderUserId are minted only at a trust boundary (packages/core/src/identity.ts): a wire schema in packages/api-schema, a branded Drizzle column, or one of the hand-written mint sites listed in .oxlintrc.json. Read an id from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
               }
             ]
           }
@@ -44,6 +54,40 @@
       // The one place allowed to wrap effect's fetch client
       "files": ["packages/core/src/egress.ts"],
       "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // The identity mint sites (packages/core/src/identity.ts): the wire
+      // schemas, the CLI's user-id argument, generation, the provider API's
+      // subject, the restore worker's and the keychain's parsers, and the
+      // DEK recipient class. The egress ban above is restated because an
+      // override replaces the rule's options
+      "files": [
+        "packages/api-schema/src/**",
+        "apps/cli/src/commands/flags.ts",
+        "apps/cli/src/keychain.ts",
+        "apps/server/src/ids.ts",
+        "apps/server/src/auth.package/github.ts",
+        "apps/server/src/restore-worker.ts",
+        "apps/server/src/data/data-plane.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect/http",
+                "importNames": ["FetchHttpClient"],
+                "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              },
+              {
+                "name": "@effect/platform-bun/BunHttpClient",
+                "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       // Effect fence (CLAUDE.md "Architecture"): packages/crypto is one of the

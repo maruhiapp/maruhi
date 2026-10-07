@@ -21,7 +21,9 @@
 // (these schemas, also behind CLI arguments; `decode*` for the few
 // hand-written parsers), DB row mapping inside the server's repository
 // service (the Drizzle column types), and generation (a new user id, the
-// subject the provider's API returns).
+// subject the provider's API returns). `.oxlintrc.json` enforces this: the
+// schemas and `decode*` mints below may be imported only by the listed mint
+// sites.
 
 import type { UserId } from "@maruhi/crypto";
 import { Schema } from "effect";
