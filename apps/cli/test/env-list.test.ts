@@ -207,6 +207,64 @@ describe("maruhi env list", () => {
     expect(env.logs).toEqual([]);
   });
 
+  it("re-syncs once when a live environment is unlisted: a deletion landing after this view's sync is not evidence", async () => {
+    // The list carries no head, so the first omission may be a
+    // delete_environment the view has not seen; the bounded resync settles it
+    const raced = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      {
+        actor: owner,
+        operation: createEnvironmentOp("env-prod", crypto.getRandomValues(new Uint8Array(32))),
+      },
+      {
+        actor: owner,
+        operation: createEnvironmentOp("env-dev", crypto.getRandomValues(new Uint8Array(32))),
+      },
+      { actor: owner, operation: deleteEnvironmentOp("env-prod") },
+    ]);
+    const dev = await environmentStatementFor({
+      projectId: raced.projectId,
+      environmentId: "env-dev",
+      name: "Development",
+      author: owner,
+      head: { seq: 1, hashHex: raced.projectId },
+    });
+    let chainCalls = 0;
+    const server = await MockServer.start([
+      onRequest("GET", `/projects/${raced.projectId}/chain`, () => {
+        chainCalls += 1;
+        const length = chainCalls === 1 ? raced.entries.length - 1 : raced.entries.length;
+        return {
+          status: 200,
+          json: {
+            projectId: raced.projectId,
+            entries: raced.entries.slice(0, length),
+            headSeq: length,
+            headHashHex: raced.hashes[length - 1],
+            attestations: [],
+          },
+        };
+      }),
+      onRequest("GET", `/projects/${raced.projectId}/environments`, () => ({
+        status: 200,
+        json: {
+          environments: [{ environmentId: "env-dev", currentEpoch: 1, statement: dev }],
+          schemaPolicy: "enabled" as const,
+        },
+      })),
+    ]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, { server: server.origin, defaultProject: raced.projectId });
+    expect(await runCli(["env", "list", "--all", "--json"], env.layer)).toBe(0);
+    const document = JSON.parse(env.logs.join("\n")) as ListDocument;
+    expect(document.environments.map((row) => [row.environmentId, row.status])).toEqual([
+      ["env-dev", "active"],
+      ["env-prod", "deleted"],
+    ]);
+  });
+
   it("refuses a listing that serves a chain-deleted environment as live (a resurrection — §6.3)", async () => {
     const env = await startEnv(owner, [devStatement, prodStatement, oldStatement]);
     expect(await runCli(["env", "list", "--all"], env.layer)).not.toBe(0);

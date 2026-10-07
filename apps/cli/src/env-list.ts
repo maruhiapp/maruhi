@@ -98,6 +98,8 @@ interface JoinedEnvironment {
 const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   view: VerifiedProject,
   wire: ListWire,
+  /** False on the first pass: an omitted live environment may be a deletion the view has not seen yet. */
+  resynced: boolean,
 ): Effect.fn.Return<
   | { readonly kind: "ok"; readonly value: readonly JoinedEnvironment[] }
   | { readonly kind: "future" },
@@ -114,6 +116,7 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
       environmentId,
       chainEnvironment,
       listed.get(environmentId),
+      resynced,
     );
     if (statement === "future") {
       return { kind: "future" } as const;
@@ -151,10 +154,16 @@ const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
   environmentId: string,
   chainEnvironment: EnvironmentChainState,
   statement: ListedStatement | undefined,
+  resynced: boolean,
 ): Effect.fn.Return<VerifiedEnvironmentStatement | null | "future", CliError> {
   if (statement === undefined) {
     if (chainEnvironment.deletedAtSeq !== null) {
       return null;
+    }
+    // The list carries no head: a deletion accepted after this view's sync
+    // legitimately drops the environment, so the first omission re-syncs once
+    if (!resynced) {
+      return "future";
     }
     return yield* Effect.fail(
       evidenceError(
@@ -217,7 +226,7 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
     fetch: input.client.environments
       .list({ params: { projectId: input.verified.projectId } })
       .pipe(Effect.mapError(toCliError)),
-    verify: verifyListing,
+    verify: (current, wire) => verifyListing(current, wire, current !== input.verified),
     // The listing is not a floor input (it only reads)
     accept: () => Effect.void,
     divergedMessage:
