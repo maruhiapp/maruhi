@@ -197,7 +197,12 @@ function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
-function isApprovalTargetOp(value: unknown): value is ApprovalTargetOp {
+/**
+ * Whether `value` names an operation a four-eyes policy may list in `ops`
+ * (the closed set APPROVAL_TARGET_OPS — §6.2). Public so that a client
+ * parsing policy ops uses the guard the consensus rule uses.
+ */
+export function isApprovalTargetOp(value: unknown): value is ApprovalTargetOp {
   return typeof value === "string" && (APPROVAL_TARGET_OPS as readonly string[]).includes(value);
 }
 
@@ -658,9 +663,14 @@ function permissionChangeEnvironments(
  * propose / approve / direct-append rejection): the policy is active and
  * the op is either listed in ops or an always-target (set_approval_policy
  * itself, and add_member / change_role establishing the owner role —
- * policy monotonicity (a))
+ * policy monotonicity (a)). Public so that a client deciding before
+ * submission whether an operation must go through propose / approve uses
+ * this one definition, not a copy
  */
-function isApprovalTarget(operation: ProposableOperation, policy: ApprovalPolicy | null): boolean {
+export function isApprovalTarget(
+  operation: ProposableOperation,
+  policy: ApprovalPolicy | null,
+): boolean {
   if (policy === null) {
     return false;
   }

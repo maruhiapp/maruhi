@@ -1,16 +1,17 @@
 // CLI-side pure functions for four-eyes (CRYPTO_SPEC §6.2 — PF1; design
 // record es-design.md §12 K6-F / G / K / O).
 //
-// - The target check `isApprovalTarget` and the vote re-tally
-//   `countOwnerVotes` are the CLI's second implementation of crypto's
-//   consensus rules (private functions in chain-verify.ts). They are derived
-//   from the public API (`APPROVAL_TARGET_OPS` / `ApprovalPolicy` /
-//   `PendingProposal` / `ApprovalVote` / `ChainMember`) without copying the
+// - The target check is crypto's own `isApprovalTarget` (public since the
+//   K6-Q handoff — the consensus rule and the CLI share one definition);
+//   the CLI keeps no copy of it
+// - The vote re-tally `countOwnerVotes` is the CLI's second implementation
+//   of crypto's consensus rule (a private function in chain-verify.ts over
+//   the verifier's internal state). It is derived from the public API
+//   (`PendingProposal` / `ApprovalVote` / `ChainMember`) without copying the
 //   internals (the same shape as K4-I's inclusion predicate). A divergence
 //   is caught by the consensus rule's 422 as the final arbiter, and the
 //   differential test against `verifyChain` (approval-rules.test.ts) catches
-//   regressions. Consider making them public API the next time crypto is
-//   touched (K6-Q handoff)
+//   regressions
 // - The vote count does not echo the record (`PendingProposal.approvals`)
 //   verbatim — **it is re-tallied under the current policy and current
 //   members** (the record keeps revoked votes — design record §8 K2
@@ -20,13 +21,13 @@
 //   the first 8 characters (approval item 23)
 
 import {
-  APPROVAL_TARGET_OPS,
   type ApprovalPolicy,
   type ApprovalTargetOp,
   type ApprovalVote,
   canonicalChainPayloadBytes,
   type ChainMember,
   effectivePermissionOf,
+  isApprovalTarget,
   type PendingProposal,
   type ProposableOperation,
 } from "@maruhi/crypto";
@@ -57,41 +58,9 @@ export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
 const MIN_PROPOSAL_REF_LENGTH = 8;
 
 // ---------------------------------------------------------------------------
-// Target check and vote re-tally (the CLI-side copy of the §6.2 principle 2)
+// Vote re-tally (the CLI-side copy of the §6.2 principle 2 — the target
+// check is crypto's `isApprovalTarget`)
 // ---------------------------------------------------------------------------
-
-/** Whether `value` names an operation a policy may list in `ops` (closed set — CRYPTO_SPEC §6.2). */
-export function isApprovalTargetOp(value: string): value is ApprovalTargetOp {
-  return APPROVAL_TARGET_OPS.some((op) => op === value);
-}
-
-/** add_member / change_role that establish an owner role (always-targets, per policy monotonicity (a)). */
-function establishesOwner(operation: ProposableOperation): boolean {
-  return (
-    (operation.op === "add_member" && operation.payload.role === "owner") ||
-    (operation.op === "change_role" && operation.payload.newRole === "owner")
-  );
-}
-
-/**
- * The four-eyes target check (§6.2): a policy is enabled and the op is
- * either listed in `ops` or an always-target (`set_approval_policy` itself
- * and add_member / change_role that establish an owner). The CLI-side copy
- * of the single predicate shared by `propose` / `approve` / direct-append
- * refusal.
- */
-export function isApprovalTarget(
-  operation: ProposableOperation,
-  policy: ApprovalPolicy | null,
-): boolean {
-  if (policy === null) {
-    return false;
-  }
-  if (operation.op === "set_approval_policy" || establishesOwner(operation)) {
-    return true;
-  }
-  return isApprovalTargetOp(operation.op) && policy.ops.includes(operation.op);
-}
 
 /**
  * Principle 2 (§6.2) signer set S = {proposers who proposed as owner} ∪

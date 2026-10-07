@@ -7,6 +7,7 @@ import {
   ALL_SCOPE,
   type ChainEntry,
   type ChainMember,
+  isApprovalTarget,
   type MemberScope,
   memberScopeOf,
   type ProposableOperation,
@@ -18,7 +19,6 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { isApprovalTarget } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,

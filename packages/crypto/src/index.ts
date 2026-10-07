@@ -180,6 +180,8 @@ export {
   type EnvValuesDigestSource,
   type GenesisPayload,
   type GrantServerPayload,
+  isApprovalTarget,
+  isApprovalTargetOp,
   type LeaseClaimConstraint,
   type LeasePolicyIssuer,
   MAX_SCOPE_ENVIRONMENTS,

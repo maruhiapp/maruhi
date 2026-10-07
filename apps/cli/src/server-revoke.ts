@@ -24,11 +24,15 @@
 // target and surfaces as a rotate failure).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import type { ChainEntry, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
+import {
+  type ChainEntry,
+  isApprovalTarget,
+  type ProposableOperation,
+  type SigningKeyPair,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { isApprovalTarget } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,

@@ -2,12 +2,13 @@
 // design note es-design.md §12 K6-F / G / K).
 //
 // Properties pinned down:
-//  1. The target check `isApprovalTarget` and the vote recount
-//     `countOwnerVotes` are the second implementation of crypto's consensus
-//     rules (K6-G). **Differential test**: run the same chains through the
-//     public API's verifyChain and require the direct-append rejection
-//     (approval-required), stale votes (demotion / key rotation), and
-//     completion verdicts to agree
+//  1. The vote recount `countOwnerVotes` is the second implementation of
+//     crypto's consensus rule (K6-G); the target check is crypto's public
+//     `isApprovalTarget` (the CLI keeps no copy). **Differential test**: run
+//     the same chains through the public API's verifyChain and require the
+//     direct-append rejection (approval-required), stale votes (demotion /
+//     key rotation), and completion verdicts to agree with what the CLI
+//     decides before submission
 //  2. Proposal-id prefix resolution (8+ chars, unique; distinguishing
 //     completed / withdrawn / unknown)
 //  3. `--expires` parsing (default 7 days, cap 30 days, 0 not allowed)
@@ -16,7 +17,7 @@
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
-import { verifyChain } from "@maruhi/crypto";
+import { isApprovalTarget, verifyChain } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -24,7 +25,6 @@ import {
   countOwnerVotes,
   DEFAULT_PROPOSAL_LIFETIME_MS,
   describeInnerOperation,
-  isApprovalTarget,
   MAX_PROPOSAL_LIFETIME_MS,
   parseProposalExpiry,
   proposalViewOf,
@@ -101,7 +101,7 @@ async function verifyResult(entries: readonly ChainEntry[]): Promise<string> {
   return result.error.kind === "ChainInvalid" ? result.error.reason : result.error.kind;
 }
 
-describe("isApprovalTarget — differential vs verifyChain (K6-G)", () => {
+describe("isApprovalTarget (crypto public API) — agrees with verifyChain (K6-G)", () => {
   it("a direct append of a policy-targeted op is invalid as approval-required, and the CLI's verdict is also true (untargeted ops pass both)", async () => {
     const prefix = prefixWith(2, ["remove_member"]);
     const verified = await verifiedOf(await buildChain(prefix));

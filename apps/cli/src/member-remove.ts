@@ -3,11 +3,16 @@
 // member.ts).
 
 import type { UserId } from "@maruhi/core";
-import type { ChainEntry, ChainMember, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
+import {
+  type ChainEntry,
+  type ChainMember,
+  isApprovalTarget,
+  type ProposableOperation,
+  type SigningKeyPair,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { isApprovalTarget } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,

@@ -72,7 +72,12 @@ export {
   scopeIncludesEnvironment,
   scopePayloadFieldsOf,
 } from "./member-scope.ts";
-export { verifyChain, verifyChainWithHistory } from "./chain-verify.ts";
+export {
+  isApprovalTarget,
+  isApprovalTargetOp,
+  verifyChain,
+  verifyChainWithHistory,
+} from "./chain-verify.ts";
 export {
   computeEnvValuesDigest,
   type EnvValuesDigestEntry,

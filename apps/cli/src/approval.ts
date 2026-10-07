@@ -24,13 +24,12 @@ import type {
   Role,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import { computeChainEntryHash, effectivePermissionOf } from "@maruhi/crypto";
+import { computeChainEntryHash, effectivePermissionOf, isApprovalTarget } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import {
   describeUnresolvedRef,
-  isApprovalTarget,
   type ProposalView,
   proposalViewOf,
   resolveProposalRef,
