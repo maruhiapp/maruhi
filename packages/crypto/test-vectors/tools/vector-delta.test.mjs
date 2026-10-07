@@ -80,6 +80,15 @@ function snapshot(src, vectors, extra = {}) {
   ]);
 }
 
+/** An encoding.json-style file with one case (extra snapshot entry). */
+function encoding(hex) {
+  return {
+    "test-vectors/encoding.json": JSON.stringify({
+      cases: [{ name: "ab-c", fields: ["ab", "c"], expected_hex: hex }],
+    }),
+  };
+}
+
 // Stands in for Bun.Transpiler: comments and formatting do not reach the
 // runtime form, anything else does
 const runtimeForm = (_path, text) => canonicalSource(text);
@@ -175,7 +184,13 @@ describe("analyze", () => {
     ]);
     expect(result.vectors.rebased[0].rebasedOff).toEqual(expect.arrayContaining(["legacy"]));
     expect(result.supported).toEqual([
-      { name: "SUPPORTED_THING_LAYOUTS", before: "[1, 2]", after: "[1]", shrinks: true },
+      {
+        name: "SUPPORTED_THING_LAYOUTS",
+        before: "[1, 2]",
+        after: "[1]",
+        shrinks: true,
+        removedMembers: ["2"],
+      },
     ]);
     expect(result.shapes.removed).toEqual(["<suite>/thing-sig-v2 ×3"]);
     expect(result.domains.new).toEqual([]);
@@ -223,6 +238,93 @@ describe("analyze", () => {
   it("does not call a domain new when a base pattern covers it", () => {
     const src = BASE_SRC.replace("thing-sig-v${layout}", "thing-sig-v1");
     expect(run(src, baseVectors()).domains.new).toEqual([]);
+  });
+
+  it("R3: an expected_hex change is data, not an outcome (Cursor Bugbot)", () => {
+    const result = analyze(
+      snapshot(BASE_SRC, baseVectors(), encoding("0000000261620000000163")),
+      snapshot(BASE_SRC, baseVectors(), encoding("0000000261620000000164")),
+      runtimeForm,
+    );
+    expect(result.vectors.outcomeChanged).toEqual([]);
+    expect(result.vectors.unexplained.map((c) => c.id)).toEqual(["encoding.json › cases › ab-c"]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("counts an unknown expected_* key as data, not an outcome", () => {
+    const base = baseVectors();
+    base.vectors[0].expected_widget = "round";
+    const head = baseVectors();
+    head.vectors[0].expected_widget = "square";
+    const result = analyze(snapshot(BASE_SRC, base), snapshot(BASE_SRC, head), runtimeForm);
+    expect(result.vectors.outcomeChanged).toEqual([]);
+    expect([...result.vectors.changed[0].kinds]).toEqual(["data"]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("lets a `*` pattern cover a layout number only", () => {
+    for (const suffix of ["vault", "v2-hybrid"]) {
+      const src = BASE_SRC.replace("thing-sig-v${layout}", `thing-sig-${suffix}`);
+      const result = run(src, baseVectors());
+      expect(result.domains.new).toEqual([`<suite>/thing-sig-${suffix}`]);
+      expect(result.risk).toBe("R3");
+    }
+  });
+
+  it("R2: a negative removed with the check behind it while its surface remains (pullfrog)", () => {
+    // base: a positive plus a too-long rejection, and src that throws on
+    // length; head: the rejection and the throw both gone. The v1 shape
+    // the negative exercised is still accepted, so acceptance may widen
+    const guarded = BASE_SRC.replace(
+      "const kem",
+      'if (a.length > 64) throw new Error("too long");\n  const kem',
+    );
+    const base = baseVectors();
+    base.negative.push({
+      name: "too-long",
+      base: "basic",
+      verify_signed_bytes_hex: lp(["maruhi/v1/thing-sig-v1", "a".repeat(65), "b"]),
+      signature_hex: SIG,
+      must_fail: true,
+    });
+    const result = analyze(snapshot(guarded, base), snapshot(BASE_SRC, baseVectors()), runtimeForm);
+    expect(result.risk).toBe("R2");
+    expect(result.reasons.R1).toEqual([]);
+    expect(result.reasons.R2).toContain(
+      "1 rejection vector(s) removed while their surface remains: thing.json › negative › too-long",
+    );
+  });
+
+  it("R1: negatives removed together with the layout they exercised", () => {
+    // `legacy-v2-tampered` carries the retired v2 shape; `legacy-transplant`
+    // has v1 bytes but replays the removed v2 positive's signature
+    const base = baseVectors();
+    base.negative.push({
+      name: "legacy-v2-tampered",
+      base: "legacy",
+      verify_signed_bytes_hex: lp(["maruhi/v1/thing-sig-v2", "old", "x"]),
+      signature_hex: OLD_SIG,
+      must_fail: true,
+    });
+    const head = baseVectors();
+    head.vectors.splice(1, 1);
+    head.negative.splice(1, 1);
+    const result = analyze(
+      snapshot(BASE_SRC, base),
+      snapshot(BASE_SRC.replace("[1, 2]", "[1]"), head),
+      runtimeForm,
+    );
+    expect(result.risk).toBe("R1");
+    expect(result.reasons.R1).toEqual([
+      "narrowing: 3 vector entries removed, a supported set shrank",
+    ]);
+    const retired = Object.fromEntries(
+      result.vectors.removedNegatives.map((n) => [n.id, n.retiredBy]),
+    );
+    expect(retired["thing.json › negative › legacy-v2-tampered"]).toEqual(
+      expect.arrayContaining(["<suite>/thing-sig-v2 ×3", "<suite>/thing-sig-v2"]),
+    );
+    expect(retired["thing.json › negative › legacy-transplant"]).toEqual(["derived from legacy"]);
   });
 
   it("R3: a surviving vector's bytes changed with nothing removed to explain it", () => {

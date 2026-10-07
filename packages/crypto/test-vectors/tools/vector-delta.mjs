@@ -233,12 +233,25 @@ export function sourceFacts(src) {
 // its entry arrays are taken out (keys, field orders, descriptions) is one
 // "fixture" entry named after the key.
 
-// Outcome keys: the verdict (must_fail / expected_reason / expected_error)
-// and expected verifier state (expected_members, expected_policy, …).
-// `expected_*_hex` and `expected_line` are expected bytes / encodings, so
-// data. `kind` is an outcome only in a negative (its rejection class); in a
-// positive it is data (e.g. the wrap kind in master-key-wrap.json)
-const OUTCOME_KEY = /^(?:must_fail|expected_reason|expected_error)$|^expected_(?!line$)(?!.*_hex$)/;
+// Outcome keys, an explicit allow-list: the verdict and the expected
+// verifier state. Every other key is data — including expected bytes such
+// as `expected_hex` / `expected_*_hex` / `expected_line` and any expected_*
+// key added later — so an unlisted key is classified upward (a byte change
+// is R3 unless rebased; an outcome change is R2). `kind` is an outcome only
+// in a negative (its rejection class); in a positive it is data (e.g. the
+// wrap kind in master-key-wrap.json)
+const OUTCOME_KEYS = new Set([
+  "must_fail",
+  "expected_reason",
+  "expected_error",
+  "expected_head_states",
+  "expected_members",
+  "expected_environments",
+  "expected_server_grants",
+  "expected_checkpoints",
+  "expected_policy",
+  "expected_pending",
+]);
 const PROSE_KEY = /^(?:note|description)$|_note$/;
 const HEX = /^(?:[0-9a-f]{2})+$/;
 
@@ -310,7 +323,7 @@ export function leafKind(entry, leafPath, value) {
   const keys = `${entry.arrayPath}.${leafPath}`
     .split(/[.[\]]+/)
     .filter((k) => k !== "" && !/^\d+$/.test(k));
-  if (keys.some((k) => OUTCOME_KEY.test(k))) return "outcome";
+  if (keys.some((k) => OUTCOME_KEYS.has(k))) return "outcome";
   if (entry.negative && keys.at(-1) === "kind") return "outcome";
   const last = keys.at(-1) ?? "";
   if (PROSE_KEY.test(last)) return "prose";
@@ -368,23 +381,64 @@ function vectorFacts(entries) {
   const shapes = new Set();
   const fieldOrders = new Set();
   for (const entry of entries.values()) {
-    for (const value of leaves(entry.value).values()) {
-      if (typeof value !== "string") continue;
-      if (SUITE_LITERAL.test(value)) suites.add(value);
-      if (DOMAIN_LITERAL.test(value)) {
-        domains.add(normalizeDomain(value));
-        suites.add(value.split("/").slice(0, 2).join("/"));
-      }
-      const shape = lpShape(value);
-      if (shape !== null) {
-        domains.add(normalizeDomain(shape.domain));
-        suites.add(shape.domain.split("/").slice(0, 2).join("/"));
-        if (!entry.negative) shapes.add(`${normalizeDomain(shape.domain)} ×${shape.fields}`);
-      }
-    }
+    const facts = entryFacts(entry);
+    for (const d of facts.domains) domains.add(d);
+    for (const s of facts.suites) suites.add(s);
+    if (!entry.negative) for (const s of facts.shapes) shapes.add(s);
     collectFieldOrders(entry.value, "", fieldOrders);
   }
   return { domains, suites, shapes, fieldOrders };
+}
+
+/** Domains, suites and §2.1 shapes (negatives included) one entry carries. */
+function entryFacts(entry) {
+  const domains = new Set();
+  const suites = new Set();
+  const shapes = new Set();
+  for (const value of leaves(entry.value).values()) {
+    if (typeof value !== "string") continue;
+    if (SUITE_LITERAL.test(value)) suites.add(value);
+    if (DOMAIN_LITERAL.test(value)) {
+      domains.add(normalizeDomain(value));
+      suites.add(value.split("/").slice(0, 2).join("/"));
+    }
+    const shape = lpShape(value);
+    if (shape !== null) {
+      domains.add(normalizeDomain(shape.domain));
+      suites.add(shape.domain.split("/").slice(0, 2).join("/"));
+      shapes.add(`${normalizeDomain(shape.domain)} ×${shape.fields}`);
+    }
+  }
+  return { domains, suites, shapes };
+}
+
+const shapeDomain = (shape) => shape.slice(0, shape.lastIndexOf(" ×"));
+
+/**
+ * The accepted surface that left head: positive shapes gone, domains whose
+ * every positive shape is gone (a retired layout keeps negatives that use
+ * its domain, so domain presence alone would not show it), and suites gone.
+ */
+function retiredSurface(baseFacts, headFacts) {
+  const headDomains = new Set([...headFacts.shapes].map(shapeDomain));
+  return {
+    shapes: new Set(setDiff(baseFacts.shapes, headFacts.shapes)),
+    domains: new Set([...baseFacts.shapes].map(shapeDomain).filter((d) => !headDomains.has(d))),
+    suites: new Set(setDiff(baseFacts.suites, headFacts.suites)),
+  };
+}
+
+/**
+ * The retired surface a removed negative exercised (empty = its surface is
+ * still in head, so removing it may widen acceptance).
+ */
+function retiredBy(entry, retired) {
+  const facts = entryFacts(entry);
+  return [
+    ...[...facts.shapes].filter((s) => retired.shapes.has(s)),
+    ...[...facts.domains].filter((d) => retired.domains.has(d)),
+    ...[...facts.suites].filter((s) => retired.suites.has(s)),
+  ];
 }
 
 /** Field-order arrays (`*_order`: lists of field names) describe encodings. */
@@ -419,7 +473,14 @@ function setDiff(a, b) {
 /** Whether `domain` (possibly a `*` pattern) is covered by `known`. */
 function domainKnown(domain, known) {
   if (known.has(domain)) return true;
-  return [...known].some((k) => k.endsWith("*") && domain.startsWith(k.slice(0, -1)));
+  // The `*` of `name-v${layout}` stands for a layout number only: it covers
+  // `name-v3` (or another pattern `name-v*`), never `name-vault` / `-v2-hybrid`
+  return [...known].some(
+    (k) =>
+      k.endsWith("*") &&
+      domain.startsWith(k.slice(0, -1)) &&
+      /^(?:\d+|\*)$/.test(domain.slice(k.length - 1)),
+  );
 }
 
 function mergeFacts(perFile, pick) {
@@ -514,6 +575,33 @@ function markRebased(baseEntries, headEntries, removed, changedEntries) {
   }
 }
 
+/**
+ * A negative built from retired material also exercised that surface even
+ * when its own bytes do not show it — e.g. a v2 signature replayed under the
+ * v1 domain. It counts when it references (by name, or by a long hex value
+ * no head entry carries) a removed positive that itself exercised retired
+ * surface.
+ */
+function markDerivedFromRetired(removedVectors, removedNegatives, retired, headEntries) {
+  const headValues = new Set();
+  for (const entry of headEntries.values()) {
+    for (const v of referenceValues(entry.value)) headValues.add(v);
+  }
+  const sources = removedVectors.filter((e) => !e.negative && retiredBy(e, retired).length > 0);
+  for (const negative of removedNegatives) {
+    const file = negative.id.split(" › ")[0];
+    const refs = referenceValues(negative.value);
+    for (const source of sources) {
+      const name = lastSegment(source.id);
+      const sameFileName = source.file === file && refs.has(name);
+      const sharedHex = [...referenceValues(source.value)].some(
+        (v) => HEX.test(v) && refs.has(v) && !headValues.has(v),
+      );
+      if (sameFileName || sharedHex) negative.retiredBy.push(`derived from ${name}`);
+    }
+  }
+}
+
 /** Entry-level delta of the vector files. */
 function vectorDelta(base, head) {
   const baseEntries = entriesOf(base);
@@ -534,6 +622,18 @@ function vectorDelta(base, head) {
   }
   markRebased(baseEntries, headEntries, removed, changed);
   const data = changed.filter((c) => c.kinds.has("data"));
+  const baseFacts = vectorFacts(baseEntries);
+  const headFacts = vectorFacts(headEntries);
+  // Removing an acceptance pin (a positive) can only narrow; removing a
+  // rejection pin (a negative) can widen, so a removed negative counts as
+  // narrowing only together with the surface it exercised (classify() also
+  // accepts a removed SUPPORTED_* member it names)
+  const retired = retiredSurface(baseFacts, headFacts);
+  const removedVectors = removed.map((id) => baseEntries.get(id)).filter((e) => !e.fixture);
+  const removedNegatives = removedVectors
+    .filter((e) => e.negative)
+    .map((e) => ({ id: e.id, value: e.value, retiredBy: retiredBy(e, retired) }));
+  markDerivedFromRetired(removedVectors, removedNegatives, retired, headEntries);
   return {
     unchanged,
     removed,
@@ -542,9 +642,10 @@ function vectorDelta(base, head) {
     rebased: data.filter((c) => c.rebasedOff.length > 0),
     unexplained: data.filter((c) => c.rebasedOff.length === 0),
     outcomeChanged: changed.filter((c) => c.kinds.has("outcome")),
-    removedVectors: removed.filter((id) => !baseEntries.get(id).fixture),
-    baseFacts: vectorFacts(baseEntries),
-    headFacts: vectorFacts(headEntries),
+    removedPositives: removedVectors.filter((e) => !e.negative).map((e) => e.id),
+    removedNegatives,
+    baseFacts,
+    headFacts,
   };
 }
 
@@ -578,7 +679,8 @@ function supportedDelta(baseSrc, headSrc) {
     if (showSupported(a) === showSupported(b)) continue;
     const shrinks =
       a?.parsed === true && b?.parsed === true && b.values.every((x) => a.values.includes(x));
-    out.push({ name, before: showSupported(a), after: showSupported(b), shrinks });
+    const removedMembers = shrinks ? a.values.filter((x) => !b.values.includes(x)) : [];
+    out.push({ name, before: showSupported(a), after: showSupported(b), shrinks, removedMembers });
   }
   return out;
 }
@@ -642,15 +744,41 @@ function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
 }
 
 /**
+ * Members a SUPPORTED_* set lost that a removed negative names: a leaf whose
+ * key words all appear in the constant's name (`layout_version` in
+ * SUPPORTED_META_LAYOUT_VERSIONS) and whose value is a removed member.
+ */
+function removedSupportedMembers(value, supported) {
+  const out = [];
+  for (const s of supported.filter((x) => x.shrinks)) {
+    const words = s.name
+      .replace(/^SUPPORTED_/, "")
+      .toLowerCase()
+      .split("_");
+    const nameWords = new Set(words.map((w) => w.replace(/s$/, "")));
+    const gone = new Set(s.removedMembers);
+    for (const [path, leaf] of leaves(value)) {
+      const keyWords = (path.split(".").at(-1) ?? "").replace(/\[\d+\]$/, "").split("_");
+      if (keyWords.every((w) => nameWords.has(w)) && gone.has(String(leaf))) {
+        out.push(`${s.name} member ${leaf}`);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * The risk class and its reasons (highest class wins):
  * R3 — the encoding surface grows: a new domain string, suite, signed-bytes
  *      shape, field order or primitive, a runtime dependency change, or a
  *      surviving vector whose bytes changed without being rebased.
  * R2 — the surface is kept but behavior moves: a surviving vector's expected
- *      outcome changed, a SUPPORTED_* set did anything but shrink, or code /
+ *      outcome changed, a SUPPORTED_* set did anything but shrink, a
+ *      negative was removed while the surface it exercised remains, or code /
  *      config / vectors changed without any narrowing.
- * R1 — a narrowing (vectors removed or a supported set shrunk) and nothing
- *      above; implementation changes that carry it out are admitted.
+ * R1 — a narrowing (positives removed, negatives removed with their retired
+ *      surface, or a supported set shrunk) and nothing above;
+ *      implementation changes that carry it out are admitted.
  * R0 — nothing but docs, prose and comment / formatting edits.
  */
 function classify(files, vectors, surface, runtimeDependencyChange) {
@@ -665,7 +793,19 @@ function classify(files, vectors, surface, runtimeDependencyChange) {
     reasons.R2.push(`${s.name} changed without only shrinking: ${s.before} → ${s.after}`);
   }
   const shrank = supported.some((s) => s.shrinks);
-  const narrowing = vectors.removedVectors.length > 0 || shrank;
+  for (const negative of vectors.removedNegatives) {
+    negative.retiredBy.push(...removedSupportedMembers(negative.value, supported));
+  }
+  const kept = vectors.removedNegatives.filter((n) => n.retiredBy.length === 0);
+  if (kept.length > 0) {
+    reasons.R2.push(
+      `${kept.length} rejection vector(s) removed while their surface remains: ` +
+        kept.map((n) => n.id).join(", "),
+    );
+  }
+  const narrowedBy =
+    vectors.removedPositives.length + vectors.removedNegatives.length - kept.length;
+  const narrowing = narrowedBy > 0 || shrank;
   const substantive =
     files.code.length + files.config.length + supported.length > 0 ||
     vectors.added.length + vectors.removed.length + vectors.rebased.length > 0 ||
@@ -676,7 +816,7 @@ function classify(files, vectors, surface, runtimeDependencyChange) {
     );
   }
   if (narrowing) {
-    const n = vectors.removedVectors.length;
+    const n = narrowedBy;
     const shrinkNote = shrank ? ", a supported set shrank" : "";
     reasons.R1.push(`narrowing: ${n} vector entr${n === 1 ? "y" : "ies"} removed${shrinkNote}`);
   }
@@ -751,7 +891,15 @@ function vectorSection(v) {
     `| ${v.unchanged} | ${v.removed.length} | ${v.added.length} | ${v.changed.length} | ` +
       `${v.outcomeChanged.length} | ${v.rebased.length} | ${v.unexplained.length} |\n`,
     "<details><summary>Removed</summary>\n",
-    list(v.removed),
+    list(v.removed, (id) => {
+      const negative = v.removedNegatives.find((n) => n.id === id);
+      if (negative === undefined) return `\`${id}\``;
+      const why =
+        negative.retiredBy.length > 0
+          ? `retired: ${inline([...new Set(negative.retiredBy)])}`
+          : "**surface remains**";
+      return `\`${id}\` — rejection vector; ${why}`;
+    }),
     "</details>\n<details><summary>Added</summary>\n",
     list(v.added),
     "</details>\n<details open><summary>Changed (leaf kinds: data / outcome / prose)</summary>\n",
