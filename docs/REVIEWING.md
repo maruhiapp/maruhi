@@ -255,10 +255,11 @@ not new, but a way to widen one is.
   scope emptied by `delete_environment` gets
   (`apps/web/src/dashboard/chain-view-state.ts`, `reportedScope`). Use
   `maruhi project verify` for a verified member set.
-- **The R0–R3 review aid** classes the removal of a keyed-map member (a lone
-  `keys` entry, or a derived chain with its negatives) like the removal of an
-  array entry, R1 or R2, not R3. The removal is listed in the report, and the
-  aid approves nothing ([vectors README](../packages/crypto/test-vectors/README.md),
+- **The R0–R3 review aid** classes the removal of a keyed-map member like the
+  removal of a top-level fixture, never a narrowing by itself: a lone `keys`
+  entry is R2, and a derived chain removed with its negatives reaches R1 or R2
+  through its own entries, not R3. The removal is listed in the report, and
+  the aid approves nothing ([vectors README](../packages/crypto/test-vectors/README.md),
   "Reviewing a crypto change").
 - **Open findings** from earlier reviews, including the chain-economics
   performance and scalability items, are tracked in
