@@ -197,22 +197,78 @@ function leaseEpochProblem(
   return null;
 }
 
+declare const leaseGrantCheckBrand: unique symbol;
+
+/**
+ * Proof that the lease authorization check (§9.1 verification obligation
+ * (6)) passed for one environment of one verified chain view. Minted only by
+ * requireLeaseGrant and required by unwrapLeases, so no lease wrap can be
+ * opened on a path that skipped the check — the order is carried by the
+ * types, not only by statement order.
+ */
+interface LeaseGrantCheck {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly [leaseGrantCheckBrand]: "LeaseGrantCheck";
+}
+
+/**
+ * The lease authorization check (§9.1 verification obligation (6)): the
+ * verified chain must carry an active grant whose scope names the leased
+ * environment. A union over the active grants — a project may hold one grant
+ * per server key (mirrors — §9.2), and the workload cannot authenticate which
+ * key served it. The lease policy is not evaluated here (the server enforces
+ * it; claims_digest binds the workload identity — §9.1).
+ *
+ * A conforming server never triggers this: its own authorization (AUTH_SPEC
+ * §14-1) runs on the same chain it bundles and answers 404 instead. A refusal
+ * is evidence of a non-conforming server, so the message never suggests
+ * widening the grant. Without an anchor this is defense in depth only: a
+ * server can serve an older prefix in which the grant was still active (the
+ * workload is floorless — §14.3-3).
+ */
+function requireLeaseGrant(
+  verified: VerifiedProject,
+  environmentId: string,
+): Effect.Effect<LeaseGrantCheck, CliError> {
+  if (serverKeysDisclosing(serverDisclosures(verified), environmentId).length > 0) {
+    // The single mint site of the brand
+    return Effect.succeed({ verified, environmentId } as LeaseGrantCheck);
+  }
+  const environment = displayText(environmentId);
+  return Effect.fail(
+    cliError(
+      `The server issued a lease for environment ${environment} of project ${displayText(verified.projectId)}, but the chain it sent carries no active grant_server naming that environment (CRYPTO_SPEC §9.1 (6)). The lease was not used: no leased DEK was opened and no value was decrypted. A conforming server answers 404 instead (AUTH_SPEC §14-1), so this server is not following the protocol: it served a chain other than the one it authorized against (for example one from before the grant), or it ignored the grant. Do not widen the grant to work around it; look at the server, and pin the current head with --anchor`,
+    ),
+  );
+}
+
 /**
  * Opens lease-wrapped DEKs and checks commitments (§9.1's
  * verification obligation (3)). The same discipline as deks.ts's
  * verifyAndUnwrapDeks (declared epoch vs the chain cap, duplicate
  * refusal, DEK unused until the check against the chain-derived
  * commitment), applied to lease wraps that carry no §5.1
- * registration signature.
+ * registration signature. Takes the proof of obligation (6) for the same
+ * chain view and environment: nothing is opened without it.
  */
 const unwrapLeases = Effect.fn("lease-client.unwrapLeases")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
+  readonly grantCheck: LeaseGrantCheck;
   readonly workloadKeyPair: EncryptionKeyPair;
   readonly claims: LeaseClaims;
   readonly leases: readonly LeasedDek[];
 }): Effect.fn.Return<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
   const { verified, environmentId } = input;
+  if (input.grantCheck.verified !== verified || input.grantCheck.environmentId !== environmentId) {
+    // A caller defect, refused fail-closed before any wrap is opened
+    return yield* Effect.fail(
+      cliError(
+        "Internal error: the lease authorization check was made for another chain view or environment; the lease was not used",
+      ),
+    );
+  }
   const environment = yield* requireChainEnvironment(verified, environmentId);
   const chainEpoch = environment.currentEpoch;
   // Only the verified entry point (computeLeaseClaimsDigest) is
@@ -251,30 +307,6 @@ const unwrapLeases = Effect.fn("lease-client.unwrapLeases")(function* (input: {
   }
   return byEpoch;
 });
-
-/**
- * The lease authorization check (§9.1 verification obligation (6)): the
- * verified chain must carry an active grant whose scope names the leased
- * environment. A union over the active grants — a project may hold one grant
- * per server key (mirrors — §9.2), and the workload cannot authenticate which
- * key served it. The lease policy is not evaluated here (the server enforces
- * it; claims_digest binds the workload identity — §9.1). Without an anchor
- * this is defense in depth only: a server can serve an older prefix in which
- * the grant was still active (the workload is floorless — §14.3-3).
- */
-function requireLeaseGrant(
-  verified: VerifiedProject,
-  environmentId: string,
-): Effect.Effect<void, CliError> {
-  if (serverKeysDisclosing(serverDisclosures(verified), environmentId).length > 0) {
-    return Effect.void;
-  }
-  return Effect.fail(
-    cliError(
-      `The verified chain grants no server environment ${displayText(environmentId)} of project ${displayText(verified.projectId)} (no active grant_server names it — CRYPTO_SPEC §9.1 (6)). The lease was not used: no leased DEK was opened and no value was decrypted. Likely causes: the grant was revoked or never covered this environment (a project owner grants it with \`maruhi server grant\`), or the server served a stale chain (pin a recent head with --anchor so a stale chain is refused)`,
-    ),
-  );
-}
 
 /**
  * Verifies a lease response end to end (CRYPTO_SPEC §9.1 duties (1)–(6)) and
@@ -327,7 +359,7 @@ export const verifyLeaseResponse = Effect.fn("lease-client.verifyLeaseResponse")
   const chainEnvironment = yield* requireChainEnvironment(verified, input.environmentId);
   // (6) Lease authorization: an active grant on the verified chain names
   // the environment — before any lease wrap is opened
-  yield* requireLeaseGrant(verified, input.environmentId);
+  const grantCheck = yield* requireLeaseGrant(verified, input.environmentId);
   // Only the chain-derived value is used for the current epoch
   // (§6.2). The declared currentEpoch is checked only for agreement
   // with the derived value (declared values are not trusted)
@@ -356,6 +388,7 @@ export const verifyLeaseResponse = Effect.fn("lease-client.verifyLeaseResponse")
   const deksByEpoch = yield* unwrapLeases({
     verified,
     environmentId: input.environmentId,
+    grantCheck,
     workloadKeyPair: input.workloadKeyPair,
     claims: input.claims,
     leases: response.leases,

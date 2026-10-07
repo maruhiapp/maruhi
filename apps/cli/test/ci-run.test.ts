@@ -26,6 +26,7 @@ import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
   genesisOp,
@@ -51,11 +52,12 @@ const SUBJECT = "repo:acme/app:ref:refs/heads/main";
 const RUNNER_TOKEN = "runner-request-token-value";
 /** An environment only the second grant (B) covers. */
 const OTHER_ENV_ID = "staging";
-/** Seqs of fixture.extended: before any grant, grant B only (staging), grant A (prod) added, A revoked. */
+/** Seqs of fixture.extended: before any grant, grant B only (staging), grant A (prod) added, A revoked, prod deleted. */
 const UNGRANTED_SEQ = 3;
 const OTHER_SCOPE_SEQ = 5;
 const GRANTED_SEQ = 6;
 const REVOKED_SEQ = 7;
+const DELETED_SEQ = 8;
 
 function chainPrefixOf(chain: BuiltChain, seq: number): BuiltChain {
   return {
@@ -77,8 +79,8 @@ interface Fixture {
   readonly built: BuiltChain;
   /**
    * genesis → create prod → rotate prod (epoch 2) → create staging → grant B
-   * (staging) → grant A (prod) → revoke A. Its prefixes are the lease
-   * authorization cases of §9.1 (6) — see chainPrefix.
+   * (staging) → grant A (prod) → revoke A → delete prod. Its prefixes are
+   * the lease authorization cases of §9.1 (6) — see chainPrefix.
    */
   readonly extended: BuiltChain;
   readonly dek1: Uint8Array;
@@ -115,6 +117,7 @@ beforeAll(async () => {
     { actor: owner, operation: await grantServerOp([OTHER_ENV_ID], leasePolicy) },
     { actor: owner, operation: grantA },
     { actor: owner, operation: revokeServerOp(grantA.payload.serverKeyFingerprintHex) },
+    { actor: owner, operation: deleteEnvironmentOp(ENV_ID) },
   ]);
   const built = chainPrefixOf(extended, GRANTED_SEQ);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
@@ -731,11 +734,6 @@ describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)
 });
 
 /* -------------------------------------------------------------------------- */
-/* token-replayed / 429 / 503(AUTH_SPEC §14-3)                                */
-/* -------------------------------------------------------------------------- */
-
-/** Lease handler that returns the given error for the first `failures` calls, then responds normally. */
-/* -------------------------------------------------------------------------- */
 /* §9.1 verification obligation (6): lease authorization                       */
 /* -------------------------------------------------------------------------- */
 
@@ -751,11 +749,13 @@ function chainPrefix(seq: number): LeaseResponseOverrides {
 function expectLeaseUnauthorized(env: TestEnv): void {
   const errors = env.errors.join("\n");
   expect(errors).toContain(
-    `The verified chain grants no server environment ${ENV_ID} of project ${fixture.built.projectId}`,
+    `The server issued a lease for environment ${ENV_ID} of project ${fixture.built.projectId}, but the chain it sent carries no active grant_server naming that environment (CRYPTO_SPEC §9.1 (6))`,
   );
   expect(errors).toContain("The lease was not used");
+  expect(errors).toContain("A conforming server answers 404 instead");
+  expect(errors).toContain("Do not widen the grant");
   expect(errors).toContain("--anchor");
-  // Refused before any lease wrap is opened and before the distribution is used
+  // Refused before any lease wrap is opened
   expect(errors).not.toContain("Cannot open the leased DEK");
   expect(errors).not.toContain("Lease verified");
   expect(env.runnerCalls).toHaveLength(0);
@@ -779,6 +779,19 @@ describe("maruhi ci run (lease authorization — CRYPTO_SPEC §9.1 (6))", () => 
     const { env, server } = await startCiEnv([leaseHandler(chainPrefix(OTHER_SCOPE_SEQ))]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
     expectLeaseUnauthorized(env);
+  });
+
+  it("refuses a deleted environment with the deletion message, ahead of the grant check", async () => {
+    // A deletion prunes the id from every grant scope (§6.2), so (6) would
+    // also refuse; the deletion is named first (its own, terminal message)
+    const { env, server } = await startCiEnv([leaseHandler(chainPrefix(DELETED_SEQ))]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Environment ${ENV_ID} is deleted (delete_environment at chain seq ${DELETED_SEQ})`,
+    );
+    expect(errors).not.toContain("CRYPTO_SPEC §9.1 (6)");
+    expect(env.runnerCalls).toHaveLength(0);
   });
 
   it("opens no lease wrap on refusal (garbage wraps still yield the authorization error)", async () => {
@@ -822,6 +835,11 @@ describe("maruhi ci run (lease authorization — CRYPTO_SPEC §9.1 (6))", () => 
   });
 });
 
+/* -------------------------------------------------------------------------- */
+/* token-replayed / 429 / 503(AUTH_SPEC §14-3)                                */
+/* -------------------------------------------------------------------------- */
+
+/** Lease handler that returns the given error for the first `failures` calls, then responds normally. */
 function flakyLeaseHandler(
   failures: number,
   error: { readonly status: number; readonly json: unknown },
