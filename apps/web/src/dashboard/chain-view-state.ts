@@ -243,6 +243,18 @@ export function readableScope(payload: Scope): boolean {
 }
 
 /**
+ * The listed ids left after a deleted environment leaves a scope (the
+ * display mirror of crypto's `scopeWithout` — §6.2 `delete_environment`):
+ * `all` is never pruned, and a `listed` scope that names the environment
+ * stays `listed`, possibly empty. Null when the scope is not pruned
+ * (`all`, or a listed scope that does not name the environment).
+ */
+export function scopeIdsWithout(scope: Scope, environmentId: string): ReadonlyArray<string> | null {
+  if (scope.scopeKind === "all" || !scope.scopeEnvironmentIds.includes(environmentId)) return null;
+  return scope.scopeEnvironmentIds.filter((id) => id !== environmentId);
+}
+
+/**
  * Folds the reported scope into a readable shape (defense against a
  * hostile server): an unreadable shape folds to "listed" + empty and
  * is emitted as "not reported". The member record itself is not

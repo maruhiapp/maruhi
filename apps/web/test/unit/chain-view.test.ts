@@ -1104,3 +1104,174 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Environment deletion (CRYPTO_SPEC §6.2 `delete_environment` —
+// 2026-10-07): the deleted id leaves every listed scope (members,
+// device caps, granted servers); `all` is never pruned
+// ---------------------------------------------------------------------------
+
+const FP_S = "5e".repeat(16);
+const FP_S2 = "5f".repeat(16);
+
+function addListedMember(
+  userId: string,
+  role: "admin" | "member" | "reader",
+  scopeEnvironmentIds: string[],
+): ChainEntry {
+  return {
+    ...base(),
+    op: "add_member",
+    payload: {
+      targetUserId: testUserId(userId),
+      encPubHex: HEX64,
+      sigPubHex: HEX64,
+      role,
+      scopeKind: "listed",
+      scopeEnvironmentIds,
+    },
+  };
+}
+
+function grantServer(fp: string, scopeEnvironmentIds: string[]): ChainEntry {
+  return {
+    ...base(),
+    op: "grant_server",
+    payload: {
+      serverEncPubHex: HEX64,
+      serverKeyFingerprintHex: testKeyFingerprintHex(fp),
+      scopeEnvironmentIds,
+      leasePolicy: [],
+    },
+  };
+}
+
+function deleteEnvironment(environmentId: string): ChainEntry {
+  return { ...signedBy("user_owner", FP), op: "delete_environment", payload: { environmentId } };
+}
+
+describe("deriveReportedView — environment deletion (§6.2 delete_environment)", () => {
+  const setup = () => {
+    const addA = addListedMember("user_a", "admin", ["dev", "prod"]);
+    const addB = addListedMember("user_b", "reader", ["dev"]);
+    const addC = addListedMember("user_c", "member", ["prod"]);
+    // user_a signs from its first key (binds FP_A) and adds a second
+    // device capped to its own listed scope; the owner adds a device
+    // capped to dev only
+    const deviceA = addDevice("user_a", FP_A, KEYS_D2, {
+      roleCap: "admin",
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["dev", "prod"],
+    });
+    const deviceOwner = addDevice("user_owner", FP, KEYS_D3, {
+      roleCap: "owner",
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["dev"],
+    });
+    const grantS = grantServer(FP_S, ["dev", "prod"]);
+    const grantS2 = grantServer(FP_S2, ["prod"]);
+    return {
+      entries: [genesis, addA, addB, addC, deviceA, deviceOwner, grantS, grantS2],
+      addC,
+      grantS,
+      grantS2,
+    };
+  };
+
+  it("prunes the deleted id from member scopes, device caps and server scopes, leaving `all` untouched", () => {
+    const { entries, addC, grantS, grantS2 } = setup();
+    const deletion = deleteEnvironment("dev");
+    const view = deriveReportedView([...entries, deletion]);
+    expect(view.unreadableEntries).toBe(0);
+
+    const owner = devicesOf(view, "user_owner");
+    expect(owner).toMatchObject({
+      scopeKind: "all",
+      scopeEnvironmentIds: [],
+      sinceSeq: genesis.seq,
+    });
+    // The genesis key's cap is `all` (never pruned); the dev-only cap
+    // stays listed and becomes empty (crypto's scopeWithout)
+    expect(owner?.devices.map((d) => [d.scopeKind, d.scopeEnvironmentIds])).toEqual([
+      ["all", []],
+      ["listed", []],
+    ]);
+
+    // A pruned member's scope was set by the deletion (sinceSeq moves)
+    const a = devicesOf(view, "user_a");
+    expect(a).toMatchObject({
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["prod"],
+      sinceSeq: deletion.seq,
+    });
+    expect(a?.devices.map((d) => [d.scopeKind, d.scopeEnvironmentIds])).toEqual([
+      ["all", []],
+      ["listed", ["prod"]],
+    ]);
+    expect(devicesOf(view, "user_b")).toMatchObject({
+      scopeKind: "listed",
+      scopeEnvironmentIds: [],
+      sinceSeq: deletion.seq,
+    });
+    // A listed scope that does not name the environment is untouched
+    expect(devicesOf(view, "user_c")).toMatchObject({
+      scopeKind: "listed",
+      scopeEnvironmentIds: ["prod"],
+      sinceSeq: addC.seq,
+    });
+
+    // Server grants keep their grant seq; an emptied scope stays a grant
+    expect(view.servers).toEqual([
+      { keyFingerprintHex: FP_S, scopeEnvironmentIds: ["prod"], sinceSeq: grantS.seq },
+      { keyFingerprintHex: FP_S2, scopeEnvironmentIds: ["prod"], sinceSeq: grantS2.seq },
+    ]);
+    const prodGone = deriveReportedView([...entries, deletion, deleteEnvironment("prod")]);
+    expect(prodGone.servers.map((s) => s.scopeEnvironmentIds)).toEqual([[], []]);
+    expect(devicesOf(prodGone, "user_a")?.scopeEnvironmentIds).toEqual([]);
+  });
+
+  it("counts an unreadable delete_environment instead of pruning or throwing", () => {
+    const { entries } = setup();
+    const unreadable = {
+      ...signedBy("user_owner", FP),
+      op: "delete_environment",
+      payload: { environmentId: 7 },
+    } as unknown as ChainEntry;
+    const before = deriveReportedView(entries);
+    const view = deriveReportedView([...entries, unreadable]);
+    expect(view.unreadableEntries).toBe(1);
+    expect(view.members).toEqual(before.members);
+    expect(view.servers).toEqual(before.servers);
+  });
+
+  it("does not apply a delete_environment carried inside a proposal (never a four-eyes target — §6.2)", () => {
+    // A propose carrying delete_environment is `approval-not-required`
+    // on a verified chain, so like the device ops (K5-4) the fold
+    // applies it only as a direct entry
+    const proposal: ChainEntry = {
+      ...signedBy("user_owner", FP),
+      op: "propose",
+      payload: {
+        inner: { op: "delete_environment", payload: { environmentId: "dev" } },
+        expiresAtMs: 4_000_000_000_000,
+      },
+    };
+    const entries = linked(
+      [
+        genesis,
+        addMember("user_a", "owner"),
+        addListedMember("user_m", "member", ["dev"]),
+        grantServer(FP_S, ["dev"]),
+        policyEntry(2, ["remove_member"]),
+        proposal,
+        approve("user_a", FP_A, HASH_P),
+      ],
+      5,
+      HASH_P,
+    );
+    const view = deriveReportedView(entries, "99".repeat(32));
+    expect(view.proposals).toEqual([]);
+    expect(devicesOf(view, "user_m")?.scopeEnvironmentIds).toEqual(["dev"]);
+    expect(view.servers.map((s) => s.scopeEnvironmentIds)).toEqual([["dev"]]);
+  });
+});
