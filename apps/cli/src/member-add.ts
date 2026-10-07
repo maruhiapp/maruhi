@@ -7,6 +7,7 @@ import {
   type ChainDevice,
   type ChainEntry,
   type ChainMember,
+  isApprovalTarget,
   memberScopeOf,
   type ProposableOperation,
   type Role,
@@ -18,7 +19,7 @@ import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
-import { describeKeyReuse, isApprovalTarget, keyReuseOf } from "./approval-rules.ts";
+import { describeKeyReuse, keyReuseOf } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,

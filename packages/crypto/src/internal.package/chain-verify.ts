@@ -197,7 +197,12 @@ function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
-function isApprovalTargetOp(value: unknown): value is ApprovalTargetOp {
+/**
+ * Whether `value` names an operation a four-eyes policy may list in `ops`
+ * (the closed set APPROVAL_TARGET_OPS — §6.2). Public so that a client
+ * parsing policy ops uses the guard the consensus rule uses.
+ */
+export function isApprovalTargetOp(value: unknown): value is ApprovalTargetOp {
   return typeof value === "string" && (APPROVAL_TARGET_OPS as readonly string[]).includes(value);
 }
 
@@ -658,9 +663,14 @@ function permissionChangeEnvironments(
  * propose / approve / direct-append rejection): the policy is active and
  * the op is either listed in ops or an always-target (set_approval_policy
  * itself, and add_member / change_role establishing the owner role —
- * policy monotonicity (a))
+ * policy monotonicity (a)). Public so that a client deciding before
+ * submission whether an operation must go through propose / approve uses
+ * this one definition, not a copy
  */
-function isApprovalTarget(operation: ProposableOperation, policy: ApprovalPolicy | null): boolean {
+export function isApprovalTarget(
+  operation: ProposableOperation,
+  policy: ApprovalPolicy | null,
+): boolean {
   if (policy === null) {
     return false;
   }
@@ -689,7 +699,7 @@ function establishesOwner(operation: ProposableOperation): boolean {
  * not enter S (same after a later promotion to owner; post-promotion they
  * can append an approve — 2026-09-15 ruling ②)
  */
-function signersOf(pending: MutablePendingProposal): readonly ApprovalVote[] {
+export function approvalSignersOf(pending: PendingProposal): readonly ApprovalVote[] {
   const proposer: readonly ApprovalVote[] =
     pending.proposerRoleAtProposal === "owner"
       ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
@@ -710,19 +720,23 @@ function voteDevice(state: MutableChainState, signer: ApprovalVote): ChainDevice
 }
 
 /**
- * Principle 2 (§6.2): of the signer set S, the count of distinct user_ids
- * whose FP is **currently a valid device of a current owner and whose
- * device's effective role is owner** (another device of the same person
- * is still one vote). Votes by voters demoted or removed after the
- * proposal are not counted and do not revive if re-added under a
- * different key (the judgment state is "the state before this entry
- * applies" — 2026-09-15 ruling ⑤)
+ * Principle 2 (§6.2): of the signer set S, the distinct user_ids whose FP
+ * is **currently a valid device of a current owner and whose device's
+ * effective role is owner** (another device of the same person is still
+ * one vote). Votes by voters demoted or removed after the proposal are not
+ * counted and do not revive if re-added under a different key (the
+ * judgment state is "the state before this entry applies" — 2026-09-15
+ * ruling ⑤). Public so that a client re-tallying a pending proposal uses
+ * this one definition, not a copy
  */
-function countOwnerVotes(state: MutableChainState, signers: readonly ApprovalVote[]): number {
+export function ownerVotersOf(
+  members: ReadonlyMap<string, ChainMember>,
+  signers: readonly ApprovalVote[],
+): ReadonlySet<string> {
   const voters = new Set<string>();
   for (const signer of signers) {
-    const member = state.members.get(signer.userId);
-    const device = voteDevice(state, signer);
+    const member = members.get(signer.userId);
+    const device = member?.devices.get(signer.keyFingerprintHex);
     if (
       member !== undefined &&
       device !== undefined &&
@@ -731,7 +745,11 @@ function countOwnerVotes(state: MutableChainState, signers: readonly ApprovalVot
       voters.add(signer.userId);
     }
   }
-  return voters.size;
+  return voters;
+}
+
+function countOwnerVotes(state: MutableChainState, signers: readonly ApprovalVote[]): number {
+  return ownerVotersOf(state.members, signers).size;
 }
 
 /**
@@ -1677,7 +1695,7 @@ async function evaluateApprove(
     keyFingerprintHex: actor.device.keyFingerprintHex,
   };
   const required = state.approvalPolicy?.requiredApprovals ?? Number.POSITIVE_INFINITY;
-  if (countOwnerVotes(state, [...signersOf(pending), signature]) < required) {
+  if (countOwnerVotes(state, [...approvalSignersOf(pending), signature]) < required) {
     pending.approvals.push(signature);
     return null;
   }
@@ -1703,7 +1721,7 @@ function approveVoteReason(
   pending: MutablePendingProposal,
   state: MutableChainState,
 ): ChainInvalidReason | null {
-  const live = signersOf(pending).some(
+  const live = approvalSignersOf(pending).some(
     (signer) => signer.userId === actor.userId && voteDevice(state, signer) !== undefined,
   );
   if (live) {

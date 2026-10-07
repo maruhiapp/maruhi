@@ -141,6 +141,15 @@ function schemaOf(v: VectorContext): MetaVariableSchema {
   return schema as MetaVariableSchema;
 }
 
+/**
+ * The builder's signed bytes as lowercase hex, or null when the builder
+ * refuses the context's layout (never equal to any vector's hex).
+ */
+function signedBytesHexOf(context: MetaStatementContext): string | null {
+  const built = buildMetaSignedBytes(context);
+  return built.ok ? toHex(built.value) : null;
+}
+
 const positives: readonly MetaVector[] = metaVectors.vectors;
 
 /** Comparison chains (name → verified history index). A vector with `chain` unset means canonical. */
@@ -208,7 +217,7 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
     const context = contextOf(vector.context);
     c.push(
       `meta-sig ${vector.name}: signed bytes construction`,
-      toHex(buildMetaSignedBytes(context)) === vector.signed_bytes_hex,
+      signedBytesHexOf(context) === vector.signed_bytes_hex,
     );
     const hash = await computeMetaSignedBytesHash(context);
     c.push(
@@ -315,7 +324,7 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   // signature's verification
   for (const swapped of metaVectors.name_swap.swapped as readonly MetaNegative[]) {
     const context = contextOf(swapped.context);
-    const bytesMatch = toHex(buildMetaSignedBytes(context)) === swapped.verify_signed_bytes_hex;
+    const bytesMatch = signedBytesHexOf(context) === swapped.verify_signed_bytes_hex;
     const key = await importSigningPublicKey(fromHex(swapped.verify_key_hex));
     if (!key.ok) {
       c.push(`meta-sig name-swap: ${swapped.name}`, false, "verify key import failed");
@@ -394,7 +403,7 @@ async function tamperNegativeCheck(
   exercised: Set<MetaInvalidReason>,
 ): Promise<void> {
   const context = contextOf(negative.context);
-  const bytesMatch = toHex(buildMetaSignedBytes(context)) === negative.verify_signed_bytes_hex;
+  const bytesMatch = signedBytesHexOf(context) === negative.verify_signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
   if (!key.ok) {
     c.push(`meta-sig negative: ${negative.name}`, false, "verify key import failed");
@@ -426,9 +435,10 @@ async function tamperNegativeCheck(
  */
 async function invalidInputNegativeCheck(c: Checks, negative: MetaNegative): Promise<void> {
   const context = contextOf(negative.context);
-  // The encoder itself is a total function, so also pin that it
-  // reproduces the vector's signed_bytes
-  const bytesMatch = toHex(buildMetaSignedBytes(context)) === negative.signed_bytes_hex;
+  // The encoder is total over field values (it refuses only a layout it
+  // cannot select — none of these vectors), so also pin that it reproduces
+  // the vector's signed_bytes
+  const bytesMatch = signedBytesHexOf(context) === negative.signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
   if (!key.ok) {
     c.push(`meta-sig invalid-input negative: ${negative.name}`, false, "key import failed");
@@ -462,11 +472,13 @@ function isUnsupportedLayout(result: CryptoResult<unknown>, layoutVersion: numbe
 /**
  * Retired-layout negatives (kind = unsupported-layout — §4.2 0.15-draft):
  * the statement is validly signed over the retired v2 encoding (confirmed by
- * the reference implementation), and every entry point — signing, raw
- * verification, hashing, and history verification with the real author
- * key — refuses it with the typed UnsupportedMetaLayout. The history path
- * would otherwise reach the signature check (the author key exists), so the
- * typed error proves the rejection precedes signature verification.
+ * the reference implementation), and every entry point — the signed-bytes
+ * builder, signing, raw verification, hashing, and history verification
+ * with the real author key — refuses it with the typed
+ * UnsupportedMetaLayout. The history path would otherwise reach the
+ * signature check (the author key exists), so the typed error proves the
+ * rejection precedes signature verification; the builder's refusal proves
+ * it never falls back to the v1 encoding.
  */
 async function unsupportedLayoutNegativeCheck(
   c: Checks,
@@ -489,7 +501,7 @@ async function unsupportedLayoutNegativeCheck(
   );
 }
 
-/** The outcomes of signing, raw verification, hashing, and history verification of one negative. */
+/** The outcomes of building, signing, raw verification, hashing, and history verification of one negative. */
 async function unsupportedLayoutEntryPoints(
   negative: MetaNegative,
   history: ChainHistoryIndex,
@@ -498,6 +510,7 @@ async function unsupportedLayoutEntryPoints(
   const context = contextOf(negative.context);
   const pair = await generateSigningKeyPair();
   return [
+    buildMetaSignedBytes(context),
     await signMetaStatement({ context, signingKey: pair.privateKey }),
     await verifyMetaStatementSignature({
       context,
@@ -707,6 +720,10 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
       signatureHex: base.signature_hex,
     });
     c.push(
+      `meta-sig layout selection: builder rejects unsupported layout ${layoutVersion} (no v1 fallback)`,
+      isUnsupportedLayout(buildMetaSignedBytes(unsupported), layoutVersion),
+    );
+    c.push(
       `meta-sig layout selection: sign rejects unsupported layout ${layoutVersion}`,
       isUnsupportedLayout(signed, layoutVersion),
     );
@@ -726,13 +743,14 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
   // Structural violations of layoutVersion (0 / non-integer) are
   // InvalidInput (a broken wire form, not version negotiation)
   for (const bad of [0, 1.5]) {
-    const result = await computeMetaSignedBytesHash({
-      ...contextOf(base.context),
-      layoutVersion: bad,
-    });
+    const context: MetaStatementContext = { ...contextOf(base.context), layoutVersion: bad };
+    const results: readonly CryptoResult<unknown>[] = [
+      buildMetaSignedBytes(context),
+      await computeMetaSignedBytesHash(context),
+    ];
     c.push(
-      `meta-sig layout selection: layoutVersion ${bad} is invalid input`,
-      !result.ok && result.error.kind === "InvalidInput",
+      `meta-sig layout selection: layoutVersion ${bad} is invalid input (builder and hash)`,
+      results.every((result) => isInvalidInput(result, "context layoutVersion")),
     );
   }
   // An explicit layoutVersion 1 is equivalent to omitted (§4.2 — omitted
@@ -742,10 +760,98 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
     c.push("meta-sig layout selection: v1 base vector", false);
     return;
   }
-  const explicit = buildMetaSignedBytes({ ...contextOf(v1.context), layoutVersion: 1 });
   c.push(
     "meta-sig layout selection: explicit layoutVersion 1 equals omitted",
-    toHex(explicit) === v1.signed_bytes_hex,
+    signedBytesHexOf({ ...contextOf(v1.context), layoutVersion: 1 }) === v1.signed_bytes_hex,
+  );
+}
+
+function isInvalidInput(result: CryptoResult<unknown>, field: string): boolean {
+  return !result.ok && result.error.kind === "InvalidInput" && result.error.field === field;
+}
+
+/**
+ * The layout's field set (§4.2): layout 3 exists only for variable
+ * statements and carries the schema fields; layout 1 carries none. A
+ * context whose fields do not match its declared layout selects no layout,
+ * so every entry point — the signed-bytes builder included — refuses it
+ * with the same InvalidInput, and the builder never encodes it under the
+ * other layout (a v3 environment statement or a schema-less v3 variable
+ * statement used to fall back to the v1 encoding; a v1 statement with
+ * schema fields used to drop them from the signed bytes). Rejection cases
+ * have no reference expected value, so they are pinned here (convention
+ * 21's split).
+ */
+async function layoutFieldSetChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
+  const v3 = byName.get("var-v3-create-expiring");
+  const env = positives.find((vector) => vector.context.kind === "environment");
+  if (v3 === undefined || env === undefined) {
+    c.push("meta-sig layout field set: base vectors", false);
+    return;
+  }
+  const v3Context = contextOf(v3.context);
+  const cases: readonly {
+    readonly name: string;
+    readonly context: MetaStatementContext;
+    readonly field: string;
+  }[] = [
+    {
+      name: "layout 3 on an environment statement",
+      context: { ...contextOf(env.context), layoutVersion: 3, schema: v3Context.schema },
+      field: "context layoutVersion",
+    },
+    {
+      name: "layout 3 without schema fields",
+      context: { ...v3Context, schema: undefined },
+      field: "context schema",
+    },
+    {
+      name: "layout 1 with schema fields",
+      context: { ...v3Context, layoutVersion: 1 },
+      field: "context schema",
+    },
+    {
+      name: "omitted layout with schema fields",
+      context: { ...v3Context, layoutVersion: undefined },
+      field: "context schema",
+    },
+  ];
+  const pair = await generateSigningKeyPair();
+  for (const { name, context, field } of cases) {
+    const results: readonly CryptoResult<unknown>[] = [
+      buildMetaSignedBytes(context),
+      await computeMetaSignedBytesHash(context),
+      await signMetaStatement({ context, signingKey: pair.privateKey }),
+      await verifyMetaStatementSignature({
+        context,
+        signatureHex: v3.signature_hex,
+        authorPublicKey: pair.publicKey,
+      }),
+      await verifyDistributedMetaStatement({
+        history,
+        context,
+        authorKeyFingerprintHex: "00".repeat(16),
+        signatureHex: v3.signature_hex,
+      }),
+    ];
+    c.push(
+      `meta-sig layout field set: ${name} is refused by every entry point`,
+      results.every((result) => isInvalidInput(result, field)),
+    );
+  }
+  // Layout selection precedes field-value validation: a context that both
+  // selects no layout and carries a bad coordinate reports the layout
+  // (parse the layout, then validate and encode under it)
+  const both: MetaStatementContext = {
+    ...contextOf(env.context),
+    layoutVersion: 3,
+    schema: v3Context.schema,
+    suite: "",
+  };
+  c.push(
+    "meta-sig layout field set: the layout is judged before the coordinates",
+    isInvalidInput(buildMetaSignedBytes(both), "context layoutVersion") &&
+      isInvalidInput(await computeMetaSignedBytesHash(both), "context layoutVersion"),
   );
 }
 
@@ -772,16 +878,16 @@ function layoutDomainSeparationChecks(c: Checks): void {
     layoutVersion: undefined,
     schema: undefined,
   };
-  const v1Bytes = toHex(buildMetaSignedBytes(v1Context));
-  const v3Bytes = toHex(buildMetaSignedBytes(v3Context));
+  const v1Bytes = signedBytesHexOf(v1Context);
+  const v3Bytes = signedBytesHexOf(v3Context);
   c.push(
     "meta-sig domain separation: same coordinates encode differently across layouts",
-    v1Bytes !== v3Bytes && v3Bytes === v3.signed_bytes_hex,
+    v1Bytes !== null && v1Bytes !== v3Bytes && v3Bytes === v3.signed_bytes_hex,
   );
   // Degenerate case: even with all schema fields empty, the domain tag
-  // prevents collision with v1 (the encoder is a total function, so it
-  // can build the byte string without structural checks)
-  const degenerate: MetaStatementContext = {
+  // prevents collision with v1 (the encoder is total over field values, so
+  // it can build the byte string without the field-value checks)
+  const degenerateBytes = signedBytesHexOf({
     ...v3Context,
     schema: {
       varType: "" as MetaVariableSchema["varType"],
@@ -789,10 +895,10 @@ function layoutDomainSeparationChecks(c: Checks): void {
       description: "",
       maxAgeDays: "",
     },
-  };
+  });
   c.push(
     "meta-sig domain separation: degenerate empty-schema v3 never collides with v1",
-    toHex(buildMetaSignedBytes(degenerate)) !== v1Bytes,
+    degenerateBytes !== null && degenerateBytes !== v1Bytes,
   );
 }
 
@@ -898,6 +1004,7 @@ export async function metadataSignatureChecks(): Promise<CheckResult[]> {
   await invalidInputChecks(c);
   await layoutInvalidInputChecks(c);
   await layoutSelectionChecks(c, history);
+  await layoutFieldSetChecks(c, history);
   layoutDomainSeparationChecks(c);
   await deletedPredecessorChecks(c, history);
   await roundtripChecks(c);

@@ -2,12 +2,13 @@
 // design note es-design.md §12 K6-F / G / K).
 //
 // Properties pinned down:
-//  1. The target check `isApprovalTarget` and the vote recount
-//     `countOwnerVotes` are the second implementation of crypto's consensus
-//     rules (K6-G). **Differential test**: run the same chains through the
-//     public API's verifyChain and require the direct-append rejection
-//     (approval-required), stale votes (demotion / key rotation), and
-//     completion verdicts to agree
+//  1. The target check and the owner-vote tally are crypto's public
+//     `isApprovalTarget` / `ownerVotersOf` (K6-G — the CLI keeps no copy).
+//     **Differential test**: run
+//     the same chains through the public API's verifyChain and require the
+//     direct-append rejection (approval-required), stale votes (demotion /
+//     key rotation), and completion verdicts to agree with what the CLI
+//     decides before submission
 //  2. Proposal-id prefix resolution (8+ chars, unique; distinguishing
 //     completed / withdrawn / unknown)
 //  3. `--expires` parsing (default 7 days, cap 30 days, 0 not allowed)
@@ -16,21 +17,18 @@
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
-import { verifyChain } from "@maruhi/crypto";
+import { approvalSignersOf, isApprovalTarget, ownerVotersOf, verifyChain } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import {
-  countOwnerVotes,
   DEFAULT_PROPOSAL_LIFETIME_MS,
   describeInnerOperation,
-  isApprovalTarget,
   MAX_PROPOSAL_LIFETIME_MS,
   parseProposalExpiry,
   proposalViewOf,
   proposalViews,
   resolveProposalRef,
-  signersOf,
   voteEligibility,
 } from "../src/approval-rules.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
@@ -101,7 +99,7 @@ async function verifyResult(entries: readonly ChainEntry[]): Promise<string> {
   return result.error.kind === "ChainInvalid" ? result.error.reason : result.error.kind;
 }
 
-describe("isApprovalTarget — differential vs verifyChain (K6-G)", () => {
+describe("isApprovalTarget (crypto public API) — agrees with verifyChain (K6-G)", () => {
   it("a direct append of a policy-targeted op is invalid as approval-required, and the CLI's verdict is also true (untargeted ops pass both)", async () => {
     const prefix = prefixWith(2, ["remove_member"]);
     const verified = await verifiedOf(await buildChain(prefix));
@@ -129,7 +127,7 @@ describe("isApprovalTarget — differential vs verifyChain (K6-G)", () => {
   });
 });
 
-describe("countOwnerVotes / proposalViewOf — vote recount (principle 2) agrees with verifyChain", () => {
+describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees with verifyChain", () => {
   it("a demoted voter's vote is not counted (stays pending), and the next non-voting owner's approve completes it — matching the CLI's needed=0", async () => {
     const prefix = prefixWith(3, ["remove_member"]);
     const proposed = await buildChain([
@@ -151,7 +149,7 @@ describe("countOwnerVotes / proposalViewOf — vote recount (principle 2) agrees
     // owner2's vote remains in the record, but the recount counts only the
     // proposer's (owner's) single vote
     expect(pending.approvals.map((vote) => vote.userId)).toEqual([owner2.userId]);
-    expect(countOwnerVotes(demoted.state.members, signersOf(pending))).toBe(1);
+    expect(ownerVotersOf(demoted.state.members, approvalSignersOf(pending)).size).toBe(1);
     const view = proposalViewOf(demoted, pending, 0);
     expect(view.votes).toBe(1);
     expect(view.voters).toEqual([owner.userId]);

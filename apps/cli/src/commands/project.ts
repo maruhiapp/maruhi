@@ -1,16 +1,11 @@
 // `maruhi project` and `project policy approvals / schema` (discipline: see commands/index.ts).
 
-import { APPROVAL_TARGET_OPS, type ApprovalTargetOp } from "@maruhi/crypto";
+import { APPROVAL_TARGET_OPS, type ApprovalTargetOp, isApprovalTargetOp } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
-import {
-  DEFAULT_POLICY_OPS,
-  describePolicy,
-  isApprovalTargetOp,
-  proposalViews,
-} from "../approval-rules.ts";
+import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
 import { type PolicyRequest, setApprovalPolicyOp } from "../approval.ts";
 import { syncProject } from "../chain-sync.ts";
 import { issueCheckpoint } from "../checkpoint.ts";

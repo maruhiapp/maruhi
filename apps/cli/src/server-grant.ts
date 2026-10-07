@@ -35,11 +35,15 @@ import type {
   ServerGrant,
   SigningKeyPair,
 } from "@maruhi/crypto";
-import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
+import {
+  computeServerKeyFingerprint,
+  decodeHex,
+  encodeHex,
+  isApprovalTarget,
+} from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { isApprovalTarget } from "./approval-rules.ts";
 import {
   ensureStillTarget,
   type ProposalInput,
