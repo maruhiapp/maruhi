@@ -7,14 +7,16 @@ own, and what is known not to hold. It is a map, not a second specification:
 the normative text is [CRYPTO_SPEC](CRYPTO_SPEC.md) (the single source of truth
 for cryptography), [AUTH_SPEC](AUTH_SPEC.md) and [AUDIT_SPEC](AUDIT_SPEC.md).
 Section references below (`§`) point into those documents. maruhi has not had
-a paid audit; this guide is the free substitute planned in
-[ROADMAP](../ROADMAP.md) H5.
+a paid audit; this guide is one part of the free substitute (with a security
+policy file, named requests and formal models — [ROADMAP](../ROADMAP.md) H5).
 
 ## 1. What maruhi is, and whom it trusts
 
 maruhi is a secrets manager. The server is a Cloudflare Worker with one
 Durable Object per project and D1; the client is the `maruhi` CLI, which does
-every encryption, decryption, signature and verification. Values are encrypted
+every encryption, decryption and signature, and every verification a member
+relies on (the server also verifies, against rogue clients — §6.4; with an
+opt-in grant it unwraps and re-wraps DEKs for workload leases — §9.1). Values are encrypted
 with AES-256-GCM under a per-environment, per-epoch DEK; each DEK is
 HPKE-wrapped to every device key allowed to read that environment; who may do
 what is decided by a per-project signed hash chain (the membership log) that
@@ -26,16 +28,18 @@ The trust model, as the specs state it:
 
 | Property | Does it depend on the server? | Where it is stated |
 |---|---|---|
-| Confidentiality of values, DEKs and private keys | No. The server stores ciphertext and wrapped DEKs only. The exception is opt-in: a project owner can grant the server key ("member N+1") for chosen environments, and the CLI shows that the project is disclosed | CRYPTO_SPEC §1 principle 1, §9, §10 |
+| Confidentiality of values, DEKs and private keys | No, against the chain view the client verified. The server stores ciphertext and wrapped DEKs only. Two qualifications: a project owner can grant the server key ("member N+1") for chosen environments (opt-in; the spec requires the UI and CLI to show the disclosure, and the web dashboard lists granted server keys); and a client encrypts to the recipients of the view it verified, so a server that withholds a removal or a rotation from a client without a floor or anchor past it (the freshness row) can get new values written under a DEK a removed member still holds | CRYPTO_SPEC §1 principle 1, §7, §9, §14.3-3 |
 | Integrity and attribution of values, metadata statements, DEKs and the chain | No. Clients verify signatures, the chain's consensus rules and the DEK commitments; "the server alone can forge neither values, names, nor DEKs" | §6.3, §14.2-1, §14.2-2 |
 | Freshness and completeness (rollback, omission) | Partly. Detected through the local floor, out-of-band anchors, checkpoints and head gossip; not guaranteed for a client that holds neither a floor nor an anchor, and a split view is not guaranteed to be detected | §14.1 G5–G7, §14.3-3, §14.3-4 |
 | Availability | Yes. A malicious server can refuse, delete or delay | §14.1 G8, §14.3-1 |
-| Who may download ciphertext; plaintext metadata | Yes. The server gates reads by the chain-derived member set and scope. Project, environment and variable names, schema fields and membership are plaintext metadata the server can read | §6.4, AUTH_SPEC §11-2, CRYPTO_SPEC §14.2-9, §13 open item #3 |
+| Who may download ciphertext; plaintext metadata | Yes. The server gates reads by the chain-derived member set and scope. Environment and variable names, schema fields, org attribution and membership are plaintext metadata the server can read | §6.4, AUTH_SPEC §11-2, CRYPTO_SPEC §14.2-9, §13 open item #3 |
 | The audit log | Yes at record time (server-managed data). Post-hoc tampering of a prefix notarized in a checkpoint is detectable | AUDIT_SPEC §6, CRYPTO_SPEC §14.2-7 |
 | Authentication (sessions, API tokens) | Yes (GitHub OAuth, server-issued sessions and tokens). A session cannot sign chain entries: device private keys never leave the device | AUTH_SPEC §1, §5, §6; CRYPTO_SPEC §3 |
 
-Short form: the server is trusted for availability and for gating access to
-ciphertext and metadata, not for the confidentiality or integrity of secrets.
+Short form: the server is trusted for availability, for freshness toward a
+client that holds neither a floor nor an anchor, and for gating access to
+ciphertext and metadata, not for the confidentiality or integrity of secrets
+against the view a client has verified.
 The hosted web dashboard holds no keys and no plaintext and does not verify
 anything; it shows what the server reports ([ADR-0018](adr/0018-web-trust-boundary.md),
 revision 2).
@@ -48,15 +52,15 @@ look like.
 | Invariant | Specified | Enforced | Break |
 |---|---|---|---|
 | Plaintext secrets and key material never cross the API, and never reach logs or error messages | CRYPTO_SPEC §10, §12; AUTH_SPEC §12-2, §12-10; [CLAUDE.md](../CLAUDE.md) | `packages/api-schema/src/data.ts` (`EncryptedPayloadSchema`), `packages/api-schema/src/strict.ts`; client-side encryption in `packages/crypto/src/internal.package/variable.ts` | Any wire field, server log, CLI error or crash path that carries a value, a DEK or a private key |
-| The membership chain alone decides authorization (roles, scopes, device caps, four-eyes) | CRYPTO_SPEC §6.1–§6.4, §1 principle 7 | `packages/crypto/src/internal.package/chain-verify.ts` (consensus rules, shared by both sides); server `apps/server/src/do/chain-accept.ts` re-runs it on every append; CLI `apps/cli/src/chain-sync.ts` re-verifies the whole chain and checks genesis hash = project ID | An entry one verifier accepts and the other refuses; a role or scope escalation; a four-eyes target applied without the quorum |
-| DEKs are authentic and reach only in-scope device keys | CRYPTO_SPEC §5.1, §5.2, §14.2-1, §14.2-9; AUTH_SPEC §12-6 | `dek-commitment.ts`, `dek-wrap-sign.ts` (crypto); `apps/server/src/dek-wraps.ts`; `apps/cli/src/deks.ts` | A DEK accepted without matching the on-chain commitment; a wrap for an out-of-scope or revoked device accepted or generated |
+| The membership chain alone decides authorization (roles, scopes, device caps, four-eyes; an API token can only narrow it — AUTH_SPEC §6) | CRYPTO_SPEC §6.1–§6.4, §1 principle 7 | `packages/crypto/src/internal.package/chain-verify.ts` (consensus rules, shared by both sides); server `apps/server/src/do/chain-accept.ts` re-runs it on every append; CLI `apps/cli/src/chain-sync.ts` re-verifies the whole chain and checks genesis hash = project ID | An entry one verifier accepts and the other refuses; a role or scope escalation; a four-eyes target applied without the quorum |
+| DEKs are authentic and reach only in-scope device keys | CRYPTO_SPEC §5.1, §5.2, §14.2-1, §14.2-9; AUTH_SPEC §12-6 | `dek-commitment.ts`, `dek-wrap-sign.ts` (crypto); `apps/server/src/dek-wraps.ts`; `apps/cli/src/dek-wrap.ts` (builds the recipient set R(E)), `apps/cli/src/deks.ts` | A DEK accepted without matching the on-chain commitment; a wrap for an out-of-scope or revoked device accepted or generated |
 | Meta statements: a stale-but-honest statement gets 409, a 422 always means malformed or forged | CRYPTO_SPEC §4.2; AUTH_SPEC §12-5 "Check order" | `apps/server/src/data/verify-meta.ts` (`acceptMetaStatement` — every predecessor-dependent check runs after the metaVersion CAS); `meta-sign.ts` / `meta-verify.ts` (crypto) | A predecessor-dependent check reachable before the CAS (an honest client is told its statement is forged), or a forged statement answered 409 |
 | Environment deletion is chain-derived and terminal | CRYPTO_SPEC §6.2 `delete_environment`, §6.3 "Chain-deleted environments", §14.2-12; AUTH_SPEC §12-4 | `chain-verify.ts` (`environment-deleted`, no reuse); `apps/server/src/programs/composite-programs.ts` (`deleteEnvironmentCompositeProgram`: the entry and the data cascade in one DO transaction; scope judged after the head CAS); CLI `apps/cli/src/scope.ts`, `apps/cli/src/values-verify.ts` (refuses a resurrection), `apps/cli/src/env-rm.ts` | A deleted environment served as live and accepted; an id reused; a deletion by a signer without admin role or scope |
 | The local floor detects rollback, regression and equivocation for a returning client | CRYPTO_SPEC §6.3 "The local floor", rules (a)–(c) | `apps/cli/src/floor.ts` (join semantics), `apps/cli/src/floor-check.ts` (rules), `apps/cli/src/floor-log.ts` (append-only storage) | A shortened chain, an older version or epoch, or a forward injection that a floor-holding client accepts; a fact joined into the floor without having been verified |
 | Out-of-band anchors and head gossip narrow the first-sync and split-view residue | CRYPTO_SPEC §6.3 "Out-of-band anchors", "Head gossip", §6.6; AUTH_SPEC §16 | `apps/cli/src/anchor.ts` (repository anchor), `apps/cli/src/invite-accept.ts` (invite-link anchor pin), `apps/cli/src/attestation.ts`; `head-attestation.ts` (crypto); `apps/server/src/attestation-accept.ts` | A view that omits the anchored head yet passes; a contradicting head declaration that is not reported as evidence |
 | The invite link key: the server can never swap the acceptance key | CRYPTO_SPEC §6.5, §14.3-9; AUTH_SPEC §15 | `invite-link.ts`, `invite-accept-sign.ts` (crypto); CLI `apps/cli/src/invite-create.ts` (the seed lives only in the URL fragment), `apps/cli/src/invite-accept.ts`, `apps/cli/src/github-signing-keys.ts`; server `apps/server/src/handlers/handlers-invites.ts` verifies both acceptance signatures | The link-key seed reaching the server; a valid acceptance under a key the link holder never approved; an issuance signature that does not bind role, scope or head |
 | Values are shown only to a person at an interactive terminal | [ADR-0016](adr/0016-effect-cli.md) decision 7; CLAUDE.md | `apps/cli/src/agent-gate.ts` (`ensureValueDisplayAllowed`: refuses a known agent, detected in `apps/cli/src/live.ts`, and refuses unless stdin and stdout are both terminals) | A value-displaying path that skips the gate; a non-terminal context that passes. Note the TTY check is a fail-closed guard, not human authentication (ADR-0018 revision 1 item 4) |
-| The web dashboard ships no decryptor and runs under a strict CSP | ADR-0018 decision 1 and revision 2; AUTH_SPEC §15-3; CLAUDE.md | `apps/web/scripts/write-headers.ts` (`script-src 'self'` plus the build-time hash of our own bootstrap script, `script-src 'none'` on `/invite`, the build fails on violation); `apps/web/test/e2e.test.ts`; `apps/web/test/unit/endpoints.test.ts` (value-import tripwire). `apps/web/src` imports nothing from `@maruhi/crypto` | Script execution under the CSP; a decrypt or wrap code path in the shipped bundle; `/invite` interpreting the fragment |
+| The web dashboard ships no decryptor and runs under a strict CSP | ADR-0018 decision 1 and revision 2; AUTH_SPEC §15-3; CLAUDE.md | `apps/web/scripts/write-headers.ts` (`script-src 'self'` plus the build-time hash of our own bootstrap script, `script-src 'none'` on `/invite`, the build fails on violation); `apps/web/test/e2e.test.ts`; `apps/web/test/unit/endpoints.test.ts` (import tripwires: no value import of `effect` or `@maruhi/api-schema`, and no reference to `@maruhi/crypto` at all — `apps/web/src` imports nothing from it) | Script execution under the CSP; a decrypt or wrap code path in the shipped bundle; `/invite` interpreting the fragment |
 | Actors in the chain and the audit log are internal user ids and key fingerprints only | CRYPTO_SPEC §12; AUDIT_SPEC §2; AUTH_SPEC §11-1 | `packages/core/src/identity.ts` (`UserId` / `ProviderUserId` brands, minted only at trust boundaries; the mint sites are restricted in `.oxlintrc.json`) | A provider identity (GitHub id, login, email) written into an append-only structure |
 | The CLI writes no plaintext secret to disk | CLAUDE.md "CLI diskless invariants" | `apps/cli/src/run.ts` (values injected into the child's environment only), `apps/cli/src/keychain.ts` | A value, DEK or key in a file, a temp file, a cache or the floor |
 
@@ -71,7 +75,7 @@ implementation per operation, shared by server and CLI.
 |---|---|---|---|---|---|
 | Length-prefixed encoding (all AAD, info, signed bytes) | CRYPTO §2.1 | `encoding.ts` | — | — | `encoding.json` |
 | Value encryption | CRYPTO §4 | `variable.ts` | — | `push.ts` | `variable-encryption.json` |
-| Value write signature | CRYPTO §4.1; AUTH §12-5 | `value-sign.ts`, `value-verify.ts` | `data/verify-value.ts` | `values-verify.ts` | `value-signature.json` |
+| Value write signature | CRYPTO §4.1; AUTH §12-5 | `value-sign.ts`, `value-verify.ts` | `data/verify-value.ts` | `push.ts`, `values-verify.ts` | `value-signature.json` |
 | Variable / environment meta statements | CRYPTO §4.2; AUTH §12-5 | `meta-sign.ts`, `meta-verify.ts` | `data/verify-meta.ts` | `meta-statement.ts` | `metadata-signature.json` |
 | Environment manifest | CRYPTO §4.3 | `manifest-sign.ts`, `manifest-verify.ts` | `data/verify-manifest.ts` | `manifest.ts` | `env-manifest.json` |
 | DEK wrap (HPKE), registration signature, commitment | CRYPTO §5, §5.1, §5.2; AUTH §12-6 | `hpke.ts`, `dek-wrap.ts`, `dek-wrap-sign.ts`, `dek-commitment.ts` | `dek-wraps.ts` | `deks.ts`, `dek-wrap.ts` | `dek-wrap.json`, `dek-wrap-signature.json`, `dek-commitment.json`, `hpke/` (RFC 9180) |
@@ -82,6 +86,7 @@ implementation per operation, shared by server and CLI.
 | Head declarations and gossip | CRYPTO §6.6; AUTH §16-1 | `head-attestation.ts` | `attestation-accept.ts` | `attestation.ts` | `head-attestation.json` |
 | Invites (link key, issuance and joint acceptance signatures) | CRYPTO §6.5; AUTH §15 | `invite-link.ts`, `invite-accept-sign.ts` | `handlers/handlers-invites.ts`, `invite-domain.ts` | `invite-create.ts`, `invite-accept.ts`, `invite-link.ts` | `invite-link.json`, `invite-accept-signature.json` |
 | Reserve-key wrap ledger (recovery code, passkey PRF, guardians, handoff) | CRYPTO §8; AUTH §13 | `recovery.ts`, `master-wrap.ts` | `key-wrap-domain.ts`, `handlers/handlers-key-wraps.ts` | `key-recover.ts`, `recovery.ts`, `guardian.ts`, `handoff.ts` | `recovery-wrap.json`, `master-key-wrap.json` |
+| Mirrors and export | CRYPTO §9.2; AUTH §11-6, §11-7 | — | `programs/programs-mirror.ts`, `programs/programs-export.ts`, `do/do-mirror.ts` | `mirror.ts`, `project-export.ts` | — |
 | Server key and workload leases | CRYPTO §9, §9.1; AUTH §14 | `lease-wrap.ts` | `server-key.ts`, `programs/programs-lease.ts` | `ci-run.ts`, `lease-client.ts` | `lease-wrap.json` |
 | Key fingerprints and word display | CRYPTO §3 | `keys.ts`, `fingerprint-words.ts` | — | `fp-words.ts`, `known-fingerprints.ts` | keys and fingerprints from `chain-entries.json`, `dek-wrap.json` |
 | Audit-head cumulative hash | AUDIT §5.1, §6 | `audit-head.ts` | `audit-store.ts` | `audit-reconcile.ts` | `audit-head.json` |
@@ -91,14 +96,24 @@ negative cases: [packages/crypto/test-vectors/README.md](../packages/crypto/test
 
 ## 4. Re-verifying the test vectors yourself
 
-The expected values are computed on a different stack from the one under test.
-The implementation uses WebCrypto and panva `hpke`; the vectors come from
-`packages/crypto/test-vectors/tools/generate_reference.py` (Python 3 with
-pyca/cryptography) and, for the HPKE Seal direction that panva cannot
-derandomize, from hpke-js. `verify_reference.mjs` re-checks them on a third
-path (WebCrypto under Bun, and Open through panva `hpke` with a non-extractable
-key pair). The HPKE layer is also checked against the official RFC 9180
-vectors (`packages/crypto/test/checks/rfc9180.ts`).
+The implementation under test uses WebCrypto and panva `hpke`. How
+independent the expected values are depends on the file:
+
+- Python 3 with pyca/cryptography computes most of them
+  (`packages/crypto/test-vectors/tools/generate_reference.py`).
+- The HPKE Seal direction, which panva cannot derandomize, comes from hpke-js
+  in four `.mjs` generators (dek-wrap, lease-wrap, sealed-value,
+  master-key-wrap). That is a different HPKE implementation and a different
+  X25519, but its AES-GCM and HKDF run on WebCrypto, and
+  `generate-master-key-wrap.mjs` also computes HKDF, AES-GCM and SHA-256 with
+  Bun's WebCrypto.
+- `verify_reference.mjs` is independent code (it does not import
+  `@maruhi/crypto`), but it runs on the shipping primitive stack: WebCrypto
+  under Bun and panva `hpke`. It re-checks the vectors and the code paths,
+  not the primitives.
+
+The HPKE layer is also checked against the official RFC 9180 vectors in
+`packages/crypto/test/checks/rfc9180.ts`.
 
 With Bun (version in `.bun-version`) and `python3` with `cryptography`
 installed:
@@ -144,7 +159,7 @@ is a bug in the rules. Full rules and the report's contents:
 | R0 | comments / docs only | the cosmetic file list |
 | R1 | deletion / narrowing (positives removed, a `SUPPORTED_*` set shrunk, encodings untouched) | each `src` diff, and that each removal is intended |
 | R2 | logic change keeping the encodings | the logic against CRYPTO_SPEC, and every outcome change |
-| R3 | new signed bytes, primitive, domain string, suite or dependency | a full crypto review |
+| R3 | new signed bytes, primitive, domain string, suite or dependency, or a surviving vector whose bytes changed (not rebased) | a full crypto review |
 
 Two merged PRs show the shape. Removing layout v2 (PR #329) reports R1:
 13 vector entries removed and a supported set shrunk. Moving environment
@@ -157,6 +172,17 @@ cd packages/crypto/test-vectors/tools
 bun run delta -- --base 04bef88 --head cddd176   # PR #329 → R1
 bun run delta -- --base 46868ba --head 3e464dc   # PR #336 → R3
 ```
+
+In #336 the R3 comes from the two changed fixtures (`canonicalization` and
+`extended_chains` in `chain-entries.json`), not from the new chain op. The
+delta reports no new signed-bytes shape: its shape rule keys on a leading
+`maruhi/vN/…` domain field, and chain-entry signed bytes begin with the bare
+suite (`maruhi/v1`). So today a new chain op is not counted as new surface by
+itself; read chain-op changes in `chain-verify.ts` and CRYPTO_SPEC §6.2
+directly.
+
+> **TODO:** update this paragraph when `vector-delta.mjs` counts a new chain
+> op as new signed-bytes surface.
 
 The aid covers `packages/crypto` only; for CRYPTO_SPEC it reports only whether
 the file changed. Check the spec diff against the vector delta yourself.

@@ -93,9 +93,9 @@ const variableParams = {
  * One environment in the listing (current epoch is chain-derived —
  * CRYPTO_SPEC §3). The display name travels as the latest verified-able
  * metadata statement + author info instead of a bare snapshot (AUTH_SPEC
- * §12-2). Deleted environments are also listed, carrying their latest
- * deleted statement (detection material for denial of deletion and
- * unauthorized revival — §12-4).
+ * §12-2). Only live environments are listed; a deleted environment's
+ * statements are deleted with its data, and clients derive deletion from
+ * the delete_environment entry on their verified chain (CRYPTO_SPEC §6.3).
  */
 export const EnvironmentSummarySchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
