@@ -113,6 +113,8 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   remove_member: "chain.member_removed",
   change_role: "chain.role_changed",
   create_environment: "chain.environment_created",
+  // Environment deletion on the chain (AUDIT_SPEC §3.4 — 2026-10-07)
+  delete_environment: "chain.environment_deleted",
   rotate_epoch: "chain.epoch_rotated",
   grant_server: "chain.server_granted",
   revoke_server: "chain.server_revoked",
@@ -277,6 +279,10 @@ const mirrorTails: {
     environmentId: operation.payload.environmentId,
     epoch: 1,
     payload: { dekCommitmentHex: operation.payload.dekCommitmentHex },
+  }),
+  delete_environment: (operation) => ({
+    event: MIRROR_EVENT_NAME.delete_environment,
+    environmentId: operation.payload.environmentId,
   }),
   rotate_epoch: (operation) => ({
     event: MIRROR_EVENT_NAME.rotate_epoch,

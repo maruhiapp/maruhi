@@ -35,6 +35,7 @@ import {
   READER,
   renameEnvironmentRequest,
   requestJson,
+  unsignedDeleteEnvironmentBody,
   STRANGER,
 } from "./support/data-fixture.ts";
 import {
@@ -153,14 +154,32 @@ describe("environment management (the §12-4 composite request)", () => {
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
 
-    // Variables, variable statements, versions, and wraps are deleted
-    // immediately; the environment row becomes a tombstone (§12-4). The
-    // environment's own statement chain (including deleted) remains
+    // The deletion is a chain entry at the head (CRYPTO_SPEC §6.2 —
+    // 2026-10-07): the chain is the authority for whether the environment
+    // is deleted
+    const chain = await requestJson("GET", "/chain", token(READER));
+    const chainBody = (await chain.json()) as {
+      headSeq: number;
+      entries: { seq: number; op: string; payload: { environmentId?: string } }[];
+    };
+    expect(chainBody.headSeq).toBe(fixture.head.seq);
+    expect(chainBody.entries.at(-1)).toMatchObject({
+      op: "delete_environment",
+      payload: { environmentId: ENV },
+    });
+
+    // Everything of the environment is deleted immediately — variables,
+    // variable and environment statements, versions, wraps, the manifest
+    // and the checkpoint snapshot; the environment row becomes a
+    // chain-derived tombstone (§12-4)
     for (const table of [
       "variables",
       "variable_meta_statements",
+      "environment_meta_statements",
       "variable_versions",
       "dek_wraps",
+      "environment_manifests",
+      "environment_checkpoints",
     ]) {
       const rows = await queryProjectDo(
         projectId,
@@ -172,13 +191,50 @@ describe("environment management (the §12-4 composite request)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(404);
 
-    // The chain does not observe deletions, so re-creation is rejected
-    // by the consensus rule (uniqueness across the whole history)
-    // (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
+    // A deleted id stays in the chain-derived environment set, so
+    // re-creation is rejected by the consensus rule (uniqueness across the
+    // whole history) (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
     const recreated = await createEnvironmentWith(fixture, ENV, "App3", []);
     expect(recreated.status).toBe(422);
     const body = (await recreated.json()) as { reason: string };
     expect(body.reason).toBe("duplicate-environment");
+  });
+
+  it("refuses a deletion whose entry names another environment than the URL (422 payload-mismatch — §12-4)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    await createEnvironmentOk(fixture, "env-app-0002", "Staging");
+    const response = await deleteEnvironmentRequest(fixture, ENV, OWNER, {
+      entryEnvironmentId: "env-app-0002",
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "PayloadMismatch",
+      field: "environmentId",
+    });
+    // Neither environment was deleted
+    const list = await requestJson("GET", "/environments", token(READER));
+    const listBody = (await list.json()) as { environments: { environmentId: string }[] };
+    expect(listBody.environments.length).toBe(2);
+  });
+
+  it("rejects delete_environment on the generic chain append (422 CompositeRequired)", async () => {
+    // AUTH_SPEC §6 / §12-4: an entry without its data deletion would leave
+    // data the chain says no longer exists
+    await createEnvironmentOk(fixture, ENV, "App");
+    const { entry } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: { op: "delete_environment", payload: { environmentId: ENV } },
+    });
+    const response = await requestJson("POST", "/chain/entries", token(OWNER), {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry,
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ op: "delete_environment" });
+    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+    expect(pull.status).toBe(200);
   });
 
   it("rejects create_environment / rotate_epoch on the generic chain append (422 CompositeRequired)", async () => {
@@ -401,23 +457,16 @@ describe("environment management (the §12-4 composite request)", () => {
       const body = (await response.json()) as { projectId: string };
       expect(body.projectId).toBe(projectId);
     }
-    // Deletion (which requires a statement) is also a 404 for
+    // Deletion (the delete_environment composite) is also a 404 for
     // non-members. STRANGER holds no vector key, so it is sent as an
     // unsigned dummy (existence hiding precedes signature verification —
     // §12-3)
-    const removal = await requestJson("DELETE", `/environments/${ENV}`, token(STRANGER), {
-      statement: {
-        suite: "maruhi/v1",
-        environmentId: ENV,
-        name: "App",
-        status: "deleted",
-        metaVersion: 2,
-        prevMetaSigHashHex: "cd".repeat(32),
-        chainHeadHashHex: fixture.head.hashHex,
-        chainHeadSeq: fixture.head.seq,
-        signatureHex: "00".repeat(64),
-      },
-    });
+    const removal = await requestJson(
+      "DELETE",
+      `/environments/${ENV}`,
+      token(STRANGER),
+      unsignedDeleteEnvironmentBody(fixture, ENV, STRANGER),
+    );
     expect(removal.status).toBe(404);
     expect(((await removal.json()) as { projectId: string }).projectId).toBe(projectId);
   });

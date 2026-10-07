@@ -193,7 +193,7 @@ async function checkpointFor(environmentId: string, epoch: number): Promise<Chai
 }
 
 /** An environment meta-statement (unsigned dummy — the 403 settles before signature verification). */
-function unsignedEnvStatement(environmentId: string, name: string, status: "active" | "deleted") {
+function unsignedEnvStatement(environmentId: string, name: string, status: "active") {
   return {
     suite: "maruhi/v1",
     environmentId,
@@ -329,11 +329,9 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
     await setupListed();
     await seedMemberToken(fixture, DEVADMIN, 9011);
     await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [ENV]));
-    await expectScopeForbidden(
-      await requestJson("DELETE", `/environments/${OTHER}`, token(DEVADMIN), {
-        statement: unsignedEnvStatement(OTHER, "Other", "deleted"),
-      }),
-    );
+    // The deletion composite judges scope after the CAS (§12-4), so the
+    // entry is signed at the real head
+    await expectScopeForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEVADMIN));
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
         wraps: [
@@ -353,12 +351,7 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
   it("judgment order: role 403 → scope 403 → existence 404 (a nonexistent environment is also 403 for a listed principal; 404 for an `all` principal)", async () => {
     await setupListed();
     // role first: member DEV performs an admin operation (environment deletion) on something out of scope
-    await expectForbidden(
-      await requestJson("DELETE", `/environments/${OTHER}`, token(DEV), {
-        statement: unsignedEnvStatement(OTHER, "Other", "deleted"),
-      }),
-      "insufficient-role",
-    );
+    await expectForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEV), "insufficient-role");
     // scope precedes existence: an uncreated environment id cannot be in a listed scope
     await expectScopeForbidden(await requestJson("GET", `/environments/${GHOST}/pull`, token(DEV)));
     const ghostRotate = await rotateEnvironmentComposite(fixture, {

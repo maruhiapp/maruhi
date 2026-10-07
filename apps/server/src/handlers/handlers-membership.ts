@@ -357,16 +357,22 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
       "append",
       Effect.fn("handlers-membership.append")(function* ({ params, payload, endpoint }) {
         const principal = yield* (yield* RequestAuth).principal;
-        // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
-        // through the composite endpoint (atomic acceptance together with
-        // their collateral data). Bypassing via the generic append would
-        // create the intermediate state "an epoch exists but no wraps", so
-        // it is refused with a typed error (the DO side has the same guard,
-        // arriving as a composite-required rejection — defense in layers).
+        // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch /
+        // delete_environment go only through the composite endpoints
+        // (atomic acceptance together with their collateral data).
+        // Bypassing via the generic append would create the intermediate
+        // state "an epoch exists but no wraps" or "deleted on the chain but
+        // the data remains", so it is refused with a typed error (the DO
+        // side has the same guard, arriving as a composite-required
+        // rejection — defense in layers).
         // A standalone (periodic) checkpoint is accepted by this endpoint
         // (§16-2 — the DO-side standaloneCheckpointProgram does content
         // cross-check + atomic snapshot saving)
-        if (payload.entry.op === "create_environment" || payload.entry.op === "rotate_epoch") {
+        if (
+          payload.entry.op === "create_environment" ||
+          payload.entry.op === "rotate_epoch" ||
+          payload.entry.op === "delete_environment"
+        ) {
           return yield* Effect.fail(new CompositeRequiredError({ op: payload.entry.op }));
         }
         // The four-eyes 4 ops (CRYPTO_SPEC §6.2 PF1) have been accepted via

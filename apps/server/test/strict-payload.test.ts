@@ -107,7 +107,7 @@ const unsignedEntry = (op: string, payload: Record<string, unknown>): Record<str
 const unsignedEnvStatement = (
   lifecycle:
     | { status: "active"; metaVersion: 1; prevMetaSigHashHex: "" }
-    | { status: "active" | "deleted"; metaVersion: number; prevMetaSigHashHex: string },
+    | { status: "active"; metaVersion: number; prevMetaSigHashHex: string },
 ): Record<string, unknown> => ({
   suite: "maruhi/v1",
   environmentId: ENV,
@@ -320,14 +320,11 @@ describe("meta operations (§12-5 — environments)", () => {
     });
   });
 
-  it("environment delete rejects an unknown field with 400", async () => {
+  it("environment delete rejects an unknown field with 400 (root and nested entry)", async () => {
     const send = sendJson("DELETE", dataUrl(`/environments/${ENV}`), bearer(token(OWNER)));
     await expectStrictReject(send, {
-      statement: unsignedEnvStatement({
-        status: "deleted",
-        metaVersion: 2,
-        prevMetaSigHashHex: "ab".repeat(32),
-      }),
+      parentHeadHashHex: fixture.head.hashHex,
+      entry: unsignedEntry("delete_environment", { environmentId: ENV }),
     });
   });
 });

@@ -6,12 +6,13 @@
 //   no client-supplied accompanying data and no separate input to bundle in
 //   a composite). The consensus rules (form, role, audit admin,
 //   unknown-environment, strict epoch equality, checkpoint-regression) are
-//   carried by verifyChain (via chain-accept.ts); here lives the acceptance
+//   carried by verifyChain (via chain-accept.ts — since 2026-10-07 also
+//   environment-deleted, CRYPTO_SPEC §6.2); here lives the acceptance
 //   policy = **content matching against the stored state at acceptance time
 //   (before applying)** and the atomic snapshot store
 // - The mismatch vocabulary is CheckpointStateMismatch (422):
-//   environment-deleted / manifest-mismatch / values-digest-mismatch /
-//   audit-head-unknown / audit-head-stale. The boundary-bundled case
+//   manifest-mismatch / values-digest-mismatch / audit-head-unknown /
+//   audit-head-stale. The boundary-bundled case
 //   (composite-programs.ts — the matching reference is the composite's
 //   post-application state) also shares the values_digest and audit-head
 //   checks from here, structuring "the storage discipline is identical
@@ -123,15 +124,16 @@ export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAudi
 );
 
 /**
- * Acceptance-time match of one environment tuple (§6.4): tombstone
- * (environment-deleted) → match against the latest manifest
- * (manifest-mismatch — notarizing a nonexistent earlier manifest_version
- * also falls here) → values_digest. On pass, returns the stored value
- * enumeration (material for the snapshot store). The environment's
- * existence on the chain is assumed already guaranteed by the consensus
- * rule (unknown-environment) — a chain-resident environment with no data
- * rows is a violation of composite-acceptance atomicity (storage
- * corruption), so it dies. So does a live environment with no stored
+ * Acceptance-time match of one environment tuple (§6.4): match against the
+ * latest manifest (manifest-mismatch — notarizing a nonexistent earlier
+ * manifest_version also falls here) → values_digest. On pass, returns the
+ * stored value enumeration (material for the snapshot store). The
+ * environment's existence and liveness on the chain are already guaranteed
+ * by the consensus rules (unknown-environment / environment-deleted —
+ * CRYPTO_SPEC §6.2) — a chain-live environment with no data row, or with a
+ * tombstoned row, is a violation of composite-acceptance atomicity (the
+ * deletion composite writes the tombstone with its chain entry — AUTH_SPEC
+ * §12-4), so it dies. So does a live environment with no stored
  * manifest: the creation composite writes it atomically, so its absence
  * is corruption, not a mismatch (AUTH_SPEC §12-5 (6) / §16-2 — the
  * server-fault discipline of every other surface).
@@ -139,16 +141,12 @@ export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAudi
 const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: CheckpointEnvironmentEntry) {
   const store = yield* DataStore;
   const environment = yield* store.findEnvironment(tuple.environmentId);
-  if (environment === null) {
+  if (environment === null || environment.deletedAtMs !== null) {
     return yield* Effect.die(
-      new Error("environment on the verified chain has no data row (composite atomicity)"),
+      new Error(
+        "environment live on the verified chain has no live data row (composite atomicity)",
+      ),
     );
-  }
-  if (environment.deletedAtMs !== null) {
-    return yield* rejectData({
-      kind: "checkpoint-state-mismatch",
-      reason: "environment-deleted",
-    });
   }
   const anchor = yield* store.environmentManifestAnchor(tuple.environmentId);
   if (anchor === null) {

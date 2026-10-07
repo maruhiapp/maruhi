@@ -219,10 +219,11 @@ export interface DataWriteOps {
     nowMs: number,
   ) => void;
   /**
-   * Tombstone + immediately delete the subordinate data (variables,
-   * variable statements, versions, wraps). The environment's own
-   * deletion statement (insertEnvironmentMetaStatement) keeps being
-   * stored and distributed (§12-4).
+   * Tombstone (a chain-derived cache — written in the same transaction as
+   * the delete_environment entry) + immediately delete everything else of
+   * the environment: variables, variable and environment statements,
+   * versions, wraps, the manifest and the checkpoint snapshot (§12-4 —
+   * 2026-10-07; the chain entry is the deletion's record).
    */
   readonly retireEnvironment: (environmentId: string, nowMs: number) => void;
   readonly insertVariable: (

@@ -321,6 +321,26 @@ export async function submitComposite(
   return response;
 }
 
+/**
+ * Submit a `delete_environment` entry through the deletion composite
+ * (AUTH_SPEC §12-4 — 2026-10-07): the generic append rejects the op with
+ * CompositeRequired, so replay and negatives both go through
+ * `DELETE /environments/:environmentId`. `urlEnvironmentId` overrides the
+ * path (a structural negative carrying an empty id still needs a routable
+ * path; its payload is refused by the wire schema).
+ */
+export function submitDeletion(
+  entry: ChainEntry & { readonly op: "delete_environment" },
+  urlEnvironmentId?: string,
+): Promise<Response> {
+  const environmentId = urlEnvironmentId ?? entry.payload.environmentId;
+  return SELF.fetch(`${BASE}/projects/${vectorProjectId}/environments/${environmentId}`, {
+    method: "DELETE",
+    headers: { ...JSON_HEADERS, ...bearer(tokenFor(entry.actor.userId)) },
+    body: JSON.stringify({ parentHeadHashHex: entry.prevHashHex, entry }),
+  });
+}
+
 /** Update the current members / valid grants while tracking the replayed ops (deriving the composite's wrap set). */
 function trackReplayState(
   entry: ReturnType<typeof toWireEntry>,
@@ -467,8 +487,12 @@ export async function replayNegativePrefix(negative: {
   let head = base.head;
   for (const vector of extended.entries) {
     const { entry, hash } = await resignForReplay(vector, head);
-    const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
-    expect(response.status).toBe(200);
+    // A deletion goes through its composite (2026-10-07 — §12-4)
+    const response =
+      entry.op === "delete_environment"
+        ? await submitDeletion(entry)
+        : await appendEntry(vectorProjectId, entry.prevHashHex, entry);
+    expect(response.status).toBe(entry.op === "delete_environment" ? 204 : 200);
     head = { seq: entry.seq, hashHex: hash };
   }
   return { members: base.members, head };

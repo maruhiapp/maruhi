@@ -16,10 +16,11 @@ import { Effect } from "effect";
 
 /**
  * The token permission level an appended entry requires (AUTH_SPEC §6 /
- * §16-2). `create_environment` / `rotate_epoch` = write (these 2 ops are
- * only reachable via the composite endpoints, though — the handler rejects a
- * generic append with CompositeRequired first; the mapping here is kept for
- * the table's exhaustiveness). `checkpoint` is payload-dependent: empty
+ * §16-2). `create_environment` / `rotate_epoch` = write and
+ * `delete_environment` = admin (these 3 ops are only reachable via the
+ * composite endpoints, though — the handler rejects a generic append with
+ * CompositeRequired first; the mapping here is kept for the table's
+ * exhaustiveness). `checkpoint` is payload-dependent: empty
  * audit_head_hash = write, non-empty = admin (§16-2 — the scope half of
  * effective permission admin; the chain-role half is judged by the DO). The
  * 2 device-key ops (§11-1 — 2026-09-19 DK): `add_device` and `revoke_device`

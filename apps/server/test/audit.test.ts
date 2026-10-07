@@ -145,14 +145,15 @@ async function nextVariableStatement(input: {
 }
 
 /**
- * Check the author key FPs of the last 5 lifecycle rows (env.renamed →
- * var.renamed → var.deleted → cascade var.deleted → env.deleted)
- * (AUDIT_SPEC §3.3): ops accompanied by a meta statement copy the author's
- * key FP, and the environment-deletion cascade var.deleted copies the
- * author FP of the env deletion statement.
+ * Check the author key FPs of the last 5 data lifecycle rows (env.renamed
+ * → var.renamed → var.deleted → cascade var.deleted → env.deleted — the
+ * chain mirror rows are skipped) (AUDIT_SPEC §3.3): ops accompanied by a
+ * meta statement copy the author's key FP, and the environment-deletion
+ * cascade (var.deleted, env.deleted) copies the actor FP of the
+ * delete_environment entry (2026-10-07).
  */
 function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]): void {
-  const tail = events.slice(-5);
+  const tail = events.filter((row) => !String(row["event"]).startsWith("chain.")).slice(-5);
   const memberFp = vectorKeyOf(MEMBER).key_fingerprint_hex;
   const ownerFp = vectorKeyOf(OWNER).key_fingerprint_hex;
   expect(tail.map((row) => [row["event"], row["actor_key_fingerprint"]])).toEqual([
@@ -400,10 +401,15 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       "env.renamed",
       "var.renamed",
       "var.deleted",
-      // Environment deletion is accompanied by var.deleted for the remaining variables (§12-4)
+      // Environment deletion (the delete_environment composite — §12-4)
+      // atomically writes the chain mirror, then var.deleted for the
+      // remaining variables and env.deleted
+      "chain.environment_deleted",
       "var.deleted",
       "env.deleted",
     ]);
+    // The mirror row and the cascade rows name the deleted environment
+    expect(events.slice(-3).map((event) => event["environment_id"])).toEqual([ENV, ENV, ENV]);
 
     const created = events[9];
     const pushed = events[10];

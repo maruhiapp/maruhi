@@ -1,6 +1,6 @@
 // Effect programs for environment management and bulk pull
 // (AUTH_SPEC §12-4 / §12-7).
-// Creation and rotation go through composite requests
+// Creation, rotation and deletion go through composite requests
 // (composite-programs.ts).
 //
 // The check order (§12-3) and the permit-serialization premise are
@@ -11,7 +11,7 @@
 // metadata-only pull are scope-agnostic (§12-3's table / §12-7).
 
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
-import type { ChainHistoryIndex, ChainMember, Role } from "@maruhi/crypto";
+import type { ChainHistoryIndex, ChainMember } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -37,17 +37,18 @@ import {
 import { DataStore } from "../data/data-store.ts";
 import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
 import { acceptMetaStatement, ensureNfcName } from "../data/verify-meta.ts";
-import type { MetaOperation } from "../data/verify-meta.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { requireActiveEnvironment } from "../quotas.ts";
 import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";
 
 /**
- * The environment-statement acceptance shared by rename and delete
- * (§12-4): the statement's caps → CAS → the operation's predecessor-match
- * checks → signature (acceptMetaStatement), which resolves the signing
- * device (design record §8 K3-1), then the second-stage authorization — that
- * device's effective permission (`role` × environment ∈ effective scope).
+ * The environment-statement acceptance of a rename (§12-4): the statement's
+ * caps → CAS → the predecessor-match checks → signature
+ * (acceptMetaStatement), which resolves the signing device (design record
+ * §8 K3-1), then the second-stage authorization — that device's effective
+ * permission (member × environment ∈ effective scope). Environment
+ * deletion carries no statement (the delete_environment composite —
+ * composite-programs.ts, 2026-10-07).
  */
 const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnvironmentStatement")(
   function* (
@@ -58,8 +59,6 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
     },
     environment: { readonly environmentId: string; readonly latestMetaVersion: number },
     statement: MetaStatementInput,
-    operation: MetaOperation,
-    role: Role,
   ) {
     const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
       access.member,
@@ -68,14 +67,14 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
           projectId: access.projectId,
           environmentId: environment.environmentId,
           target: { kind: "environment" },
-          operation,
+          operation: "reissue",
           latestMetaVersion: environment.latestMetaVersion,
           history: access.history,
           member: candidate,
           statement,
         }),
     );
-    yield* ensureDevicePermission(author, role, environment.environmentId);
+    yield* ensureDevicePermission(author, "member", environment.environmentId);
     return { author, signedBytesHashHex };
   },
 );
@@ -93,9 +92,8 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
     // The DO storage-total guard (§12-8 — H2): renaming an
     // environment stacks a statement row + a manifest, so it is a
     // growth surface (after the existence check, before NFC /
-    // uniqueness / CAS / signature). Deletion
-    // (deleteEnvironmentProgram) does not call it — it must not plug
-    // the release path
+    // uniqueness / CAS / signature). Deletion (the delete_environment
+    // composite) does not call it — it must not plug the release path
     yield* ensureStorageAdmitsGrowth;
     yield* ensureNfcName(statement.name);
     const store = yield* DataStore;
@@ -117,8 +115,6 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
       access,
       environment,
       statement,
-      "reissue",
-      "member",
     );
     // Composite acceptance of the manifest (§12-4 / §12-5): an
     // environment rename bundles a manifest (manifestVersion + 1)
@@ -155,80 +151,13 @@ export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEn
   },
 );
 
-export const deleteEnvironmentProgram = Effect.fn("programs-environment.deleteEnvironmentProgram")(
-  function* (
-    actor: DataActor,
-    environmentId: string,
-    statement: MetaStatementInput,
-    cache: StateCache,
-  ) {
-    // Admin × environment ∈ scope at acceptance time (§12-3). The
-    // admin / scope check at declared-head time is covered by
-    // signature verification (§12-3's dual check — the required role
-    // for env × deleted, 3′)
-    const access = yield* requireEnvironmentAccess(actor.userId, "admin", environmentId, cache);
-    const environment = yield* requireActiveEnvironment(environmentId);
-    // deleted's name preserves the immediately-prior active name
-    // (§4.2 — byte-exact): a predecessor-match check, so the meta
-    // pipeline runs it after the metaVersion CAS (a deletion signed
-    // over a stale view — e.g. before a concurrent rename — is a 409,
-    // not a 422 — §12-5's check order)
-    // Includes stage 2 (design record §8 K3-1): admin × environment ∈
-    // effective scope under the signing device's effective permission
-    const { author, signedBytesHashHex } = yield* acceptEnvironmentStatement(
-      access,
-      environment,
-      statement,
-      "delete",
-      "admin",
-    );
-    const store = yield* DataStore;
-    const audit = yield* AuditStore;
-    const now = yield* Clock.currentTimeMillis;
-    const variables = yield* store.listActiveVariables(environmentId);
-    // The write phase (a single task): atomically writes the
-    // tombstone + data deletion + the deleted statement row, plus a
-    // per-variable var.deleted (§12-4) closing each existence
-    // interval, and env.deleted. Variables deleted by cascade carry
-    // no statement of their own, so their var.deleted's FP copies
-    // the environment-deletion statement's author FP (the semantics
-    // "FP = evidence of a signature" — the signature that authorized
-    // this deletion lives on the env side)
-    yield* Effect.sync(() => {
-      store.write.retireEnvironment(environmentId, now);
-      store.write.insertEnvironmentMetaStatement(
-        environmentId,
-        statement,
-        signedBytesHashHex,
-        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
-        now,
-      );
-      audit.appendManySync([
-        ...variables.map((variable) =>
-          dataEvent(actor, now, "var.deleted", {
-            environmentId,
-            variableId: variable.variableId,
-            actorKeyFingerprintHex: author.keyFingerprintHex,
-          }),
-        ),
-        dataEvent(actor, now, "env.deleted", {
-          environmentId,
-          payload: { name: environment.name },
-          actorKeyFingerprintHex: author.keyFingerprintHex,
-        }),
-      ]);
-    });
-  },
-);
-
 export const listEnvironmentsProgram = Effect.fn("programs-environment.listEnvironmentsProgram")(
   function* (actor: DataActor, cache: StateCache) {
     const { state } = yield* requireMemberState(actor.userId, "reader", cache);
     const store = yield* DataStore;
     const environments = yield* store.listEnvironmentStatements;
-    // Even a deleted environment carries create_environment on the
-    // chain (the chain does not observe deletion — §6.2), so
-    // currentEpochOf can be derived for every row
+    // Every listed (live) environment carries create_environment on the
+    // chain, so currentEpochOf can be derived for every row
     return {
       environments: environments.map((environment): EnvironmentSummaryValue => ({
         environmentId: environment.environmentId,

@@ -19,6 +19,7 @@ import { AuthMiddleware } from "./auth-middleware.ts";
 import {
   CheckpointEntrySchema,
   CreateEnvironmentEntrySchema,
+  DeleteEnvironmentEntrySchema,
   RotateEpochEntrySchema,
 } from "./chain.ts";
 import {
@@ -30,7 +31,6 @@ import {
   CreateVariableMetaStatementV3Schema,
   DeclareVariableMetaStatementSchema,
   DekWrapRefSchema,
-  DeleteEnvironmentMetaStatementSchema,
   DeleteVariableMetaStatementSchema,
   DeleteVariableMetaStatementV3Schema,
   DistributedEncryptedPayloadSchema,
@@ -278,9 +278,12 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
  *   two-step "generic chain append + DEK registration" flow. Re-encryption
  *   of current values stays a follow-up push (§12-7). rotate carries no
  *   statement (name and state do not change).
- * - `rename` / `remove` carry a signed `EnvironmentMetaStatement`
- *   (metaVersion CAS — the §12-5 meta rule; deletion is status = deleted
- *   and admin at declared-head time — §12-3).
+ * - `rename` carries a signed `EnvironmentMetaStatement` (metaVersion CAS
+ *   — the §12-5 meta rule).
+ * - `remove` is the composite deletion (2026-10-07 — CRYPTO_SPEC §6.2): the
+ *   `delete_environment` chain entry appended with a parent-head CAS and the
+ *   environment's data deleted in the same DO transaction. No statement and
+ *   no manifest accompany it — the chain entry is the deletion's record.
  */
 export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
@@ -447,25 +450,32 @@ export const environmentsGroup = HttpApiGroup.make("environments")
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:projectId/environments/:environmentId", {
       params: environmentParams,
-      // Deletion also requires a signed statement (status deleted; name
-      // is the immediately preceding active name — CRYPTO_SPEC §4.2).
-      // DELETE + body follows the deks.remove precedent
-      payload: strictPayload(Schema.Struct({ statement: DeleteEnvironmentMetaStatementSchema })),
+      // The composite deletion (§12-4 — 2026-10-07): the delete_environment
+      // entry (strict acceptance — §12-10 (1)) and the head it appends
+      // onto. DELETE + body follows the deks.remove precedent
+      payload: strictPayload(
+        Schema.Struct({
+          parentHeadHashHex: Sha256Hex,
+          entry: DeleteEnvironmentEntrySchema,
+        }),
+      ),
       success: HttpApiSchema.NoContent,
-      // DataLimitExceeded is not declared: the deletion path's quantity
-      // check is only the metaVersion cap, and a delete statement (the
-      // wire Schema pins status = deleted) is outside its scope (§12-8 —
-      // if a cap could block deletion, a resource at its cap would become
-      // permanently undeletable. The grounds are quotas.ts's
-      // metaVersionsExceeded and its pinned test). Same for
-      // variables.remove
+      // Judgment order (§12-4): role (403) → the URL / entry environment
+      // match (422 PayloadMismatch) → the parent-head CAS (409 — stale) →
+      // scope (403) → verifyChain (422 ChainEntryInvalid — unknown /
+      // already deleted / out of scope). No 404 for the environment: its
+      // existence and deleted state depend on the head the entry appends
+      // onto, so they are judged after the CAS. DataLimitExceeded is not
+      // declared: deletion is the "freed by deletion" path (§12-8 — the
+      // storage guard never blocks it)
       error: [
         ProjectNotFoundError,
         ForbiddenError,
-        EnvironmentNotFoundError,
         PayloadMismatchError,
-        MetaVersionConflictError,
-        MetaStatementRejectedError,
+        ChainHeadConflictError,
+        ChainEntryInvalidError,
+        ChainEntryTooLargeError,
+        ChainCapacityExceededError,
       ],
     }).middleware(AuthMiddleware),
   );

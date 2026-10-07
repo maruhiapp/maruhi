@@ -49,6 +49,7 @@ export {
   ChainEntrySchema,
   CheckpointEntrySchema,
   CreateEnvironmentEntrySchema,
+  DeleteEnvironmentEntrySchema,
   RoleSchema,
   RotateEpochEntrySchema,
 } from "./chain.ts";
@@ -65,7 +66,6 @@ export {
   DeclareVariableMetaStatementSchema,
   type DekWrapRef,
   DekWrapRefSchema,
-  DeleteEnvironmentMetaStatementSchema,
   DeleteVariableMetaStatementSchema,
   DeleteVariableMetaStatementV3Schema,
   type DistributedEncryptedPayload,

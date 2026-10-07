@@ -54,6 +54,7 @@ import { chainStoreLayer } from "../src/do/chain-store.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "../src/policy.ts";
 import {
   createEnvironmentCompositeProgram,
+  deleteEnvironmentCompositeProgram,
   rotateEpochCompositeProgram,
 } from "../src/programs/composite-programs.ts";
 import { auditHeadProgram } from "../src/programs/programs-audit.ts";
@@ -63,7 +64,6 @@ import {
   registerDekWrapsProgram,
 } from "../src/programs/programs-dek.ts";
 import {
-  deleteEnvironmentProgram,
   listEnvironmentsProgram,
   pullEnvironmentMetadataProgram,
   pullEnvironmentProgram,
@@ -165,7 +165,7 @@ const dummyValueInput = (version: number) =>
 const dummyVariableStatement = (variableId: string, name: string) =>
   toMetaStatementInput({ ...unsignedVariableStatement(variableId, name), suite: "maruhi/v1" });
 const dummyManifest = () => toManifestInput(unsignedManifest());
-const dummyEnvStatement = (name: string, status: "active" | "deleted" = "active") =>
+const dummyEnvStatement = (name: string, status: "active" = "active") =>
   toMetaStatementInput({
     suite: "maruhi/v1",
     name,
@@ -548,6 +548,10 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       op: "checkpoint",
       payload: { environments: [], auditHeadHashHex: "" },
     });
+    const deleteEnv = await signedEntry({
+      op: "delete_environment",
+      payload: { environmentId: ENV },
+    });
     const rotate = await signedEntry({
       op: "rotate_epoch",
       payload: {
@@ -572,7 +576,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       );
       // (b) deletions â€” pass the guard and are rejected for another reason (dummy input:
       // the variable statement's metaVersion 1 fails the CAS; the environment
-      // statement passes it and fails the post-CAS name-preservation check)
+      // deletion composite's stale parent fails the chain-head CAS)
       expect(
         rejectionOf(
           await run(
@@ -590,15 +594,18 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       expect(
         rejectionOf(
           await run(
-            deleteEnvironmentProgram(
+            deleteEnvironmentCompositeProgram(
               actor(OWNER),
               ENV,
-              dummyEnvStatement("Wrong", "deleted"),
+              {
+                parentHeadHashHex: staleParent,
+                entry: deleteEnv.entry as ChainEntry & { readonly op: "delete_environment" },
+              },
               cache,
             ),
           ),
-        ),
-      ).toEqual({ kind: "payload-mismatch", field: "name" });
+        )?.kind,
+      ).toBe("chain-head-conflict");
       expect(
         rejectionOf(
           await run(

@@ -8,6 +8,9 @@
 // - Rotation = a `rotate_epoch` entry (carrying the new epoch's commitment)
 //   + the new epoch's complete wrap set (re-encrypting current values is a
 //   later normal push — §12-7)
+// - Deletion = a `delete_environment` entry + the deletion of every piece
+//   of the environment's data (2026-10-07 — CRYPTO_SPEC §6.2; the chain
+//   entry is the deletion's only record)
 //
 // The chain append (parent-head CAS + verifyChain re-run) and the data
 // registration are accepted atomically in a single synchronous block, so no
@@ -63,8 +66,10 @@ import {
 import {
   ensureParentHead,
   insertAcceptedEntryPairSync,
+  verifyAcceptableEntry,
   verifyAcceptableEntryPair,
 } from "../do/chain-accept.ts";
+import { commitAcceptedEntry } from "../do/chain-commit.ts";
 import type { StateCache, StoredChain } from "../do/chain-store.ts";
 import { ChainStore, deriveStoredState, updateStateCache } from "../do/chain-store.ts";
 import { ensureEnvironmentQuota, requireActiveEnvironment } from "../quotas.ts";
@@ -692,4 +697,93 @@ export const rotateEpochCompositeProgram = Effect.fn(
   });
   updateStateCache(cache, applied);
   return compositeResult(environmentId, input.entry.payload.newEpoch, appliedState);
+});
+
+/**
+ * The deletion composite (AUTH_SPEC §12-4 — 2026-10-07, CRYPTO_SPEC §6.2
+ * `delete_environment`): the chain entry (H+1, CAS parent H) and the
+ * deletion of the environment's data, accepted atomically in one
+ * synchronous block. The judgment order puts everything that depends on the
+ * chain the entry appends onto after the CAS (§12-5's check-order rule):
+ * membership (404) → role admin (403, the person then the signing device)
+ * → the URL / entry environment match (422) → **CAS (409 — stale: e.g. a
+ * concurrent deletion of the same environment moved the head)** → scope at
+ * the head (403 — a deletion prunes the id from listed scopes, so a stale
+ * view must reach the CAS first) → verifyChain (422 — unknown-environment /
+ * environment-deleted / environment-out-of-scope …). The environment's
+ * existence is never answered with 404 here. The storage guard is not
+ * consulted (deletion is the "freed by deletion" path — §12-8).
+ */
+export const deleteEnvironmentCompositeProgram = Effect.fn(
+  "composite-programs.deleteEnvironmentCompositeProgram",
+)(function* (
+  actor: DataActor,
+  environmentId: string,
+  input: {
+    readonly parentHeadHashHex: string;
+    readonly entry: ChainEntry & { readonly op: "delete_environment" };
+  },
+  cache: StateCache,
+) {
+  const chain = yield* loadInitializedChain;
+  const { state } = yield* deriveStoredState(chain, cache);
+  const person = yield* requireRole(state, actor.userId, "admin");
+  // The composite-internal consistency check (§12-4): the URL coordinate
+  // must name the entry's environment
+  if (input.entry.payload.environmentId !== environmentId) {
+    return yield* rejectData({ kind: "payload-mismatch", field: "environmentId" });
+  }
+  // The device the entry's actor FP names (an FP that is not a valid device
+  // of the caller is verifyChain's actor-key-mismatch, answered early)
+  const member = deviceOf(person, input.entry.actor.keyFingerprintHex);
+  if (member === undefined) {
+    return yield* rejectData({
+      kind: "chain-entry-invalid",
+      seq: input.entry.seq,
+      reason: "actor-key-mismatch",
+    });
+  }
+  yield* ensureDevicePermission(member, "admin");
+  yield* ensureParentHead(chain, input.parentHeadHashHex);
+  // After the CAS the head is the one the entry was signed over, so the
+  // scope judgment cannot be stale
+  yield* ensureDevicePermission(member, "admin", environmentId);
+  const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, input.entry);
+  const store = yield* DataStore;
+  // verifyChain accepted the deletion, so the environment was live on the
+  // chain — its data row is live too (the creation composite wrote it and
+  // only this composite tombstones it); anything else is storage corruption
+  const environment = yield* store.findEnvironment(environmentId);
+  if (environment === null || environment.deletedAtMs !== null) {
+    return yield* Effect.die(
+      new Error(
+        "environment live on the verified chain has no live data row (composite atomicity)",
+      ),
+    );
+  }
+  const variables = yield* store.listActiveVariables(environmentId);
+  // Write phase (one synchronous block — commitAcceptedEntry's extraSync):
+  // the chain entry + its mirror (chain.environment_deleted) + the
+  // tombstone + the data deletion + per-variable var.deleted and
+  // env.deleted. Every audit row copies the entry's actor FP (AUDIT_SPEC
+  // §3.3 — the signature that authorized the deletion is the chain entry's)
+  const audit = yield* AuditStore;
+  yield* commitAcceptedEntry(chain, input.entry, applied, canonicalBytes, (nowMs) => {
+    store.write.retireEnvironment(environmentId, nowMs);
+    audit.appendManySync([
+      ...variables.map((variable) =>
+        dataEvent(actor, nowMs, "var.deleted", {
+          environmentId,
+          variableId: variable.variableId,
+          actorKeyFingerprintHex: member.keyFingerprintHex,
+        }),
+      ),
+      dataEvent(actor, nowMs, "env.deleted", {
+        environmentId,
+        payload: { name: environment.name },
+        actorKeyFingerprintHex: member.keyFingerprintHex,
+      }),
+    ]);
+  });
+  updateStateCache(cache, applied);
 });

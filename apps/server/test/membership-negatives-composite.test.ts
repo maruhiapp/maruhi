@@ -1,6 +1,7 @@
 // Server-side verification (CRYPTO_SPEC §6.4 = verifyChain re-run) —
 // rejection tests for the authorization negative vectors that go
-// through the composite endpoint (create_environment / rotate_epoch).
+// through the composite endpoints (create_environment / rotate_epoch /
+// delete_environment).
 // Negatives via generic append live in
 // membership-negatives-append.test.ts.
 // The shared fixture and vector-replay helpers are in
@@ -15,6 +16,7 @@ import {
   registerMembershipScenario,
   replayNegativePrefix,
   submitComposite,
+  submitDeletion,
 } from "./support/membership-scenario.ts";
 
 registerMembershipScenario();
@@ -93,12 +95,42 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "authz-rotate-by-reader-cap-device": { status: 403, reason: "insufficient-role" },
   "authz-rotate-out-of-device-scope": { status: 403, reason: "insufficient-scope" },
   "authz-create-env-by-listed-device": { status: 403, reason: "insufficient-scope" },
+  // Environment deletion on the chain (2026-10-07 — CRYPTO_SPEC §6.2 /
+  // AUTH_SPEC §12-4). A rotate of a deleted environment meets the
+  // tombstoned row first (404, the same as any rotate of a deleted
+  // environment); for a listed principal the deletion pruned the id from
+  // its scope, so scope 403 stands first. Reusing a deleted id is the
+  // consensus rule's duplicate-environment
+  "authz-rotate-deleted-environment": { status: 404 },
+  "authz-rotate-deleted-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-create-env-reuse-deleted-id": { status: 422, reason: "duplicate-environment" },
+  // The deletion composite's acceptance surface (§12-4's judgment order:
+  // role 403 → the URL / entry match → CAS 409 → scope 403 → verifyChain
+  // 422). A wrong role stops at 403; an environment outside a listed
+  // admin's scope (unknown, out of scope, or pruned by the deletion) stops
+  // at scope 403; existence and deletion themselves are the consensus
+  // rules' 422 — never a 404. An empty id fails the wire schema (400)
+  "authz-delete-env-member": { status: 403, reason: "insufficient-role" },
+  "authz-delete-env-reader": { status: 403, reason: "insufficient-role" },
+  "authz-delete-env-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-delete-env-before-create": { status: 422, reason: "unknown-environment" },
+  "authz-delete-env-unknown": { status: 422, reason: "unknown-environment" },
+  "authz-delete-env-role-precedes-unknown": { status: 403, reason: "insufficient-role" },
+  "authz-delete-env-unknown-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "delete-env-id-empty": { status: 400 },
+  "delete-env-format-precedes-role": { status: 400 },
+  "authz-delete-env-twice": { status: 422, reason: "environment-deleted" },
+  "authz-delete-env-deleted-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },
+  "authz-delete-env-role-precedes-deleted": { status: 403, reason: "insufficient-role" },
 };
+
+/** The routable path of a deletion negative (an empty id is refused by the payload schema, not the router). */
+const DELETION_URL_FALLBACK = "env-prod-0001";
 
 describe("server-side verification (§6.4) — authorization negative vectors (via composite)", () => {
   for (const negative of vectorAuthzNegatives) {
     const op = negative.entry.op;
-    if (op !== "create_environment" && op !== "rotate_epoch") {
+    if (op !== "create_environment" && op !== "rotate_epoch" && op !== "delete_environment") {
       continue;
     }
     const expectation = compositeExpectations[negative.name];
@@ -116,6 +148,18 @@ describe("server-side verification (§6.4) — authorization negative vectors (v
         head.seq + 1,
         head.hashHex,
       );
+      if (entry.op === "delete_environment") {
+        const response = await submitDeletion(
+          entry,
+          entry.payload.environmentId === "" ? DELETION_URL_FALLBACK : undefined,
+        );
+        expect(response.status).toBe(expectation.status);
+        if (expectation.reason !== undefined) {
+          const body = (await response.json()) as { reason: string };
+          expect(body.reason).toBe(expectation.reason);
+        }
+        return;
+      }
       if (entry.op !== "create_environment" && entry.op !== "rotate_epoch") {
         throw new Error("unexpected op");
       }

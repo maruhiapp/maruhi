@@ -119,20 +119,21 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       environmentId,
     );
     sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
-    // The subordinate variable statements are also deleted immediately
-    // (the §12-4 subordinate data). The environment's own statement
-    // chain (deleted included) stays in environment_meta_statements —
-    // since an environment ID cannot be reused under the chain
-    // consensus rules, nothing on the variable side remains as
-    // detection material
+    // The subordinate variable statements and the environment's own
+    // statements are also deleted immediately (§12-4 — 2026-10-07: the
+    // delete_environment chain entry is the deletion's only record and its
+    // detection material; an environment ID cannot be reused under the
+    // chain consensus rules, and nothing of a deleted environment is
+    // distributed again)
     sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
+    sql.exec("DELETE FROM environment_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
     // The environment manifest is also cascade-deleted (§12-4: a
     // deleted environment has no distribution channel, and a
     // server-stored artifact that is never distributed has no residual
-    // value as detection material. The environment's own deleted
-    // statement is the terminal detection material)
+    // value as detection material. The delete_environment chain entry
+    // is the terminal detection material)
     sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
     // The checkpoint tuple and value snapshot are cascade-deleted by
     // the same argument (§12-4: a deleted environment's snapshot has no

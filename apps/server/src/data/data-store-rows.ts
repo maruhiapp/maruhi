@@ -78,12 +78,13 @@ export function storedSuite(value: unknown): WireSuite {
 }
 
 /**
- * The stored status column → an environment statement's 2 values
- * (environment meta is outside the schema layout's scope — CRYPTO_SPEC §4.2). An
- * unknown value is a defect as storage corruption.
+ * The stored status column → an environment statement's only value,
+ * active (CRYPTO_SPEC §4.2 — 2026-10-07: an environment's deletion is the
+ * chain op delete_environment, not a statement). Any other value is a
+ * defect as storage corruption.
  */
-function storedEnvStatus(value: string): "active" | "deleted" {
-  if (value !== "active" && value !== "deleted") {
+function storedEnvStatus(value: string): "active" {
+  if (value !== "active") {
     // The write path is pinned by the Schema Literal (an unknown value is storage corruption)
     throw new Error("unexpected status in stored meta statement row");
   }

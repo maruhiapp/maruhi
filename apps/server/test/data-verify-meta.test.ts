@@ -417,29 +417,22 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     expect(result.ok).toBe(true);
   });
 
-  it("lists deleted environments with their tombstone statement (§12-4's continued distribution)", async () => {
+  it("stops distributing a chain-deleted environment: the list omits it and its pulls are 404 (§12-7 — 2026-10-07)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, "env-app-0002", "Staging");
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
     const list = await requestJson("GET", "/environments", token(READER));
     const body = (await list.json()) as {
-      environments: {
-        environmentId: string;
-        statement: { name: string; status: string; metaVersion: number; authorUserId: string };
-      }[];
+      environments: { environmentId: string; statement: { status: string } }[];
     };
-    expect(body.environments.length).toBe(2);
-    const deleted = body.environments.find((e) => e.environmentId === ENV);
-    expect(deleted?.statement).toMatchObject({
-      name: "App",
-      status: "deleted",
-      metaVersion: 2,
-      authorUserId: OWNER,
-    });
-    // A pull on a deleted environment is a 404 as before (tombstone)
-    const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
-    expect(pull.status).toBe(404);
+    // The deletion is on the chain (the client derives it there); no
+    // statement of the deleted environment remains to be listed
+    expect(body.environments.map((e) => e.environmentId)).toEqual(["env-app-0002"]);
+    expect(body.environments.every((e) => e.statement.status === "active")).toBe(true);
+    for (const path of [`/environments/${ENV}/pull`, `/environments/${ENV}/pull/metadata`]) {
+      expect((await requestJson("GET", path, token(READER))).status).toBe(404);
+    }
   });
 
   it("requires the composite statement to declare the pre-append head (§12-4)", async () => {
