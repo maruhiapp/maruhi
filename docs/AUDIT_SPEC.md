@@ -1,6 +1,6 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
-Version: 1.11-draft
+Version: 1.12-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of
 the PR containing a revision constitutes that approval. History: `git log`.
 
@@ -89,7 +89,7 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
 | `auth.key_handoff_requested` | requestId | Creation of a handoff request. actor = ward |
 | `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward |
 | `auth.key_handoff_collected` | requestId, approvalCount | The requester obtained one or more approvals **for the first time** = the fact that a restoration happened (once per request; not recorded on each polling response — AUTH_SPEC §13-6 `collected_at`). actor = ward |
-| `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id` |
+| `auth.user_created` | — | A fresh creation by getOrCreateUser. A creation consuming a signup invite code (AUTH_SPEC §3's `invite` — 2026-09-01 H1) copies `signupInviteId` (the internal ULID of the consumed invite row — not an external identifier) into the payload, allowing a cross-check against the invite row's `used_by_user_id`. A creation by a project import (AUTH_SPEC §11-6) carries `imported: true` instead |
 
 - **Recording rules for the 9 KL3 events (2026-09-12 — `auth.key_wrap_*` /
   `auth.guardian_*` / `auth.key_handoff_*`)**: visibility follows the user
@@ -105,7 +105,8 @@ Event names are `domain.verb` form. ★ = an input to rotation-needed detection
   `auth.login_succeeded`. A Web login's `auth.login_succeeded` copies the
   session id into the payload (the same hash as the stored id — not the raw
   value — AUTH_SPEC §10), allowing a cross-check against `auth.session_revoked`'s
-  target session id (2026-08-10)
+  target session id (2026-08-10). A CLI login (handoff) creates no session and
+  copies the flow id instead (`flowId` — AUTH_SPEC §4-1's public correlator)
 - `auth.session_revoked` is **explicit revocation only** (logout / server-side
   revocation). Cleanup of expired rows (on resolve, by cron) is not a
   revocation event and is not recorded (2026-08-10)
@@ -211,7 +212,10 @@ org roles do not participate in project access (AUTH_SPEC §9-2), so org events
 do not participate in rotation-needed detection.
 
 - Personal-org auto-creation (AUTH_SPEC §9-1) is recorded as `org.created`
-  (payload `personal: true`) + an `org.member_added` of the self as owner. The
+  (payload `personal: true`) + an `org.member_added` of the self as owner (a
+  project import — AUTH_SPEC §11-6 — writes the same rows with `imported: true`
+  in the `org.created` payload, and marks its `org.project_created` the same
+  way). The
   org-name snapshot is **not** copied into the payload — a personal org's name
   derives from providerLogin and is §1-2's forbidden information (2026-08-10)
 - **Invite events (2026-08-12 drafting — AUTH_SPEC §15)**: invite records live
@@ -650,7 +654,15 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
 
 - Frequent attributes are promoted to columns (for indexes); everything else
   is payload JSON. Columns are NULL-allowed, and per-event-kind required
-  attributes are enforced at the app layer (Effect Schema)
+  attributes are enforced at the app layer (Effect Schema). **For the payload
+  this is one schema per event, derived from §3's tables
+  (`packages/core/src/audit-payloads.ts`, shared by both stores — §5.2's D1
+  side too)**: a payload holds exactly the attributes its event's row lists
+  (plus a session actor's `auth_method` — §2), its free-text attributes refuse
+  a provider subject at compile time, and a key the tables do not list is
+  refused at the append — a defect, so the write it belongs to rolls back with
+  it (§1-2's identity rule enforced on the payload, not only on the actor
+  columns. 2026-10-07)
 - **Audit-head cumulative hash (2026-08-18 session 27 drafting. The input of CRYPTO_SPEC §6.2 `checkpoint`)**: the project DO
   maintains a cumulative hash on each audit-row append — `h_n =
   lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))`

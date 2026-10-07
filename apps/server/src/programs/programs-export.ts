@@ -153,7 +153,8 @@ const openExport = Effect.fn("programs-export.openExport")(function* (
   const exportedSeq = yield* Effect.sync(() => {
     store.recordLeaseWindowUse("exported", nowMs);
     audit.appendSync(
-      dataEvent(actor, nowMs, "project.exported", {
+      dataEvent(actor, nowMs, {
+        event: "project.exported",
         payload: { chainHeadSeq, chainHeadHashHex },
       }),
     );

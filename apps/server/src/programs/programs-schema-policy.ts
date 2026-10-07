@@ -53,7 +53,8 @@ export const setSchemaPolicyProgram = Effect.fn("programs-schema-policy.setSchem
     yield* Effect.sync(() => {
       store.write.setSchemaPolicy(schemaPolicy);
       audit.appendSync(
-        dataEvent(actor, now, "project.schema_policy_changed", {
+        dataEvent(actor, now, {
+          event: "project.schema_policy_changed",
           payload: { previous, next: schemaPolicy },
         }),
       );

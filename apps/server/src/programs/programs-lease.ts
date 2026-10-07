@@ -40,7 +40,7 @@
 import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
-import { AuditStore } from "../audit-store.ts";
+import { AuditStore, type AuditEventInput } from "../audit-store.ts";
 import type { EnvironmentPullValue, InitializedChain } from "../data/data-plane.ts";
 import {
   currentEpochOf,
@@ -414,7 +414,7 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
     store.recordLeaseWindowUse("issued", nowMs);
     store.recordLeaseBinding(facts.bindingKeyHex, ephemeralPubHex, facts.bindingExpiresAtMs, nowMs);
     audit.appendManySync([
-      ...leases.map((lease) => ({
+      ...leases.map((lease): AuditEventInput => ({
         event: "server.dek_unwrapped",
         serverTs: nowMs,
         actorType: "server" as const,

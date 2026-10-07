@@ -121,11 +121,6 @@ function tokenCreatedAuditAfterInsert(db: Db, token: NewApiToken) {
  * actually deleted in the same batch.
  */
 async function rotateExistingToken(db: Db, token: NewApiToken): Promise<boolean> {
-  const basePayload = JSON.stringify({
-    tokenId: token.id,
-    name: token.name,
-    scopes: token.scopes,
-  });
   const sameTokenName = and(eq(apiTokens.userId, token.userId), eq(apiTokens.name, token.name));
   const results = await db.batch([
     db.insert(userAuditEvents).select(
@@ -135,7 +130,8 @@ async function rotateExistingToken(db: Db, token: NewApiToken): Promise<boolean>
             event: "auth.token_created",
             actor: { userId: token.userId },
             nowMs: token.createdAtMs,
-            payloadSql: sql<string>`json_patch(${basePayload}, json_object('replacedTokenId', ${apiTokens.id}))`,
+            payload: { tokenId: token.id, name: token.name, scopes: token.scopes },
+            replacedTokenIdSql: sql<string>`${apiTokens.id}`,
           }),
         )
         .from(apiTokens)

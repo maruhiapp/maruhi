@@ -443,7 +443,8 @@ export function dekRegisteredEvent(
   environmentId: string,
   wrap: DekWrapInput,
 ): AuditEventInput {
-  return dataEvent(actor, nowMs, "dek.registered", {
+  return dataEvent(actor, nowMs, {
+    event: "dek.registered",
     environmentId,
     epoch: wrap.epoch,
     ...dekRecipientTarget(wrap.recipientClass, wrap.recipientUserId),

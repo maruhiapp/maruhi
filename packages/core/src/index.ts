@@ -47,9 +47,21 @@ export {
   userKeyFingerprintHex,
 } from "./identity.ts";
 export {
+  assertProjectAuditPayload,
+  assertUserOrgAuditPayload,
+  type ChainMirrorEventName,
+  type ProjectAuditEventName,
+  type ProjectAuditEventPayload,
+  ROTATION_BASES,
+  ROTATION_TRIGGERS,
+  type UserOrgAuditEventPayload,
+} from "./audit-payloads.ts";
+export {
   type AuditActor,
   auditActorOf,
+  type AuditEventColumns,
   type AuditEventRecord,
+  type AuditEventRecordOf,
   auditPayloadWith,
   type AuditReadPayload,
   auditReadPayload,

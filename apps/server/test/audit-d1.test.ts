@@ -12,10 +12,11 @@
 
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
-import { Context, Effect } from "effect";
+import { Cause, Context, Effect, Exit } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  D1AuditRepo,
   LOGIN_FAILED_WINDOW_LIMIT,
   LOGIN_FAILED_WINDOW_MS,
   makeDbServices,
@@ -559,6 +560,40 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
     );
     const events = await auditRows("org_audit_events");
     expect(events.filter((row) => row.event === "org.project_created")).toHaveLength(1);
+  });
+
+  it("refuses a payload key AUDIT_SPEC does not list, writing nothing (the D1 payload check)", async () => {
+    const audit = Context.get(makeDbServices(env.DB), D1AuditRepo);
+    type D1Event = Parameters<typeof audit.appendUserEvent>[0];
+    const typed: D1Event[] = [
+      { event: "auth.identity_linked", actor: { userId: OWNER }, payload: { provider: "github" } },
+      {
+        event: "auth.identity_linked",
+        actor: { userId: OWNER },
+        // @ts-expect-error the login is never recorded (§3.1)
+        payload: { provider: "github", login: "octocat" },
+      },
+      // @ts-expect-error a project event is not a D1 event
+      { event: "var.read", actor: { userId: OWNER }, payload: { variables: [] } },
+    ];
+    expect(typed).toHaveLength(3);
+    const before = (await auditRows("user_audit_events")).length;
+    // Structural typing lets a wider object through (this compiles); the
+    // store's check at serialization refuses it before any SQL runs
+    const linked = { provider: "github" as const, login: "octocat" };
+    const exit = await Effect.runPromiseExit(
+      audit.appendUserEvent(
+        { event: "auth.identity_linked", actor: { userId: OWNER }, payload: linked },
+        Date.now(),
+      ),
+    );
+    // A defect (the repository boundary's orDie over tryD1's wrapper) whose cause is the check
+    expect(Exit.isFailure(exit)).toBe(true);
+    const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
+    expect(String((defect as { readonly cause?: unknown } | null)?.cause)).toContain(
+      "the auth.identity_linked payload is not the AUDIT_SPEC §3 shape",
+    );
+    expect(await auditRows("user_audit_events")).toHaveLength(before);
   });
 
   it("never records provider identifiers or emails in any row (§1-2)", async () => {

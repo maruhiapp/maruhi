@@ -16,6 +16,8 @@
 
 import type { AuditEventRecord } from "@maruhi/core";
 import {
+  assertProjectAuditPayload,
+  auditPayloadWith,
   auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   cryptoEffect,
@@ -437,6 +439,26 @@ function assertChainSeqInvariant(event: AuditEventInput): void {
   }
 }
 
+/**
+ * The checks every row passes ahead of sequencing and SQL execution: the
+ * chain_seq reservation above, and the payload against its event's AUDIT_SPEC
+ * §3 schema (no key the spec does not list — the identity rule's gate on the
+ * payload, packages/core audit-payloads.ts). Both are defects.
+ */
+function assertAppendable(event: AuditEventInput): void {
+  assertChainSeqInvariant(event);
+  assertProjectAuditPayload(event);
+}
+
+/** The stored payload: the event's payload plus a session actor's auth method (§2 / §5.1). NULL when empty. */
+function storedPayload(event: AuditEventInput): string | null {
+  const payload = auditPayloadWith(
+    event.actorAuthMethod === undefined ? {} : { authMethod: event.actorAuthMethod },
+    event.payload,
+  );
+  return Object.keys(payload).length === 0 ? null : JSON.stringify(payload);
+}
+
 /** The insert bindings (same order as INSERT_EVENT's SELECT columns). Unspecified = NULL. */
 function eventBindings(event: AuditEventInput): (string | number | null)[] {
   return [
@@ -454,7 +476,7 @@ function eventBindings(event: AuditEventInput): (string | number | null)[] {
     orNull(event.epoch),
     orNull(event.version),
     orNull(event.chainSeq),
-    event.payload === undefined ? null : JSON.stringify(event.payload),
+    storedPayload(event),
   ];
 }
 
@@ -493,7 +515,7 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
   };
   return {
     appendSync: (event) => {
-      assertChainSeqInvariant(event);
+      assertAppendable(event);
       const seq = nextSeq();
       try {
         // row_id = the wire row identifier (16 bytes random — AUDIT_SPEC §5.1 / §7)
@@ -508,7 +530,7 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
       // Check every event ahead of the SQL so a violation in a later
       // chunk never leaves only the earlier chunks written
       for (const event of events) {
-        assertChainSeqInvariant(event);
+        assertAppendable(event);
       }
       try {
         for (let offset = 0; offset < events.length; offset += APPEND_CHUNK_ROWS) {

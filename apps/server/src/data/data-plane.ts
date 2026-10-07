@@ -6,8 +6,14 @@
 // RPC boundary as a DataOutcome discriminated union (the worker maps it
 // onto api-schema's typed errors).
 
-import type { AuditActor } from "@maruhi/core";
-import { auditPayloadWith, decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
+import type {
+  AuditActor,
+  AuditEventColumns,
+  ChainMirrorEventName,
+  ProjectAuditEventName,
+  ProjectAuditEventPayload,
+} from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -1085,40 +1091,58 @@ export function currentEpochOf(state: ChainState, environmentId: string): number
 }
 
 /**
- * Build the audit event of a data operation (AUDIT_SPEC §3.3). The
- * actor's auth_method rides the payload JSON rather than a column (§5.1:
- * only frequent attributes are promoted to columns).
- * The actor's key FP is in principle absent (the chain mirror's
- * exclusive remit), but **dek.registered alone is the exception** — the
- * signer FP of the registration signature (CRYPTO_SPEC §5.1) is recorded
- * into actorKeyFingerprintHex (AUDIT_SPEC §3.3 — for cross-checking the
- * audit row against the chain-external signature).
+ * The events a data operation's actor writes (AUDIT_SPEC §3.3) — never a
+ * chain mirror row (§3.4), a server access row (§3.5) or a row whose actor
+ * is the system (detection, a workload's proposal, an expiry sweep).
  */
-export function dataEvent(
-  actor: DataActor,
-  serverTs: number,
-  event: string,
-  fields: Pick<
-    AuditEventInput,
+type DataEventName = Exclude<
+  ProjectAuditEventName,
+  | ChainMirrorEventName
+  | `server.${string}`
+  | "rotation.recommended"
+  | "rotation.proposed"
+  | "rotation.proposal_expired"
+>;
+
+/** A data event's name, payload and columns — a discriminated union on the name (the payload is the event's own — audit-payloads.ts). */
+export type DataEventFields = {
+  readonly [E in DataEventName]: Pick<
+    AuditEventColumns,
     | "environmentId"
     | "variableId"
     | "epoch"
     | "version"
     | "targetUserId"
     | "targetKeyFingerprintHex"
-    | "payload"
     | "actorKeyFingerprintHex"
-  >,
+  > &
+    Extract<ProjectAuditEventPayload, { readonly event: E }>;
+}[DataEventName];
+
+/**
+ * Build the audit event of a data operation (AUDIT_SPEC §3.3). The
+ * actor's auth_method rides the actor (`actorAuthMethod`) and the store
+ * merges it into the stored payload (§5.1: only frequent attributes are
+ * promoted to columns).
+ * The actor's key FP is in principle absent (the chain mirror's
+ * exclusive remit), but operations accompanied by a client signature
+ * (dek.registered, the value writes, the meta statements, the
+ * environment deletion) record the signer FP into actorKeyFingerprintHex
+ * (AUDIT_SPEC §3.3 — for cross-checking the audit row against the
+ * chain-external signature).
+ */
+export function dataEvent(
+  actor: DataActor,
+  serverTs: number,
+  fields: DataEventFields,
 ): AuditEventInput {
-  const payload = auditPayloadWith(actor, fields.payload);
   return {
     ...fields,
-    event,
     serverTs,
     actorType: "user",
     actorUserId: actor.userId,
     ...(actor.apiTokenId === undefined ? {} : { actorApiTokenId: actor.apiTokenId }),
-    ...(Object.keys(payload).length === 0 ? {} : { payload }),
+    ...(actor.authMethod === undefined ? {} : { actorAuthMethod: actor.authMethod }),
   };
 }
 

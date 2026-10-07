@@ -100,7 +100,8 @@ function writeVersionWithAudit(
     nowMs,
   );
   appendAudit(
-    dataEvent(actor, nowMs, "var.version_pushed", {
+    dataEvent(actor, nowMs, {
+      event: "var.version_pushed",
       environmentId,
       variableId,
       epoch: value.epoch,
@@ -411,7 +412,8 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
       // signature — records only the statement signature's author key FP.
       // AUDIT_SPEC §3.3)
       audit.appendSync(
-        dataEvent(actor, now, "var.created", {
+        dataEvent(actor, now, {
+          event: "var.created",
           environmentId,
           variableId: input.variableId,
           payload: { name: input.statement.name },
@@ -722,7 +724,8 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
       );
       acceptedManifest.writeSync(now);
       audit.appendSync(
-        dataEvent(actor, now, event, {
+        dataEvent(actor, now, {
+          event,
           environmentId,
           variableId,
           payload: { name: statement.name },
@@ -784,7 +787,8 @@ export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariable
       );
       acceptedManifest.writeSync(now);
       audit.appendSync(
-        dataEvent(actor, now, "var.deleted", {
+        dataEvent(actor, now, {
+          event: "var.deleted",
           environmentId,
           variableId,
           actorKeyFingerprintHex: author.keyFingerprintHex,

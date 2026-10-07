@@ -142,7 +142,8 @@ export const variableVersionValuesProgram = Effect.fn(
   const now = yield* Clock.currentTimeMillis;
   yield* Effect.sync(() => {
     audit.appendSync(
-      dataEvent(actor, now, VAR_READ_EVENT, {
+      dataEvent(actor, now, {
+        event: VAR_READ_EVENT,
         environmentId,
         payload: auditReadPayload(
           values.map((value) => ({

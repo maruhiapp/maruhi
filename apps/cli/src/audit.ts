@@ -994,7 +994,7 @@ function entryMirrorProblems(
     ];
   }
   const expectedRows = chainMirrorEvents(entry, 0, index);
-  const expectedEvents = new Set(expectedRows.map((row) => row.event));
+  const expectedEvents = new Set<string>(expectedRows.map((row) => row.event));
   const problems = expectedRows.flatMap((expected) =>
     expectedRowProblems(
       entry,

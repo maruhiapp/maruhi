@@ -576,15 +576,16 @@ export const resolveRotationProposalProgram = Effect.fn(
         actor,
         nowMs,
         resolution.outcome === "accepted"
-          ? "rotation.proposal_accepted"
-          : "rotation.proposal_rejected",
-        {
-          environmentId: proposal.environmentId,
-          payload: {
-            proposalId,
-            ...(resolution.outcome === "accepted" ? { versions: resolution.versions } : {}),
-          },
-        },
+          ? {
+              event: "rotation.proposal_accepted",
+              environmentId: proposal.environmentId,
+              payload: { proposalId, versions: resolution.versions },
+            }
+          : {
+              event: "rotation.proposal_rejected",
+              environmentId: proposal.environmentId,
+              payload: { proposalId },
+            },
       ),
     );
   });

@@ -43,7 +43,7 @@ describe("UserId brand (CLAUDE.md identity rule)", () => {
     ];
     const rows: readonly AuditEventRecord[] = [
       // @ts-expect-error a provider subject is not an audit target
-      { event: "x", serverTs: 1, actorType: "user", targetUserId: providerSubject },
+      { event: "dek.deleted", serverTs: 1, actorType: "system", targetUserId: providerSubject },
     ];
     expect(actors).toHaveLength(3);
     expect(rows).toHaveLength(1);

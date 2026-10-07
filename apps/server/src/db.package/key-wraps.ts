@@ -15,7 +15,7 @@
 // - Wraps and segments are opaque to the server; this file does not
 //   interpret their contents
 
-import type { UserId } from "@maruhi/core";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 import { and, count, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -81,7 +81,8 @@ export interface GuardianShareInput {
 export interface HandoffApprovalInput {
   readonly source: string;
   readonly shareIndex: number;
-  readonly approverKeyFingerprintHex: string;
+  /** Decoded from the approval request (written to the `auth.key_handoff_approved` audit row). */
+  readonly approverKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
@@ -247,11 +248,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       db
         .select(
           guardedAuditSelectColumns({
-            event: event.event,
-            actor: event.actor,
+            ...event,
             nowMs,
             targetUserId: event.targetUserId ?? null,
-            ...(event.payload === undefined ? {} : { payload: event.payload }),
           }),
         )
         .from(source)
@@ -343,11 +342,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
                   db
                     .select(
                       guardedAuditSelectColumns({
-                        event: audit.event,
-                        actor: audit.actor,
+                        ...audit,
                         nowMs,
                         targetUserId: audit.targetUserId ?? null,
-                        ...(audit.payload === undefined ? {} : { payload: audit.payload }),
                       }),
                     )
                     .from(keyWrapWindows)

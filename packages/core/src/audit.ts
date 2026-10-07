@@ -18,6 +18,13 @@
 
 import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
+import type {
+  AuditText,
+  ChainMirrorEventName,
+  ProjectAuditEventName,
+  ProjectAuditEventPayload,
+  ProjectAuditPayload,
+} from "./audit-payloads.ts";
 import type { AuthenticatedPrincipal } from "./auth.ts";
 import type { KeyFingerprintHex, UserId } from "./identity.ts";
 
@@ -45,12 +52,14 @@ export function auditActorOf(principal: AuthenticatedPrincipal): AuditActor {
 
 /**
  * Merges the actor's auth method into the event payload (AUDIT_SPEC §5.1:
- * auth_method is a payload attribute, not a column). Shared by the DO event
- * builder and the D1 row builder so the merge cannot drift between the two.
+ * auth_method is a payload attribute, not a column) — the stored payload.
+ * Shared by the DO and the D1 serialization so the merge cannot drift
+ * between the two. The event payload has already been checked against its
+ * event's schema (audit-payloads.ts); the auth method is the actor's (§2).
  */
 export function auditPayloadWith(
   actor: Pick<AuditActor, "authMethod">,
-  payload: Readonly<Record<string, unknown>> | undefined,
+  payload: object | undefined,
 ): Readonly<Record<string, unknown>> {
   return {
     ...payload,
@@ -71,20 +80,19 @@ export function auditPayloadWith(
 // (ProposalIndex) derived from the verified chain.
 // ---------------------------------------------------------------------------
 
-/**
- * One audit event (AUDIT_SPEC §5.1 columns; unspecified fields are absent /
- * NULL). Shared between the server-side append input (apps/server
- * audit-store.ts) and the client-side mirror verifier, so the mirror mapping
- * below produces the exact shape the server persists.
- */
-export interface AuditEventRecord {
-  readonly event: string;
+/** The columns of an audit row besides the event and its payload (AUDIT_SPEC §5.1; unspecified = NULL). */
+export interface AuditEventColumns {
   readonly serverTs: number;
   readonly clientTs?: number;
   readonly actorType: "user" | "server" | "system";
   readonly actorUserId?: UserId;
   readonly actorKeyFingerprintHex?: KeyFingerprintHex;
   readonly actorApiTokenId?: string;
+  /**
+   * The session actor's auth method (AUDIT_SPEC §2 — the kind name only). Not
+   * a column: the store merges it into the stored payload (§5.1).
+   */
+  readonly actorAuthMethod?: AuditText;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   readonly environmentId?: string;
@@ -92,13 +100,30 @@ export interface AuditEventRecord {
   readonly epoch?: number;
   readonly version?: number;
   readonly chainSeq?: number;
-  readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-type MirrorTail = Pick<
-  AuditEventRecord,
-  "event" | "targetUserId" | "targetKeyFingerprintHex" | "environmentId" | "epoch" | "payload"
->;
+/**
+ * One project audit event (AUDIT_SPEC §3.3–§3.5): the columns plus the event
+ * and its payload, a discriminated union on the event name whose payload is
+ * the one AUDIT_SPEC §3 lists for that event (audit-payloads.ts). Shared
+ * between the server-side append input (apps/server audit-store.ts) and the
+ * client-side mirror verifier, so the mirror mapping below produces the exact
+ * shape the server persists.
+ */
+export type AuditEventRecord = AuditEventColumns & ProjectAuditEventPayload;
+
+/** The record of one project event. */
+export type AuditEventRecordOf<E extends ProjectAuditEventName> = AuditEventColumns &
+  Extract<ProjectAuditEventPayload, { readonly event: E }>;
+
+/** The part of a mirror row an operation determines (event, target, coordinates, payload), per mirror event. */
+type MirrorTail = {
+  readonly [E in ChainMirrorEventName]: Pick<
+    AuditEventColumns,
+    "targetUserId" | "targetKeyFingerprintHex" | "environmentId" | "epoch"
+  > &
+    Extract<ProjectAuditEventPayload, { readonly event: E }>;
+}[ChainMirrorEventName];
 
 /**
  * op → mirror event name (§3.4). A whole-domain map over ChainOp (the
@@ -107,7 +132,7 @@ type MirrorTail = Pick<
  * where an added op updates only one of them and the verifier drifts
  * (false detections / misses).
  */
-const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
+const MIRROR_EVENT_NAME = {
   genesis: "chain.genesis",
   add_member: "chain.member_added",
   remove_member: "chain.member_removed",
@@ -127,7 +152,7 @@ const MIRROR_EVENT_NAME: { readonly [K in ChainOp]: string } = {
   // Device keys (AUDIT_SPEC §3.4 — 2026-09-19 DK). Row generation (the acceptance side effect) is K3
   add_device: "chain.device_added",
   revoke_device: "chain.device_revoked",
-};
+} as const satisfies { readonly [K in ChainOp]: ChainMirrorEventName };
 
 /**
  * All chain-mirror audit event names (AUDIT_SPEC §3.4) — the image of
@@ -217,7 +242,7 @@ export function indexProposals(
   return index;
 }
 
-/** The actor an operation is attributed to (the entry actor, or the proposer for an applied inner op). */
+/** The actor an operation is attributed to (the entry actor, or the proposer for an applied inner op), plus what the entry alone cannot tell. */
 interface MirrorSubject {
   readonly actor: ChainActor;
   /**
@@ -228,6 +253,14 @@ interface MirrorSubject {
    * contract violation (throw), never a silent row without the fingerprint.
    */
   readonly addedDeviceKeyFingerprintHex?: KeyFingerprintHex;
+  /** An applied inner op only (§3.4 — PF1): the seq of the `propose` entry that carried it. */
+  readonly viaProposalSeq?: number;
+  /**
+   * `approve` / `withdraw` only (§3.4): the seq of the proposal the entry
+   * names, and — for an `approve` — whether this entry completed it. They come
+   * from the proposal index; missing = a contract violation (throw).
+   */
+  readonly referenced?: { readonly proposalChainSeq: number; readonly completed: boolean };
 }
 
 /** The per-entry extra input of {@link chainMirrorEvents} (see {@link MirrorSubject}). */
@@ -235,11 +268,33 @@ export interface ChainMirrorSubject {
   readonly addedDeviceKeyFingerprintHex?: KeyFingerprintHex;
 }
 
+/** An applied row's `viaProposalSeq`, spread last into a mirror payload (§3.4 — PF1). */
+function viaOf(subject: MirrorSubject): { readonly viaProposalSeq?: number } {
+  return subject.viaProposalSeq === undefined ? {} : { viaProposalSeq: subject.viaProposalSeq };
+}
+
+/** The payload of a mirror row whose op copies nothing: none, or an applied row's `viaProposalSeq` alone. */
+function viaOnly(subject: MirrorSubject): {
+  readonly payload?: { readonly viaProposalSeq: number };
+} {
+  return subject.viaProposalSeq === undefined
+    ? {}
+    : { payload: { viaProposalSeq: subject.viaProposalSeq } };
+}
+
+/** The referenced proposal of an `approve` / `withdraw` mapping (handed in by chainMirrorEvents). */
+function referencedOf(subject: MirrorSubject, op: "approve" | "withdraw") {
+  if (subject.referenced === undefined) {
+    throw new Error(`chain mirror: ${op} requires the referenced proposal`);
+  }
+  return subject.referenced;
+}
+
 // Per-op mappings (the §3.4 table). The input is op + payload (+ actor
-// — only genesis's target uses it), so it applies both to signed
-// entries and to a proposal's inner op. genesis's target is the creator
-// = actor (so the start of the membership interval can be looked up in
-// Q1's index)
+// — only genesis's and add_device's targets use it), so it applies both
+// to signed entries and to a proposal's inner op. genesis's target is the
+// creator = actor (so the start of the membership interval can be looked
+// up in Q1's index)
 const mirrorTails: {
   readonly [K in ChainOp]: (
     operation: Extract<ChainOperation, { op: K }> & MirrorSubject,
@@ -248,6 +303,7 @@ const mirrorTails: {
   genesis: (operation) => ({
     event: MIRROR_EVENT_NAME.genesis,
     targetUserId: operation.actor.userId,
+    ...viaOnly(operation),
   }),
   // scope is copied too (AUDIT_SPEC §3.4 — 2026-09-14 ES: material to reconstruct §4.1's per-environment access windows)
   add_member: (operation) => ({
@@ -257,11 +313,13 @@ const mirrorTails: {
       role: operation.payload.role,
       scopeKind: operation.payload.scopeKind,
       scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
+      ...viaOf(operation),
     },
   }),
   remove_member: (operation) => ({
     event: MIRROR_EVENT_NAME.remove_member,
     targetUserId: operation.payload.targetUserId,
+    ...viaOnly(operation),
   }),
   change_role: (operation) => ({
     event: MIRROR_EVENT_NAME.change_role,
@@ -270,6 +328,7 @@ const mirrorTails: {
       newRole: operation.payload.newRole,
       scopeKind: operation.payload.scopeKind,
       scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
+      ...viaOf(operation),
     },
   }),
   // dek_commitment is copied into the payload (AUDIT_SPEC §3.4 — for
@@ -278,11 +337,12 @@ const mirrorTails: {
     event: MIRROR_EVENT_NAME.create_environment,
     environmentId: operation.payload.environmentId,
     epoch: 1,
-    payload: { dekCommitmentHex: operation.payload.dekCommitmentHex },
+    payload: { dekCommitmentHex: operation.payload.dekCommitmentHex, ...viaOf(operation) },
   }),
   delete_environment: (operation) => ({
     event: MIRROR_EVENT_NAME.delete_environment,
     environmentId: operation.payload.environmentId,
+    ...viaOnly(operation),
   }),
   rotate_epoch: (operation) => ({
     event: MIRROR_EVENT_NAME.rotate_epoch,
@@ -291,6 +351,7 @@ const mirrorTails: {
     payload: {
       reason: operation.payload.reason,
       dekCommitmentHex: operation.payload.dekCommitmentHex,
+      ...viaOf(operation),
     },
   }),
   grant_server: (operation) => ({
@@ -302,11 +363,12 @@ const mirrorTails: {
     // The source of truth for the policy is the chain (grant payload),
     // matchable via chain_seq. The scope (the internal environment_id
     // set) is copied per §3.4
-    payload: { scopeEnvironmentIds: operation.payload.scopeEnvironmentIds },
+    payload: { scopeEnvironmentIds: operation.payload.scopeEnvironmentIds, ...viaOf(operation) },
   }),
   revoke_server: (operation) => ({
     event: MIRROR_EVENT_NAME.revoke_server,
     targetKeyFingerprintHex: operation.payload.serverKeyFingerprintHex,
+    ...viaOnly(operation),
   }),
   // Copies the notarized digests (per-environment epoch /
   // manifest_version / manifest_sig_hash / values_digest and
@@ -324,26 +386,36 @@ const mirrorTails: {
         valuesDigestHex: tuple.valuesDigestHex,
       })),
       auditHeadHashHex: operation.payload.auditHeadHashHex,
+      ...viaOf(operation),
     },
   }),
   // Four-eyes (AUDIT_SPEC §3.4 — 2026-09-14 PF1). The inner payload is
   // not copied (the chain is the source of truth). approve / withdraw's
-  // referenced proposal (proposalChainSeq) and completed need the
-  // proposal index, so they are added on the chainMirrorEvents side
-  // (only the name lives here)
+  // referenced proposal (proposalChainSeq) and completed come from the
+  // proposal index (chainMirrorEvents hands them in)
   set_approval_policy: (operation) => ({
     event: MIRROR_EVENT_NAME.set_approval_policy,
     payload: {
       ops: operation.payload.ops,
       requiredApprovals: operation.payload.requiredApprovals,
+      ...viaOf(operation),
     },
   }),
   propose: (operation) => ({
     event: MIRROR_EVENT_NAME.propose,
     payload: { innerOp: operation.payload.inner.op, expiresAtMs: operation.payload.expiresAtMs },
   }),
-  approve: () => ({ event: MIRROR_EVENT_NAME.approve }),
-  withdraw: () => ({ event: MIRROR_EVENT_NAME.withdraw }),
+  approve: (operation) => {
+    const referenced = referencedOf(operation, "approve");
+    return {
+      event: MIRROR_EVENT_NAME.approve,
+      payload: { proposalChainSeq: referenced.proposalChainSeq, completed: referenced.completed },
+    };
+  },
+  withdraw: (operation) => ({
+    event: MIRROR_EVENT_NAME.withdraw,
+    payload: { proposalChainSeq: referencedOf(operation, "withdraw").proposalChainSeq },
+  }),
   // Device keys (AUDIT_SPEC §3.4 — 2026-09-19 DK). add_device's target
   // = actor (one can only add one's own device); payload = device FP +
   // cap. revoke_device's target = the target; payload = the revoked FP
@@ -360,13 +432,17 @@ const mirrorTails: {
         roleCap: operation.payload.roleCap,
         scopeKind: operation.payload.scopeKind,
         scopeEnvironmentIds: operation.payload.scopeEnvironmentIds,
+        ...viaOf(operation),
       },
     };
   },
   revoke_device: (operation) => ({
     event: MIRROR_EVENT_NAME.revoke_device,
     targetUserId: operation.payload.targetUserId,
-    payload: { deviceKeyFingerprints: operation.payload.deviceFingerprintsHex },
+    payload: {
+      deviceKeyFingerprints: operation.payload.deviceFingerprintsHex,
+      ...viaOf(operation),
+    },
   }),
 };
 
@@ -416,16 +492,17 @@ export function chainMirrorEvents(
     chainSeq: entry.seq,
     actorType: "user" as const,
   };
-  const own = (tail: MirrorTail): AuditEventRecord => ({
+  const rowOf = (actor: ChainActor, tail: MirrorTail): AuditEventRecord => ({
     ...tail,
     ...base,
-    actorUserId: entry.actor.userId,
-    actorKeyFingerprintHex: entry.actor.keyFingerprintHex,
+    actorUserId: actor.userId,
+    actorKeyFingerprintHex: actor.keyFingerprintHex,
   });
   if (entry.op === "add_device") {
     // add_device's mapping needs the added device's FP (MirrorSubject — the accepting side computes it and hands it in)
     return [
-      own(
+      rowOf(
+        entry.actor,
         mirrorTailOf({
           ...entry,
           ...(subject.addedDeviceKeyFingerprintHex === undefined
@@ -438,40 +515,39 @@ export function chainMirrorEvents(
   if (entry.op === "withdraw") {
     const proposal = referencedProposal(entry, index);
     return [
-      own({
-        ...mirrorTailOf(entry),
-        payload: { proposalChainSeq: proposal.entry.seq },
-      }),
+      rowOf(
+        entry.actor,
+        mirrorTailOf({
+          ...entry,
+          referenced: { proposalChainSeq: proposal.entry.seq, completed: false },
+        }),
+      ),
     ];
   }
   if (entry.op !== "approve") {
-    return [own(mirrorTailOf(entry))];
+    return [rowOf(entry.actor, mirrorTailOf(entry))];
   }
   const proposal = referencedProposal(entry, index);
   const completed = proposal.completedAtSeq === entry.seq;
-  const approved = own({
-    ...mirrorTailOf(entry),
-    payload: { proposalChainSeq: proposal.entry.seq, completed },
-  });
+  const approved = rowOf(
+    entry.actor,
+    mirrorTailOf({ ...entry, referenced: { proposalChainSeq: proposal.entry.seq, completed } }),
+  );
   if (!completed) {
     return [approved];
   }
-  // The applied row (AUDIT_SPEC §3.4): adds viaProposalSeq to the inner
-  // op's mirror mapping; actor is the proposer (the inner op's actor).
-  // The discipline exists so §4.1's membership intervals (Q1) and grant
+  // The applied row (AUDIT_SPEC §3.4): the inner op's mirror mapping with
+  // viaProposalSeq; actor is the proposer (the inner op's actor). The
+  // discipline exists so §4.1's membership intervals (Q1) and grant
   // intervals (Q6) keep the same input structure — detection reads the
   // same rows via the same index as direct appends
   const inner = proposal.entry.payload.inner;
-  const tail = mirrorTailOf({ ...inner, actor: proposal.entry.actor });
   return [
     approved,
-    {
-      ...tail,
-      ...base,
-      actorUserId: proposal.entry.actor.userId,
-      actorKeyFingerprintHex: proposal.entry.actor.keyFingerprintHex,
-      payload: { ...tail.payload, viaProposalSeq: proposal.entry.seq },
-    },
+    rowOf(
+      proposal.entry.actor,
+      mirrorTailOf({ ...inner, actor: proposal.entry.actor, viaProposalSeq: proposal.entry.seq }),
+    ),
   ];
 }
 
@@ -495,13 +571,8 @@ export interface AuditReadVariable {
   readonly version: number;
 }
 
-/**
- * The payload of an aggregated `var.read` row (AUDIT_SPEC §3.3). A type alias
- * (not an interface) so it stays assignable to the generic payload record.
- */
-export type AuditReadPayload = {
-  readonly variables: readonly AuditReadVariable[];
-};
+/** The payload of an aggregated `var.read` row (AUDIT_SPEC §3.3 — its schema in audit-payloads.ts). */
+export type AuditReadPayload = ProjectAuditPayload<"var.read">;
 
 /**
  * Builds the payload of an aggregated `var.read` row: the values whose
