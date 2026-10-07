@@ -249,6 +249,17 @@ not new, but a way to widen one is.
   revision 1 item 4). `maruhi run` hands values to its child by design; its
   output redaction is exact-match and misses transformed output and an unknown
   agent on a PTY ([pf4-design §12](notes/pf4-design.md)).
+- **The dashboard is a display, not a verifier** (ADR-0018): its chain view
+  folds the server's report without checking it, and a scope it cannot read
+  folds to an empty listed scope, rendered "no environments", the same row a
+  scope emptied by `delete_environment` gets
+  (`apps/web/src/dashboard/chain-view-state.ts`, `reportedScope`). Use
+  `maruhi project verify` for a verified member set.
+- **The R0–R3 review aid** classes the removal of a keyed-map member (a lone
+  `keys` entry, or a derived chain with its negatives) like the removal of an
+  array entry, R1 or R2, not R3. The removal is listed in the report, and the
+  aid approves nothing ([vectors README](../packages/crypto/test-vectors/README.md),
+  "Reviewing a crypto change").
 - **Open findings** from earlier reviews, including the chain-economics
   performance and scalability items, are tracked in
   [AUDIT_REVIEW_2026-09-26](AUDIT_REVIEW_2026-09-26.md); an earlier full review
