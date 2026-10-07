@@ -51,11 +51,14 @@ bun run generate       # generate-dek-wrap.mjs → generate-lease-wrap.mjs → g
                        #   which generate_reference.py writes)
 bun run verify         # verify_reference.mjs (exit 0 = all verifications pass)
 oxfmt ../*.json        # apply the repository formatting (committed vectors are already oxfmt-formatted)
+bun run regen-check    # regen-check.mjs: the same generate in a scratch copy, compared with the committed files (CI 7c)
+bun run delta -- --base origin/main   # vector-delta.mjs: the review summary of CI 7d (see "Reviewing a crypto change")
 ```
 
 - As a precondition of any PR that modifies vectors, confirm that `git status`
   is empty after generate → `oxfmt` (byte-exact reproduction). Do not mix
-  environment-derived diffs with spec-change-derived diffs
+  environment-derived diffs with spec-change-derived diffs. CI step 7c checks
+  this on every run (`regen-check`, formatting ignored)
 - On environments where the system pyca/cryptography is broken (e.g.
   `pyo3_runtime.PanicException` from a missing `_cffi_backend`), use a venv:
   `python3 -m venv /tmp/vecgen && /tmp/vecgen/bin/pip install cryptography` →
@@ -63,6 +66,42 @@ oxfmt ../*.json        # apply the repository formatting (committed vectors are 
   version-independent — everything is deterministic keys, nonces, and ekm)
 
 `tools/` is a throwaway reference tool, not product code. Product code (`packages/crypto/src`) must not import it.
+
+## Reviewing a crypto change (CI steps 7c / 7d)
+
+Two CI steps support the owner's review of a PR that touches `packages/crypto`. **Neither approves anything**; they make the review smaller and its blind spots visible.
+
+- **7c — regeneration check** (`tools/regen-check.mjs`, every run): runs `bun run generate` in a scratch copy of this directory and fails when a committed vector file differs from the regenerated one, formatting ignored (both sides parsed as JSON; key order counts). So the committed vectors are exactly what the generator in the same PR produces: reviewing the generator diff plus the vector delta below covers the vector files. CI takes pyca/cryptography from the Ubuntu archive (`python3-cryptography`, installed with zsh); the output does not depend on its version (see above).
+- **7d — vector-delta summary** (`tools/vector-delta.mjs`, pull requests only): compares `packages/crypto` at the merge-base with the PR head and writes a report to the job summary. Locally: `bun run delta -- --base origin/main` (or `--base <rev> --head <rev>`). Unit tests: `tools/vector-delta.test.mjs` (root `bun run test`).
+
+The report lists:
+
+1. **Vector entries**: every object in an array of objects is an entry, named by `name` / `seq` / `after_seq` (else by index — an insertion into such an array shows as changes); what is left of a top-level key (keys, field orders, descriptions) is one fixture entry. Each entry is unchanged / removed / added / changed. A changed entry shows which kinds of leaves moved: `outcome` (an explicit allow-list: `must_fail`, `expected_reason`, `expected_error`, the expected verifier state `expected_head_states` / `expected_members` / `expected_environments` / `expected_server_grants` / `expected_checkpoints` / `expected_policy` / `expected_pending`, and `kind` in a negative; any other key — `expected_hex`, `expected_*_hex`, `expected_line` or a future `expected_*` — is data, the upward side), `prose` (`note` / `description` / `*_note`, or sentence-like text of six or more words) or `data` (everything else). Counting an input sentence as prose hides nothing: 7c ties every input to its output bytes, so a meaningful input edit also moves `data`. A changed entry is **rebased** when its old version referenced material only removed positives or fixtures had (a removed positive of the same file named through `base` / `prev_base` / `predecessor`, or a long hex value no unchanged entry carries) — it had to move with the deletion, and an encoding change cannot hide in it because the unchanged vectors of the same encoding would move too.
+2. **Domain-separation strings**: `${…}/name` templates and `maruhi/vN/…` literals in `src` (comments excluded; `${…}/name-v${…}` becomes the pattern `name-v*`), `domain`-like strings in the vectors, and the leading field of every §2.1-encoded hex value. "New" means covered by neither a base src pattern nor a base vector domain.
+3. **`SUPPORTED_*` constants** in `src` whose array literal changed, and whether the new set is a subset of the old.
+4. **Encodings, suites and primitives**: signed-bytes shapes (domain × field count of every §2.1 hex value in a non-negative entry — negatives are malformed on purpose), `*_order` field lists, suite identifiers, WebCrypto algorithm names, `subtle.*` methods, external modules and the `hpke` members used, and `packages/crypto` runtime `dependencies`.
+5. **Changed files** by category; a code file counts as comments / formatting only when both its comment-free token text and its transpiled runtime form (Bun.Transpiler) are unchanged (Python: whitespace only).
+
+Risk classes — the highest matching class wins, and a rule that cannot tell picks the higher class:
+
+| Class | Meaning | Mechanical rule |
+|---|---|---|
+| R0 | comments / docs only | only docs, prose leaves, and comment / formatting-only code edits |
+| R1 | deletion / narrowing | a narrowing — positives removed, negatives removed together with the surface they exercised (see below), or a `SUPPORTED_*` set shrunk — and nothing of R2 / R3: no surviving vector changed bytes except rebased ones, no new domain string, supported sets only shrink. Implementation changes that carry out the narrowing and added entries on existing shapes are admitted |
+| R2 | logic change keeping the encodings | a surviving vector's expected outcome changed, a `SUPPORTED_*` set did anything but shrink, a negative was removed while the surface it exercised remains, or code / config / vectors changed with no narrowing |
+| R3 | new signed bytes / primitive / domain | a new domain string or suite, a new signed-bytes shape or field order, a new primitive or `hpke` member, a runtime dependency change, or a surviving vector whose bytes changed without being rebased |
+
+Removing a positive can only narrow what is accepted; removing a negative can widen it (the rejection and the check behind it may leave together). So a removed negative counts as narrowing only when the surface it exercised left head too: a signed-bytes shape no head positive has, a domain with no head positive shape left (a retired layout keeps negatives over its domain, so mere presence does not count), a suite no head positive and no head src uses while a base positive did, or derivation from a removed positive that itself exercised retired surface (named through `base` / `prev_base` / `predecessor`, or sharing a long hex value no head entry carries — e.g. a v2 signature replayed under the v1 domain). The report shows what retired each removed negative, or **surface remains**.
+
+Negatives never vouch for a surface. Every comparison that could lower a class reads positives and fixtures only: the retired surface above, what base already knew (a domain, suite or field order only a base negative used is still new once head adopts it in src, a positive or a fixture; an item appearing nowhere in base is new wherever it appears, a negative that merely survives adds nothing), and the material that makes a changed entry "rebased" (only removed positives and fixtures; entry names only through the reference keys, never from free text). Only "what head now carries" includes negatives, which errs upward. A shrunk `SUPPORTED_*` set is still narrowing evidence of its own, but it never vouches for a removed negative.
+
+The `*` of a src domain pattern (`name-v${layout}` → `name-v*`) stands for a layout number only: it covers `name-v3`, never `name-vault` or `name-v2-hybrid`.
+
+How the owner uses the summary:
+
+- Read the class and its "Why this class" lines, then check the facts against the PR description: removed entries are exactly what the PR retires, added entries re-pin surviving rules, each rebased entry names the removed material it followed, and the domain / `SUPPORTED_*` lines match the spec change.
+- R0: glance at the cosmetic file list. R1: read the `src` diffs (R1 admits them) and confirm each removal. R2: review the logic against `docs/CRYPTO_SPEC.md`, and each outcome change one by one. R3: the full crypto review of CLAUDE.md (spec first, vectors first, human approval).
+- A class lower than the change deserves is a bug in the rules (they are meant to err only upward): say so in the review and fix the rule. The report covers `packages/crypto` only; for `docs/CRYPTO_SPEC.md` it only says whether it changed.
 
 ## What the vectors pin down (points to check especially in human review)
 

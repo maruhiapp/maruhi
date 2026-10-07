@@ -96,6 +96,14 @@ leaks every secret. Therefore:
   decryption always live in client components / client code
 - No Bun-specific APIs (`bun:*`) in server code. The Worker side uses Web
   standards + Workers APIs only
+- **Effect fence**: Effect v4 is the orchestration layer (server, CLI, core,
+  api-schema). The two trusted leaves — `packages/crypto` and the shipped web
+  bundle (`apps/web/src`) — are Effect-free by contract. crypto imports nothing
+  from `effect` / `@effect/*`, not even types (the `packages/crypto` override
+  of `no-restricted-imports` in `.oxlintrc.json`); the web bundle takes types
+  only (`import type`, the value-import tripwire in
+  `apps/web/test/unit/endpoints.test.ts` — rulings BR / CD). Branded types are
+  used only where they carry an invariant
 - Past design decisions live in `docs/adr/`. Do not implement anything that
   relitigates an ADR decision (propose changes as an ADR revision to a human)
 

@@ -46,6 +46,32 @@
       "rules": { "no-restricted-imports": "off" }
     },
     {
+      // Effect fence (CLAUDE.md "Architecture"): packages/crypto is one of the
+      // two trusted leaves and is Effect-free by contract, so it imports
+      // nothing from effect — values, types, subpaths and re-exports alike.
+      // The other leaf (the web bundle, apps/web/src) is held by the
+      // value-import tripwire in apps/web/test/unit/endpoints.test.ts
+      // (rulings BR / CD); types stay allowed there because they are erased
+      // from the bundle, while crypto has no reason to see Effect types at
+      // all (core and api-schema build on crypto, not the other way round).
+      // This override replaces the outbound-HTTP one above for these files;
+      // that ban is subsumed here
+      "files": ["packages/crypto/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["effect", "effect/**", "@effect/**"],
+                "message": "packages/crypto is Effect-free by contract (the Effect fence in CLAUDE.md). Keep Effect in core / api-schema / the apps and pass plain values into crypto"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       // Astryx styling discipline (ADR-0013, B2 operation). Details: the
       // styling-discipline section of CLAUDE.md
       "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
