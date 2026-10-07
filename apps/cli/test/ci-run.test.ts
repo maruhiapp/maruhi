@@ -26,6 +26,7 @@ import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
   genesisOp,
@@ -34,6 +35,7 @@ import {
   hexBytes,
   makeTestUser,
   manifestFor,
+  revokeServerOp,
   rotateEpochOp,
   statementFor,
   type TestUser,
@@ -48,6 +50,22 @@ const ENV_ID = "prod";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const SUBJECT = "repo:acme/app:ref:refs/heads/main";
 const RUNNER_TOKEN = "runner-request-token-value";
+/** An environment only the second grant (B) covers. */
+const OTHER_ENV_ID = "staging";
+/** Seqs of fixture.extended: before any grant, grant B only (staging), grant A (prod) added, A revoked, prod deleted. */
+const UNGRANTED_SEQ = 3;
+const OTHER_SCOPE_SEQ = 5;
+const GRANTED_SEQ = 6;
+const REVOKED_SEQ = 7;
+const DELETED_SEQ = 8;
+
+function chainPrefixOf(chain: BuiltChain, seq: number): BuiltChain {
+  return {
+    projectId: chain.projectId,
+    entries: chain.entries.slice(0, seq),
+    hashes: chain.hashes.slice(0, seq),
+  };
+}
 
 interface PullEntry {
   variableId: string;
@@ -57,7 +75,14 @@ interface PullEntry {
 
 interface Fixture {
   readonly owner: TestUser;
+  /** The served chain of the happy path: `extended`'s first GRANTED_SEQ entries. */
   readonly built: BuiltChain;
+  /**
+   * genesis → create prod → rotate prod (epoch 2) → create staging → grant B
+   * (staging) → grant A (prod) → revoke A → delete prod. Its prefixes are
+   * the lease authorization cases of §9.1 (6) — see chainPrefix.
+   */
+  readonly extended: BuiltChain;
   readonly dek1: Uint8Array;
   readonly dek2: Uint8Array;
   readonly envStatement: WireDistributedEnvironmentStatement;
@@ -72,21 +97,29 @@ beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
-  // The chain carries a commitment to the real DEK and a grant_server (with the
-  // lease policy) — the same shape as a production leased project (the client's
-  // §9.1 verification does not inspect grant presence, but keep the fixture faithful)
-  const built = await buildChain([
+  // The chain carries a commitment to the real DEK and an active grant_server
+  // naming the leased environment (§9.1 verification obligation (6)) — the same
+  // shape as a production leased project. A second grant (another server key —
+  // a mirror's, §9.2) covers only staging, so every happy path also exercises
+  // the union over active grants
+  const leasePolicy = [
+    { issuerUrl: ISSUER, audience: "https://maruhi.example", claimConstraints: [] },
+  ];
+  const grantA = await grantServerOp([ENV_ID], leasePolicy);
+  if (grantA.op !== "grant_server") {
+    throw new Error("grantServerOp built another operation");
+  }
+  const extended = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-    {
-      actor: owner,
-      operation: await grantServerOp(
-        [ENV_ID],
-        [{ issuerUrl: ISSUER, audience: "https://maruhi.example", claimConstraints: [] }],
-      ),
-    },
+    { actor: owner, operation: createEnvironmentOp(OTHER_ENV_ID, dek1) },
+    { actor: owner, operation: await grantServerOp([OTHER_ENV_ID], leasePolicy) },
+    { actor: owner, operation: grantA },
+    { actor: owner, operation: revokeServerOp(grantA.payload.serverKeyFingerprintHex) },
+    { actor: owner, operation: deleteEnvironmentOp(ENV_ID) },
   ]);
+  const built = chainPrefixOf(extended, GRANTED_SEQ);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   // The latest version's epoch differs per variable (same shape as §12-7):
   // ALPHA is epoch 2, BETA stays at epoch 1 — never re-encrypted after rotation
@@ -142,7 +175,7 @@ beforeAll(async () => {
     }),
     value: valueBeta,
   };
-  fixture = { owner, built, dek1, dek2, envStatement, entryAlpha, entryBeta };
+  fixture = { owner, built, extended, dek1, dek2, envStatement, entryAlpha, entryBeta };
 });
 
 afterEach(async () => {
@@ -215,6 +248,10 @@ interface LeaseResponseOverrides {
   /** Substitutes the per-epoch DEK (poisoned wrap = commitment mismatch). */
   readonly dekForEpoch?: (epoch: number, dek: Uint8Array) => Uint8Array;
   readonly entries?: readonly ChainEntry[];
+  /** The declared head hash (defaults to the last hash of fixture.built). */
+  readonly headHashHex?: string;
+  /** Replaces every lease wrap with well-formed garbage (no wrap can be opened). */
+  readonly garbageLeases?: boolean;
   readonly declaredProjectId?: string;
   readonly currentEpoch?: number;
   readonly variables?: readonly PullEntry[];
@@ -303,7 +340,7 @@ async function leaseResponseFor(
     currentEpoch: resolved.currentEpoch,
     chain: resolved.entries,
     headSeq: resolved.entries.length,
-    headHashHex: built.hashes[built.hashes.length - 1],
+    headHashHex: overrides?.headHashHex ?? built.hashes[built.hashes.length - 1],
     statement: envStatement,
     variables: resolved.variables,
     deletedVariables: [],
@@ -323,11 +360,21 @@ async function leaseResponseFor(
         ...resolved.declaredVariables,
       ],
     }),
-    leases: [
-      await wrapFor(1, dek1),
-      await wrapFor(2, dek2),
-      ...(await Promise.all(resolved.extraLeases.map((extra) => wrapFor(extra.epoch, extra.dek)))),
-    ],
+    leases:
+      overrides?.garbageLeases === true
+        ? [1, 2].map((epoch) => ({
+            suite: "maruhi/v1",
+            epoch,
+            encHex: "ab".repeat(32),
+            ciphertextHex: "cd".repeat(48),
+          }))
+        : [
+            await wrapFor(1, dek1),
+            await wrapFor(2, dek2),
+            ...(await Promise.all(
+              resolved.extraLeases.map((extra) => wrapFor(extra.epoch, extra.dek)),
+            )),
+          ],
     schemaPolicy: "enabled" as const,
   };
 }
@@ -683,6 +730,108 @@ describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)
     );
     expect(env.runnerCalls).toHaveLength(0);
     expectNoSecretLeak(env);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* §9.1 verification obligation (6): lease authorization                       */
+/* -------------------------------------------------------------------------- */
+
+/** Serves fixture.extended's first `seq` entries (a consistent declared head). */
+function chainPrefix(seq: number): LeaseResponseOverrides {
+  const prefix = chainPrefixOf(fixture.extended, seq);
+  return {
+    entries: prefix.entries,
+    headHashHex: prefix.hashes[prefix.hashes.length - 1] as string,
+  };
+}
+
+function expectLeaseUnauthorized(env: TestEnv): void {
+  const errors = env.errors.join("\n");
+  expect(errors).toContain(
+    `The server issued a lease for environment ${ENV_ID} of project ${fixture.built.projectId}, but the chain it sent carries no active grant_server naming that environment (CRYPTO_SPEC §9.1 (6))`,
+  );
+  expect(errors).toContain("The lease was not used");
+  expect(errors).toContain("A conforming server answers 404 instead");
+  expect(errors).toContain("Do not widen the grant");
+  expect(errors).toContain("--anchor");
+  // Refused before any lease wrap is opened
+  expect(errors).not.toContain("Cannot open the leased DEK");
+  expect(errors).not.toContain("Lease verified");
+  expect(env.runnerCalls).toHaveLength(0);
+  expectNoSecretLeak(env);
+}
+
+describe("maruhi ci run (lease authorization — CRYPTO_SPEC §9.1 (6))", () => {
+  it("refuses a lease when the verified chain carries no grant at all", async () => {
+    const { env, server } = await startCiEnv([leaseHandler(chainPrefix(UNGRANTED_SEQ))]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expectLeaseUnauthorized(env);
+  });
+
+  it("refuses a lease when the grant naming the environment was revoked", async () => {
+    const { env, server } = await startCiEnv([leaseHandler(chainPrefix(REVOKED_SEQ))]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expectLeaseUnauthorized(env);
+  });
+
+  it("refuses a lease when the only active grant's scope does not name the environment", async () => {
+    const { env, server } = await startCiEnv([leaseHandler(chainPrefix(OTHER_SCOPE_SEQ))]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expectLeaseUnauthorized(env);
+  });
+
+  it("refuses a deleted environment with the deletion message, ahead of the grant check", async () => {
+    // A deletion prunes the id from every grant scope (§6.2), so (6) would
+    // also refuse; the deletion is named first (its own, terminal message)
+    const { env, server } = await startCiEnv([leaseHandler(chainPrefix(DELETED_SEQ))]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Environment ${ENV_ID} is deleted (delete_environment at chain seq ${DELETED_SEQ})`,
+    );
+    expect(errors).not.toContain("CRYPTO_SPEC §9.1 (6)");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("opens no lease wrap on refusal (garbage wraps still yield the authorization error)", async () => {
+    const { env, server } = await startCiEnv([
+      leaseHandler({ ...chainPrefix(UNGRANTED_SEQ), garbageLeases: true }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expectLeaseUnauthorized(env);
+  });
+
+  it("garbage wraps under an authorizing chain fail at the unwrap (the probe of the case above)", async () => {
+    const { env, server } = await startCiEnv([leaseHandler({ garbageLeases: true })]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("Cannot open the leased DEK");
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("accepts a lease covered by any active grant (the union — the other grant covers only staging)", async () => {
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(0);
+    expect(env.runnerCalls).toHaveLength(1);
+    // Both active grants are stated (§9), the leased environment's among them
+    const notes = env.errors.filter((line) => line.includes("is disclosed to the server"));
+    expect(notes).toHaveLength(2);
+    expect(notes.some((line) => line.endsWith(`environment ${ENV_ID}`))).toBe(true);
+    expect(notes.some((line) => line.endsWith(`environment ${OTHER_ENV_ID}`))).toBe(true);
+  });
+
+  it("with --anchor, a stale chain from before the revocation is refused (the anchor carries the head)", async () => {
+    const revokedHead = chainPrefixOf(fixture.extended, REVOKED_SEQ);
+    const path = await anchorFile({
+      ...validAnchor(),
+      headSeq: REVOKED_SEQ,
+      headHashHex: revokedHead.hashes[REVOKED_SEQ - 1],
+    });
+    // The server serves the prefix in which the grant is still active
+    const { env, server } = await startCiEnv([leaseHandler()]);
+    expect(await runCli(ciArgs(server, ["--anchor", path]), env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("does not contain the anchored head");
+    expect(env.runnerCalls).toHaveLength(0);
   });
 });
 
@@ -1075,7 +1224,7 @@ describe("maruhi project anchor", () => {
       projectId: built.projectId,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
-      environments: { [ENV_ID]: 2 },
+      environments: { [ENV_ID]: 2, [OTHER_ENV_ID]: 1 },
     });
 
     // The emitted anchor passes ci run --anchor verification as-is (round-trip consistency)

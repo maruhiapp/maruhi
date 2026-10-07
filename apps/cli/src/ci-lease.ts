@@ -230,7 +230,7 @@ export const leaseEnvironmentsWithCredential = Effect.fn(
         return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
       }
     }
-    // §9.1 verification obligations (1)–(4). No value is decrypted until all of them pass
+    // §9.1 verification obligations (1)–(6). No value is decrypted until all of them pass
     const material = yield* verifyLeaseResponse({
       projectId: input.projectId,
       environmentId,
@@ -247,7 +247,7 @@ export const leaseEnvironmentsWithCredential = Effect.fn(
     // the child process's output — decision 9; stderr is the destination
     // for diagnostics and info)
     yield* io.logError(
-      `Lease verified (chain, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${environmentId})`,
+      `Lease verified (chain, grant, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${environmentId})`,
     );
     materials.set(environmentId, material);
   }

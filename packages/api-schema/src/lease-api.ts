@@ -76,9 +76,12 @@ export const LeaseRequestSchema = Schema.Struct({
  *   sealed to the ephemeral key (CRYPTO_SPEC §9.1), never the stored
  *   `RecipientDek` wraps a chain member registered
  *
- * The workload must run the §9.1 verification duties (chain verification with
- * a pre-pinned genesis, repository anchor, commitment matching, value and
- * statement signatures) before using anything here.
+ * The workload must run the §9.1 verification duties (1)–(6) before using
+ * anything here: chain verification with a pre-pinned genesis, the repository
+ * anchor, commitment matching, value and statement signatures, manifest and
+ * checkpoint consistency, and the lease authorization check (an active grant
+ * on the verified chain names the environment — before any lease wrap is
+ * opened).
  */
 export const LeaseResponseSchema = Schema.Struct({
   projectId: ProjectIdSchema,
