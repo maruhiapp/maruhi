@@ -10,7 +10,11 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { requireWritingMember } from "./dek-wrap.ts";
-import { type DekRecipient, requireChainEnvironment } from "./deks.ts";
+import {
+  type DekRecipient,
+  refuseChainDeletedEnvironment,
+  requireChainEnvironment,
+} from "./deks.ts";
 import { CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
@@ -88,6 +92,10 @@ export const ensureRotatable = Effect.fn("env-rotate-shared.ensureRotatable")(fu
   signerUserId: string,
   signingKeyPair: SigningKeyPair,
 ): Effect.fn.Return<ChainMember, CliError> {
+  // A chain-deleted environment first: the deletion pruned it from every
+  // listed scope, so the scope check would misreport it (§6.2 — the same
+  // order as the command prologues)
+  yield* refuseChainDeletedEnvironment(verified, environmentId);
   // Membership + the device's effective role (member or above) / scope are shared with env create
   const { member } = yield* requireWritingMember({
     verified,
