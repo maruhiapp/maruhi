@@ -4,8 +4,8 @@
 // - Refresh the view right before issuing → build the manifest reference
 //   and values_digest from the verified view (a verified pull) (never sign
 //   server-declared values as-is — §16-2). Coverage is every environment in
-//   the verified view (SHOULD; environments with a verified deletion
-//   statement are not included) — trigger (i) [after rotate + re-encryption
+//   the verified view (SHOULD; environments deleted on the verified chain
+//   — a delete_environment entry — are not included) — trigger (i) [after rotate + re-encryption
 //   completes] is a single tuple for that environment (the ruling is
 //   docs/notes/session-35.md)
 // - Only effective-admin authority (min(token scope, chain role) — §9-2)
@@ -185,7 +185,7 @@ const determineAuditAttestation = Effect.fn("checkpoint.determineAuditAttestatio
 
 /**
  * Resolving the coverage targets ("all" = chain-derived environments -
- * verified deletions - **outside one's own scope**). An out-of-scope
+ * chain-deleted environments - **outside one's own scope**). An out-of-scope
  * environment cannot be value-pulled and cannot be notarized (CRYPTO_SPEC
  * §6.2 `checkpoint` requires every tuple's environment in actor scope; §6.3
  * cross-environment (i) — 2026-09-15 ES K4). Exclusions are returned via

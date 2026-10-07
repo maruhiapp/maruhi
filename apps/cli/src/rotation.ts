@@ -6,7 +6,7 @@
 //   resolved from the verified meta statements (a deleted
 //   variable's tombstone — §4.2's "deleted keeps the last active
 //   name") (AUDIT_SPEC §7's TCB discipline). An environment that
-//   cannot be resolved (a verified deletion etc.) is displayed as
+//   cannot be resolved (one deleted on the verified chain etc.) is displayed as
 //   its identifier
 // - dismiss: the withdrawal operation (the server generates
 //   rotation.dismissed — admin). A flag is also resolved by
@@ -104,7 +104,7 @@ export type StateIndex = ReadonlyMap<string, VariableState>;
 /**
  * For each environment appearing in the list, fetches the verified
  * metadata (active + tombstone) and builds a variableId → state index. An
- * environment whose fetch/verification fails (a verified deletion etc.)
+ * environment whose fetch/verification fails (a chain-deleted one etc.)
  * has no index = degrades to identifier display (with a warning — the
  * display is SHOULD and does not stop the listing itself).
  */
