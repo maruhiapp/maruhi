@@ -86,7 +86,7 @@ auth_method rides every row's payload as `authMethod` (§2).
 | `auth.key_wrap_removed` | kind, wrapId / groupId | Removal from the ledger. actor = ward |
 | `auth.key_wrap_fetched` | kind, wrapId / groupId | Fetch of the wrap body of a passkey / guardian group (**monitor** — same rank as `auth.recovery_blob_fetched`). actor = ward |
 | `auth.guardian_designated` / `auth.guardian_released` | groupId, mode, shareIndex | Designation / release of a guardian. actor = ward, **target = guardian** (also appears on the guardian's own axis). One row per segment |
-| `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id + key FP), target = ward |
+| `auth.guardian_share_fetched` | groupId, shareIndex | A guardian fetched the segment addressed to them (**monitor**). actor = guardian (user_id), target = ward. No key FP: the fetch is a token-authenticated read that returns the segment wrapped to each of the guardian's devices, so no device key acts at fetch time; the device that acts is recorded when the segment is used (`auth.key_handoff_approved`'s `approverKeyFingerprintHex`) (2026-10-07) |
 | `auth.key_handoff_requested` | requestId | Creation of a handoff request. actor = ward |
 | `auth.key_handoff_approved` | requestId, source (groupId), shareIndex | Acceptance of an approval (**monitor**). actor = approver (user_id + key FP = the device used for the approval), target = ward; the payload carries `approverKeyFingerprintHex` (D1 rows have no actor key column) |
 | `auth.key_handoff_collected` | requestId, approvalCount | The requester obtained one or more approvals **for the first time** = the fact that a restoration happened (once per request; not recorded on each polling response — AUTH_SPEC §13-6 `collected_at`). actor = ward |
@@ -98,7 +98,8 @@ auth_method rides every row's payload as `authMethod` (§2).
   guardian can trace in their own audit what they were designated for and what
   they approved; a ward can trace whom they designated and who approved). The
   identity rule (§1-2) is unchanged — guardians, wards, and approvers are all
-  internal user_id + key FP, and display snapshots like `wardLogin` exist only
+  internal user_ids (an approver also with the approving device's key FP),
+  and display snapshots like `wardLogin` exist only
   in API responses, never written to audit rows. They do not participate in
   rotation-needed detection (§4) (events outside any project). 429 / 404
   rejections are not recorded (AUTH_SPEC §13-10)
