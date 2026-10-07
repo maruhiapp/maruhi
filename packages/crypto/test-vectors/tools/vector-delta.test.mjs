@@ -189,7 +189,6 @@ describe("analyze", () => {
         before: "[1, 2]",
         after: "[1]",
         shrinks: true,
-        removedMembers: ["2"],
       },
     ]);
     expect(result.shapes.removed).toEqual(["<suite>/thing-sig-v2 ×3"]);
@@ -293,6 +292,75 @@ describe("analyze", () => {
     expect(result.reasons.R2).toContain(
       "1 rejection vector(s) removed while their surface remains: thing.json › negative › too-long",
     );
+  });
+
+  it("R2: a removed SUPPORTED member never vouches for a negative (Cursor Bugbot)", () => {
+    // A lone `version` leaf equal to the dropped layout used to count as
+    // naming it; the v1 surface the negative exercised is still accepted
+    const base = baseVectors();
+    base.negative.push({
+      name: "stale-version",
+      base: "basic",
+      version: 2,
+      verify_signed_bytes_hex: lp(["maruhi/v1/thing-sig-v1", "a", "stale"]),
+      signature_hex: SIG,
+      must_fail: true,
+    });
+    const result = analyze(
+      snapshot(BASE_SRC, base),
+      snapshot(BASE_SRC.replace("[1, 2]", "[1]"), baseVectors()),
+      runtimeForm,
+    );
+    expect(result.vectors.removedNegatives[0].retiredBy).toEqual([]);
+    expect(result.reasons.R2).toContain(
+      "1 rejection vector(s) removed while their surface remains: thing.json › negative › stale-version",
+    );
+    expect(result.risk).toBe("R2");
+  });
+
+  it("R2: a suite only a negative used is not retired when that negative goes (Cursor Bugbot)", () => {
+    const base = baseVectors();
+    base.negative.push({
+      name: "unknown-suite",
+      base: "basic",
+      verify_signed_bytes_hex: lp(["maruhi/v9/thing-sig-v1", "a", "b"]),
+      signature_hex: SIG,
+      must_fail: true,
+    });
+    const result = analyze(
+      snapshot(BASE_SRC, base),
+      snapshot(BASE_SRC, baseVectors()),
+      runtimeForm,
+    );
+    expect(result.vectors.removedNegatives[0].retiredBy).toEqual([]);
+    expect(result.reasons.R1).toEqual([]);
+    expect(result.risk).toBe("R2");
+  });
+
+  it("R3: a domain only a base negative used is still new when src adopts it", () => {
+    const base = baseVectors();
+    base.negative[0].verify_signed_bytes_hex = lp(["maruhi/v1/other", "a", "b"]);
+    const head = baseVectors();
+    head.negative[0].verify_signed_bytes_hex = lp(["maruhi/v1/other", "a", "b"]);
+    const src = BASE_SRC.replace(
+      "return encodeLengthPrefixed",
+      "void `${suite}/other`;\n  return encodeLengthPrefixed",
+    );
+    const result = analyze(snapshot(BASE_SRC, base), snapshot(src, head), runtimeForm);
+    expect(result.domains.new).toEqual(["<suite>/other"]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("R3: material shared only with a removed negative does not rebase a byte change", () => {
+    const base = baseVectors();
+    base.vectors[0].signature_hex = OLD_SIG; // shared with legacy-transplant only after legacy goes
+    base.vectors.splice(1, 1);
+    const head = structuredClone(base);
+    head.negative.splice(1, 1);
+    head.vectors[0].signature_hex = SIG;
+    const result = analyze(snapshot(BASE_SRC, base), snapshot(BASE_SRC, head), runtimeForm);
+    expect(result.vectors.unexplained.map((c) => c.id)).toEqual(["thing.json › vectors › basic"]);
+    expect(result.risk).toBe("R3");
   });
 
   it("R1: negatives removed together with the layout they exercised", () => {

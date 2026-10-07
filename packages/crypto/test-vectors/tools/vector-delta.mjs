@@ -369,25 +369,32 @@ export function lpShape(hex) {
   return DOMAIN_LITERAL.test(domain) ? { domain, fields: fields.length } : null;
 }
 
+function emptyFacts() {
+  return { domains: new Set(), suites: new Set(), shapes: new Set(), fieldOrders: new Set() };
+}
+
 /**
  * Domains, suites, encoding shapes (domain + field count of every
- * length-prefixed hex value in a non-negative entry) and field orders seen
- * in a set of entries. Negatives are excluded from shapes because they are
- * malformed on purpose; their domains still count.
+ * length-prefixed hex value) and field orders seen in a set of entries, in
+ * two layers: `accepted` from non-negative entries (positives and fixtures)
+ * and `all` including negatives. Negatives are malformed or foreign on
+ * purpose, so they never vouch for a surface: every comparison that could
+ * lower a class (what base already knew, what head retired) reads
+ * `accepted`; only "what head now carries" reads `all`, which errs upward.
  */
 function vectorFacts(entries) {
-  const domains = new Set();
-  const suites = new Set();
-  const shapes = new Set();
-  const fieldOrders = new Set();
+  const accepted = emptyFacts();
+  const all = emptyFacts();
   for (const entry of entries.values()) {
     const facts = entryFacts(entry);
-    for (const d of facts.domains) domains.add(d);
-    for (const s of facts.suites) suites.add(s);
-    if (!entry.negative) for (const s of facts.shapes) shapes.add(s);
-    collectFieldOrders(entry.value, "", fieldOrders);
+    collectFieldOrders(entry.value, "", facts.fieldOrders);
+    for (const target of entry.negative ? [all] : [all, accepted]) {
+      for (const key of ["domains", "suites", "shapes", "fieldOrders"]) {
+        for (const x of facts[key]) target[key].add(x);
+      }
+    }
   }
-  return { domains, suites, shapes, fieldOrders };
+  return { accepted, all };
 }
 
 /** Domains, suites and §2.1 shapes (negatives included) one entry carries. */
@@ -409,22 +416,26 @@ function entryFacts(entry) {
       shapes.add(`${normalizeDomain(shape.domain)} ×${shape.fields}`);
     }
   }
-  return { domains, suites, shapes };
+  return { domains, suites, shapes, fieldOrders: new Set() };
 }
 
 const shapeDomain = (shape) => shape.slice(0, shape.lastIndexOf(" ×"));
 
 /**
- * The accepted surface that left head: positive shapes gone, domains whose
- * every positive shape is gone (a retired layout keeps negatives that use
- * its domain, so domain presence alone would not show it), and suites gone.
+ * The accepted surface that left head, from non-negative entries only:
+ * shapes gone, domains whose every shape is gone (a retired layout keeps
+ * negatives that use its domain, so domain presence alone would not show
+ * it), and suites no longer used by any non-negative entry nor by src.
  */
-function retiredSurface(baseFacts, headFacts) {
-  const headDomains = new Set([...headFacts.shapes].map(shapeDomain));
+function retiredSurface(baseFacts, headFacts, headSrcSuites) {
+  const base = baseFacts.accepted;
+  const head = headFacts.accepted;
+  const headDomains = new Set([...head.shapes].map(shapeDomain));
+  const headSuites = new Set([...head.suites, ...headSrcSuites]);
   return {
-    shapes: new Set(setDiff(baseFacts.shapes, headFacts.shapes)),
-    domains: new Set([...baseFacts.shapes].map(shapeDomain).filter((d) => !headDomains.has(d))),
-    suites: new Set(setDiff(baseFacts.suites, headFacts.suites)),
+    shapes: new Set(setDiff(base.shapes, head.shapes)),
+    domains: new Set([...base.shapes].map(shapeDomain).filter((d) => !headDomains.has(d))),
+    suites: new Set(setDiff(base.suites, headSuites)),
   };
 }
 
@@ -461,6 +472,19 @@ function referenceValues(value) {
 
 // ---------------------------------------------------------------------------
 // The analysis
+
+// Keys through which one entry names another (`base: "var-v2-create-typed"`).
+// Name references are read only here, never from free text
+const REFERENCE_KEYS = new Set(["base", "prev_base", "predecessor"]);
+
+/** Entry names an entry references through REFERENCE_KEYS. */
+function referencedNames(value) {
+  const out = new Set();
+  for (const [path, v] of leaves(value)) {
+    if (typeof v === "string" && REFERENCE_KEYS.has(path.split(".").at(-1))) out.add(v);
+  }
+  return out;
+}
 
 const VECTOR_FILE = /^test-vectors\/(?:hpke\/)?[^/]+\.json$/;
 const CODE_FILE = /\.(?:ts|mts|mjs|js|py)$/;
@@ -543,16 +567,19 @@ const lastSegment = (id) => id.split(" › ").at(-1);
 /**
  * Marks each changed entry with the removed material it referenced.
  * A changed entry is "rebased" when its old version referenced material only
- * removed (or likewise changed) entries had: the name of a removed entry of
- * the same file, or a long hex value no unchanged entry carries. Such an
- * entry had to move with the deletion. It cannot hide an encoding change on
- * its own: that would also move the unchanged vectors of the same encoding.
+ * removed (or likewise changed) non-negative entries had: a removed
+ * positive of the same file named through a reference key, or a long hex
+ * value of a removed positive / fixture that no unchanged entry carries.
+ * Such an entry had to move with the deletion. It cannot hide an encoding
+ * change on its own: that would also move the unchanged vectors of the same
+ * encoding. Removed negatives never explain a byte change.
  */
 function markRebased(baseEntries, headEntries, removed, changedEntries) {
   const removedNames = new Set(); // "file|name"
   const removedValues = new Set();
   for (const id of removed) {
     const entry = baseEntries.get(id);
+    if (entry.negative) continue;
     if (!entry.fixture) removedNames.add(`${entry.file}|${lastSegment(id)}`);
     for (const v of referenceValues(entry.value)) if (HEX.test(v)) removedValues.add(v);
   }
@@ -567,20 +594,21 @@ function markRebased(baseEntries, headEntries, removed, changedEntries) {
   }
   for (const c of changedEntries) {
     const name = (v) => `${c.entry.file}|${v}`;
-    c.rebasedOff = [...referenceValues(c.before)].filter(
-      (v) =>
-        (removedNames.has(name(v)) && !survivingNames.has(name(v))) ||
-        (removedValues.has(v) && !keptValues.has(v)),
-    );
+    c.rebasedOff = [
+      ...[...referencedNames(c.before)].filter(
+        (v) => removedNames.has(name(v)) && !survivingNames.has(name(v)),
+      ),
+      ...[...referenceValues(c.before)].filter((v) => removedValues.has(v) && !keptValues.has(v)),
+    ];
   }
 }
 
 /**
  * A negative built from retired material also exercised that surface even
  * when its own bytes do not show it — e.g. a v2 signature replayed under the
- * v1 domain. It counts when it references (by name, or by a long hex value
- * no head entry carries) a removed positive that itself exercised retired
- * surface.
+ * v1 domain. It counts when it references (by name through a reference key,
+ * or by a long hex value no head entry carries) a removed positive that
+ * itself exercised retired surface.
  */
 function markDerivedFromRetired(removedVectors, removedNegatives, retired, headEntries) {
   const headValues = new Set();
@@ -591,9 +619,10 @@ function markDerivedFromRetired(removedVectors, removedNegatives, retired, headE
   for (const negative of removedNegatives) {
     const file = negative.id.split(" › ")[0];
     const refs = referenceValues(negative.value);
+    const names = referencedNames(negative.value);
     for (const source of sources) {
       const name = lastSegment(source.id);
-      const sameFileName = source.file === file && refs.has(name);
+      const sameFileName = source.file === file && names.has(name);
       const sharedHex = [...referenceValues(source.value)].some(
         (v) => HEX.test(v) && refs.has(v) && !headValues.has(v),
       );
@@ -603,7 +632,7 @@ function markDerivedFromRetired(removedVectors, removedNegatives, retired, headE
 }
 
 /** Entry-level delta of the vector files. */
-function vectorDelta(base, head) {
+function vectorDelta(base, head, headSrcSuites) {
   const baseEntries = entriesOf(base);
   const headEntries = entriesOf(head);
   const removed = [...baseEntries.keys()].filter((id) => !headEntries.has(id));
@@ -626,9 +655,8 @@ function vectorDelta(base, head) {
   const headFacts = vectorFacts(headEntries);
   // Removing an acceptance pin (a positive) can only narrow; removing a
   // rejection pin (a negative) can widen, so a removed negative counts as
-  // narrowing only together with the surface it exercised (classify() also
-  // accepts a removed SUPPORTED_* member it names)
-  const retired = retiredSurface(baseFacts, headFacts);
+  // narrowing only together with the surface it exercised
+  const retired = retiredSurface(baseFacts, headFacts, headSrcSuites);
   const removedVectors = removed.map((id) => baseEntries.get(id)).filter((e) => !e.fixture);
   const removedNegatives = removedVectors
     .filter((e) => e.negative)
@@ -679,42 +707,63 @@ function supportedDelta(baseSrc, headSrc) {
     if (showSupported(a) === showSupported(b)) continue;
     const shrinks =
       a?.parsed === true && b?.parsed === true && b.values.every((x) => a.values.includes(x));
-    const removedMembers = shrinks ? a.values.filter((x) => !b.values.includes(x)) : [];
-    out.push({ name, before: showSupported(a), after: showSupported(b), shrinks, removedMembers });
+    out.push({ name, before: showSupported(a), after: showSupported(b), shrinks });
   }
   return out;
 }
 
+/**
+ * What head adds to one kind of surface, compared like with like: an item
+ * is new when it newly appears as accepted surface (src or a non-negative
+ * entry; a base negative never vouches for it) or newly appears anywhere
+ * (negatives included). Both halves err upward; a negative that merely
+ * survives unchanged adds nothing.
+ */
+function grown(srcBase, srcHead, base, head, known = (x, set) => set.has(x)) {
+  const acceptedBase = new Set([...srcBase, ...base.accepted]);
+  const allBase = new Set([...srcBase, ...base.all]);
+  const out = new Set();
+  for (const x of [...srcHead, ...head.accepted]) if (!known(x, acceptedBase)) out.add(x);
+  for (const x of head.all) if (!known(x, allBase)) out.add(x);
+  return [...out].toSorted();
+}
+
+/** One kind of fact from both layers, for grown(). */
+function layers(facts, key) {
+  return { accepted: facts.accepted[key], all: facts.all[key] };
+}
+
 /** Domain, suite, encoding, primitive and SUPPORTED_* delta of src + the vectors. */
-function surfaceDelta(base, head, vectors) {
-  const baseSrc = sourceFactsOf(base);
-  const headSrc = sourceFactsOf(head);
+function surfaceDelta(baseSrc, headSrc, vectors) {
   const srcBase = mergeFacts(baseSrc, (f) => f.domains);
   const srcHead = mergeFacts(headSrc, (f) => f.domains);
-  const { baseFacts, headFacts } = vectors;
-  const known = new Set([...srcBase, ...baseFacts.domains]);
-  const suitesBase = new Set([...mergeFacts(baseSrc, (f) => f.suites), ...baseFacts.suites]);
-  const suitesHead = new Set([...mergeFacts(headSrc, (f) => f.suites), ...headFacts.suites]);
+  const srcSuitesBase = mergeFacts(baseSrc, (f) => f.suites);
+  const srcSuitesHead = mergeFacts(headSrc, (f) => f.suites);
+  const base = vectors.baseFacts;
+  const head = vectors.headFacts;
   const primitivesBase = mergeFacts(baseSrc, (f) => f.primitives);
   const primitivesHead = mergeFacts(headSrc, (f) => f.primitives);
-  const allHead = new Set([...srcHead, ...headFacts.domains]);
+  const suitesHeadAll = new Set([...srcSuitesHead, ...head.all.suites]);
   return {
     domains: {
-      new: [...allHead].filter((d) => !domainKnown(d, known)).toSorted(),
+      new: grown(srcBase, srcHead, layers(base, "domains"), layers(head, "domains"), domainKnown),
       srcAdded: setDiff(srcHead, srcBase),
       srcRemoved: setDiff(srcBase, srcHead),
-      vectorAdded: setDiff(headFacts.domains, baseFacts.domains),
-      vectorRemoved: setDiff(baseFacts.domains, headFacts.domains),
+      vectorAdded: setDiff(head.all.domains, base.all.domains),
+      vectorRemoved: setDiff(base.all.domains, head.all.domains),
     },
     shapes: {
-      added: setDiff(headFacts.shapes, baseFacts.shapes),
-      removed: setDiff(baseFacts.shapes, headFacts.shapes),
+      added: setDiff(head.accepted.shapes, base.accepted.shapes),
+      removed: setDiff(base.accepted.shapes, head.accepted.shapes),
     },
     fieldOrders: {
-      added: setDiff(headFacts.fieldOrders, baseFacts.fieldOrders),
-      removed: setDiff(baseFacts.fieldOrders, headFacts.fieldOrders),
+      added: grown([], [], layers(base, "fieldOrders"), layers(head, "fieldOrders")),
+      removed: setDiff(base.all.fieldOrders, head.all.fieldOrders),
     },
-    suites: { added: setDiff(suitesHead, suitesBase), removed: setDiff(suitesBase, suitesHead) },
+    suites: {
+      added: grown(srcSuitesBase, srcSuitesHead, layers(base, "suites"), layers(head, "suites")),
+      removed: setDiff(new Set([...srcSuitesBase, ...base.all.suites]), suitesHeadAll),
+    },
     primitives: {
       added: setDiff(primitivesHead, primitivesBase),
       removed: setDiff(primitivesBase, primitivesHead),
@@ -739,30 +788,6 @@ function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
     out.push(
       `${vectors.unexplained.length} surviving vector(s) changed bytes without referencing removed material`,
     );
-  }
-  return out;
-}
-
-/**
- * Members a SUPPORTED_* set lost that a removed negative names: a leaf whose
- * key words all appear in the constant's name (`layout_version` in
- * SUPPORTED_META_LAYOUT_VERSIONS) and whose value is a removed member.
- */
-function removedSupportedMembers(value, supported) {
-  const out = [];
-  for (const s of supported.filter((x) => x.shrinks)) {
-    const words = s.name
-      .replace(/^SUPPORTED_/, "")
-      .toLowerCase()
-      .split("_");
-    const nameWords = new Set(words.map((w) => w.replace(/s$/, "")));
-    const gone = new Set(s.removedMembers);
-    for (const [path, leaf] of leaves(value)) {
-      const keyWords = (path.split(".").at(-1) ?? "").replace(/\[\d+\]$/, "").split("_");
-      if (keyWords.every((w) => nameWords.has(w)) && gone.has(String(leaf))) {
-        out.push(`${s.name} member ${leaf}`);
-      }
-    }
   }
   return out;
 }
@@ -793,9 +818,6 @@ function classify(files, vectors, surface, runtimeDependencyChange) {
     reasons.R2.push(`${s.name} changed without only shrinking: ${s.before} → ${s.after}`);
   }
   const shrank = supported.some((s) => s.shrinks);
-  for (const negative of vectors.removedNegatives) {
-    negative.retiredBy.push(...removedSupportedMembers(negative.value, supported));
-  }
   const kept = vectors.removedNegatives.filter((n) => n.retiredBy.length === 0);
   if (kept.length > 0) {
     reasons.R2.push(
@@ -837,8 +859,14 @@ export function analyze(base, head, runtimeForm = () => undefined) {
   const files = classifyFiles(base, head, runtimeForm);
   const runtimeDependencyChange =
     runtimeDependencies(base.get("package.json")) !== runtimeDependencies(head.get("package.json"));
-  const vectors = vectorDelta(base, head);
-  const surface = surfaceDelta(base, head, vectors);
+  const baseSrc = sourceFactsOf(base);
+  const headSrc = sourceFactsOf(head);
+  const vectors = vectorDelta(
+    base,
+    head,
+    mergeFacts(headSrc, (f) => f.suites),
+  );
+  const surface = surfaceDelta(baseSrc, headSrc, vectors);
   return {
     ...classify(files, vectors, surface, runtimeDependencyChange),
     files,
