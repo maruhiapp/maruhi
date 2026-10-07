@@ -27,6 +27,12 @@
 //       verifyLeaseDistribution (a future head is refused outright,
 //       no re-sync — since the chain is bundled, there is no honest
 //       explanation of "my chain is just old")
+//   (5) Manifest / checkpoint-consistency verification — also inside
+//       verifyLeaseDistribution
+//   (6) Lease authorization — requireLeaseGrant, right after (1) and
+//       (2): some active grant on the verified chain names the
+//       environment (server-disclosure.ts's derivation), or the lease
+//       is refused before any lease wrap is opened
 //
 // No floor is used: the workload is a floorless first-sync class
 // (§14.3-3), and its main mitigation is the anchor of (2).
@@ -54,9 +60,11 @@ import type { RepositoryAnchor } from "./anchor.ts";
 import { checkRepositoryAnchor } from "./anchor.ts";
 import { verifyChainSnapshot, type VerifiedProject } from "./chain-sync.ts";
 import { requireChainEnvironment } from "./deks.ts";
+import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
+import { serverDisclosures, serverKeysDisclosing } from "./server-disclosure.ts";
 import type { PulledWire, VerifiedPulledValue } from "./values-verify.ts";
 import { verifyLeaseDistribution } from "./values.ts";
 
@@ -245,7 +253,31 @@ const unwrapLeases = Effect.fn("lease-client.unwrapLeases")(function* (input: {
 });
 
 /**
- * Verifies a lease response end to end (CRYPTO_SPEC §9.1 duties (1)–(4)) and
+ * The lease authorization check (§9.1 verification obligation (6)): the
+ * verified chain must carry an active grant whose scope names the leased
+ * environment. A union over the active grants — a project may hold one grant
+ * per server key (mirrors — §9.2), and the workload cannot authenticate which
+ * key served it. The lease policy is not evaluated here (the server enforces
+ * it; claims_digest binds the workload identity — §9.1). Without an anchor
+ * this is defense in depth only: a server can serve an older prefix in which
+ * the grant was still active (the workload is floorless — §14.3-3).
+ */
+function requireLeaseGrant(
+  verified: VerifiedProject,
+  environmentId: string,
+): Effect.Effect<void, CliError> {
+  if (serverKeysDisclosing(serverDisclosures(verified), environmentId).length > 0) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    cliError(
+      `The verified chain grants no server environment ${displayText(environmentId)} of project ${displayText(verified.projectId)} (no active grant_server names it — CRYPTO_SPEC §9.1 (6)). The lease was not used: no leased DEK was opened and no value was decrypted. Likely causes: the grant was revoked or never covered this environment (a project owner grants it with \`maruhi server grant\`), or the server served a stale chain (pin a recent head with --anchor so a stale chain is refused)`,
+    ),
+  );
+}
+
+/**
+ * Verifies a lease response end to end (CRYPTO_SPEC §9.1 duties (1)–(6)) and
  * decrypts every latest value. Nothing in the response is trusted before it
  * passes: the chain is re-verified against the pre-pinned genesis, declared
  * coordinates are cross-checked against derived state, every statement and
@@ -290,10 +322,16 @@ export const verifyLeaseResponse = Effect.fn("lease-client.verifyLeaseResponse")
   if (input.anchor !== null) {
     yield* checkRepositoryAnchor({ anchor: input.anchor, verified });
   }
+  // A deleted or unknown environment is refused first (its own message —
+  // a deletion also prunes the id from every grant scope, §6.2)
+  const chainEnvironment = yield* requireChainEnvironment(verified, input.environmentId);
+  // (6) Lease authorization: an active grant on the verified chain names
+  // the environment — before any lease wrap is opened
+  yield* requireLeaseGrant(verified, input.environmentId);
   // Only the chain-derived value is used for the current epoch
   // (§6.2). The declared currentEpoch is checked only for agreement
   // with the derived value (declared values are not trusted)
-  const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
+  const chainEpoch = chainEnvironment.currentEpoch;
   if (response.currentEpoch !== chainEpoch) {
     return yield* Effect.fail(
       cliError(
