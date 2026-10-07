@@ -69,14 +69,20 @@ function sectionBody(spec: string, id: string): string {
   return after.split(/^#{2,4} /m)[0] ?? "";
 }
 
-function resolvesTo(spec: string, id: string): boolean {
-  if (HEADINGS[spec]!.has(id)) return true;
-  // A trailing `-k` is list item k inside the section in CRYPTO / AUDIT
-  // (§14.2-12): the section must exist and hold a `k. ` item
-  const item = /^(.+)-(\d+)$/.exec(id);
-  if (spec === "AUTH_SPEC" || item === null || !HEADINGS[spec]!.has(item[1]!)) return false;
-  return new RegExp(`^${item[2]}\\. `, "m").test(sectionBody(spec, item[1]!));
+/**
+ * A trailing `-k` is list item k inside the section in CRYPTO / AUDIT
+ * (§14.2-12): the section must exist and hold a `k. ` item. AUTH uses `-k`
+ * in its own headings (§12-5), so it never reaches here.
+ */
+function resolvesToListItem(spec: string, id: string): boolean {
+  const [, section = "", item = ""] = /^(.+)-(\d+)$/.exec(id) ?? [];
+  return (
+    HEADINGS[spec]!.has(section) && new RegExp(`^${item}\\. `, "m").test(sectionBody(spec, section))
+  );
 }
+
+const resolvesTo = (spec: string, id: string): boolean =>
+  HEADINGS[spec]!.has(id) || (spec !== "AUTH_SPEC" && resolvesToListItem(spec, id));
 
 describe("docs/REVIEWING.md tables", () => {
   it("(a) resolves every file cell in its column's directory", () => {
