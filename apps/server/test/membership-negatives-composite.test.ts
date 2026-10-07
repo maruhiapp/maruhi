@@ -63,8 +63,10 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   // Environment scope (2026-09-14 ES — CRYPTO_SPEC §6.2's
   // environment-targeted ops): since K3 (2026-09-15) the acceptance
   // surface returns 403 insufficient-scope first (AUTH_SPEC §12-3's
-  // judgment order — role 403 → scope 403 → existence 404 → semantics
-  // 422. Design record es-design.md §9 K3-C / K3-G). The consensus
+  // judgment order — role 403 → [the parent-head CAS 409 — these vectors
+  // are signed over the current head, so it passes] → scope 403 →
+  // existence 404 → semantics 422. Design record es-design.md §9 K3-C /
+  // K3-G; AUTH_SPEC §12-4 since 2026-10-07). The consensus
   // rule environment-out-of-scope (422) is pinned as defense in depth
   // by the crypto layer's 4-runtime tests. For a listed principal an
   // "uncreated environment" is also out of scope, so 403 precedes 404
@@ -96,10 +98,12 @@ const compositeExpectations: Readonly<Record<string, CompositeExpectation>> = {
   "authz-rotate-out-of-device-scope": { status: 403, reason: "insufficient-scope" },
   "authz-create-env-by-listed-device": { status: 403, reason: "insufficient-scope" },
   // Environment deletion on the chain (2026-10-07 — CRYPTO_SPEC §6.2 /
-  // AUTH_SPEC §12-4). A rotate of a deleted environment meets the
-  // tombstoned row first (404, the same as any rotate of a deleted
-  // environment); for a listed principal the deletion pruned the id from
-  // its scope, so scope 403 stands first. Reusing a deleted id is the
+  // AUTH_SPEC §12-4). Signed over the current head, a rotate of a
+  // deleted environment passes the CAS and meets the tombstoned row (404,
+  // the same as any rotate of a deleted environment); for a listed
+  // principal the deletion pruned the id from its scope, so scope 403
+  // stands first. Signed over a pre-deletion head it is a 409
+  // (scope-authz.test.ts). Reusing a deleted id is the
   // consensus rule's duplicate-environment
   "authz-rotate-deleted-environment": { status: 404 },
   "authz-rotate-deleted-precedes-out-of-scope": { status: 403, reason: "insufficient-scope" },

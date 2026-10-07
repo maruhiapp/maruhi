@@ -86,19 +86,16 @@ export interface EnvironmentChainResultValue {
 /**
  * The shared front stage of a composite: uninitialized / membership /
  * role floor (all member — the §12-3 level for environment creation and
- * rotate_epoch) / the check of **environment ∈ scope** (§12-3 —
- * 2026-09-15 ES K3; rotate = the target environment, create = the new
- * environment_id. Since creation cannot carry a not-yet-existent id in
- * `listed`, only a scope = all principal passes — the same single
- * predicate satisfies the table's "scope = all" row), plus loading the
- * whole chain.
- * The acceptance surface's 403 stands first; the consensus rule
- * `environment-out-of-scope` (verifyChain's 422) remains as defense in
- * depth (design record es-design.md §9 K3-G).
+ * rotate_epoch), for the person and for the device the bundled entry's
+ * actor FP names, plus loading the whole chain. The **environment ∈
+ * scope** check is not here: it depends on the chain the entry is
+ * appended onto (a concurrent `delete_environment` prunes listed scopes —
+ * CRYPTO_SPEC §6.2), so it runs after the parent-head CAS
+ * (ensureCompositeScope — AUTH_SPEC §12-5's check-order rule: a request
+ * signed over a stale view is a 409).
  */
 const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposite")(function* (
   callerUserId: string,
-  environmentId: string,
   entryActorFingerprintHex: string,
   entrySeq: number,
   cache: StateCache,
@@ -109,14 +106,13 @@ const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposit
   // chain (§12-4 — a shape declaring the bundled entry itself as head is
   // not accepted)
   const { state, history } = yield* deriveStoredState(chain, cache);
-  const person = yield* requireRoleInScope(state, callerUserId, "member", environmentId);
-  // Second stage (design record §8 K3-1): re-judge member × environment
-  // ∈ effective scope under the effective permission of the device the
-  // bundled entry's actor FP names (no device trial needed — the entry
-  // names it). An FP that is not a valid device of the calling principal
-  // is rejected for the same reason as verifyChain's actor-key-mismatch
-  // (the acceptance surface's 403 standing ahead of verifyChain's 422 is
-  // unchanged)
+  const person = yield* requireRole(state, callerUserId, "member");
+  // Second stage (design record §8 K3-1): re-judge the role floor under
+  // the effective permission of the device the bundled entry's actor FP
+  // names (no device trial needed — the entry names it). An FP that is
+  // not a valid device of the calling principal is rejected for the same
+  // reason as verifyChain's actor-key-mismatch (the acceptance surface's
+  // 403 standing ahead of verifyChain's 422 is unchanged)
   const member = deviceOf(person, entryActorFingerprintHex);
   if (member === undefined) {
     return yield* rejectData({
@@ -125,8 +121,30 @@ const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposit
       reason: "actor-key-mismatch",
     });
   }
-  yield* ensureDevicePermission(member, "member", environmentId);
+  yield* ensureDevicePermission(member, "member");
   return { chain, state, history, member, projectId: chain.genesisHashHex };
+});
+
+/**
+ * The composite's **environment ∈ scope** check (§12-3 — 2026-09-15 ES
+ * K3; rotate = the target environment, create = the new environment_id.
+ * Since creation cannot carry a not-yet-existent id in `listed`, only a
+ * scope = all principal passes — the same single predicate satisfies the
+ * table's "scope = all" row), for the person and then for the signing
+ * device (design record §8 K3-1). Called after the parent-head CAS: the
+ * scope is judged on the chain the entry is appended onto. The
+ * acceptance surface's 403 stands ahead of verifyChain; the consensus
+ * rule `environment-out-of-scope` (422) remains as defense in depth
+ * (design record es-design.md §9 K3-G).
+ */
+const ensureCompositeScope = Effect.fn("composite-programs.ensureCompositeScope")(function* (
+  state: ChainState,
+  callerUserId: string,
+  member: MemberWithDevice,
+  environmentId: string,
+) {
+  yield* requireRoleInScope(state, callerUserId, "member", environmentId);
+  yield* ensureDevicePermission(member, "member", environmentId);
 });
 
 /**
@@ -375,7 +393,6 @@ export const createEnvironmentCompositeProgram = Effect.fn(
 ) {
   const { chain, state, history, member, projectId } = yield* loadChainForComposite(
     actor.userId,
-    input.entry.payload.environmentId,
     input.entry.actor.keyFingerprintHex,
     input.entry.seq,
     cache,
@@ -388,6 +405,7 @@ export const createEnvironmentCompositeProgram = Effect.fn(
   // section)
   yield* ensureStorageAdmitsGrowth;
   yield* ensureParentHead(chain, input.parentHeadHashHex);
+  yield* ensureCompositeScope(state, actor.userId, member, input.entry.payload.environmentId);
   // The composite-internal declared head (§12-4): the bundled
   // statement's and manifest's declared heads match the pre-append
   // current head (= the bundled entry's prev) exactly. Since the CAS has
@@ -566,13 +584,8 @@ export const rotateEpochCompositeProgram = Effect.fn(
   },
   cache: StateCache,
 ) {
-  // scope is judged on the URL-coordinate environment (a mismatch
-  // between URL and entry is rejected by the composite-internal
-  // consistency check right after — the accepted combinations are the
-  // same whichever side judges)
   const { chain, state, member, projectId } = yield* loadChainForComposite(
     actor.userId,
-    environmentId,
     input.entry.actor.keyFingerprintHex,
     input.entry.seq,
     cache,
@@ -584,11 +597,22 @@ export const rotateEpochCompositeProgram = Effect.fn(
   if (input.entry.payload.environmentId !== environmentId) {
     return yield* rejectData({ kind: "payload-mismatch", field: "environmentId" });
   }
-  // A rotate to a deleted (tombstone) environment is a 404 (§12-4 —
-  // §7's "all environments" does not include deleted ones; do not
-  // silently accept and advance an epoch nothing is left to protect)
-  yield* requireActiveEnvironment(environmentId);
+  // The environment's existence and scope depend on the chain the entry
+  // is appended onto (a concurrent delete_environment deletes the
+  // environment and prunes listed scopes — CRYPTO_SPEC §6.2), so they are
+  // judged after the parent-head CAS (§12-5's check-order rule): a rotate
+  // signed over a view from before the deletion is a 409, and the client
+  // sees the deletion on its re-synced chain
   yield* ensureParentHead(chain, input.parentHeadHashHex);
+  // Scope (403) then existence (404) — the §12-3 order (design record §9
+  // K3-C: a listed principal's scope cannot hold an uncreated or deleted
+  // id). Scope is judged on the URL-coordinate environment, which the
+  // consistency check above tied to the entry's. A rotate to a deleted
+  // environment is a 404 (§12-4 — §7's "all environments" does not include
+  // deleted ones; do not silently accept and advance an epoch nothing is
+  // left to protect)
+  yield* ensureCompositeScope(state, actor.userId, member, environmentId);
+  yield* requireActiveEnvironment(environmentId);
   // The composite-internal declared-head (§12-4) and epoch (=
   // new_epoch) consistency checks. On a retry after a head CAS failure,
   // both the entry and the manifest are re-signed

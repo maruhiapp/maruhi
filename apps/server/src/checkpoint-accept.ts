@@ -24,9 +24,10 @@
 //   consensus rule's checkpoint-audit-role-insufficient (422)
 //   (session-27 §13-5 permission matrix (c))
 // - Every tuple's environment ∈ the caller's scope (AUTH_SPEC §12-3 —
-//   2026-09-15 ES K3): 403 insufficient-scope right after the role axis.
-//   Precedes the consensus rule environment-out-of-scope (422) (defense in
-//   depth on the same state)
+//   2026-09-15 ES K3): 403 insufficient-scope after the parent-head CAS
+//   (a concurrent delete_environment prunes listed scopes, so a stale view
+//   is a 409 — AUTH_SPEC §16-2, 2026-10-07). Precedes the consensus rule
+//   environment-out-of-scope (422) (defense in depth on the same state)
 
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
@@ -191,14 +192,7 @@ export const standaloneCheckpointProgram = Effect.fn(
   if (entry.payload.auditHeadHashHex !== "") {
     yield* requireRole(state, callerUserId, "admin");
   }
-  // §12-3: every tuple's environment ∈ the caller's scope (403
-  // insufficient-scope — right after the role axis, before CAS /
-  // verifyChain. The consensus rule `environment-out-of-scope`'s 422
-  // remains as defense in depth — design record es-design.md §9 K3-G)
-  for (const tuple of entry.payload.environments) {
-    yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
-  }
-  // Stage 2 (design record §8 K3-1): repeat the same check with the
+  // Stage 2 (design record §8 K3-1): repeat the role check with the
   // effective permission of the device the entry's actor FP names (an FP
   // that is not one of the caller's valid devices is
   // actor-key-mismatch)
@@ -211,10 +205,18 @@ export const standaloneCheckpointProgram = Effect.fn(
     });
   }
   yield* ensureDevicePermission(device, entry.payload.auditHeadHashHex === "" ? "reader" : "admin");
+  yield* ensureParentHead(chain, parentHeadHashHex);
+  // §12-3: every tuple's environment ∈ the caller's scope, then the
+  // signing device's (403 insufficient-scope — before verifyChain; the
+  // consensus rule `environment-out-of-scope`'s 422 remains as defense in
+  // depth — design record es-design.md §9 K3-G). After the CAS: a
+  // concurrent delete_environment prunes listed scopes (CRYPTO_SPEC §6.2),
+  // so the scope depends on the chain the entry is appended onto, and a
+  // checkpoint signed over a stale view is a 409 (§12-5's check-order rule)
   for (const tuple of entry.payload.environments) {
+    yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
     yield* ensureDevicePermission(device, "reader", tuple.environmentId);
   }
-  yield* ensureParentHead(chain, parentHeadHashHex);
   // The 4 acceptance steps (size → capacity → verifyChain = §6.2's
   // consensus rules) are shared with the other paths
   const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
