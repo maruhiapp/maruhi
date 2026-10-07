@@ -160,6 +160,8 @@ export function canonicalSource(src) {
 // Facts extracted from packages/crypto/src
 
 const SUITE_LITERAL = /^maruhi\/v\d+$/;
+/** An `op:` / `op?:` / `inner_op:` declaration (the ChainOperation union). */
+const OP_DECLARATION = /(?:^|[^\w$])(?:inner_)?op\??:$/;
 const DOMAIN_LITERAL = /^maruhi\/v\d+\/[a-z0-9][a-z0-9/-]*$/;
 // WebCrypto algorithm names a primitive change would introduce
 const ALGORITHM_LITERAL =
@@ -196,7 +198,7 @@ export function sourceFacts(src) {
   const suites = new Set();
   const primitives = new Set();
   const caseLabels = new Set();
-  let opRun = false; // the previous token was a string declared as an `op`
+  let opRun = false; // inside an `op:` declaration's union
   for (const [i, { t, v }] of tokens.entries()) {
     if (t === "str") {
       const text = v.slice(1, -1);
@@ -211,13 +213,14 @@ export function sourceFacts(src) {
         after?.t === "code" &&
         after.v.startsWith(":");
       const isOp =
-        before?.t === "code" &&
-        (/(?:^|[^\w$])(?:inner_)?op\??:$/.test(before.v) || (opRun && before.v === "|"));
+        before?.t === "code" && (OP_DECLARATION.test(before.v) || (opRun && before.v === "|"));
       if (isCase || isOp) caseLabels.add(text);
       opRun = isOp;
       continue;
     }
-    if (t !== "code" || v !== "|") opRun = false;
+    // An `op:` declaration starts a run and a `|` continues it, so a union
+    // wrapped with a leading pipe (`op:\n  | "a"\n  | "b"`) is read too
+    opRun = t === "code" && (v === "|" ? opRun : OP_DECLARATION.test(v));
     if (t === "tpl") {
       const m = /^`\$\{[^}]*\}\/([a-z0-9][a-z0-9/-]*)(\$\{)?/.exec(v);
       if (m !== null) domains.add(`<suite>/${m[1]}${m[2] === undefined ? "" : "*"}`);

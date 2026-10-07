@@ -547,10 +547,15 @@ describe("chain ops (signed bytes led by the bare suite)", () => {
     expect([...facts.caseLabels].toSorted()).toEqual(["approve", "genesis", "withdraw"]);
   });
 
-  it("reads the ops a type declares under `op:` / `inner_op:`, union members included", () => {
+  it("reads the ops a type declares under `op:` / `inner_op:`, union members included (a leading pipe too)", () => {
     const facts = sourceFacts(`type Operation =
   | { readonly op: "genesis"; readonly payload: G }
   | { readonly op?: "approve" | "withdraw"; readonly inner_op: "propose" };
+type Wrapped = {
+  readonly op:
+    | "revoke"
+    | "transfer";
+};
 const role: Role = "admin" | "member";
 const x = { stop: "not-an-op", op: "rotate_epoch" };
 `);
@@ -558,7 +563,9 @@ const x = { stop: "not-an-op", op: "rotate_epoch" };
       "approve",
       "genesis",
       "propose",
+      "revoke",
       "rotate_epoch",
+      "transfer",
       "withdraw",
     ]);
   });
