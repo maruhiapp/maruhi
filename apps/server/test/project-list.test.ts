@@ -36,7 +36,7 @@ import {
   STRANGER,
 } from "./support/data-fixture.ts";
 import { fixture, registerDataScenario, token } from "./support/data-scenario.ts";
-import { resetProjectDo } from "./support/project-do.ts";
+import { callProjectDo, resetProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -269,7 +269,7 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
       // log it; the direct call on the instance pins which one fires
       // (the stored row's decode, at the inserted seq)
       await expect(
-        runInDurableObject(stub, (instance) => instance.memberRoleFor(OWNER)),
+        callProjectDo(broken, (instance) => instance.memberRoleFor(OWNER)),
       ).rejects.toMatchObject({ _tag: "ChainInvalid", seq: 1, reason: "invalid-payload" });
       // The same rejection on a site with no recovery stays a defect
       // (Effect.orDie): 500, as before RpcCallError — the chain get

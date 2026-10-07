@@ -705,8 +705,9 @@ interface RotateCompositeInput {
 /**
  * Assemble the body of a composite rotation request (§12-4): rotate_epoch
  * entry (with the new epoch's commitment) + wrap set + manifest + boundary
- * checkpoint. Exported for tests that hand the same body to the DO method
- * directly.
+ * checkpoint. Exported for tests that hand an equivalent body to the DO
+ * method directly (a second call signs the entry and checkpoint afresh, so
+ * the body matches the sent one in content, not byte for byte).
  */
 export async function rotateCompositeBody(fixture: DataFixture, input: RotateCompositeInput) {
   const actorUserId = input.actorUserId ?? MEMBER;
