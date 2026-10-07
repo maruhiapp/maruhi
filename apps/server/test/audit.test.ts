@@ -13,6 +13,7 @@ import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:te
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
+import { dataEvent } from "../src/data/data-plane.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {
@@ -559,6 +560,17 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
         ]),
       ).toThrow("the env.renamed payload is not the AUDIT_SPEC §3 shape");
       expect(maxSeq()).toBe(before);
+    });
+  });
+
+  it("a user actor's dek.deleted carries no payload: the cause-naming one is the system's cleanup (§3.3)", () => {
+    const actor = { userId: OWNER };
+    const fields = { event: "dek.deleted", environmentId: "env-1", epoch: 1 } as const;
+    expect(dataEvent(actor, 1, fields).payload).toBeUndefined();
+    dataEvent(actor, 1, {
+      ...fields,
+      // @ts-expect-error -- the re-add cleanup payload is written by the system actor only
+      payload: { cause: "member-readded", triggerChainSeq: 2 },
     });
   });
 

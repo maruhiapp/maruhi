@@ -1104,7 +1104,17 @@ type DataEventName = Exclude<
   | "rotation.proposal_expired"
 >;
 
-/** A data event's name, payload and columns — a discriminated union on the name (the payload is the event's own — audit-payloads.ts). */
+/**
+ * The payload a user actor writes for a data event: the event's own
+ * (audit-payloads.ts), except `dek.deleted`, whose cause-naming payload is
+ * the system actor's cleanup on a member's re-add (chain-accept.ts) — a
+ * user's deletion (the §12-6 repair path) writes none.
+ */
+type UserActorPayload<E extends DataEventName> = E extends "dek.deleted"
+  ? { readonly event: E; readonly payload?: never }
+  : Extract<ProjectAuditEventPayload, { readonly event: E }>;
+
+/** A data event's name, payload and columns — a discriminated union on the name. */
 export type DataEventFields = {
   readonly [E in DataEventName]: Pick<
     AuditEventColumns,
@@ -1116,7 +1126,7 @@ export type DataEventFields = {
     | "targetKeyFingerprintHex"
     | "actorKeyFingerprintHex"
   > &
-    Extract<ProjectAuditEventPayload, { readonly event: E }>;
+    UserActorPayload<E>;
 }[DataEventName];
 
 /**
