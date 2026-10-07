@@ -698,6 +698,18 @@ const runKeyed = (vectors) =>
 const runPair = (base, head) =>
   analyze(chainSnapshot(CHAIN_SRC, base), chainSnapshot(CHAIN_SRC, head), runtimeForm);
 
+const OLD_PUB = "aa".repeat(32);
+const NEW_PUB = "bb".repeat(32);
+
+/** chainVectors() plus a signer key in `extra_keys` and a vector carrying it. */
+function signedWithKey(signer, pub) {
+  return {
+    ...chainVectors(),
+    extra_keys: { [signer]: { sig_pub_hex: pub } },
+    vectors: [{ name: "signed-by-ghost", verify_key_hex: pub, signature_hex: pub.repeat(2) }],
+  };
+}
+
 describe("keyed fixture maps", () => {
   it("gives each member of a listed map its own fixture id", () => {
     const result = runKeyed(keyedVectors());
@@ -757,10 +769,43 @@ describe("keyed fixture maps", () => {
     expect(result.risk).toBe("R3");
   });
 
-  it("keeps the coarse identity when a listed key is not a map of records", () => {
+  it("splits a listed map's records and keeps its non-object members as one entry", () => {
     const base = { ...chainVectors(), keys: { count: 1, owner: { sig_pub_hex: "aa".repeat(32) } } };
     const head = structuredClone(base);
     head.keys.owner.sig_pub_hex = "bb".repeat(32);
-    expect(runPair(base, head).vectors.changed.map((c) => c.id)).toEqual(["chain.json › keys"]);
+    head.keys.count = 2;
+    expect(runPair(base, head).vectors.changed.map((c) => c.id)).toEqual([
+      "chain.json › keys › owner",
+      "chain.json › keys",
+    ]);
+  });
+
+  it("R3: an in-place re-key plus a scalar sibling is not explained as rebased", () => {
+    // A scalar member added beside the records must not flip the split
+    // (every base member "removed", handing their hex to markRebased)
+    const base = signedWithKey("ghost", OLD_PUB);
+    const head = signedWithKey("ghost", NEW_PUB);
+    head.extra_keys.format = "hex";
+    const result = runPair(base, head);
+    expect(result.vectors.removed).toEqual([]);
+    expect(result.vectors.rebased).toEqual([]);
+    expect(result.vectors.unexplained.map((c) => c.id)).toEqual([
+      "chain.json › extra_keys › ghost",
+      "chain.json › vectors › signed-by-ghost",
+    ]);
+    expect(result.risk).toBe("R3");
+  });
+
+  it("R3: renaming a listed member while re-keying it explains nothing", () => {
+    const base = signedWithKey("ghost", OLD_PUB);
+    const head = signedWithKey("ghost-2", NEW_PUB);
+    const result = runPair(base, head);
+    expect(result.vectors.removed).toEqual(["chain.json › extra_keys › ghost"]);
+    expect(result.vectors.added).toEqual(["chain.json › extra_keys › ghost-2"]);
+    expect(result.vectors.rebased).toEqual([]);
+    expect(result.vectors.unexplained.map((c) => c.id)).toEqual([
+      "chain.json › vectors › signed-by-ghost",
+    ]);
+    expect(result.risk).toBe("R3");
   });
 });
