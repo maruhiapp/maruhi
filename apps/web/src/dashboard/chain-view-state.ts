@@ -256,10 +256,12 @@ export function scopeIdsWithout(scope: Scope, environmentId: string): ReadonlyAr
 
 /**
  * Folds the reported scope into a readable shape (defense against a
- * hostile server): an unreadable shape folds to "listed" + empty and
- * is emitted as "not reported". The member record itself is not
- * dropped (even when add_member's scope is unreadable, a membership
- * interval is a membership interval)
+ * hostile server): an unreadable shape folds to "listed" + empty, which
+ * the overview renders as "no environments" — the same row a scope
+ * emptied by delete_environment gets, so the two are indistinguishable
+ * on screen. The member record itself is not dropped (even when
+ * add_member's scope is unreadable, a membership interval is a
+ * membership interval)
  */
 export function reportedScope(payload: Scope): Scope {
   return readableScope(payload) ? payload : { scopeKind: "listed", scopeEnvironmentIds: [] };

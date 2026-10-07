@@ -1,7 +1,7 @@
-// Drift test of the four-eyes tally (issue #13): the web fold's copy
-// (`signersOf` / `countedVoters` in chain-view-proposals.ts) against
-// crypto's one definition (`approvalSignersOf` / `ownerVotersOf` —
-// CRYPTO_SPEC §6.2 principle 2).
+// Drift tests of the web display fold against crypto. The four-eyes
+// tally (issue #13): the fold's copy (`signersOf` / `countedVoters` in
+// chain-view-proposals.ts) against crypto's one definition
+// (`approvalSignersOf` / `ownerVotersOf` — CRYPTO_SPEC §6.2 principle 2).
 //
 // The web bundle may not contain crypto code (ADR-0018 — the
 // `@maruhi/crypto` tripwire in endpoints.test.ts scans apps/web/src
@@ -19,8 +19,10 @@
 // extended chain), plus chains built here for the shapes the vectors
 // leave out (a pending proposal holding two or more counted votes, a
 // vote lost to a demotion or a device revocation and cast again, a
-// proposal signed from an owner's admin-capped device, an ambiguous
-// vote from one of several fingerprint-unbound owner-capped devices).
+// revoked device's vote revived by re-registering its key — two live
+// votes of one user, counted once — a proposal signed from an owner's
+// admin-capped device, an ambiguous vote from one of several
+// fingerprint-unbound owner-capped devices).
 //
 // Structural difference with the same result: crypto's signer set takes
 // the proposer's vote when the proposing device's **effective** role
@@ -38,6 +40,13 @@
 // attribute (K5-2). Crypto knows the signing device exactly. So the web
 // may show fewer voters than crypto (fail-closed), never more; the last
 // two cases pin that direction on valid chains.
+//
+// Members and servers (issue #15): the same prefixes (now of every
+// positive chain vector) compare the fold's members (role, scope, each
+// device's cap and added seq, and every fingerprint the fold bound) and
+// servers (fingerprint, scope, grant seq) with crypto's verified state,
+// plus a built chain whose delete_environment empties a member scope, a
+// device cap and a grant. The one skip is documented at `membershipAt`.
 
 import {
   approvalSignersOf,
@@ -45,6 +54,8 @@ import {
   type ChainEntry as VerifiedChainEntry,
   type ChainOperation,
   computeChainEntryHash,
+  computeDekCommitment,
+  computeServerKeyFingerprint,
   computeUserKeyFingerprint,
   encodeHex,
   exportEncryptionPublicKey,
@@ -92,6 +103,28 @@ async function talliesAt(entries: ReadonlyArray<VerifiedChainEntry>): Promise<Ta
     view.proposals.map((p) => [p.proposalHashHex, [...p.voterUserIds].toSorted()]),
   );
   return { crypto, web };
+}
+
+/**
+ * The positive chain vectors: the canonical chain and each extended
+ * chain on its canonical prefix. An extended chain's prefixes up to its
+ * base_seq are canonical prefixes, so `fromLength` skips them (compared
+ * once, with the canonical chain).
+ */
+function vectorChains(): ReadonlyArray<{
+  name: string;
+  entries: ReadonlyArray<VerifiedChainEntry>;
+  fromLength: number;
+}> {
+  const canonical = vectorEntries.map(toTypedEntry);
+  return [
+    { name: "canonical", entries: canonical, fromLength: 1 },
+    ...Object.entries(vectorExtendedChains).map(([name, extended]) => ({
+      name,
+      entries: [...canonical.slice(0, extended.base_seq), ...extended.entries.map(toTypedEntry)],
+      fromLength: extended.base_seq + 1,
+    })),
+  ];
 }
 
 /** Counts of what a comparison saw (guards against a vacuous pass). */
@@ -218,9 +251,10 @@ const approveOp = (proposalHashHex: string): ChainOperation => ({
 /**
  * Required 3 among four owners: an approver demoted (the vote stops
  * counting); a vote cast from an approver's second device, that device
- * revoked (the vote dies) and the vote cast again from the first
- * device; quorum reached by the remaining owners; and a second proposal
- * left pending with two counted votes.
+ * revoked (the vote dies), the vote cast again from the first device,
+ * and the revoked key re-registered (the first vote revives — two live
+ * votes of one user); quorum reached by the remaining owners; and a
+ * second proposal left pending with two counted votes.
  */
 async function demotionAndRevocationChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
   const [o, o2, a, b, b2, c, m, n] = await Promise.all(
@@ -243,6 +277,10 @@ async function demotionAndRevocationChain(): Promise<ReadonlyArray<VerifiedChain
   await chain.append(b2!, approveOp(removeM));
   await chain.append(b!, revokeDeviceOp(b!.actor.userId, b2!));
   await chain.append(b!, approveOp(removeM));
+  // Re-registering the revoked key revives its vote (revocation is not
+  // monotonic — §6.2), so the signer set now holds two live votes of
+  // user_b: both tallies must still count that user once
+  await chain.append(b!, addDeviceOp(b2!, "owner"));
   await chain.append(c!, approveOp(removeM));
   await chain.append(o!, addMemberOp(n!, "member"));
   // An owner proposing from an admin-capped device: crypto's signer set
@@ -281,23 +319,12 @@ async function ambiguousOwnerCappedChain(): Promise<ReadonlyArray<VerifiedChainE
 describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
   it("agrees at every prefix of every positive chain vector that carries a proposal", async () => {
     const coverage: Coverage = { pointsWithPending: 0, pendingCompared: 0, multiVoterTallies: 0 };
-    const canonical = vectorEntries.map(toTypedEntry);
-    // An extended chain's prefixes up to its base_seq are canonical
-    // prefixes (compared once, with the canonical chain)
-    const chains = [
-      { name: "canonical", entries: canonical, fromLength: 1 },
-      ...Object.entries(vectorExtendedChains).map(([name, extended]) => ({
-        name,
-        entries: [...canonical.slice(0, extended.base_seq), ...extended.entries.map(toTypedEntry)],
-        fromLength: extended.base_seq + 1,
-      })),
-    ];
-    for (const chain of chains) {
+    for (const chain of vectorChains()) {
       if (!chain.entries.some((entry) => entry.op === "propose")) continue;
       await expectAgreementAtEveryPrefix(chain.name, chain.entries, coverage, chain.fromLength);
     }
-    expect(coverage.pointsWithPending).toBeGreaterThanOrEqual(100);
-    expect(coverage.pendingCompared).toBeGreaterThanOrEqual(120);
+    expect(coverage.pointsWithPending).toBeGreaterThanOrEqual(105);
+    expect(coverage.pendingCompared).toBeGreaterThanOrEqual(125);
   }, 60_000);
 
   it("agrees at every prefix of built chains with multi-vote pending proposals, lost and recast votes, and second-device votes", async () => {
@@ -315,7 +342,7 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
     // The vectors hold no pending proposal with two or more counted
     // votes (their proposals run under a required-2 policy, so a second
     // counted vote applies them); these chains supply them
-    expect(coverage.multiVoterTallies).toBeGreaterThanOrEqual(8);
+    expect(coverage.multiVoterTallies).toBeGreaterThanOrEqual(9);
   }, 60_000);
 
   describe("the intentional difference: the web shows fewer voters than crypto, never more, when an unbound vote's device cannot be told apart (K5-2)", () => {
@@ -378,4 +405,255 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
       expect(web[removeM]).toEqual(["user_o"]);
     }, 60_000);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Members and servers (issue #15 — the fold's scopes against crypto's
+// verified state, including delete_environment's pruning)
+// ---------------------------------------------------------------------------
+
+/** A scope in one comparable string (`all`, or the sorted listed ids). */
+function scopeKey(kind: "all" | "listed", ids: ReadonlyArray<string>): string {
+  return kind === "all" ? "all" : `listed:${ids.toSorted().join(",")}`;
+}
+
+/** A device row in comparable form, keyed by its public keys (the wire carries no FP — K5-1). */
+interface DeviceRow {
+  key: string;
+  fingerprint: string | null;
+  cap: string;
+  addedSeq: number;
+}
+
+/** A member row in comparable form; `devices` is null where the comparison skips it. */
+interface MemberRow {
+  userId: string;
+  role: string;
+  scope: string;
+  devices: ReadonlyArray<DeviceRow> | null;
+}
+
+interface ServerRow {
+  fingerprint: string;
+  scope: string;
+  sinceSeq: number;
+}
+
+const byKey = (a: DeviceRow, b: DeviceRow) => a.key.localeCompare(b.key);
+const byUser = (a: MemberRow, b: MemberRow) => a.userId.localeCompare(b.userId);
+const byServer = (a: ServerRow, b: ServerRow) => a.fingerprint.localeCompare(b.fingerprint);
+
+/**
+ * Both sides' members and servers at one prefix, in comparable form.
+ *
+ * Intentional difference: a member with unresolved revocations (the
+ * reported bytes said how many fingerprint-less devices were revoked
+ * but not which — K5-1) keeps the revoked rows on the web, and the UI
+ * says so; crypto knows exactly which ones are gone. Their device rows
+ * are not compared (the vectors reach this from seq 35 of
+ * device-recovered and of the chains that share that prefix — device-ops,
+ * reader-second-device, proposer-device-revoked). Their role and scope
+ * are still compared. A web device whose fingerprint is still unbound is compared by
+ * key only (its fingerprint is null on the web by construction).
+ */
+async function membershipAt(entries: ReadonlyArray<VerifiedChainEntry>) {
+  const state = unwrapResult(await verifyChain(entries), "verifyChain");
+  const view = deriveReportedView(entries as ReadonlyArray<ChainEntry>, state.headHashHex);
+  const webFingerprints = new Map<string, string | null>();
+  const unresolved = new Set<string>();
+  const web: MemberRow[] = view.members.map((member) => {
+    if (member.unresolvedRevocations > 0) unresolved.add(member.userId);
+    const devices = member.devices.map((device) => {
+      const key = `${member.userId}:${device.encPubHex}:${device.sigPubHex}`;
+      webFingerprints.set(key, device.keyFingerprintHex);
+      return {
+        key,
+        fingerprint: device.keyFingerprintHex,
+        cap: `${device.roleCap}/${scopeKey(device.scopeKind, device.scopeEnvironmentIds)}`,
+        addedSeq: device.addedSeq,
+      };
+    });
+    return {
+      userId: member.userId,
+      role: member.role,
+      scope: scopeKey(member.scopeKind, member.scopeEnvironmentIds),
+      devices: member.unresolvedRevocations > 0 ? null : devices.toSorted(byKey),
+    };
+  });
+  const crypto: MemberRow[] = [...state.members.values()].map((member) => {
+    const devices = [...member.devices.values()].map((device) => {
+      const key = `${member.userId}:${device.encPubHex}:${device.sigPubHex}`;
+      return {
+        key,
+        fingerprint: webFingerprints.get(key) === null ? null : device.keyFingerprintHex,
+        cap: `${device.roleCap}/${scopeKey(device.scope.kind, device.scope.kind === "all" ? [] : device.scope.environmentIds)}`,
+        addedSeq: device.addedSeq,
+      };
+    });
+    return {
+      userId: member.userId,
+      role: member.role,
+      scope: scopeKey(
+        member.scope.kind,
+        member.scope.kind === "all" ? [] : member.scope.environmentIds,
+      ),
+      devices: unresolved.has(member.userId) ? null : devices.toSorted(byKey),
+    };
+  });
+  const webServers: ServerRow[] = view.servers.map((server) => ({
+    fingerprint: server.keyFingerprintHex,
+    scope: scopeKey("listed", server.scopeEnvironmentIds),
+    sinceSeq: server.sinceSeq,
+  }));
+  const cryptoServers: ServerRow[] = [...state.serverGrants.values()].map((grant) => ({
+    fingerprint: grant.serverKeyFingerprintHex,
+    scope: scopeKey("listed", grant.scopeEnvironmentIds),
+    sinceSeq: grant.grantSeq,
+  }));
+  return {
+    web: { members: web.toSorted(byUser), servers: webServers.toSorted(byServer) },
+    crypto: { members: crypto.toSorted(byUser), servers: cryptoServers.toSorted(byServer) },
+    skippedDevices: unresolved.size,
+  };
+}
+
+/** Counts of what the membership comparison saw (guards against a vacuous pass). */
+interface MembershipCoverage {
+  points: number;
+  listedScopes: number;
+  skippedDevices: number;
+}
+
+async function expectMembershipAgreementAtEveryPrefix(
+  name: string,
+  entries: ReadonlyArray<VerifiedChainEntry>,
+  coverage: MembershipCoverage,
+  fromLength = 1,
+): Promise<void> {
+  for (let length = fromLength; length <= entries.length; length += 1) {
+    const { web, crypto, skippedDevices } = await membershipAt(entries.slice(0, length));
+    expect(web, `${name} @ seq ${length}`).toEqual(crypto);
+    coverage.points += 1;
+    coverage.listedScopes += crypto.members.filter((m) => m.scope !== "all").length;
+    coverage.skippedDevices += skippedDevices;
+  }
+}
+
+/**
+ * An environment deleted while it is named by: a listed member whose
+ * only environment it is (the scope empties), a listed admin's scope
+ * next to another environment, a listed device cap of that admin, an
+ * owner's listed device cap, and two server grants (one emptied).
+ */
+async function deletionChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, o2, a, a2, l] = await Promise.all(
+    ["user_o", "user_o", "user_a", "user_a", "user_l"].map(makeKey),
+  );
+  const chain = new ChainBuilder();
+  const projectId = await chain.append(o!, genesisOp(o!));
+  for (const environmentId of ["dev", "prod"]) {
+    const dekCommitmentHex = unwrapResult(
+      await computeDekCommitment({
+        context: { suite: SUITE_ID, projectId, environmentId, epoch: 1 },
+        dek: new Uint8Array(32).fill(7),
+      }),
+      "computeDekCommitment",
+    );
+    await chain.append(o!, {
+      op: "create_environment",
+      payload: { environmentId, dekCommitmentHex },
+    });
+  }
+  const listed = (ids: string[]) => ({ scopeKind: "listed" as const, scopeEnvironmentIds: ids });
+  await chain.append(o!, {
+    op: "add_member",
+    payload: {
+      targetUserId: l!.actor.userId,
+      encPubHex: l!.encPubHex,
+      sigPubHex: l!.sigPubHex,
+      role: "member",
+      ...listed(["dev"]),
+    },
+  });
+  await chain.append(o!, {
+    op: "add_member",
+    payload: {
+      targetUserId: a!.actor.userId,
+      encPubHex: a!.encPubHex,
+      sigPubHex: a!.sigPubHex,
+      role: "admin",
+      ...listed(["dev", "prod"]),
+    },
+  });
+  await chain.append(a!, {
+    op: "add_device",
+    payload: {
+      encPubHex: a2!.encPubHex,
+      sigPubHex: a2!.sigPubHex,
+      roleCap: "member",
+      ...listed(["dev"]),
+    },
+  });
+  await chain.append(o!, {
+    op: "add_device",
+    payload: {
+      encPubHex: o2!.encPubHex,
+      sigPubHex: o2!.sigPubHex,
+      roleCap: "owner",
+      ...listed(["dev", "prod"]),
+    },
+  });
+  for (const ids of [["dev"], ["dev", "prod"]]) {
+    const server = await generateEncryptionKeyPair();
+    const serverEncPub = await exportEncryptionPublicKey(server.publicKey);
+    const fingerprint = unwrapResult(
+      await computeServerKeyFingerprint(serverEncPub),
+      "computeServerKeyFingerprint",
+    );
+    await chain.append(o!, {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex: encodeHex(serverEncPub),
+        serverKeyFingerprintHex: testKeyFingerprintHex(encodeHex(fingerprint)),
+        scopeEnvironmentIds: ids,
+        leasePolicy: [],
+      },
+    });
+  }
+  await chain.append(o!, { op: "delete_environment", payload: { environmentId: "dev" } });
+  return chain.entries;
+}
+
+describe("members and servers drift (web fold vs crypto verifyChain)", () => {
+  it("agrees on roles, scopes, device caps and server scopes at every prefix of every positive chain vector", async () => {
+    const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
+    for (const chain of vectorChains()) {
+      await expectMembershipAgreementAtEveryPrefix(
+        chain.name,
+        chain.entries,
+        coverage,
+        chain.fromLength,
+      );
+    }
+    expect(coverage.points).toBeGreaterThanOrEqual(200);
+    expect(coverage.listedScopes).toBeGreaterThanOrEqual(450);
+    // The documented skip is exercised, and stays the exception
+    expect(coverage.skippedDevices).toBeGreaterThanOrEqual(1);
+    expect(coverage.skippedDevices).toBeLessThan(coverage.points / 10);
+  }, 60_000);
+
+  it("agrees at every prefix of a built chain deleting an environment named by member scopes, device caps and server grants", async () => {
+    const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
+    const entries = await deletionChain();
+    await expectMembershipAgreementAtEveryPrefix("deletion", entries, coverage);
+    // The deletion emptied a member scope, a device cap and a grant
+    const { crypto } = await membershipAt(entries);
+    expect(crypto.members.map((m) => m.scope)).toContain("listed:");
+    expect(crypto.members.flatMap((m) => m.devices ?? []).map((d) => d.cap)).toContain(
+      "member/listed:",
+    );
+    expect(crypto.servers.map((s) => s.scope)).toEqual(
+      expect.arrayContaining(["listed:", "listed:prod"]),
+    );
+  }, 60_000);
 });

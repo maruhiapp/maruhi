@@ -97,7 +97,7 @@ function deviceChipLabel(device: ReportedDevice): string {
 /** The chip's description (the full FP, cap, and adding seq — for hover / assistive tech). */
 function deviceChipDescription(device: ReportedDevice): string {
   const fp = device.keyFingerprintHex ?? FINGERPRINT_NOT_REPORTED;
-  return `${fp} · cap ${describeCap(device)} · since seq ${device.addedSeq}`;
+  return `${fp} · cap ${describeCap(device)} · added at seq ${device.addedSeq}`;
 }
 
 /** The chip of one device (shortened FP + bound. The full FP and cap go in the description). */

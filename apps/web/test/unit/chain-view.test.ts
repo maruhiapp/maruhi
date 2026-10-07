@@ -929,7 +929,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     expect(view.members.map((m) => m.userId)).toEqual(["user_owner"]);
   });
 
-  it("folds an unreadable member/server scope as not-reported instead of crashing the render", () => {
+  it("folds an unreadable member/server scope as listed and empty instead of crashing the render", () => {
     const badScope = {
       ...base(),
       op: "add_member",
