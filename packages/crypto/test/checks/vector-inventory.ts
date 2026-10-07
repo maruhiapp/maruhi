@@ -939,6 +939,8 @@ const KEYED_COLLECTIONS: readonly {
       "policy-narrowed",
       "policy-required-3",
       "policy-off",
+      "proposal-grant-server-applied",
+      "proposal-revoke-server-applied",
       "device-added",
       "device-dead-vote",
       "device-revote-applied",

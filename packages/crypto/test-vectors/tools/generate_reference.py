@@ -3218,6 +3218,58 @@ def gen_chain_entries():
         "a propose after the policy is off is invalid (approval-not-required)",
         chain="policy-off",
     )
+    # (11) Applied server-grant proposals (2026-10-07 — convention 32):
+    #      grant_server and revoke_server each applied through a proposal
+    #      that reaches quorum. Head 24 has no active grant (seq 9's grant
+    #      was revoked at seq 12) and its policy targets grant_server but
+    #      not revoke_server, so widening the policy to revoke_server is
+    #      itself a four-eyes application (policy monotonicity (a))
+    REVOKE_POLICY_OPS = ["change_role", "grant_server", "remove_member", "revoke_server",
+                         "set_approval_policy"]
+    revoke_server_payload = {"server_key_fingerprint_hex": server["fp_hex"]}
+    grant_applied = extend(24, head24, [
+        ("propose", owner_id, propose_payload("grant_server", grant_payload, EXPIRES), T24),  # 25: votes [0001]
+    ])
+    p25g = grant_applied[0]
+    grant_applied += extend(25, p25g["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p25g), t0 + 25000),                    # 26: applies — grant active
+    ])
+    extended_chains["proposal-grant-server-applied"] = chain_doc(
+        "owner-0001 proposes grant_server (seq 25 — the seq-9 server key "
+        "with scope {prod, dev} and the canonical lease policy; the "
+        "proposer's vote is 1) and owner-0014's approve (seq 26) reaches "
+        "quorum 2, so the inner grant_server applies at seq 26: the grant "
+        "is active with grant_seq 26 (the applying approve's seq — §6.2's "
+        "'applies at this approve entry's seq' and the grant_chain_seq "
+        "source of AUDIT_SPEC §3.5)",
+        24, grant_applied, members_24, canonical_policy, {},
+        expected_environments=base_environments,
+        expected_server_grants=[grant_state(grant_scope, grant_lease_policy, 26)],
+    )
+    revoke_applied = list(grant_applied) + extend(26, grant_applied[-1]["entry_hash_hex"], [
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(REVOKE_POLICY_OPS, 2), EXPIRES), t0 + 26000),  # 27
+    ])
+    p27r = revoke_applied[-1]
+    revoke_applied += extend(27, p27r["entry_hash_hex"], [
+        ("approve", owner3_id, approve_of(p27r), t0 + 27000),                    # 28: applies — revoke_server targeted
+        ("propose", owner_id, propose_payload("revoke_server", revoke_server_payload, EXPIRES), t0 + 28000),  # 29
+    ])
+    p29r = revoke_applied[-1]
+    revoke_applied += extend(29, p29r["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(p29r), t0 + 29000),                    # 30: applies — grant gone
+    ])
+    extended_chains["proposal-revoke-server-applied"] = chain_doc(
+        "Continues proposal-grant-server-applied (the grant is active from "
+        "seq 26): the policy is widened to target revoke_server via "
+        "proposal (seq 27 by owner-0001 → applied by owner-0015's approve "
+        "at seq 28), then owner-0001 proposes revoke_server for the active "
+        "grant (seq 29) and owner-0014's approve (seq 30) reaches quorum 2, "
+        "so the inner revoke_server applies at seq 30: no grant stays "
+        "active (§7's rotation duty starts at seq 30)",
+        24, revoke_applied, members_24, policy_state(REVOKE_POLICY_OPS, 2), {},
+        expected_environments=base_environments,
+        expected_server_grants=[],
+    )
 
     # --- The permissive side (valid_appends). Cases with a chain
     #     specifier attach to the tail of that derived chain ---

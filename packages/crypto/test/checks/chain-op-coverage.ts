@@ -76,20 +76,12 @@ const FOUR_EYES_TARGET_OPS: Record<ApprovalTargetOp, true> = {
 
 /**
  * Four-eyes target ops with no applied-proposal positive vector yet, each with
- * its justification. Shrinks only: adding the missing vector makes the entry
- * stale (a failure) until it is removed here.
+ * its justification. Empty: every target op is covered (grant_server and
+ * revoke_server by the derived chains proposal-grant-server-applied /
+ * proposal-revoke-server-applied). A future gap must be listed here with a
+ * justification; an entry the vectors already cover fails as stale.
  */
-const APPLIED_PROPOSAL_GAPS: Readonly<Partial<Record<ApprovalTargetOp, string>>> = {
-  grant_server:
-    "the only grant_server proposal is the valid append propose-grant-server-by-owner, which " +
-    "stays pending (no vector approves it). Covering it needs a new vector that approves it " +
-    "to quorum — vector generation, out of scope for the coverage test",
-  revoke_server:
-    "no vector proposes revoke_server: canonical seq 12 revokes directly before any policy, " +
-    "the seq-20 policy does not target it, and no grant stays active after seq 12. Covering " +
-    "it needs a new extended chain (grant, policy naming revoke_server, propose, approve) — " +
-    "vector generation, out of scope for the coverage test",
-};
+const APPLIED_PROPOSAL_GAPS: Readonly<Partial<Record<ApprovalTargetOp, string>>> = {};
 
 /** Typed keys of an exhaustive record (Object.keys widens to string[]). */
 function keysOf<K extends string>(record: Readonly<Record<K, true>>): readonly K[] {
