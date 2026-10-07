@@ -66,12 +66,12 @@ import {
   ALL_SCOPE,
   type EnvironmentSet,
   MAX_SCOPE_ENVIRONMENTS,
-  type MemberScope,
   memberScopeOf,
   scopeAsEnvironmentSet,
   scopeContainsEnvironmentSet,
   scopeIncludesEnvironment,
   scopeShapeOk,
+  scopeWithout,
   symmetricDifferenceEnvironmentSets,
   unionEnvironmentSets,
 } from "./member-scope.ts";
@@ -1451,17 +1451,6 @@ function applyCreateEnvironment(
   });
 }
 
-/** A scope without the deleted environment (a `listed` scope stays `listed`, possibly empty; `all` is unchanged). */
-function scopeWithout(scope: MemberScope, environmentId: string): MemberScope {
-  if (scope.kind === "all" || !scope.environmentIds.includes(environmentId)) {
-    return scope;
-  }
-  return {
-    kind: "listed",
-    environmentIds: scope.environmentIds.filter((id) => id !== environmentId),
-  };
-}
-
 /**
  * delete_environment (§6.2 — 2026-10-07): the environment stays in the set
  * with its deletion seq (the id is never reusable), and the id leaves every
@@ -1878,11 +1867,13 @@ const HISTORY_RECORDERS: {
     history.recordTenureEnd(operation.payload.targetUserId, seq),
   create_environment: (history: ChainHistoryBuilder, operation, seq) =>
     history.recordEnvironmentCreated(operation.payload.environmentId, seq),
-  // A deletion changes no interval the history index serves (past epochs and
-  // past (role, scope) intervals stay as they were — §6.2); consumers read
-  // deletion from the state's deletedAtSeq and refuse the environment
-  // wholesale (§6.3 "Chain-deleted environments")
-  delete_environment: () => undefined,
+  // The deletion is a change point like change_role (§6.2): every member
+  // span and device cap the deletion pruned gets a new interval from this
+  // seq, the environment carries its deletion seq, and its latest-checkpoint
+  // baseline is dropped — so the index agrees with the state at every seq.
+  // Past intervals stay as they were
+  delete_environment: (history: ChainHistoryBuilder, operation, seq) =>
+    history.recordEnvironmentDeleted(operation.payload.environmentId, seq),
   rotate_epoch: (history: ChainHistoryBuilder, operation, seq) =>
     history.recordEpochRotated(operation.payload.environmentId, operation.payload.newEpoch, seq),
   checkpoint: (history: ChainHistoryBuilder, operation, seq) =>

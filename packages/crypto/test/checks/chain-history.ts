@@ -4,7 +4,13 @@
 // member/environment state as of the declared head (inclusive), and tenure
 // separation.
 
-import type { ChainEntry, ChainHistoryIndex, MemberStateAtSeq } from "../../src/index.ts";
+import type {
+  ChainEntry,
+  ChainHistoryIndex,
+  ChainState,
+  MemberScope,
+  MemberStateAtSeq,
+} from "../../src/index.ts";
 import { soleDeviceOf, verifyChainWithHistory } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
 import {
@@ -13,6 +19,7 @@ import {
   vectorEntries,
   vectorExtendedChains,
   vectorKeys,
+  vectorValidAppends,
 } from "./chain-vector.ts";
 import { type CheckResult, Checks } from "./support.ts";
 
@@ -456,6 +463,136 @@ function effectivePermissionChecks(c: Checks, history: ChainHistoryIndex): void 
   );
 }
 
+const STAGE = "env-stage-0003";
+
+function sameScope(a: MemberScope | undefined, b: MemberScope): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The index agrees with the verified state at the head: every current
+ * member's (role, scope), every active device's cap, each environment's
+ * deletion seq, and the latest-checkpoint baselines (the invariant a
+ * delete_environment's pruning must keep — §6.2).
+ */
+function agreesWithState(history: ChainHistoryIndex, state: ChainState): boolean {
+  const head = history.headSeq;
+  const members = [...state.members.values()].every((member) => {
+    const atHead = history.memberStateAt(member.userId, head);
+    return (
+      atHead !== undefined &&
+      atHead.role === member.role &&
+      sameScope(atHead.scope, member.scope) &&
+      [...member.devices.values()].every((device) =>
+        sameScope(atHead.devices.get(device.keyFingerprintHex)?.scope, device.scope),
+      )
+    );
+  });
+  const environments = [...state.environments].every(
+    ([environmentId, environment]) =>
+      history.environmentStateAt(environmentId, head)?.deletedAtSeq === environment.deletedAtSeq &&
+      (history.latestCheckpointFor(environmentId) === undefined) ===
+        !state.checkpoints.has(environmentId),
+  );
+  return members && environments;
+}
+
+/** The listed ids of a scope (null for `all` or an absent scope). */
+function listedIds(scope: MemberScope | undefined): readonly string[] | null {
+  return scope?.kind === "listed" ? scope.environmentIds : null;
+}
+
+/** Verifies an extended chain (plus optional appended entries) with its history; throws on failure. */
+async function verifiedExtended(
+  name: string,
+  appended: readonly ChainEntry[] = [],
+): Promise<{ readonly history: ChainHistoryIndex; readonly state: ChainState }> {
+  const extended = vectorExtendedChains[name];
+  if (extended === undefined) {
+    throw new Error(`extended chain ${name} missing`);
+  }
+  const result = await verifyChainWithHistory([
+    ...typedEntries.slice(0, extended.base_seq),
+    ...extended.entries.map((entry) => toTypedEntry(entry)),
+    ...appended,
+  ]);
+  if (!result.ok) {
+    throw new Error(`extended chain ${name} failed verification`);
+  }
+  return result.value;
+}
+
+/**
+ * delete_environment as a change point (§6.2 — 2026-10-07) on a member
+ * scope: on environment-deleted (canonical prefix up to 19, then
+ * user-devadmin-0011 deletes env-stage-0003 at seq 20) the listed scope is
+ * pruned from the deletion's own seq (inclusive), the earlier interval is
+ * unchanged, and an `all` scope gets no new interval.
+ */
+async function memberPruneChecks(c: Checks): Promise<void> {
+  const { history, state } = await verifiedExtended("environment-deleted");
+  const before = listedIds(history.memberStateAt(DEV_MEMBER, 19)?.scope);
+  const at = listedIds(history.memberStateAt(DEV_MEMBER, 20)?.scope);
+  c.push(
+    "history deletion: a listed scope holds the environment before the deletion seq",
+    before?.includes(STAGE) === true,
+  );
+  c.push(
+    "history deletion: a listed scope is pruned from the deletion seq (inclusive)",
+    JSON.stringify(at) === JSON.stringify(before?.filter((id) => id !== STAGE)),
+  );
+  c.push(
+    "history deletion: the role is kept across the pruning",
+    history.memberStateAt(DEV_MEMBER, 20)?.role === history.memberStateAt(DEV_MEMBER, 19)?.role,
+  );
+  c.push(
+    "history deletion: an `all` scope is not pruned",
+    history.memberStateAt(OWNER, 20)?.scope.kind === "all",
+  );
+  c.push(
+    "history deletion: the environment is deleted from the deletion seq on",
+    history.environmentStateAt(STAGE, 19)?.deletedAtSeq === null &&
+      history.environmentStateAt(STAGE, 20)?.deletedAtSeq === 20,
+  );
+  c.push(
+    "history deletion: the index agrees with the state at the head",
+    agreesWithState(history, state),
+  );
+}
+
+/**
+ * The same on a device cap: delete-environment-prunes-device-scope appends
+ * admin-0003's deletion of env-stage-0003 (seq 30) onto device-added
+ * (canonical 24 + seq 25-29), pruning CI box C's cap (member, listed{dev,
+ * stage} — added at 27).
+ */
+async function devicePruneChecks(c: Checks): Promise<void> {
+  const append = vectorValidAppends.find(
+    (candidate) => candidate.name === "delete-environment-prunes-device-scope",
+  );
+  if (append === undefined) {
+    c.push("history deletion: device-pruning vector present", false);
+    return;
+  }
+  const { history, state } = await verifiedExtended("device-added", [toTypedEntry(append.entry)]);
+  const cibox = deviceKey("user-allmember-0013@ci-box");
+  const before = history.deviceStateAt(ALL_MEMBER, cibox.fp, 29);
+  const at = history.deviceStateAt(ALL_MEMBER, cibox.fp, 30);
+  c.push(
+    "history deletion: a device cap holds the environment before the deletion seq",
+    listedIds(before?.device.scope)?.includes(STAGE) === true,
+  );
+  c.push(
+    "history deletion: a device cap and its effective scope are pruned from the deletion seq",
+    listedIds(at?.device.scope)?.includes(STAGE) === false &&
+      listedIds(at?.permission.scope)?.includes(STAGE) === false,
+  );
+  c.push(
+    "history deletion: the device-pruning index agrees with the state at the head",
+    agreesWithState(history, state),
+  );
+}
+
 export async function chainHistoryChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const history = await canonicalHistory();
@@ -480,5 +617,7 @@ export async function chainHistoryChecks(): Promise<CheckResult[]> {
   const deviceOps = await extendedVectorChainHistory("device-ops");
   deviceIntervalChecks(c, deviceOps);
   effectivePermissionChecks(c, deviceOps);
+  await memberPruneChecks(c);
+  await devicePruneChecks(c);
   return c.results;
 }
