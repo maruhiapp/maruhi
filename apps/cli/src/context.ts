@@ -20,7 +20,7 @@ import {
 import { resyncExtended, syncProject, type VerifiedProject } from "./chain-sync.ts";
 import type { CliConfig } from "./config.ts";
 import { ConfigStore, loadCliConfig } from "./config.ts";
-import { type DekRecipient, refuseChainDeletedEnvironment } from "./deks.ts";
+import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
 import { cliError, type CliError, evidenceError, usageError } from "./errors.ts";
@@ -46,7 +46,7 @@ import type { ProxyAcceptStore } from "./proxy.package/index.ts";
 import type { SqlRunner } from "./rotate-connector.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
-import { requireEnvironmentInScope } from "./scope.ts";
+import { refuseChainDeletedEnvironment, requireEnvironmentInScope } from "./scope.ts";
 import {
   type CliSession,
   loadMasterKeys,

@@ -18,15 +18,23 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
+import { requireWritingMember } from "../src/dek-wrap.ts";
 import { environmentKeysFor } from "../src/deks.ts";
 import { scopeChangesOf } from "../src/member-change-role.ts";
-import { environmentsOfScopeAt, sameScope, scopeChangeAt, scopeContains } from "../src/scope.ts";
+import {
+  environmentsOfScopeAt,
+  requireEnvironmentInScope,
+  sameScope,
+  scopeChangeAt,
+  scopeContains,
+} from "../src/scope.ts";
 import {
   addScopedMemberOp,
   buildChain,
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   genesisOp,
   makeTestUser,
   removeMemberOp,
@@ -208,4 +216,56 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
     expect(change.widened).toEqual(["env-prod"]);
     expect(change.narrowed).toEqual([]);
   });
+});
+
+describe("the scope gates refuse a chain-deleted environment first (§6.2)", () => {
+  // delete_environment prunes the id from every listed scope, so a scope
+  // judgment run first would tell a listed member to "widen" their scope to
+  // an environment that can no longer be scoped. Both gates every path goes
+  // through (reads, checkpoints, var rotate, epoch rotation) refuse the
+  // deletion before judging scope.
+  let view: VerifiedProject;
+  beforeAll(async () => {
+    const dek = new Uint8Array(32);
+    view = await verify(
+      await buildChain([
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
+        { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+        { actor: owner, operation: deleteEnvironmentOp("env-dev") },
+      ]),
+    );
+  });
+
+  for (const who of ["listed member", "all-scope owner"] as const) {
+    it(`requireEnvironmentInScope reports the deletion (${who})`, async () => {
+      const user = who === "listed member" ? dev : owner;
+      const exit = await Effect.runPromiseExit(
+        requireEnvironmentInScope({
+          verified: view,
+          userId: user.userId,
+          environmentId: "env-dev",
+          operation: "pull values from",
+        }),
+      );
+      expect(JSON.stringify(exit)).toContain("is deleted (delete_environment at chain seq 4)");
+      expect(JSON.stringify(exit)).not.toContain("outside your environment scope");
+    });
+
+    it(`requireWritingMember reports the deletion (${who})`, async () => {
+      const user = who === "listed member" ? dev : owner;
+      const exit = await Effect.runPromiseExit(
+        requireWritingMember({
+          verified: view,
+          environmentId: "env-dev",
+          signerUserId: user.userId,
+          signingKeyPair: user.sigKeyPair,
+          operation: "rotate the epoch",
+          forbidden: "forbidden",
+        }),
+      );
+      expect(JSON.stringify(exit)).toContain("is deleted (delete_environment at chain seq 4)");
+      expect(JSON.stringify(exit)).not.toContain("outside your environment scope");
+    });
+  }
 });

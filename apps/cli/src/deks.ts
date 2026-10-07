@@ -37,7 +37,7 @@ import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { describeScope, outOfScopeMessage } from "./scope.ts";
+import { deletedEnvironmentMessage, describeScope, outOfScopeMessage } from "./scope.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
 export interface DekRecipient {
@@ -161,26 +161,6 @@ export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet
     }
   }
   return deleted;
-}
-
-/** The refusal for operating on an environment the verified chain shows as deleted (§6.3 "Chain-deleted environments"). */
-export function deletedEnvironmentMessage(environmentId: string, deletedAtSeq: number): string {
-  return `Environment ${displayText(environmentId)} is deleted (delete_environment at chain seq ${deletedAtSeq}). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused`;
-}
-
-/**
- * Refuses an environment the verified chain shows as deleted, before any
- * request about it (§6.3 "Chain-deleted environments"). An environment the
- * chain does not know is left to each path's own existence check.
- */
-export function refuseChainDeletedEnvironment(
-  verified: VerifiedProject,
-  environmentId: string,
-): Effect.Effect<void, CliError> {
-  const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
-  return deletedAtSeq === null
-    ? Effect.void
-    : Effect.fail(cliError(deletedEnvironmentMessage(environmentId, deletedAtSeq)));
 }
 
 /**

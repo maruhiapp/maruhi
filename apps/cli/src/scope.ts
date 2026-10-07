@@ -174,6 +174,26 @@ export function requireScopeEnvironmentsExist(
   return Effect.void;
 }
 
+/** The refusal for operating on an environment the verified chain shows as deleted (§6.3 "Chain-deleted environments"). */
+export function deletedEnvironmentMessage(environmentId: string, deletedAtSeq: number): string {
+  return `Environment ${displayText(environmentId)} is deleted (delete_environment at chain seq ${deletedAtSeq}). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused`;
+}
+
+/**
+ * Refuses an environment the verified chain shows as deleted, before any
+ * request about it (§6.3 "Chain-deleted environments"). An environment the
+ * chain does not know is left to each path's own existence check.
+ */
+export function refuseChainDeletedEnvironment(
+  verified: VerifiedProject,
+  environmentId: string,
+): Effect.Effect<void, CliError> {
+  const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
+  return deletedAtSeq === null
+    ? Effect.void
+    : Effect.fail(cliError(deletedEnvironmentMessage(environmentId, deletedAtSeq)));
+}
+
 /** The wording for when I point at an environment outside my scope (K4-C — does not wait for the server's 403). */
 export function outOfScopeMessage(input: {
   readonly member: ChainMember;
@@ -216,6 +236,13 @@ export function requireEnvironmentInScope(input: {
   const member = input.verified.state.members.get(input.userId);
   if (member === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
+  }
+  // A chain-deleted environment first: the deletion pruned it from every
+  // listed scope, so the scope judgment below would misreport it (§6.2)
+  const deletedAtSeq =
+    input.verified.state.environments.get(input.environmentId)?.deletedAtSeq ?? null;
+  if (deletedAtSeq !== null) {
+    return Effect.fail(cliError(deletedEnvironmentMessage(input.environmentId, deletedAtSeq)));
   }
   const scope =
     input.device === undefined ? member.scope : effectivePermissionOf(member, input.device).scope;

@@ -43,7 +43,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { outOfScopeMessage } from "./scope.ts";
+import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
 /**
  * A wrap recipient (recipient class — AUTH_SPEC §12-6). A member's
@@ -388,6 +388,9 @@ export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(f
       cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
     );
   }
+  // A chain-deleted environment first: the deletion pruned it from every
+  // listed scope, so the scope judgment below would misreport it (§6.2)
+  yield* refuseChainDeletedEnvironment(input.verified, input.environmentId);
   const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
   const permission = effectivePermissionOf(member, device);
   if (ROLE_RANK[permission.role] < minimumRank) {

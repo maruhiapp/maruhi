@@ -31,7 +31,6 @@ import { Effect, Stdio } from "effect";
 
 import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { deletedEnvironmentMessage } from "./deks.ts";
 import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
 import { displayText } from "./display.ts";
 import {
@@ -45,6 +44,7 @@ import { toCliError } from "./failure.ts";
 import { rejectIntentOnServerRejection } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { retryOnConflict } from "./retry.ts";
+import { deletedEnvironmentMessage } from "./scope.ts";
 
 const MAX_ATTEMPTS = 5;
 
