@@ -2,9 +2,11 @@
 // is disclosed to the server" while the verified chain carries an active
 // grant whose scope names an environment.
 //
-// The one derivation every surface reads: the prologue's Note (every
-// command that opens the project — context.ts), the `env list` column and
-// `project verify`'s grant lines. Chain-derived only: the active grants are
+// The one derivation every surface reads: the Note (every command that
+// opens the project — the prologue in context.ts, plus the views opened
+// outside it: `project export`, `mirror sync | status`, and the workload
+// lease of `ci run | sync | rotate` in ci-lease.ts), the `env list` column
+// and `project verify`'s grant lines. Chain-derived only: the active grants are
 // what §6.3 verification folded (a revoke_server removes one, a
 // delete_environment prunes its id from every scope), never the server's
 // report. No request is made.
@@ -56,9 +58,9 @@ function describeEnvironments(environmentIds: readonly string[]): string {
   return `${environmentIds.length === 1 ? "environment" : "environments"} ${environmentIds.map(displayText).join(", ")}`;
 }
 
-/** The prologue Note's text for one grant. */
-function describeServerDisclosure(disclosure: ServerDisclosure): string {
-  return `this project is disclosed to the server (CRYPTO_SPEC §9): server key ${disclosure.serverKeyFingerprintHex} can decrypt the values of ${describeEnvironments(disclosure.environmentIds)}`;
+/** The Note's text for one grant (names the project: a multi-project sweep prints one per project, and the ledger keeps identical lines once). */
+function describeServerDisclosure(projectId: string, disclosure: ServerDisclosure): string {
+  return `project ${displayText(projectId)} is disclosed to the server (CRYPTO_SPEC §9): server key ${disclosure.serverKeyFingerprintHex} can decrypt the values of ${describeEnvironments(disclosure.environmentIds)}`;
 }
 
 /** `project verify`'s row for one grant (fingerprint, scope, lease policy, grant seq). */
@@ -77,6 +79,6 @@ export const noteServerDisclosure = Effect.fn("server-disclosure.noteServerDiscl
   verified: VerifiedProject,
 ): Effect.fn.Return<void, never, CliIo> {
   for (const disclosure of serverDisclosures(verified)) {
-    yield* logNote(describeServerDisclosure(disclosure));
+    yield* logNote(describeServerDisclosure(verified.projectId, disclosure));
   }
 });

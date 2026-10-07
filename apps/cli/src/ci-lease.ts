@@ -40,6 +40,7 @@ import {
   readLeaseClaims,
   tokenExpiresAtMs,
 } from "./oidc-github.ts";
+import { noteServerDisclosure } from "./server-disclosure.ts";
 
 /** Input shared by the CI commands (all from explicit flags — session-25 §2). */
 export interface CiLeaseInput {
@@ -239,6 +240,9 @@ export const leaseEnvironmentsWithCredential = Effect.fn(
       anchor,
     });
     yield* logWarnings(material.warnings);
+    // §9's constant display on the workload side (ci run / ci sync / ci
+    // rotate): from the bundled chain this lease just verified
+    yield* noteServerDisclosure(material.verified);
     // Leave the verification success in the CI log (keep stdout free for
     // the child process's output — decision 9; stderr is the destination
     // for diagnostics and info)

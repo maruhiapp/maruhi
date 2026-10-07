@@ -37,7 +37,11 @@ import {
   showSchemaPolicyOp,
 } from "../project-schema-policy.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
-import { formatServerDisclosureRow, serverDisclosures } from "../server-disclosure.ts";
+import {
+  formatServerDisclosureRow,
+  noteServerDisclosure,
+  serverDisclosures,
+} from "../server-disclosure.ts";
 import { loadMasterKeys } from "../session.ts";
 import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposalInputOf, reportProposed } from "./shared.ts";
@@ -384,6 +388,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
         synced,
         syncProject(context.client, projectId),
       )).verified;
+      yield* noteServerDisclosure(verified);
       const result = yield* projectExportOp({
         client: context.client,
         projectId,

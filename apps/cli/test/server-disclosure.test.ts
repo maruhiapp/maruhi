@@ -16,10 +16,15 @@
 //  5. Chain-derived only: every input is the verified chain (the mocks serve
 //     no grant report — there is none to trust)
 
+import type { ProjectId } from "@maruhi/core";
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
+import { NoticeLedger } from "../src/notice.ts";
+import { noteServerDisclosure } from "../src/server-disclosure.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -149,8 +154,8 @@ async function startEnv(
   return env;
 }
 
-function disclosureNote(fingerprintHex: string, environments: string): string {
-  return `Note: this project is disclosed to the server (CRYPTO_SPEC §9): server key ${fingerprintHex} can decrypt the values of ${environments}`;
+function disclosureNote(projectId: string, fingerprintHex: string, environments: string): string {
+  return `Note: project ${projectId} is disclosed to the server (CRYPTO_SPEC §9): server key ${fingerprintHex} can decrypt the values of ${environments}`;
 }
 
 interface EnvListDocument {
@@ -162,9 +167,12 @@ interface EnvListDocument {
 
 describe("the prologue's server-disclosure Note (§9)", () => {
   it("is stated on a project-level command while a grant is active, on stderr only", async () => {
-    const env = await startEnv(await chainWith([await grantProd()]));
+    const built = await chainWith([await grantProd()]);
+    const env = await startEnv(built);
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
-    expect(env.errors).toContain(disclosureNote(serverFpHex, "environment env-prod"));
+    expect(env.errors).toContain(
+      disclosureNote(built.projectId, serverFpHex, "environment env-prod"),
+    );
     // stdout stays one JSON document
     expect(() => JSON.parse(env.logs.join("\n")) as unknown).not.toThrow();
     expect(env.logs.join("\n")).not.toContain("disclosed to the server");
@@ -202,22 +210,25 @@ describe("the prologue's server-disclosure Note (§9)", () => {
   });
 
   it("states each grant on its own line (a mirror's key is another server), fingerprint ascending", async () => {
-    const env = await startEnv(
-      await chainWith([
-        await grantProd(),
-        {
-          actor: owner,
-          operation: await grantServerOp(["env-prod", "env-dev"], [], MIRROR_ENC_PUB_HEX),
-        },
-      ]),
-    );
-    expect(await runCli(["member", "list"], env.layer)).toBe(0);
-    const lines = env.errors.filter((line) => line.includes("disclosed to the server"));
-    const expected = [
-      disclosureNote(serverFpHex, "environment env-prod"),
-      disclosureNote(mirrorFpHex, "environments env-dev, env-prod"),
-    ].toSorted((a, b) => (a < b ? -1 : 1));
-    expect(lines).toEqual(expected);
+    // Granted in both orders, so the output order cannot be the chain's
+    const mirrorGrant: ChainStep = {
+      actor: owner,
+      operation: await grantServerOp(["env-prod", "env-dev"], [], MIRROR_ENC_PUB_HEX),
+    };
+    for (const steps of [
+      [await grantProd(), mirrorGrant],
+      [mirrorGrant, await grantProd()],
+    ]) {
+      const built = await chainWith(steps);
+      const env = await startEnv(built);
+      expect(await runCli(["member", "list"], env.layer)).toBe(0);
+      const lines = env.errors.filter((line) => line.includes("disclosed to the server"));
+      const expected = [
+        disclosureNote(built.projectId, serverFpHex, "environment env-prod"),
+        disclosureNote(built.projectId, mirrorFpHex, "environments env-dev, env-prod"),
+      ].toSorted((a, b) => (a < b ? -1 : 1));
+      expect(lines).toEqual(expected);
+    }
   });
 
   it("is stated on pull of a granted environment, before its output", async () => {
@@ -243,7 +254,9 @@ describe("the prologue's server-disclosure Note (§9)", () => {
       defaultEnvironment: ENV_ID,
     });
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    expect(env.errors).toContain(disclosureNote(serverFpHex, `environment ${ENV_ID}`));
+    expect(env.errors).toContain(
+      disclosureNote(granted.projectId, serverFpHex, `environment ${ENV_ID}`),
+    );
     expect(env.logs.join("\n")).toContain("ALPHA");
   });
 
@@ -259,6 +272,41 @@ describe("the prologue's server-disclosure Note (§9)", () => {
     });
     expect(await runCli(["pull"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).not.toContain("disclosed to the server");
+  });
+});
+
+describe("the Note across projects in one run (§9)", () => {
+  it("names each project, so one run's ledger keeps one line per project with the same grant", async () => {
+    // Every project on a deployment is granted to the same server key, and
+    // environment IDs repeat across projects: without the project the two
+    // lines would be identical and the run's ledger would print one
+    const other = await makeTestUser("user-owner-2222");
+    const grant = await grantServerOp(["env-prod"], LEASE_POLICY, SERVER_ENC_PUB_HEX);
+    const first = await chainWith([{ actor: owner, operation: grant }]);
+    const second = await buildChain([
+      { actor: other, operation: genesisOp(other) },
+      { actor: other, operation: createEnvironmentOp("env-prod", dek()) },
+      { actor: other, operation: grant },
+    ]);
+    expect(second.projectId).not.toBe(first.projectId);
+    const env = await makeTestEnv();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        for (const built of [first, second]) {
+          const verified = yield* verifyChainSnapshot({
+            projectId: built.projectId as ProjectId,
+            entries: built.entries,
+            claimedHeadSeq: built.entries.length,
+            claimedHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+          });
+          yield* noteServerDisclosure(verified);
+        }
+      }).pipe(Effect.provideService(NoticeLedger, new Set<string>()), Effect.provide(env.layer)),
+    );
+    expect(env.errors).toEqual([
+      disclosureNote(first.projectId, serverFpHex, "environment env-prod"),
+      disclosureNote(second.projectId, serverFpHex, "environment env-prod"),
+    ]);
   });
 });
 
