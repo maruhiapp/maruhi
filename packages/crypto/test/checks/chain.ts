@@ -120,6 +120,8 @@ function environmentMatches(
   return (
     actual.currentEpoch === Number(expected.current_epoch) &&
     actual.createdAtSeq === expected.created_at_seq &&
+    // The canonical chain deletes no environment (§6.2 — 2026-10-07)
+    actual.deletedAtSeq === null &&
     seqsMatch &&
     commitmentsMatch
   );

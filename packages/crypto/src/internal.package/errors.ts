@@ -62,7 +62,12 @@ export type ChainInvalidReason =
   // revoking another person's device reuses scope-not-contained
   | "unknown-device"
   | "last-device-protected"
-  | "device-cap-exceeded";
+  | "device-cap-exceeded"
+  // Environment deletion on the chain (§6.2 — 2026-10-07). A second
+  // deletion, and any later entry naming a deleted environment (rotate /
+  // delete targets, checkpoint tuples, scope lists, grant scopes); reusing
+  // the id stays duplicate-environment
+  | "environment-deleted";
 
 /**
  * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /

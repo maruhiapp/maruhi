@@ -18,6 +18,7 @@
 // is the hex of the inner op's payload_bytes (2026-09-14).
 // add_device's scope is the same nested LP as member scope; revoke_device's
 // device_fingerprints is the hex of a nested LP of the FP list (2026-09-19 DK — §6.2).
+// delete_environment's payload is LP(environment_id) (2026-10-07 — §6.2).
 
 import { encodeHex } from "./bytes.ts";
 import type {
@@ -117,6 +118,11 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
     case "create_environment": {
       const p = operation.payload;
       return encodeLengthPrefixed([p.environmentId, p.dekCommitmentHex]);
+    }
+    // 2026-10-07 (§6.2): one field. Domain separation is the op name inside
+    // signed_bytes, like every chain op
+    case "delete_environment": {
+      return encodeLengthPrefixed([operation.payload.environmentId]);
     }
     case "rotate_epoch": {
       const p = operation.payload;

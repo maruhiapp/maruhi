@@ -140,6 +140,8 @@ interface VectorValidAppend {
   readonly expected_server_grants: readonly VectorServerGrant[];
   /** Latest checkpoint per environment after acceptance (valid appends of checkpoint only). */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
+  /** Deleted environments → the delete_environment seq (§6.2 — 2026-10-07; absent = none deleted). */
+  readonly expected_deleted_environments?: Readonly<Record<string, number>>;
   readonly note?: string;
 }
 
@@ -155,6 +157,10 @@ interface VectorExtendedChain {
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
   readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
+  /** Environment deletion chains (§6.2 — 2026-10-07): the environment set, deletions and grants after the chain. */
+  readonly expected_environments?: Readonly<Record<string, string>>;
+  readonly expected_deleted_environments?: Readonly<Record<string, number>>;
+  readonly expected_server_grants?: readonly VectorServerGrant[];
 }
 
 interface VectorEnvironmentState {
@@ -462,6 +468,10 @@ const OPERATION_DECODERS: Readonly<
       environmentId: str(payload, "environment_id"),
       dekCommitmentHex: str(payload, "dek_commitment_hex"),
     },
+  }),
+  delete_environment: (payload) => ({
+    op: "delete_environment",
+    payload: { environmentId: str(payload, "environment_id") },
   }),
   rotate_epoch: (payload) => ({
     op: "rotate_epoch",

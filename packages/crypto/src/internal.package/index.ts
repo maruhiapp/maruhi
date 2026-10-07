@@ -41,6 +41,7 @@ export {
   type CheckpointEnvironmentEntry,
   type CheckpointPayload,
   type CreateEnvironmentPayload,
+  type DeleteEnvironmentPayload,
   type EnvironmentChainState,
   type EnvironmentCheckpointState,
   type GenesisPayload,

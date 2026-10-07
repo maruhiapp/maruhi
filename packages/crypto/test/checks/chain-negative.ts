@@ -146,6 +146,22 @@ function payloadTamperVariants(): readonly TamperVariant[] {
     ),
     ...scopeAndApprovalTamperVariants(),
     ...deviceTamperVariants(),
+    ...deletionTamperVariants(),
+  ];
+}
+
+/** Payload-tampered variant for environment deletion (2026-10-07 — seq 20 of the derived chain environment-deleted). */
+function deletionTamperVariants(): readonly TamperVariant[] {
+  const chain = "environment-deleted";
+  const eDelete = extendedEntryOfOp(chain, 20, "delete_environment");
+  return [
+    // The deleted environment is signed (a server cannot redirect a deletion)
+    {
+      name: "delete-env-tampered-environment-id",
+      entry: { ...eDelete, payload: { environmentId: "env-dev-0002" } },
+      expect: "bad-signature",
+      chain,
+    },
   ];
 }
 
@@ -514,6 +530,11 @@ const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "propose-inner-payload-flat",
   "add-device-scope-flat-concat",
   "revoke-device-fp-flat-concat",
+  // 2026-10-07: a deletion's bytes relabeled as remove_member (same
+  // one-field payload — the op name is the domain separation) and under
+  // another suite (based on the derived chain environment-deleted)
+  "delete-env-op-confusion",
+  "delete-env-suite-mismatch",
 ];
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
@@ -632,7 +653,12 @@ async function extendedChainChecks(c: Checks): Promise<void> {
         membersMatch(result.value, extended.expected_members) &&
         checkpointsMatch(result.value, extended.expected_checkpoints) &&
         policyMatchesVector(result.value.approvalPolicy, extended.expected_policy) &&
-        pendingMatchesVector(result.value.pendingProposals, extended.expected_pending),
+        pendingMatchesVector(result.value.pendingProposals, extended.expected_pending) &&
+        (extended.expected_environments === undefined ||
+          environmentsMatch(result.value, extended.expected_environments)) &&
+        deletedEnvironmentsMatch(result.value, extended.expected_deleted_environments) &&
+        (extended.expected_server_grants === undefined ||
+          serverGrantsMatch(result.value, extended.expected_server_grants)),
     );
   }
 }
@@ -847,6 +873,27 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
   );
 }
 
+/**
+ * Whether the derived deletions match the expectation (environment_id →
+ * delete_environment seq — §6.2, 2026-10-07). An absent expectation means
+ * no environment is deleted.
+ */
+function deletedEnvironmentsMatch(
+  state: ChainState,
+  expected: Readonly<Record<string, number>> | undefined,
+): boolean {
+  const deleted = [...state.environments].filter(
+    ([, environment]) => environment.deletedAtSeq !== null,
+  );
+  const wanted = Object.entries(expected ?? {});
+  return (
+    deleted.length === wanted.length &&
+    wanted.every(
+      ([environmentId, seq]) => state.environments.get(environmentId)?.deletedAtSeq === seq,
+    )
+  );
+}
+
 /** Whether the derived active-grant set matches the expectation (including scope + lease_policy). */
 function serverGrantsMatch(
   state: ChainState,
@@ -871,6 +918,7 @@ async function validAppendVectorCheck(
     result.ok &&
       membersMatch(result.value, append.expected_members) &&
       environmentsMatch(result.value, append.expected_environments) &&
+      deletedEnvironmentsMatch(result.value, append.expected_deleted_environments) &&
       serverGrantsMatch(result.value, append.expected_server_grants) &&
       checkpointsMatch(result.value, append.expected_checkpoints) &&
       policyMatchesVector(result.value.approvalPolicy, append.expected_policy) &&

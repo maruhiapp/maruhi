@@ -13,7 +13,7 @@ export type Role = "owner" | "admin" | "member" | "reader";
 /**
  * Chain operation kind (CRYPTO_SPEC §6.2 — the 4 four-eyes ops added at
  * 2026-09-14 PF1, the 2 device-key ops `add_device` / `revoke_device` at
- * 2026-09-19 DK).
+ * 2026-09-19 DK, `delete_environment` at 2026-10-07).
  */
 export type ChainOp =
   | "genesis"
@@ -21,6 +21,7 @@ export type ChainOp =
   | "remove_member"
   | "change_role"
   | "create_environment"
+  | "delete_environment"
   | "rotate_epoch"
   | "grant_server"
   | "revoke_server"
@@ -119,6 +120,17 @@ export interface CreateEnvironmentPayload {
    * against an unwrapped DEK is the recipient's §5.2 duty.
    */
   readonly dekCommitmentHex: string;
+}
+
+/**
+ * `delete_environment` payload (CRYPTO_SPEC §6.2 — 2026-10-07): the deleted
+ * environment only. Admin or above with the environment in the actor's
+ * effective scope, only after its `create_environment` and at most once; no
+ * later entry may name it (`environment-deleted`). The chain is the authority
+ * for whether an environment is deleted — no off-chain statement records it.
+ */
+export interface DeleteEnvironmentPayload {
+  readonly environmentId: string;
 }
 
 export interface RotateEpochPayload {
@@ -313,6 +325,7 @@ export type ChainOperation =
   | { readonly op: "remove_member"; readonly payload: RemoveMemberPayload }
   | { readonly op: "change_role"; readonly payload: ChangeRolePayload }
   | { readonly op: "create_environment"; readonly payload: CreateEnvironmentPayload }
+  | { readonly op: "delete_environment"; readonly payload: DeleteEnvironmentPayload }
   | { readonly op: "rotate_epoch"; readonly payload: RotateEpochPayload }
   | { readonly op: "grant_server"; readonly payload: GrantServerPayload }
   | { readonly op: "revoke_server"; readonly payload: RevokeServerPayload }
@@ -419,15 +432,22 @@ export interface ServerGrant {
 
 /**
  * One environment derived from a verified chain (CRYPTO_SPEC §6.2 / §6.3):
- * its existence (`create_environment`), the current epoch, the seq at which
- * each epoch became current (§6.3's "valid interval of each epoch (start
- * seq)" — the input of §4.1 value verification), and the §5.2 DEK
- * commitment per epoch.
+ * its existence (`create_environment`), its deletion (`delete_environment`),
+ * the current epoch, the seq at which each epoch became current (§6.3's
+ * "valid interval of each epoch (start seq)" — the input of §4.1 value
+ * verification), and the §5.2 DEK commitment per epoch. A deleted
+ * environment stays in the set (its id is never reusable).
  */
 export interface EnvironmentChainState {
   readonly currentEpoch: number;
   /** Seq of the `create_environment` entry (= epoch 1's start seq). */
   readonly createdAtSeq: number;
+  /**
+   * Seq of the `delete_environment` entry, or null while the environment is
+   * live. The verified chain is the only authority for deletion (§6.2 /
+   * §6.3 "Chain-deleted environments").
+   */
+  readonly deletedAtSeq: number | null;
   /** epoch → seq of the entry that made it current (create / rotate). */
   readonly epochStartSeqs: ReadonlyMap<number, number>;
   /** epoch → dek_commitment_hex (CRYPTO_SPEC §5.2). */

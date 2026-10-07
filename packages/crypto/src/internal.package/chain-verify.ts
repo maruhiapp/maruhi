@@ -66,6 +66,7 @@ import {
   ALL_SCOPE,
   type EnvironmentSet,
   MAX_SCOPE_ENVIRONMENTS,
+  type MemberScope,
   memberScopeOf,
   scopeAsEnvironmentSet,
   scopeContainsEnvironmentSet,
@@ -99,6 +100,8 @@ const MAX_REVOKE_DEVICE_FINGERPRINTS = 256;
 interface MutableEnvironmentState {
   currentEpoch: number;
   readonly createdAtSeq: number;
+  // Seq of the delete_environment entry (§6.2 — 2026-10-07), null while live
+  deletedAtSeq: number | null;
   readonly epochStartSeqs: Map<number, number>;
   readonly dekCommitments: Map<number, string>;
 }
@@ -118,8 +121,8 @@ interface MutablePendingProposal {
 interface MutableChainState {
   readonly members: Map<string, ChainMember>;
   readonly serverGrants: Map<string, ServerGrant>;
-  // Environment set (derived from §6.2 create_environment). The chain never
-  // observes an environment deletion (deletion is a data-plane operation),
+  // Environment set (derived from §6.2 create_environment). A
+  // delete_environment marks the environment deleted but never removes it,
   // so this map is itself "every ID used across history" and the
   // duplicate-environment check needs no extra index
   readonly environments: Map<string, MutableEnvironmentState>;
@@ -486,6 +489,8 @@ const PAYLOAD_SHAPES: {
   remove_member: (p) => isBoundedId(p.targetUserId),
   change_role: shapeChangeRole,
   create_environment: shapeCreateEnvironment,
+  // delete_environment (§6.2 — 2026-10-07): a non-empty id within §6.1's limit
+  delete_environment: (p) => isBoundedId(p.environmentId),
   rotate_epoch: shapeRotateEpoch,
   grant_server: shapeGrantServer,
   revoke_server: (p) => isHexOfLength(p.serverKeyFingerprintHex, FINGERPRINT_BYTES),
@@ -814,6 +819,8 @@ const ROLE_RULES: {
   remove_member: (_operation, actor) => requireRole(actor.permission.role, "admin"),
   change_role: (_operation, actor) => requireRole(actor.permission.role, "admin"),
   create_environment: (_operation, actor) => requireRole(actor.permission.role, "member"),
+  // The level the data-plane deletion had (§6.2 — 2026-10-07)
+  delete_environment: (_operation, actor) => requireRole(actor.permission.role, "admin"),
   rotate_epoch: (_operation, actor) => requireRole(actor.permission.role, "member"),
   checkpoint: (operation, actor) =>
     checkpointRoleReason(operation.payload.auditHeadHashHex, actor.permission.role),
@@ -855,17 +862,43 @@ function targetRoleReason(
 // ---------------------------------------------------------------------------
 // Consensus rules (after role rules and approval-required; do not mutate state)
 
-/** Existence of each environment_id in a scope (§6.2 — `unknown-environment`). */
+/** Whether the environment's `delete_environment` is on the chain (§6.2 — 2026-10-07). */
+function isDeletedEnvironment(state: MutableChainState, environmentId: string): boolean {
+  return (state.environments.get(environmentId)?.deletedAtSeq ?? null) !== null;
+}
+
+/**
+ * The existence stage of an op naming one environment (§6.2):
+ * `unknown-environment` (no preceding create_environment) →
+ * `environment-deleted` (its delete_environment precedes — 2026-10-07).
+ */
+function liveEnvironmentReason(
+  state: MutableChainState,
+  environmentId: string,
+): ChainInvalidReason | null {
+  if (!state.environments.has(environmentId)) {
+    return "unknown-environment";
+  }
+  return isDeletedEnvironment(state, environmentId) ? "environment-deleted" : null;
+}
+
+/**
+ * Existence of each environment_id in a scope (§6.2 — `unknown-environment`,
+ * then `environment-deleted`). Stage-wise across the list (every id is
+ * checked for existence before any for deletion — fixed by
+ * authz-add-member-unknown-precedes-deleted)
+ */
 function scopeEnvironmentsReason(
   payload: { readonly scopeEnvironmentIds: readonly string[] },
   state: MutableChainState,
 ): ChainInvalidReason | null {
-  for (const environmentId of payload.scopeEnvironmentIds) {
-    if (!state.environments.has(environmentId)) {
-      return "unknown-environment";
-    }
+  const ids = payload.scopeEnvironmentIds;
+  if (ids.some((environmentId) => !state.environments.has(environmentId))) {
+    return "unknown-environment";
   }
-  return null;
+  return ids.some((environmentId) => isDeletedEnvironment(state, environmentId))
+    ? "environment-deleted"
+    : null;
 }
 
 /** add_member / change_role establishing an owner only allow scope = all (§6.2 — `scope-role-mismatch`). */
@@ -1072,6 +1105,12 @@ async function grantServerReason(
   if (encodeHex(digest.slice(0, FINGERPRINT_BYTES)) !== p.serverKeyFingerprintHex) {
     return "invalid-payload";
   }
+  // No later entry may name a deleted environment (§6.2 — 2026-10-07). A
+  // deletion already pruned the id from every active grant's scope, so the
+  // re-grant rule below never needs the deleted id to stay
+  if (p.scopeEnvironmentIds.some((environmentId) => isDeletedEnvironment(state, environmentId))) {
+    return "environment-deleted";
+  }
   // Two-layer judgment for re-granting the same server key (owner
   // ruling): the disclosure scope accepts only scope widening (old ⊆
   // new). Allowing a narrowing would let one bypass revoke_server +
@@ -1105,11 +1144,10 @@ function createEnvironmentReason(
   state: MutableChainState,
 ): ChainInvalidReason | null {
   // Check order (§6.2): duplicate-environment → environment-out-of-scope.
-  // environment_id is unique across the whole chain history. The chain
-  // never observes an environment deletion (deletion is a data-plane
-  // operation), so the environments map is never shrunk, and recreating a
-  // deleted environment ID is also rejected here (a consensus-rule
-  // escalation of the ID-reuse ban). Since a new environment_id cannot be
+  // environment_id is unique across the whole chain history. A
+  // delete_environment marks the environment deleted without removing it
+  // from the environments map, so recreating a deleted environment ID is
+  // also rejected here (a consensus-rule escalation of the ID-reuse ban). Since a new environment_id cannot be
   // inside a `listed` scope (no prior scoping to a not-yet-existing
   // environment), environment creation is only possible for a scope = all
   // actor — judged by the same single predicate
@@ -1128,12 +1166,16 @@ function rotateEpochReason(
 ): ChainInvalidReason | null {
   const p = operation.payload;
   // Check order (§6.2; fixed by the vectors): unknown-environment →
-  // environment-out-of-scope → epoch ordering. The op is invalid unless a
-  // create_environment for that environment_id precedes it (there is no
-  // "initial value 1 if unobserved" default fallback)
+  // environment-deleted → environment-out-of-scope → epoch ordering. The op
+  // is invalid unless a create_environment for that environment_id precedes
+  // it (there is no "initial value 1 if unobserved" default fallback) and
+  // no delete_environment does (nothing is left to protect)
   const environment = state.environments.get(p.environmentId);
   if (environment === undefined) {
     return "unknown-environment";
+  }
+  if (environment.deletedAtSeq !== null) {
+    return "environment-deleted";
   }
   if (!scopeIncludesEnvironment(actor.permission.scope, p.environmentId)) {
     return "environment-out-of-scope";
@@ -1147,9 +1189,30 @@ function rotateEpochReason(
 }
 
 /**
+ * Consensus rules for delete_environment (§6.2 — 2026-10-07). Check order
+ * (fixed by the vectors): (role rule — admin) → unknown-environment (a
+ * deletion needs a preceding creation) → environment-deleted (at most once)
+ * → environment-out-of-scope (the actor's effective scope)
+ */
+function deleteEnvironmentReason(
+  operation: Extract<ProposableOperation, { op: "delete_environment" }>,
+  actor: ActorContext,
+  state: MutableChainState,
+): ChainInvalidReason | null {
+  const environmentId = operation.payload.environmentId;
+  return (
+    liveEnvironmentReason(state, environmentId) ??
+    (scopeIncludesEnvironment(actor.permission.scope, environmentId)
+      ? null
+      : "environment-out-of-scope")
+  );
+}
+
+/**
  * Consensus rules for checkpoint (§6.2). Check order (fixed by the
- * vectors): unknown-environment → environment-out-of-scope →
- * checkpoint-epoch-mismatch → checkpoint-regression. Across multiple
+ * vectors): unknown-environment → environment-deleted (2026-10-07) →
+ * environment-out-of-scope → checkpoint-epoch-mismatch →
+ * checkpoint-regression. Across multiple
  * environment entries, **every entry is scanned per check stage**
  * (stage-wise — session-33 ruling C; fixed by
  * authz-checkpoint-unknown-precedes-epoch). The epoch must strictly
@@ -1172,6 +1235,7 @@ function checkpointReason(
   ): ChainInvalidReason | null => (environments.some(rejected) ? reason : null);
   return (
     stage((tuple) => !state.environments.has(tuple.environmentId), "unknown-environment") ??
+    stage((tuple) => isDeletedEnvironment(state, tuple.environmentId), "environment-deleted") ??
     stage(
       (tuple) => !scopeIncludesEnvironment(actor.permission.scope, tuple.environmentId),
       "environment-out-of-scope",
@@ -1217,6 +1281,7 @@ const CONSENSUS_RULES: {
       ? null
       : "unknown-server-grant",
   create_environment: createEnvironmentReason,
+  delete_environment: deleteEnvironmentReason,
   rotate_epoch: rotateEpochReason,
   checkpoint: (operation, actor, state) =>
     checkpointReason(operation.payload.environments, actor, state),
@@ -1380,9 +1445,60 @@ function applyCreateEnvironment(
   state.environments.set(operation.payload.environmentId, {
     currentEpoch: INITIAL_EPOCH,
     createdAtSeq: seq,
+    deletedAtSeq: null,
     epochStartSeqs: new Map([[INITIAL_EPOCH, seq]]),
     dekCommitments: new Map([[INITIAL_EPOCH, operation.payload.dekCommitmentHex]]),
   });
+}
+
+/** A scope without the deleted environment (a `listed` scope stays `listed`, possibly empty; `all` is unchanged). */
+function scopeWithout(scope: MemberScope, environmentId: string): MemberScope {
+  if (scope.kind === "all" || !scope.environmentIds.includes(environmentId)) {
+    return scope;
+  }
+  return {
+    kind: "listed",
+    environmentIds: scope.environmentIds.filter((id) => id !== environmentId),
+  };
+}
+
+/**
+ * delete_environment (§6.2 — 2026-10-07): the environment stays in the set
+ * with its deletion seq (the id is never reusable), and the id leaves every
+ * listed scope — each member's, each device's, each active grant's — so no
+ * derivation over scopes (principle 1, R(E), the re-grant rule, a device
+ * cap) ever carries it again. Its latest-checkpoint state is dropped (it is
+ * never a baseline again)
+ */
+function applyDeleteEnvironment(
+  operation: Extract<ProposableOperation, { op: "delete_environment" }>,
+  state: MutableChainState,
+  seq: number,
+): void {
+  const environmentId = operation.payload.environmentId;
+  const environment = state.environments.get(environmentId);
+  if (environment === undefined) {
+    return;
+  }
+  environment.deletedAtSeq = seq;
+  for (const member of state.members.values()) {
+    const devices = new Map<string, ChainDevice>();
+    for (const [fingerprintHex, device] of member.devices) {
+      devices.set(fingerprintHex, { ...device, scope: scopeWithout(device.scope, environmentId) });
+    }
+    state.members.set(member.userId, {
+      ...member,
+      scope: scopeWithout(member.scope, environmentId),
+      devices,
+    });
+  }
+  for (const grant of state.serverGrants.values()) {
+    state.serverGrants.set(grant.serverKeyFingerprintHex, {
+      ...grant,
+      scopeEnvironmentIds: grant.scopeEnvironmentIds.filter((id) => id !== environmentId),
+    });
+  }
+  state.checkpoints.delete(environmentId);
 }
 
 function applyRotateEpoch(
@@ -1454,6 +1570,7 @@ const OPERATION_APPLIERS: {
     state.serverGrants.delete(operation.payload.serverKeyFingerprintHex);
   },
   create_environment: applyCreateEnvironment,
+  delete_environment: applyDeleteEnvironment,
   rotate_epoch: applyRotateEpoch,
   checkpoint: applyCheckpoint,
   set_approval_policy: applySetApprovalPolicy,
@@ -1761,6 +1878,11 @@ const HISTORY_RECORDERS: {
     history.recordTenureEnd(operation.payload.targetUserId, seq),
   create_environment: (history: ChainHistoryBuilder, operation, seq) =>
     history.recordEnvironmentCreated(operation.payload.environmentId, seq),
+  // A deletion changes no interval the history index serves (past epochs and
+  // past (role, scope) intervals stay as they were — §6.2); consumers read
+  // deletion from the state's deletedAtSeq and refuse the environment
+  // wholesale (§6.3 "Chain-deleted environments")
+  delete_environment: () => undefined,
   rotate_epoch: (history: ChainHistoryBuilder, operation, seq) =>
     history.recordEpochRotated(operation.payload.environmentId, operation.payload.newEpoch, seq),
   checkpoint: (history: ChainHistoryBuilder, operation, seq) =>
