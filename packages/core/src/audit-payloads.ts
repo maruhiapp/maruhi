@@ -6,9 +6,13 @@
 // any key the spec does not list.
 //
 // Gate of the identity rule (§1-2, CLAUDE.md): an append-only row never
-// carries a provider identity. A payload can hold only the attributes of
-// §3's tables for its event — none of which is a provider identifier — and
-// its free-text fields are `AuditText`, which refuses a value typed
+// carries a provider identity. A payload can hold only the attributes §3
+// lists for its event — none of which is a provider identifier. Every
+// attribute that carries server vocabulary (a reason code, a kind name, an
+// op name, a connector) is a closed literal set derived from its single
+// definition, so the remaining free text is user-authored content (name
+// snapshots, a token's name, a rotation's reason) and identifiers or
+// digests. Those are `AuditText`, which refuses a value typed
 // `ProviderUserId` at compile time (a guard, not a sound exclusion — see its
 // doc). The only provider-derived values §1-2 allows are the authentication
 // means' kind name (`authMethod`) and the provider's kind name
@@ -24,10 +28,16 @@
 // rides the actor (`actorAuthMethod` / `D1AuditActor.authMethod`) and each
 // store merges it into the stored payload (`auditPayloadWith`).
 
-import { APPROVAL_TARGET_OPS } from "@maruhi/crypto";
+import { APPROVAL_TARGET_OPS, type ProposableOperation } from "@maruhi/crypto";
 import { Exit, Schema } from "effect";
 
-import { OrgRoleSchema, TokenScopeSchema } from "./auth.ts";
+import {
+  AUTH_FLOW_FAILURE_REASONS,
+  AUTH_METHODS,
+  OrgRoleSchema,
+  SIGNUP_DENIAL_REASONS,
+  TokenScopeSchema,
+} from "./auth.ts";
 import { KeyFingerprintHexSchema, type ProviderUserId } from "./identity.ts";
 
 /** What a {@link ProviderUserId} carries beyond a string: its brand marker (derived, so it follows the brand's definition). */
@@ -91,6 +101,73 @@ export const ROTATION_TRIGGERS = [
   "revoke_device",
 ] as const;
 
+/**
+ * The connector that minted a sealed value proposal (AUTH_SPEC §14-5 — the
+ * rotation config's vocabulary, docs/rotation). The single definition: the
+ * api-schema wire literal and the server's stored-row check derive from it.
+ */
+export const ROTATION_CONNECTORS = [
+  "aws-iam-access-key",
+  "cloudflare-api-token",
+  "postgres",
+  "mysql",
+  "exec",
+] as const;
+
+/**
+ * Why a workload lease was refused after its OIDC signature verified
+ * (`server.lease_denied` — §3.5; AUTH_SPEC §14). The `reseal-*` reasons are
+ * the server key's reseal failures (apps/server server-key.ts
+ * `ResealFailure`); the server builds them as `reseal-${failure}`, which
+ * must type-check against this set, so neither side can drift.
+ */
+export const LEASE_DENIAL_REASONS = [
+  "no-grant",
+  "policy-mismatch",
+  "scope-out-of-range",
+  "environment-not-found",
+  "rate-limited",
+  "token-replayed",
+  "server-wraps-missing",
+  "reseal-not-configured",
+  "reseal-unwrap-failed",
+  "reseal-wrap-failed",
+] as const;
+
+/** A `server.lease_denied` reason. */
+export type LeaseDenialReason = (typeof LEASE_DENIAL_REASONS)[number];
+
+/** The operations a `propose` entry may carry (CRYPTO_SPEC §6.2 — every op but the approval ops). */
+type ProposableOp = ProposableOperation["op"];
+
+/**
+ * Every member of `All`, as a runtime list: a list missing a member makes the
+ * argument `never` (a compile error), and an extra member fails the element
+ * constraint — so the list cannot drift from the type it enumerates.
+ */
+function everyOf<All extends string>() {
+  return <const List extends readonly All[]>(
+    list: List & ([Exclude<All, List[number]>] extends [never] ? unknown : never),
+  ): List => list;
+}
+
+/** {@link ProposableOp} as a runtime list, complete against crypto's ChainOperation. */
+const PROPOSABLE_OPS = everyOf<ProposableOp>()([
+  "genesis",
+  "add_member",
+  "remove_member",
+  "change_role",
+  "create_environment",
+  "delete_environment",
+  "rotate_epoch",
+  "grant_server",
+  "revoke_server",
+  "checkpoint",
+  "set_approval_policy",
+  "add_device",
+  "revoke_device",
+]);
+
 /** The project events (AUDIT_SPEC §3.3–§3.5) — the project DO's log. */
 const PROJECT_AUDIT_PAYLOADS = {
   // §3.3 project data events
@@ -122,7 +199,7 @@ const PROJECT_AUDIT_PAYLOADS = {
     variableIds: Schema.Array(Text),
     claimsDigest: Text,
     grantChainSeq: Seq,
-    connector: Text,
+    connector: Schema.Literals(ROTATION_CONNECTORS),
   }),
   "rotation.proposal_accepted": Schema.Struct({
     proposalId: Text,
@@ -161,7 +238,10 @@ const PROJECT_AUDIT_PAYLOADS = {
     ops: Schema.Array(Schema.Literals(APPROVAL_TARGET_OPS)),
     requiredApprovals: Seq,
   }),
-  "chain.proposed": Schema.Struct({ innerOp: Text, expiresAtMs: Schema.Number }),
+  "chain.proposed": Schema.Struct({
+    innerOp: Schema.Literals(PROPOSABLE_OPS),
+    expiresAtMs: Schema.Number,
+  }),
   "chain.approved": Schema.Struct({ proposalChainSeq: Seq, completed: Schema.Boolean }),
   "chain.proposal_withdrawn": Schema.Struct({ proposalChainSeq: Seq }),
   "chain.device_added": chainPayload({
@@ -180,7 +260,7 @@ const PROJECT_AUDIT_PAYLOADS = {
     epochs: Schema.Array(Seq),
   }),
   "server.lease_denied": Schema.Struct({
-    reason: Text,
+    reason: Schema.Literals(LEASE_DENIAL_REASONS),
     claimsDigest: Schema.optionalKey(Text),
   }),
 };
@@ -188,14 +268,20 @@ const PROJECT_AUDIT_PAYLOADS = {
 /** The ledger kinds of the reserve-key wrap ledger (§3.1 — AUTH_SPEC §13-7). */
 const passkeyWrap = Schema.Struct({ kind: Schema.Literal("passkey-prf"), wrapId: Text });
 
+const AuthMethod = Schema.Literals(AUTH_METHODS);
+const AuthFlowFailureReason = Schema.Literals(AUTH_FLOW_FAILURE_REASONS);
+const SignupDenialReason = Schema.Literals(SIGNUP_DENIAL_REASONS);
+
 /** The fixed-window suppression marker (§3.1): only the classification, the window, the cap and the count. */
-const SuppressionMarker = Schema.Struct({
-  authMethod: Text,
-  reason: Text,
-  windowMs: Schema.Int,
-  limit: Schema.Int,
-  suppressedCount: Schema.Int,
-});
+function suppressionMarker<const Reason extends Schema.Constraint>(reason: Reason) {
+  return Schema.Struct({
+    authMethod: AuthMethod,
+    reason,
+    windowMs: Schema.Int,
+    limit: Schema.Int,
+    suppressedCount: Schema.Int,
+  });
+}
 
 /** The user / org events (AUDIT_SPEC §3.1–§3.2) — D1. */
 const USER_ORG_AUDIT_PAYLOADS = {
@@ -205,13 +291,14 @@ const USER_ORG_AUDIT_PAYLOADS = {
     Schema.Struct({ flowId: Text }),
   ]),
   // Unauthenticated (no actor user id): the kind name and the reason only — never the presented external id
-  "auth.login_failed": Schema.Struct({ authMethod: Text, reason: Text }),
-  "auth.login_failed_suppressed": SuppressionMarker,
+  "auth.login_failed": Schema.Struct({ authMethod: AuthMethod, reason: AuthFlowFailureReason }),
+  "auth.login_failed_suppressed": suppressionMarker(AuthFlowFailureReason),
+  // Only the Web OAuth signup can be denied (the CLI handoff never creates an account — AUTH_SPEC §4)
   "auth.signup_denied": Schema.Struct({
-    authMethod: Text,
-    reason: Schema.Literals(["policy-closed", "invite-required", "invite-invalid"]),
+    authMethod: Schema.Literal("github_oauth"),
+    reason: SignupDenialReason,
   }),
-  "auth.signup_denied_suppressed": SuppressionMarker,
+  "auth.signup_denied_suppressed": suppressionMarker(SignupDenialReason),
   "auth.session_revoked": Schema.Struct({ sessionId: Text }),
   // replacedTokenId is added by the SQL of a same-name rotation (the row that actually vanished)
   "auth.token_created": Schema.Struct({

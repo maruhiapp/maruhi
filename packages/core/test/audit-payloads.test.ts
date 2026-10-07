@@ -81,11 +81,11 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
         actorType: "system",
         payload: {
           proposalId: "p",
-          variableIds: [],
+          // @ts-expect-error not as an identifier list's element
+          variableIds: [providerSubject],
           claimsDigest: "d",
           grantChainSeq: 1,
-          // @ts-expect-error not as a connector
-          connector: providerSubject,
+          connector: "exec",
         },
       },
     ];
@@ -128,6 +128,53 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
     expect(rows).toHaveLength(4);
   });
 
+  it("closes every attribute that carries server vocabulary", () => {
+    const rows: AuditEventRecord[] = [
+      {
+        ...columns,
+        event: "server.lease_denied",
+        actorType: "system",
+        payload: { reason: "token-replayed", claimsDigest: "d" },
+      },
+      {
+        ...columns,
+        event: "server.lease_denied",
+        actorType: "system",
+        // @ts-expect-error a lease denial reason is a closed code
+        payload: { reason: providerLogin },
+      },
+      {
+        ...columns,
+        event: "chain.proposed",
+        // @ts-expect-error the inner op is a proposable chain op
+        payload: { innerOp: "approve", expiresAtMs: 1 },
+      },
+      {
+        ...columns,
+        event: "rotation.proposed",
+        actorType: "system",
+        payload: {
+          proposalId: "p",
+          variableIds: [],
+          claimsDigest: "d",
+          grantChainSeq: 1,
+          // @ts-expect-error the connector is the rotation config's vocabulary
+          connector: "octocat",
+        },
+      },
+    ];
+    expect(rows).toHaveLength(4);
+    expect(() =>
+      assertProjectAuditPayload({ event: "server.lease_denied", payload: { reason: "because" } }),
+    ).toThrow();
+    expect(() =>
+      assertUserOrgAuditPayload({
+        event: "auth.login_failed",
+        payload: { authMethod: "password", reason: "state-mismatch" },
+      }),
+    ).toThrow();
+  });
+
   it("narrows by the event name", () => {
     const row = {} as AuditEventRecord;
     if (row.event === "rotation.recommended") {
@@ -161,13 +208,27 @@ describe("user / org event payloads (AUDIT_SPEC §3.1–§3.2) — compile time"
       },
       {
         event: "auth.login_failed",
-        // @ts-expect-error a failed login never records the presented external id (§3.1)
-        payload: { authMethod: "github_oauth", reason: "x", githubId: providerSubject },
+        payload: {
+          authMethod: "github_oauth",
+          reason: "state-mismatch",
+          // @ts-expect-error a failed login never records the presented external id (§3.1)
+          githubId: providerSubject,
+        },
       },
-      // @ts-expect-error a denied signup's reason is one of the three kinds
       {
         event: "auth.signup_denied",
+        // @ts-expect-error a denied signup's reason is one of the three kinds
         payload: { authMethod: "github_oauth", reason: providerLogin },
+      },
+      {
+        event: "auth.login_failed",
+        // @ts-expect-error a failure reason is a closed code, never free text
+        payload: { authMethod: "cli_handoff", reason: providerLogin },
+      },
+      {
+        event: "auth.login_failed",
+        // @ts-expect-error the auth method is a kind name from the closed set
+        payload: { authMethod: providerLogin, reason: "state-mismatch" },
       },
       { event: "org.created", payload: { personal: true } },
       // @ts-expect-error a personal org's name derives from the login, so it is never copied (§3.2)
@@ -195,7 +256,7 @@ describe("user / org event payloads (AUDIT_SPEC §3.1–§3.2) — compile time"
       // @ts-expect-error a project event is not a user / org event
       { event: "var.read", payload: { variables: [] } },
     ];
-    expect(events).toHaveLength(13);
+    expect(events).toHaveLength(15);
   });
 });
 

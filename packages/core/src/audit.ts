@@ -19,13 +19,12 @@
 import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
 import type {
-  AuditText,
   ChainMirrorEventName,
   ProjectAuditEventName,
   ProjectAuditEventPayload,
   ProjectAuditPayload,
 } from "./audit-payloads.ts";
-import type { AuthenticatedPrincipal } from "./auth.ts";
+import type { AuthenticatedPrincipal, AuthMethod } from "./auth.ts";
 import type { KeyFingerprintHex, UserId } from "./identity.ts";
 
 /**
@@ -36,7 +35,7 @@ import type { KeyFingerprintHex, UserId } from "./identity.ts";
 export interface AuditActor {
   readonly userId: UserId;
   readonly apiTokenId?: string;
-  readonly authMethod?: string;
+  readonly authMethod?: AuthMethod;
 }
 
 /**
@@ -92,7 +91,7 @@ export interface AuditEventColumns {
    * The session actor's auth method (AUDIT_SPEC §2 — the kind name only). Not
    * a column: the store merges it into the stored payload (§5.1).
    */
-  readonly actorAuthMethod?: AuditText;
+  readonly actorAuthMethod?: AuthMethod;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   readonly environmentId?: string;

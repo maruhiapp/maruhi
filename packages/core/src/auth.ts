@@ -17,6 +17,39 @@ import type { UserId } from "./identity.ts";
 import { ProjectIdSchema } from "./project.ts";
 
 // ---------------------------------------------------------------------------
+// Authentication vocabulary (AUTH_SPEC §3 / §4). The single definitions: the
+// api-schema error schemas, the server and the audit payloads (AUDIT_SPEC
+// §3.1) all derive from these.
+// ---------------------------------------------------------------------------
+
+/**
+ * The authentication means' kind names (AUTH_SPEC §3 Web OAuth / §4 the CLI
+ * handoff) — the only provider-related value an audit row may carry
+ * (AUDIT_SPEC §1-2).
+ */
+export const AUTH_METHODS = ["github_oauth", "cli_handoff"] as const;
+
+/** An authentication means' kind name. */
+export type AuthMethod = (typeof AUTH_METHODS)[number];
+
+/** Why a GitHub authentication dance failed (AUTH_SPEC §3 / §4 — the reason code only). */
+export const AUTH_FLOW_FAILURE_REASONS = [
+  "state-mismatch",
+  "code-exchange-failed",
+  "github-token-invalid",
+] as const;
+
+/** Why signupPolicy refused a new account (AUTH_SPEC §3 — 2026-09-01 H1). */
+export const SIGNUP_DENIAL_REASONS = [
+  "policy-closed",
+  "invite-required",
+  "invite-invalid",
+] as const;
+
+/** A signupPolicy denial reason. */
+export type SignupDenialReason = (typeof SIGNUP_DENIAL_REASONS)[number];
+
+// ---------------------------------------------------------------------------
 // Org roles (AUTH_SPEC §9-1 — not involved in project access)
 // ---------------------------------------------------------------------------
 
@@ -104,7 +137,7 @@ export function parseTokenScopes(json: string): readonly TokenScope[] | null {
  * enforcement (AUTH_SPEC §9-2).
  */
 export type AuthenticatedPrincipal =
-  | { readonly kind: "session"; readonly userId: UserId; readonly authMethod: string }
+  | { readonly kind: "session"; readonly userId: UserId; readonly authMethod: AuthMethod }
   | {
       readonly kind: "token";
       readonly userId: UserId;
@@ -140,7 +173,7 @@ export interface IssuedSession {
 /** AUTH_SPEC §8: session issuance, verification, revocation (§5). */
 export interface SessionServiceShape {
   /** Issues a 256-bit session. Only the hash is stored in the DB; the raw value is returned only here. */
-  readonly issueSession: (userId: UserId, authMethod: string) => Effect.Effect<IssuedSession>;
+  readonly issueSession: (userId: UserId, authMethod: AuthMethod) => Effect.Effect<IssuedSession>;
   /** Resolves a principal from a raw cookie value. Revoked, unknown, and expired are treated as anonymous. */
   readonly resolveSession: (rawValue: string) => Effect.Effect<Principal>;
   /** Revokes the session of a raw cookie value (logout). */

@@ -7,6 +7,7 @@
 // handlers-auth-cli), the parts both sides use live in this module.
 
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
+import type { AuthMethod } from "@maruhi/core";
 import { Clock, Effect, type Redacted } from "effect";
 import type { Cookies, HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
@@ -140,7 +141,7 @@ export function authFlowFailure(
  * on one path or reason must not silently erase failures of other reasons.
  */
 export function recordLoginFailed(
-  authMethod: "github_oauth" | "cli_handoff",
+  authMethod: AuthMethod,
   reason: AuthFlowError["reason"],
 ): Effect.Effect<void, never, D1AuditRepo> {
   return Effect.flatMap(D1AuditRepo, (audit) =>

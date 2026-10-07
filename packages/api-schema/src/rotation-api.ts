@@ -14,7 +14,12 @@
 // Responses carry identifiers only (the client resolves display names
 // via verified meta statements — tombstones included; AUDIT_SPEC §7).
 
-import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
+import {
+  EnvironmentIdSchema,
+  ProjectIdSchema,
+  ROTATION_CONNECTORS,
+  VariableIdSchema,
+} from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -109,14 +114,8 @@ export const RotationDismissTargetSchema = Schema.Struct({
 /** The proposal id: 16 random bytes as lowercase hex, chosen by the minting workload (§5.3). */
 export const ProposalIdSchema = hexString(16);
 
-/** The connector that minted a proposal (the rotation config's vocabulary — docs/rotation). */
-export const RotationConnectorSchema = Schema.Literals([
-  "aws-iam-access-key",
-  "cloudflare-api-token",
-  "postgres",
-  "mysql",
-  "exec",
-]);
+/** The connector that minted a proposal (the rotation config's vocabulary — docs/rotation; core's ROTATION_CONNECTORS). */
+export const RotationConnectorSchema = Schema.Literals(ROTATION_CONNECTORS);
 
 /**
  * One non-secret fact a connector reports (the new key id, the role now

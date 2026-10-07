@@ -16,7 +16,14 @@
 //   (+ the maruhi-issued token id) and the auth_method kind name. Provider
 //   IDs, logins, and emails must not enter this layer
 
-import type { AuditActor, UserId, UserOrgAuditEventPayload } from "@maruhi/core";
+import type {
+  AUTH_FLOW_FAILURE_REASONS,
+  AuditActor,
+  AuthMethod,
+  SignupDenialReason,
+  UserId,
+  UserOrgAuditEventPayload,
+} from "@maruhi/core";
 import { assertUserOrgAuditPayload, auditPayloadWith } from "@maruhi/core";
 import { and, desc, eq, inArray, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -157,8 +164,15 @@ export const LOGIN_FAILED_WINDOW_MS = 60 * 60 * 1000;
 export const LOGIN_FAILED_WINDOW_LIMIT = 100;
 
 interface LoginFailedBucket {
-  readonly authMethod: string;
-  readonly reason: string;
+  readonly authMethod: AuthMethod;
+  readonly reason: (typeof AUTH_FLOW_FAILURE_REASONS)[number];
+}
+
+/** The window's state a suppression marker records (AUDIT_SPEC §3.1 — the window length, the cap, the count). */
+interface SuppressionCounts {
+  readonly windowMs: number;
+  readonly limit: number;
+  readonly suppressedCount: number;
 }
 
 /** The mutable counter's primary key. No external ID / IP — only the classification the audit row itself carries. */
@@ -258,7 +272,7 @@ interface D1AuditRepoShape {
   readonly appendSignupDenied: (
     event: D1AuditEventInput,
     serverTs: number,
-    reason: string,
+    reason: SignupDenialReason,
   ) => Effect.Effect<void>;
   /**
    * The project_id-scoped read of invite.* (the §7 exception clause). The
@@ -387,11 +401,8 @@ async function appendWithFixedWindow(
   serverTs: number,
   spec: {
     readonly bucketKey: string;
-    readonly markerEvent:
-      | typeof LOGIN_FAILED_SUPPRESSED_EVENT
-      | typeof SIGNUP_DENIED_SUPPRESSED_EVENT;
-    /** The classification part of the marker payload (window length, cap, and suppressed count are added here). */
-    readonly markerBasePayload: LoginFailedBucket;
+    /** The suppression marker: the bucket's classification plus the window's state (built by the caller per event). */
+    readonly marker: (counts: SuppressionCounts) => D1AuditEventInput;
   },
 ): Promise<void> {
   const expired = sql`${serverTs} - ${loginFailedWindows.windowStart} >= ${LOGIN_FAILED_WINDOW_MS}`;
@@ -431,21 +442,20 @@ async function appendWithFixedWindow(
     // suppression's scale, and writes stay logarithmically bounded in the
     // count
     if (isSuppressionMilestone(suppressed)) {
-      await userAuditInsert(db, serverTs, {
-        event: spec.markerEvent,
-        actor: {},
-        // The individual row's payload is not carried (AUDIT_SPEC §3.1:
-        // a marker's payload is only the classification part, the window
-        // length, the cap, and the suppressed count). A marker describes
-        // the window's state, not this one request, so the last individual
-        // row does not represent it
-        payload: {
-          ...spec.markerBasePayload,
+      // The individual row's payload is not carried (AUDIT_SPEC §3.1: a
+      // marker's payload is only the classification part, the window
+      // length, the cap, and the suppressed count). A marker describes the
+      // window's state, not this one request, so the last individual row
+      // does not represent it
+      await userAuditInsert(
+        db,
+        serverTs,
+        spec.marker({
           windowMs: LOGIN_FAILED_WINDOW_MS,
           limit: LOGIN_FAILED_WINDOW_LIMIT,
           suppressedCount: suppressed,
-        },
-      });
+        }),
+      );
     }
     return;
   }
@@ -462,8 +472,11 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
       tryD1(() =>
         appendWithFixedWindow(db, event, serverTs, {
           bucketKey: loginFailedBucketKey(bucket),
-          markerEvent: LOGIN_FAILED_SUPPRESSED_EVENT,
-          markerBasePayload: { authMethod: bucket.authMethod, reason: bucket.reason },
+          marker: (counts) => ({
+            event: LOGIN_FAILED_SUPPRESSED_EVENT,
+            actor: {},
+            payload: { authMethod: bucket.authMethod, reason: bucket.reason, ...counts },
+          }),
         }),
       ).pipe(Effect.orDie),
     appendSignupDenied: (event, serverTs, reason) =>
@@ -472,8 +485,11 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
           // The bucket namespaces are separated by event name (cannot
           // collide with login_failed's [authMethod, reason] key)
           bucketKey: JSON.stringify(["auth.signup_denied", reason]),
-          markerEvent: SIGNUP_DENIED_SUPPRESSED_EVENT,
-          markerBasePayload: { authMethod: "github_oauth", reason },
+          marker: (counts) => ({
+            event: SIGNUP_DENIED_SUPPRESSED_EVENT,
+            actor: {},
+            payload: { authMethod: "github_oauth", reason, ...counts },
+          }),
         }),
       ).pipe(Effect.orDie),
     readProjectInviteEvents: (projectId, page) =>

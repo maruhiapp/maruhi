@@ -37,6 +37,7 @@
 //   5. Unwrap → re-wrap → audit → response (the first-come-binding record is
 //      in the same synchronous block)
 
+import type { LeaseDenialReason } from "@maruhi/core";
 import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
@@ -135,7 +136,7 @@ export type LeaseOutcome =
  * external identifiers such as repository names are not written (§14-4).
  */
 export const recordDenied = Effect.fn("programs-lease.recordDenied")(function* (
-  reason: string,
+  reason: LeaseDenialReason,
   claimsDigestHex: string,
   nowMs: number,
 ) {
@@ -158,7 +159,7 @@ export const recordDenied = Effect.fn("programs-lease.recordDenied")(function* (
 
 /** Fold rejection + audit recording into one (leaves no path that forgets to record). */
 const denyWithAudit = Effect.fn("programs-lease.denyWithAudit")(function* (
-  reason: string,
+  reason: LeaseDenialReason,
   facts: LeaseTokenFacts,
   nowMs: number,
 ) {

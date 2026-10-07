@@ -4,7 +4,14 @@
 // implementations). Drizzle types do not appear here (ADR-0006: confined
 // within the service boundary).
 
-import type { OrgRole, ProviderUserId, TokenScope, UserId } from "@maruhi/core";
+import type {
+  AuthMethod,
+  OrgRole,
+  ProviderUserId,
+  SignupDenialReason,
+  TokenScope,
+  UserId,
+} from "@maruhi/core";
 
 /**
  * Provider-verified identity (the output of the AUTH_SPEC §3 / §4
@@ -25,10 +32,11 @@ export interface ResolvedUser {
 }
 
 /**
- * Reason for signup denial (AUTH_SPEC §3 signup control).
- * Same vocabulary as the `auth.signup_denied` audit payload reason (AUDIT_SPEC §3.1).
+ * Reason for signup denial (AUTH_SPEC §3 signup control) — core's
+ * SIGNUP_DENIAL_REASONS, the `auth.signup_denied` audit payload's reason
+ * (AUDIT_SPEC §3.1).
  */
-export type SignupDenialReason = "policy-closed" | "invite-required" | "invite-invalid";
+export type { SignupDenialReason } from "@maruhi/core";
 
 /**
  * Result of get-or-create through the signupPolicy gate (AUTH_SPEC §3).
@@ -50,7 +58,7 @@ export interface UserOrg {
 /** Domain representation of a session row (no raw value exists; id is a hash). */
 export interface SessionRecord {
   readonly userId: UserId;
-  readonly authMethod: string;
+  readonly authMethod: AuthMethod;
   readonly expiresAtMs: number;
 }
 
