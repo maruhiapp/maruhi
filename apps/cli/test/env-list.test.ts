@@ -7,7 +7,8 @@
 //     §6.2); a live row carries the verified statement's name, the
 //     chain-derived epoch, and whether the caller's effective scope covers
 //     it. Deleted environments (no name — nothing of them is distributed)
-//     appear only with --all; --json is one document
+//     appear only with --all; --json is one document. The server-disclosure
+//     column (CRYPTO_SPEC §9) is pinned in server-disclosure.test.ts
 //  2. Fail-closed: a live chain environment missing from the list, a
 //     chain-deleted one served as live (a resurrection), or a listed
 //     statement failing verification, is an error — never silently skipped
@@ -124,6 +125,7 @@ interface ListDocument {
     readonly status: string;
     readonly currentEpoch: number;
     readonly inScope: boolean;
+    readonly disclosedToServerKeyFingerprintsHex: readonly string[];
   }[];
 }
 
@@ -133,9 +135,13 @@ describe("maruhi env list", () => {
     expect(await runCli(["env", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain(`Environments (2) — verified chain head seq=${built.entries.length}:`);
-    expect(logs).toContain("env-dev\tDevelopment\tactive\tepoch=1\tin-scope=yes");
+    expect(logs).toContain(
+      "env-dev\tDevelopment\tactive\tepoch=1\tin-scope=yes\tdisclosed-to-server=no",
+    );
     // The epoch is chain-derived (the rotation), not the server's advisory value
-    expect(logs).toContain("env-prod\tProduction\tactive\tepoch=2\tin-scope=yes");
+    expect(logs).toContain(
+      "env-prod\tProduction\tactive\tepoch=2\tin-scope=yes\tdisclosed-to-server=no",
+    );
     expect(logs.indexOf("env-dev")).toBeLessThan(logs.indexOf("env-prod"));
     // The deleted environment is hidden without --all, and that is said
     expect(logs).not.toContain("env-old");
@@ -147,7 +153,7 @@ describe("maruhi env list", () => {
     expect(await runCli(["env", "list", "--all"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("Environments (3)");
-    expect(logs).toContain("env-old\t-\tdeleted\tepoch=1\tin-scope=no");
+    expect(logs).toContain("env-old\t-\tdeleted\tepoch=1\tin-scope=no\tdisclosed-to-server=no");
   });
 
   it("judges the scope column by the caller's effective scope", async () => {
@@ -162,6 +168,7 @@ describe("maruhi env list", () => {
         status: "active",
         currentEpoch: 1,
         inScope: true,
+        disclosedToServerKeyFingerprintsHex: [],
       },
       {
         environmentId: "env-prod",
@@ -169,6 +176,7 @@ describe("maruhi env list", () => {
         status: "active",
         currentEpoch: 2,
         inScope: false,
+        disclosedToServerKeyFingerprintsHex: [],
       },
     ]);
   });

@@ -47,6 +47,7 @@ import type { SqlRunner } from "./rotate-connector.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
 import { refuseChainDeletedEnvironment, requireEnvironmentInScope } from "./scope.ts";
+import { noteServerDisclosure } from "./server-disclosure.ts";
 import {
   type CliSession,
   loadMasterKeys,
@@ -670,9 +671,9 @@ export const reconcileGossip = Effect.fn("context.reconcileGossip")(function* (
  * check → anchor mechanical reconciliation → head-gossip reconciliation
  * (§6.3 / §6.6 — a contradiction report aborts use of the artifact) → floor
  * head advance → standing warning of unconverged rotation mandates (§7 / B2
- * ruling — the same discipline as §9's always-on disclosure) → submission of
- * the verified-head attestation (SHOULD — prologues holding a signing key
- * only). Only the caller differs by whether a key is held; the floor and
+ * ruling) → §9's constant server-disclosure Note → submission of the
+ * verified-head attestation (SHOULD — prologues holding a signing key only).
+ * Only the caller differs by whether a key is held; the floor and
  * gossip semantics are unified here (split into two tracks, they would
  * silently diverge sooner or later). The floor head advance is common to all
  * commands and happens as before even for commands that read no values, like
@@ -729,6 +730,11 @@ const attachProject = Effect.fn("context.attachProject")(function* (
   if (options?.quietMandateWarning !== true) {
     yield* warnUnconvergedMandates({ verified });
   }
+  // §9's constant display: every command that opens a project with a
+  // disclosing grant says so, from the verified view (server-disclosure.ts).
+  // Never quieted — a converging command (server revoke) states the grant it
+  // is about to revoke
+  yield* noteServerDisclosure(verified);
   // Submission of the verified-head attestation (§6.3 head gossip —
   // SHOULD; only views that passed every reconciliation are attested.
   // Failure is a non-fatal warning — attestation.ts)

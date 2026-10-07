@@ -20,6 +20,9 @@
 //   - **In scope** is the caller's effective scope (member scope ∩ this
 //     machine's device cap — §6.2); without a usable device key it falls
 //     back to the member scope and says so
+//   - **Disclosed to server** is chain-derived: the server keys whose active
+//     grant_server scope names the environment (CRYPTO_SPEC §9 —
+//     server-disclosure.ts; a revoked grant no longer counts)
 //
 // Fail-closed: a live chain environment missing from the list, a deleted
 // one present in it (a resurrection), an ID listed twice, or a statement
@@ -38,6 +41,7 @@ import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedEnvironmentStatement } from "./floor-check.ts";
 import { compareCodePoints } from "./scope.ts";
+import { serverDisclosures, serverKeysDisclosing } from "./server-disclosure.ts";
 import { verifyEnvironmentStatement } from "./values-verify.ts";
 import { pullWithBoundedResync } from "./values.ts";
 
@@ -62,6 +66,8 @@ export interface EnvironmentListRow {
   readonly currentEpoch: number;
   /** Whether the caller's scope (see `scopeBasis`) covers the environment (never for a deleted one — a deletion leaves no permission in it). */
   readonly inScope: boolean;
+  /** The server keys an active grant discloses the environment to (fingerprint ascending; empty = none — CRYPTO_SPEC §9). */
+  readonly disclosedToServerKeyFingerprintsHex: readonly string[];
 }
 
 /** Which scope `inScope` was judged against. */
@@ -238,6 +244,7 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
     return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
   const scope = scopeOf(member, input.ownKeyFingerprintHex);
+  const disclosures = serverDisclosures(view);
   const rows = joined
     .map((environment): EnvironmentListRow => {
       const status = environmentStatusOf(environment.chain);
@@ -248,6 +255,10 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
         currentEpoch: environment.chain.currentEpoch,
         inScope:
           status === "active" && scopeIncludesEnvironment(scope.scope, environment.environmentId),
+        disclosedToServerKeyFingerprintsHex: serverKeysDisclosing(
+          disclosures,
+          environment.environmentId,
+        ),
       };
     })
     .toSorted((a, b) => compareCodePoints(a.environmentId, b.environmentId));
@@ -278,6 +289,7 @@ export function envListJson(list: EnvironmentList, all: boolean): string {
         status: row.status,
         currentEpoch: row.currentEpoch,
         inScope: row.inScope,
+        disclosedToServerKeyFingerprintsHex: row.disclosedToServerKeyFingerprintsHex,
       })),
     },
     null,
@@ -285,7 +297,8 @@ export function envListJson(list: EnvironmentList, all: boolean): string {
   );
 }
 
-/** The human-readable row (ID, name, status, epoch, scope; the name is neutralized; a deleted environment has no name — "-"). */
+/** The human-readable row (ID, name, status, epoch, scope, server disclosure; the name is neutralized; a deleted environment has no name — "-"). */
 export function formatEnvListRow(row: EnvironmentListRow): string {
-  return `${displayText(row.environmentId)}\t${row.name === null ? "-" : displayText(row.name)}\t${row.status}\tepoch=${row.currentEpoch}\tin-scope=${row.inScope ? "yes" : "no"}`;
+  const disclosed = row.disclosedToServerKeyFingerprintsHex.length > 0 ? "yes" : "no";
+  return `${displayText(row.environmentId)}\t${row.name === null ? "-" : displayText(row.name)}\t${row.status}\tepoch=${row.currentEpoch}\tin-scope=${row.inScope ? "yes" : "no"}\tdisclosed-to-server=${disclosed}`;
 }
