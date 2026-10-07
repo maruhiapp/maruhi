@@ -12,6 +12,7 @@ import type {
   ChainOperation,
   EncryptionKeyPair,
   GrantServerPayload,
+  KeyFingerprintHex,
   ProposableOperation,
   SigningKeyPair,
   UserId,
@@ -48,6 +49,7 @@ import type {
 import {
   buildChainWith,
   hexBytes,
+  testKeyFingerprintHex,
   testUserId,
   unwrapResult,
   valueSignedBytesHashOf,
@@ -63,7 +65,7 @@ export interface TestUser {
   readonly encSkHex: string;
   readonly sigPubHex: string;
   readonly sigSkSeedHex: string;
-  readonly fingerprintHex: string;
+  readonly fingerprintHex: KeyFingerprintHex;
   readonly encKeyPair: EncryptionKeyPair;
   readonly sigKeyPair: SigningKeyPair;
 }
@@ -82,7 +84,7 @@ export async function makeTestUser(userId: string): Promise<TestUser> {
     encSkHex: encodeHex(encSk),
     sigPubHex: encodeHex(sigPub),
     sigSkSeedHex: encodeHex(sigSeed),
-    fingerprintHex: encodeHex(fingerprint),
+    fingerprintHex: testKeyFingerprintHex(encodeHex(fingerprint)),
     encKeyPair,
     sigKeyPair,
   };
@@ -256,7 +258,7 @@ export async function grantServerOp(
     op: "grant_server",
     payload: {
       serverEncPubHex: encodeHex(serverEncPub),
-      serverKeyFingerprintHex: encodeHex(digest.slice(0, 16)),
+      serverKeyFingerprintHex: testKeyFingerprintHex(encodeHex(digest.slice(0, 16))),
       scopeEnvironmentIds: [...scopeEnvironmentIds],
       leasePolicy,
     },
@@ -265,7 +267,10 @@ export async function grantServerOp(
 
 /** revoke_server (§6.2 — the revocation target is identified by server-key FP). */
 export function revokeServerOp(serverKeyFingerprintHex: string): ChainOperation {
-  return { op: "revoke_server", payload: { serverKeyFingerprintHex } };
+  return {
+    op: "revoke_server",
+    payload: { serverKeyFingerprintHex: testKeyFingerprintHex(serverKeyFingerprintHex) },
+  };
 }
 
 /** Wire representation of the RecipientDek shape (distribution response). */

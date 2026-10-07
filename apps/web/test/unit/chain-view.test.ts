@@ -1,8 +1,8 @@
 // Unit test of chain-view (S5's display fold — not verification).
 // Inputs are fixtures conforming to api-schema's wire types (the types
 // are bound by tsc).
-import type { UserId } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import type { KeyFingerprintHex, UserId } from "@maruhi/crypto";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { reportedDeviceCount } from "../../src/dashboard/chain-view-reported.ts";
@@ -11,7 +11,7 @@ import type { ChainEntry } from "../../src/dashboard/types.ts";
 
 const HEX64 = "12".repeat(32);
 const SIG = "34".repeat(64);
-const FP = "56".repeat(16);
+const FP = testKeyFingerprintHex("56".repeat(16));
 
 let seqCounter = 0;
 
@@ -19,7 +19,7 @@ function base(): {
   suite: string;
   seq: number;
   prevHashHex: string;
-  actor: { userId: UserId; keyFingerprintHex: string };
+  actor: { userId: UserId; keyFingerprintHex: KeyFingerprintHex };
   timestampMs: number;
   signatureHex: string;
 } {
@@ -223,7 +223,10 @@ const HASH_P = "77".repeat(32);
 
 /** An entry in the shape of being signed by the given actor (as reported — the signature is not verified). */
 function signedBy(userId: string, fp: string): ReturnType<typeof base> {
-  return { ...base(), actor: { userId: testUserId(userId), keyFingerprintHex: fp } };
+  return {
+    ...base(),
+    actor: { userId: testUserId(userId), keyFingerprintHex: testKeyFingerprintHex(fp) },
+  };
 }
 
 function policyEntry(
@@ -574,7 +577,10 @@ function revokeDevice(
   return {
     ...signedBy(userId, signerFp),
     op: "revoke_device",
-    payload: { targetUserId: testUserId(target), deviceFingerprintsHex: [...fps] },
+    payload: {
+      targetUserId: testUserId(target),
+      deviceFingerprintsHex: fps.map(testKeyFingerprintHex),
+    },
   };
 }
 

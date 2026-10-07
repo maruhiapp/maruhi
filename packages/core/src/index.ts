@@ -34,12 +34,17 @@ export {
 export { type EgressRequestInit, egressHttpClientLayer } from "./egress.ts";
 export { ulid } from "./ids.ts";
 export {
+  decodeKeyFingerprintHex,
   decodeProviderUserId,
   decodeUserId,
+  type KeyFingerprintHex,
+  KeyFingerprintHexSchema,
   type ProviderUserId,
   ProviderUserIdSchema,
+  serverKeyFingerprintHex,
   type UserId,
   UserIdSchema,
+  userKeyFingerprintHex,
 } from "./identity.ts";
 export {
   type AuditActor,

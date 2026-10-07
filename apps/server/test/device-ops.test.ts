@@ -34,9 +34,10 @@ import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   importSigningKeyPair,
+  type KeyFingerprintHex,
   signHeadAttestation,
 } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -91,7 +92,7 @@ const CI_BOX = "user-allmember-0013@ci-box";
 interface DevicePublic {
   readonly encPubHex: string;
   readonly sigPubHex: string;
-  readonly fp: string;
+  readonly fp: KeyFingerprintHex;
 }
 
 function vectorDevice(name: string): DevicePublic {
@@ -116,7 +117,7 @@ async function freshDevice(): Promise<DevicePublic> {
   return {
     encPubHex: encodeHex(encPub),
     sigPubHex: encodeHex(sigPub),
-    fp: encodeHex(digest.value),
+    fp: testKeyFingerprintHex(encodeHex(digest.value)),
   };
 }
 
@@ -155,7 +156,7 @@ async function revokeDevice(
     op: "revoke_device",
     payload: {
       targetUserId: testUserId(targetUserId),
-      deviceFingerprintsHex: fingerprints.toSorted(),
+      deviceFingerprintsHex: fingerprints.map(testKeyFingerprintHex).toSorted(),
     },
   });
   return fixture.head.seq;

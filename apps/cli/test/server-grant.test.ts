@@ -7,13 +7,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
   computeServerKeyFingerprint,
   encodeHex,
   fingerprintToWords,
 } from "@maruhi/crypto";
+import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -39,7 +40,7 @@ let dek2: Uint8Array;
 // The deployment's server key (public side only — grant never needs the
 // server secret key)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
-let serverFpHex: string;
+let serverFpHex: KeyFingerprintHex;
 let serverFpWords: readonly string[];
 
 const servers: MockServer[] = [];
@@ -51,7 +52,7 @@ beforeAll(async () => {
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   const fp = await computeServerKeyFingerprint(Uint8Array.from({ length: 32 }, () => 0x5a));
   if (!fp.ok) throw new Error("server fingerprint failed");
-  serverFpHex = encodeHex(fp.value);
+  serverFpHex = testKeyFingerprintHex(encodeHex(fp.value));
   const words = await fingerprintToWords(fp.value);
   if (!words.ok) throw new Error("server fingerprint words failed");
   serverFpWords = words.value;

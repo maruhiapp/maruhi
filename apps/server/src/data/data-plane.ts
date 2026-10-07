@@ -7,7 +7,7 @@
 // onto api-schema's typed errors).
 
 import type { AuditActor } from "@maruhi/core";
-import { auditPayloadWith, decodeUserId } from "@maruhi/core";
+import { auditPayloadWith, decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -15,6 +15,7 @@ import type {
   ChainMember,
   ChainState,
   EffectivePermission,
+  KeyFingerprintHex,
   Role,
 } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
@@ -776,7 +777,7 @@ export function roleAtLeast(role: Role, minimum: Role): boolean {
  */
 export interface MemberWithDevice extends ChainMember {
   readonly device: ChainDevice;
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   /** The signing device's effective permission (§6.2 — the input of the second-stage authorization). */
@@ -1126,14 +1127,17 @@ export function dataEvent(
  * position holds a member's user id, or the server key FP for recipient
  * class server (CRYPTO_SPEC §9). A server recipient has no user_id (the
  * §2 actor model), so its FP goes on target_key_fingerprint, never into
- * the user-id column. The class is what makes the position a user id, so
- * reading it by class is where the member's id is minted.
+ * the user-id column. The class is what makes the position a user id (or
+ * a server key fingerprint), so reading it by class is where the member's id
+ * — or the server key's fingerprint — is minted. A server recipient passed
+ * acceptance only as a valid grant's fingerprint (dek-wraps.ts), so the
+ * format check cannot fail on an accepted wrap.
  */
 export function dekRecipientTarget(
   recipientClass: DekRecipientClass,
   recipientUserId: string,
 ): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
   return recipientClass === "server"
-    ? { targetKeyFingerprintHex: recipientUserId }
+    ? { targetKeyFingerprintHex: decodeKeyFingerprintHex(recipientUserId) }
     : { targetUserId: decodeUserId(recipientUserId) };
 }

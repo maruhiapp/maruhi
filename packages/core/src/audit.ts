@@ -19,7 +19,7 @@
 import type { ChainActor, ChainEntry, ChainOp, ChainOperation } from "@maruhi/crypto";
 
 import type { AuthenticatedPrincipal } from "./auth.ts";
-import type { UserId } from "./identity.ts";
+import type { KeyFingerprintHex, UserId } from "./identity.ts";
 
 /**
  * A resolved audit actor (AUDIT_SPEC §2): the internal user id plus, depending
@@ -83,10 +83,10 @@ export interface AuditEventRecord {
   readonly clientTs?: number;
   readonly actorType: "user" | "server" | "system";
   readonly actorUserId?: UserId;
-  readonly actorKeyFingerprintHex?: string;
+  readonly actorKeyFingerprintHex?: KeyFingerprintHex;
   readonly actorApiTokenId?: string;
   readonly targetUserId?: UserId;
-  readonly targetKeyFingerprintHex?: string;
+  readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   readonly environmentId?: string;
   readonly variableId?: string;
   readonly epoch?: number;
@@ -227,12 +227,12 @@ interface MirrorSubject {
    * the mapping itself stays synchronous. Missing for an `add_device` = a
    * contract violation (throw), never a silent row without the fingerprint.
    */
-  readonly addedDeviceKeyFingerprintHex?: string;
+  readonly addedDeviceKeyFingerprintHex?: KeyFingerprintHex;
 }
 
 /** The per-entry extra input of {@link chainMirrorEvents} (see {@link MirrorSubject}). */
 export interface ChainMirrorSubject {
-  readonly addedDeviceKeyFingerprintHex?: string;
+  readonly addedDeviceKeyFingerprintHex?: KeyFingerprintHex;
 }
 
 // Per-op mappings (the §3.4 table). The input is op + payload (+ actor

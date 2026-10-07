@@ -17,7 +17,9 @@ import {
   deriveEncryptionKeyPair,
   encodeHex,
   exportEncryptionPublicKey,
+  type KeyFingerprintHex,
 } from "@maruhi/crypto";
+import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
 
 import { OIDC_ISSUER, OIDC_KID, OIDC_PRIVATE_JWK } from "./oidc-issuer.ts";
@@ -31,7 +33,7 @@ export const LEASE_SUBJECT = "repo:maruhi-test/demo:ref:refs/heads/main";
 
 export interface DeploymentKey {
   readonly encPubHex: string;
-  readonly fingerprintHex: string;
+  readonly fingerprintHex: KeyFingerprintHex;
 }
 
 let cachedKey: DeploymentKey | undefined;
@@ -61,7 +63,7 @@ export async function deploymentKey(): Promise<DeploymentKey> {
   }
   cachedKey = {
     encPubHex: encodeHex(publicKey),
-    fingerprintHex: encodeHex(fingerprint.value),
+    fingerprintHex: testKeyFingerprintHex(encodeHex(fingerprint.value)),
   };
   return cachedKey;
 }

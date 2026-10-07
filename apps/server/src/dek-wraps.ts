@@ -11,7 +11,7 @@
 // remaining wraps are verified with that key alone.
 
 import { cryptoEffect } from "@maruhi/core";
-import type { ChainMember, ChainState } from "@maruhi/crypto";
+import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
   effectivePermissionOf,
@@ -438,7 +438,7 @@ export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAccepta
  */
 export function dekRegisteredEvent(
   actor: DataActor,
-  signer: { readonly keyFingerprintHex: string },
+  signer: { readonly keyFingerprintHex: KeyFingerprintHex },
   nowMs: number,
   environmentId: string,
   wrap: DekWrapInput,

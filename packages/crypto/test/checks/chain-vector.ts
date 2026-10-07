@@ -10,6 +10,7 @@ import {
   type ChainEntry,
   type ChainMember,
   type ChainOperation,
+  type KeyFingerprintHex,
   type MemberScope,
   type PendingProposal,
   type ProposableOperation,
@@ -20,7 +21,7 @@ import {
 } from "../../src/index.ts";
 import { importSigningKeyPair, importSigningPublicKey } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
-import { testUserId } from "../support/fixture.ts";
+import { testKeyFingerprintHex, testUserId } from "../support/fixture.ts";
 import { fromHex, toHex } from "./support.ts";
 
 export interface VectorEntry {
@@ -300,7 +301,7 @@ export function pendingMatchesVector(
       expiresAtMs: Number(proposal.expires_at_ms),
       approvals: proposal.approvals.map((vote) => ({
         userId: testUserId(vote.user_id),
-        keyFingerprintHex: vote.key_fingerprint_hex,
+        keyFingerprintHex: testKeyFingerprintHex(vote.key_fingerprint_hex),
       })),
     }),
   );
@@ -366,10 +367,11 @@ export interface VectorKey {
   readonly sig_sk_seed_hex: string;
   readonly enc_pub_hex: string;
   readonly sig_pub_hex: string;
-  readonly key_fingerprint_hex: string;
+  /** Computed by the reference generator from the two public keys (the vectors are the tests' trust boundary). */
+  readonly key_fingerprint_hex: KeyFingerprintHex;
 }
 
-export const vectorKeys = chainVectors.keys as Readonly<Record<string, VectorKey>>;
+export const vectorKeys = chainVectors.keys as unknown as Readonly<Record<string, VectorKey>>;
 
 /**
  * Select the signing key by (user_id, key FP) (§6.2 — signers are identified
@@ -488,7 +490,7 @@ const OPERATION_DECODERS: Readonly<
       op: "grant_server",
       payload: {
         serverEncPubHex: str(payload, "server_enc_pub_hex"),
-        serverKeyFingerprintHex: str(payload, "server_key_fingerprint_hex"),
+        serverKeyFingerprintHex: testKeyFingerprintHex(str(payload, "server_key_fingerprint_hex")),
         scopeEnvironmentIds: payload["scope_environments"] as readonly string[],
         leasePolicy: leasePolicy.map((element) => ({
           issuerUrl: element.issuer_url,
@@ -503,7 +505,9 @@ const OPERATION_DECODERS: Readonly<
   },
   revoke_server: (payload) => ({
     op: "revoke_server",
-    payload: { serverKeyFingerprintHex: str(payload, "server_key_fingerprint_hex") },
+    payload: {
+      serverKeyFingerprintHex: testKeyFingerprintHex(str(payload, "server_key_fingerprint_hex")),
+    },
   }),
   checkpoint: (payload) => {
     const environments = payload["environments"] as readonly Readonly<Record<string, unknown>>[];
@@ -563,7 +567,9 @@ const OPERATION_DECODERS: Readonly<
     op: "revoke_device",
     payload: {
       targetUserId: testUserId(str(payload, "target_user_id")),
-      deviceFingerprintsHex: payload["device_fingerprints"] as readonly string[],
+      deviceFingerprintsHex: (payload["device_fingerprints"] as readonly string[]).map(
+        testKeyFingerprintHex,
+      ),
     },
   }),
 };
@@ -600,7 +606,7 @@ export function toTypedEntry(vector: VectorEntry): ChainEntry {
     prevHashHex: vector.prev_hash_hex,
     actor: {
       userId: testUserId(vector.actor.user_id),
-      keyFingerprintHex: vector.actor.key_fingerprint_hex,
+      keyFingerprintHex: testKeyFingerprintHex(vector.actor.key_fingerprint_hex),
     },
     timestampMs: vector.timestamp_ms,
     signatureHex: vector.signature_hex,

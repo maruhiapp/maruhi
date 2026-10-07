@@ -30,7 +30,7 @@ import {
   variablesGroup,
 } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
@@ -278,7 +278,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       op: "grant_server",
       payload: {
         serverEncPubHex: "ab".repeat(32),
-        serverKeyFingerprintHex: "cd".repeat(16),
+        serverKeyFingerprintHex: testKeyFingerprintHex("cd".repeat(16)),
         scopeEnvironmentIds: [ENV],
         leasePolicy: [],
       },
@@ -463,7 +463,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
           op: "grant_server",
           payload: {
             serverEncPubHex: "ab".repeat(32),
-            serverKeyFingerprintHex: "cd".repeat(16),
+            serverKeyFingerprintHex: testKeyFingerprintHex("cd".repeat(16)),
             scopeEnvironmentIds: [],
             leasePolicy: [],
           },
@@ -542,7 +542,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
     });
     const revokeServer = await signedEntry({
       op: "revoke_server",
-      payload: { serverKeyFingerprintHex: "cd".repeat(16) },
+      payload: { serverKeyFingerprintHex: testKeyFingerprintHex("cd".repeat(16)) },
     });
     const checkpoint = await signedEntry({
       op: "checkpoint",

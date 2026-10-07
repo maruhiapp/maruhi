@@ -15,7 +15,7 @@
 //     structural rule (3))
 
 import type { ChainState, MemberScope } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
@@ -255,7 +255,7 @@ const memberOf = (userId: string, scope: MemberScope) =>
         [
           "33".repeat(16),
           {
-            keyFingerprintHex: "33".repeat(16),
+            keyFingerprintHex: testKeyFingerprintHex("33".repeat(16)),
             encPubHex: "11".repeat(32),
             sigPubHex: "22".repeat(32),
             roleCap: "owner" as const,
@@ -269,7 +269,7 @@ const memberOf = (userId: string, scope: MemberScope) =>
 
 describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_SPEC §6.2)", () => {
   it("counts members only when E ∈ scope and grants by disclosure scope (the same predicate across recipient classes)", () => {
-    const fp = "ab".repeat(16);
+    const fp = testKeyFingerprintHex("ab".repeat(16));
     const state: ChainState = {
       members: new Map([
         memberOf("user-all", { kind: "all" }),

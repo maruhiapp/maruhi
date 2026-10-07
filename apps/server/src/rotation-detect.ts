@@ -35,7 +35,7 @@
 //   a value the subject could read re-opens a resolved flag. A dismissal
 //   covers the flags effective when it is recorded and is sticky
 
-import type { UserId } from "@maruhi/core";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 
 import type {
   AuditEventInput,
@@ -316,9 +316,9 @@ function recommendedEvent(input: {
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
   readonly targetUserId?: UserId;
-  readonly targetKeyFingerprintHex?: string;
+  readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
-  readonly revokedDeviceKeyFingerprints?: readonly string[];
+  readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];
   /** The exposure bound (§4.1-5 — VH): written to the epoch column when known. */
   readonly epochBound: number;
 }): AuditEventInput {
@@ -366,7 +366,7 @@ function detectForMember(input: {
     environmentId: string,
   ) => readonly SeqInterval[];
   readonly transitions: readonly ScopeTransition[];
-  readonly revokedDeviceKeyFingerprints?: readonly string[];
+  readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];
 }): readonly AuditEventInput[] {
   const windowsOf = windowsByEnvironment(input.transitions);
   const selected = new Map<string, readonly SeqInterval[]>();
@@ -583,7 +583,7 @@ function revokedDeviceSpans(
 export function detectDeviceRevocation(input: {
   readonly read: AuditRotationRead;
   readonly targetUserId: UserId;
-  readonly deviceFingerprintsHex: readonly string[];
+  readonly deviceFingerprintsHex: readonly KeyFingerprintHex[];
   readonly triggerChainSeq: number;
   readonly nowMs: number;
 }): readonly AuditEventInput[] {
@@ -631,7 +631,7 @@ export function detectDeviceRevocation(input: {
  */
 export function detectServerRevocation(input: {
   readonly read: AuditRotationRead;
-  readonly serverKeyFingerprintHex: string;
+  readonly serverKeyFingerprintHex: KeyFingerprintHex;
   readonly triggerChainSeq: number;
   readonly nowMs: number;
 }): readonly AuditEventInput[] {

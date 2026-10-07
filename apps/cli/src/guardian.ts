@@ -30,7 +30,7 @@
 //
 // Plaintext KEK, segments, and B exist only in local variables.
 
-import { cryptoEffect, fromCryptoResult, type UserId } from "@maruhi/core";
+import { cryptoEffect, fromCryptoResult, type KeyFingerprintHex, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainMember,
@@ -644,7 +644,7 @@ const confirmApproval = Effect.fn("guardian.confirmApproval")(function* (
 function sendApproval(input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
-  readonly approverKeyFingerprintHex: string;
+  readonly approverKeyFingerprintHex: KeyFingerprintHex;
   readonly source: string;
   readonly shareIndex: number;
   readonly sealed: { readonly enc: Uint8Array; readonly ciphertext: Uint8Array };

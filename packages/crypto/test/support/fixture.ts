@@ -10,6 +10,7 @@ import type {
   ChainEntry,
   ChainOperation,
   CryptoResult,
+  KeyFingerprintHex,
   UnsignedChainEntry,
   UserId,
   ValueSignatureContext,
@@ -41,6 +42,18 @@ export function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
  */
 export function testUserId(value: string): UserId {
   return value as UserId;
+}
+
+/**
+ * Test-only mint of a {@link KeyFingerprintHex} from a fixture literal or a
+ * test-vector fingerprint. Production code mints only through the package's
+ * own fingerprint computation and `@maruhi/core`'s format-checked mints. Like
+ * {@link testUserId}, it is a plain cast with no format check: test data is
+ * the test suites' trust boundary, and negative vectors carry malformed
+ * fingerprints on purpose.
+ */
+export function testKeyFingerprintHex(value: string): KeyFingerprintHex {
+  return value as KeyFingerprintHex;
 }
 
 /** Hex inside tests is always well-formed (a null from decodeHex = an assembly bug = throw). */

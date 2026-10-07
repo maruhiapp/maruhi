@@ -7,7 +7,7 @@
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -68,7 +68,10 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
       seq: 2,
       prevHashHex: genesis.entry_hash_hex,
       op: "remove_member",
-      actor: { userId: testUserId("user-stranger-0009"), keyFingerprintHex: "ab".repeat(16) },
+      actor: {
+        userId: testUserId("user-stranger-0009"),
+        keyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
+      },
       payload: { targetUserId: testUserId("user-owner-0001") },
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),

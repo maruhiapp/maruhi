@@ -7,12 +7,17 @@
 // create a route that puts key material into the process environment.
 // session-11.md handoff).
 
-import { cryptoEffect, cryptoPromise, type UserId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  cryptoPromise,
+  type KeyFingerprintHex,
+  type UserId,
+  userKeyFingerprintHex,
+} from "@maruhi/core";
 import type { EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
 import {
   computeUserKeyFingerprint,
   decodeHex,
-  encodeHex,
   exportEncryptionPrivateKey,
   exportEncryptionPublicKey,
   exportSigningPrivateSeed,
@@ -74,7 +79,8 @@ export interface MasterKeys {
   readonly record: StoredMasterKey;
   readonly encKeyPair: EncryptionKeyPair;
   readonly sigKeyPair: SigningKeyPair;
-  readonly fingerprintHex: string;
+  /** Computed from this device's public keys (the actor FP of every entry it signs). */
+  readonly fingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -846,13 +852,8 @@ export const importMasterKeys = Effect.fn("session.importMasterKeys")(function* 
   const sigKeyPair = yield* cryptoEffect(() =>
     importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
   ).pipe(Effect.mapError(() => new MasterKeyCorrupt()));
-  const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
+  const fingerprintHex = yield* userKeyFingerprintHex(encPub, sigPub).pipe(
     Effect.mapError(() => new MasterKeyCorrupt()),
   );
-  return {
-    record,
-    encKeyPair,
-    sigKeyPair,
-    fingerprintHex: encodeHex(fingerprint),
-  } satisfies MasterKeys;
+  return { record, encKeyPair, sigKeyPair, fingerprintHex } satisfies MasterKeys;
 });

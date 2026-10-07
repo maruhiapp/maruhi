@@ -16,7 +16,7 @@ import {
   type UnsignedChainEntry,
   verifyChain,
 } from "../../src/index.ts";
-import { testUserId } from "../support/fixture.ts";
+import { testKeyFingerprintHex, testUserId } from "../support/fixture.ts";
 import {
   membersMatchVector,
   pendingMatchesVector,
@@ -383,7 +383,10 @@ function legacyPayloadTamperVariants(
     },
     {
       name: "revoke-server-tampered-fp",
-      entry: { ...eRevoke, payload: { serverKeyFingerprintHex: toHex(flipped) } },
+      entry: {
+        ...eRevoke,
+        payload: { serverKeyFingerprintHex: testKeyFingerprintHex(toHex(flipped)) },
+      },
       expect: "bad-signature",
     },
     // dek_commitment_hex is also signed (§5.2): substitution fails
@@ -807,7 +810,9 @@ function semanticCases(
       entry: {
         ...base,
         op: "revoke_server",
-        payload: { serverKeyFingerprintHex: "00112233445566778899aabbccddeeff" },
+        payload: {
+          serverKeyFingerprintHex: testKeyFingerprintHex("00112233445566778899aabbccddeeff"),
+        },
       },
       expect: "unknown-server-grant",
     },
@@ -823,7 +828,8 @@ async function appendRotation(
     ...base,
     actor: {
       userId: testUserId("user-admin-0003"),
-      keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
+      keyFingerprintHex:
+        vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? testKeyFingerprintHex(""),
     },
     op: "rotate_epoch",
     payload: {
@@ -1484,7 +1490,8 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
   const adminActor = {
     userId: testUserId("user-admin-0003"),
-    keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
+    keyFingerprintHex:
+      vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? testKeyFingerprintHex(""),
   };
 
   // A reason of exactly 1024 bytes (ASCII) → accepted

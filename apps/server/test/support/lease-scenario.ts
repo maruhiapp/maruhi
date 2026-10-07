@@ -10,6 +10,7 @@ import {
   encodeHex,
   exportEncryptionPublicKey,
   generateEncryptionKeyPair,
+  type KeyFingerprintHex,
   unwrapLeaseDek,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -55,7 +56,7 @@ export type LeasePolicy = ReturnType<typeof defaultPolicy>;
 export async function grantServer(input: {
   readonly scope: readonly string[];
   readonly leasePolicy?: LeasePolicy;
-}): Promise<string> {
+}): Promise<KeyFingerprintHex> {
   const key = await deploymentKey();
   await appendOperation(fixture, OWNER, {
     op: "grant_server",

@@ -8,6 +8,7 @@
 //   row
 
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -289,7 +290,7 @@ describe("chain mirror (§3.4)", () => {
     const serverEncPubHex = "ab".repeat(32);
     const fpResult = await computeServerKeyFingerprint(hexBytes(serverEncPubHex));
     if (!fpResult.ok) throw new Error("fingerprint failed");
-    const serverKeyFingerprintHex = encodeHex(fpResult.value);
+    const serverKeyFingerprintHex = testKeyFingerprintHex(encodeHex(fpResult.value));
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
       payload: {

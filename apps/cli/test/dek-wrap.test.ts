@@ -4,7 +4,7 @@
 // runs the internal effect and folds `WrapBuildFailed` back into the Result.
 
 import { unwrapDek, verifyDekWrapSignature } from "@maruhi/crypto";
-import { unwrapResult } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, unwrapResult } from "@maruhi/crypto/test-support";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -15,7 +15,7 @@ function serverRecipient(serverEncPubHex: string) {
   return {
     kind: "server" as const,
     grant: {
-      serverKeyFingerprintHex: "ab".repeat(16),
+      serverKeyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
       serverEncPubHex,
       grantSeq: 1,
       scopeEnvironmentIds: ["prod"],
