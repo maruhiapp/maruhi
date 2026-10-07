@@ -250,6 +250,10 @@ PAYLOAD_FIELD_ORDER = {
     "add_device": ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind",
                    "scope_environments_lp_hex"],
     "revoke_device": ["target_user_id", "device_fingerprints_lp_hex"],
+    # 2026-10-07 (CRYPTO_SPEC 0.17-draft §6.2 — environment deletion on the
+    # chain): 1 op added. Domain separation is the op name inside
+    # signed_bytes, like every chain op (no new domain string)
+    "delete_environment": ["environment_id"],
 }
 
 # CRYPTO_SPEC §6.2: checkpoint's values_digest.
@@ -3983,6 +3987,356 @@ def gen_chain_entries():
     ]
     valid_appends[-2]["expected_checkpoints"] = {DEV: expected_checkpoint(37, dev_scoped_checkpoint)}
 
+    # =========================================================================
+    # Environment deletion on the chain (2026-10-07 — CRYPTO_SPEC
+    # 0.17-draft §6.2 `delete_environment`). The canonical chain and every
+    # existing vector are untouched: the new op appears only in valid
+    # appends, two derived chains, and negatives.
+    #   - payload = [environment_id]; admin or above, the environment in the
+    #     actor's effective scope; only after create_environment
+    #     (unknown-environment), at most once (environment-deleted)
+    #   - no later entry may name a deleted environment (environment-deleted
+    #     right after unknown-environment; grant_server: after the FP
+    #     self-consistency, before the re-grant rule); reusing the id stays
+    #     duplicate-environment
+    #   - the state keeps the environment (deleted_at_seq) and prunes the id
+    #     from every listed member / device / grant scope
+    # =========================================================================
+    del_start = len(authz_cases)
+    head2 = entries[1]["entry_hash_hex"]
+
+    def delete_payload(environment_id: str) -> dict:
+        return {"environment_id": environment_id}
+
+    def pruned_scope(scope: dict, environment_id: str) -> dict:
+        if scope["kind"] != "listed":
+            return scope
+        return {"kind": "listed",
+                "environments": [e for e in scope["environments"] if e != environment_id]}
+
+    def pruned_members(members: dict, environment_id: str) -> dict:
+        """The expected member state after a deletion: the id leaves every
+        listed member scope and every listed device scope (§6.2's state
+        transition)."""
+        out = {}
+        for uid, state in members.items():
+            next_state = {**state, "scope": pruned_scope(state["scope"], environment_id)}
+            if "devices" in state:
+                next_state["devices"] = {
+                    fp: {**dev, "scope": pruned_scope(dev["scope"], environment_id)}
+                    for fp, dev in state["devices"].items()
+                }
+            out[uid] = next_state
+        return out
+
+    # --- The derived chain environment-deleted (base 19, policy off): the
+    #     dev-dedicated admin deletes env-stage-0003 (in its listed scope);
+    #     devmember's and devadmin's listed scopes lose the id ---
+    T20 = t0 + 20000
+    deleted_steps = extend(19, head19, [
+        ("delete_environment", devadmin_id, delete_payload(STAGE), T19),   # 20
+    ])
+    deleted_head = deleted_steps[-1]["entry_hash_hex"]
+    members_20_deleted = pruned_members(members_19, STAGE)
+    extended_chains["environment-deleted"] = chain_doc(
+        "A derived chain appending one delete_environment to the canonical "
+        "chain seq 1-19 (policy off): the dev-dedicated admin devadmin-0011 "
+        "(admin, listed{dev, stage}) deletes env-stage-0003 at seq 20 (the "
+        "permissive side — admin or above with the environment in scope). The "
+        "derived state keeps env-stage-0003 in the environment set at epoch 1 "
+        "with deleted_at_seq 20, and the id leaves every listed scope: "
+        "devmember-0010 and devadmin-0011 become listed{dev} (§6.2's state "
+        "transition). The precondition chain of the reference-after-deletion "
+        "negatives",
+        19, deleted_steps, members_20_deleted, None, {},
+        expected_environments=base_environments,
+        expected_deleted_environments={STAGE: 20},
+        expected_server_grants=[],
+    )
+
+    # --- The derived chain environment-deleted-granted (base 9 — the grant
+    #     of seq 9 is active with scope {prod, dev}): admin-0003 deletes
+    #     env-dev-0002 at seq 10, and the grant's scope loses the id ---
+    granted_steps = extend(9, head9, [
+        ("delete_environment", admin_id, delete_payload(DEV), t0 + 9000),   # 10
+    ])
+    granted_head = granted_steps[-1]["entry_hash_hex"]
+    granted_environments = {PROD: "2", DEV: "1"}
+    extended_chains["environment-deleted-granted"] = chain_doc(
+        "A derived chain appending one delete_environment to the canonical "
+        "chain seq 1-9: admin-0003 deletes env-dev-0002 at seq 10 while the "
+        "server grant of seq 9 discloses {prod, dev}. The grant's "
+        "scope_environments loses the id (§6.2's state transition — its "
+        "grant_seq stays 9), so a later re-grant of {prod} is a widening-or-"
+        "equal, not a narrowing",
+        9, granted_steps, OWNER_ADMIN, None, {},
+        expected_environments=granted_environments,
+        expected_deleted_environments={DEV: 10},
+        expected_server_grants=[grant_state([PROD], grant_lease_policy, 9)],
+    )
+
+    # --- The permissive side (valid_appends) ---
+    valid_appends += [
+        {
+            "name": "delete-environment-by-admin",
+            "entry": build_entry(13, "delete_environment", admin_id, admin,
+                                 delete_payload(STAGE), t0 + 12000, head12),
+            "expected_members": OWNER_ADMIN,
+            "expected_environments": base_environments,
+            "expected_deleted_environments": {STAGE: 13},
+            "expected_server_grants": [],
+            "note": "an admin (scope all) deletes an environment created earlier (env-stage-0003, seq 11). The environment stays in the environment set (its epoch is still derivable) with deleted_at_seq 13 — a deleted id is never reusable (§6.2)",
+        },
+        {
+            "name": "delete-environment-prunes-grant-scope",
+            "entry": granted_steps[0],
+            "expected_members": OWNER_ADMIN,
+            "expected_environments": granted_environments,
+            "expected_deleted_environments": {DEV: 10},
+            "expected_server_grants": [grant_state([PROD], grant_lease_policy, 9)],
+            "note": "deleting env-dev-0002 while the seq-9 grant discloses {prod, dev} removes the id from the grant's scope_environments (the grant itself and its grant_seq stay — §6.2's state transition)",
+        },
+        {
+            "name": "regrant-after-environment-deleted",
+            "chain": "environment-deleted-granted",
+            "entry": build_entry(11, "grant_server", owner_id, owner,
+                                 grant_payload_for([PROD], grant_lease_policy),
+                                 t0 + 10000, granted_head),
+            "expected_members": OWNER_ADMIN,
+            "expected_environments": granted_environments,
+            "expected_deleted_environments": {DEV: 10},
+            "expected_server_grants": [grant_state([PROD], grant_lease_policy, 11)],
+            "note": "after the deletion pruned the grant's scope to {prod}, a re-grant of {prod} is accepted (old ⊆ new). A verifier that kept the deleted id in the grant's scope would reject it as grant-scope-narrowed — and could never accept any re-grant, because naming the deleted id is environment-deleted",
+        },
+        append_case(
+            "delete-environment-under-policy", 25, head24, "delete_environment", admin_id,
+            delete_payload(DEV), T24, pruned_members(members_24, DEV),
+            "delete_environment is never a four-eyes target, so it is appended directly while the policy is active (§6.2). devmember-0010 (reader, listed{dev}) keeps an empty listed scope and devadmin-0011 becomes listed{stage}",
+        ),
+        dk_append(
+            "delete-environment-prunes-device-scope", 30, dk_head[29], "delete_environment",
+            admin_id, admin, delete_payload(STAGE), pruned_members(members_29, STAGE),
+            "deleting env-stage-0003 also removes it from device scopes: the CI box C of allmember-0013 (cap member, listed{dev, stage}) becomes listed{dev}, and devadmin-0011's member scope becomes listed{dev} (§6.2's state transition covers member and device scopes)",
+            chain="device-added",
+        ),
+    ]
+    valid_appends[-2]["expected_deleted_environments"] = {DEV: 25}
+    valid_appends[-1]["expected_deleted_environments"] = {STAGE: 30}
+
+    # --- Authorization negatives (the signature is valid) ---
+    # Wrong role
+    add_es(
+        "authz-delete-env-member", 20, head19, "delete_environment", allmember_id,
+        delete_payload(STAGE), T19, "insufficient-role",
+        "delete_environment is admin or above (§6.2 — the level the data-plane deletion had). A member with scope all is refused",
+    )
+    add_es(
+        "authz-delete-env-reader", 20, head19, "delete_environment", prodreader_id,
+        delete_payload(PROD), T19, "insufficient-role",
+        "a reader cannot delete even an environment in its own scope",
+    )
+    # Out of scope
+    add_es(
+        "authz-delete-env-out-of-scope", 20, head19, "delete_environment", devadmin_id,
+        delete_payload(PROD), T19, "environment-out-of-scope",
+        "the dev-dedicated admin (listed{dev, stage}) cannot delete env-prod-0001, which is outside its scope (environment-targeted ops — §6.2)",
+    )
+    # Delete before create
+    add_es(
+        "authz-delete-env-before-create", 3, head2, "delete_environment", owner_id,
+        delete_payload(PROD), t0 + 2000, "unknown-environment",
+        "deleting env-prod-0001 at seq 3, before its create_environment (canonical seq 3) exists, is unknown-environment (a deletion needs a preceding creation)",
+    )
+    add_es(
+        "authz-delete-env-unknown", 13, head12, "delete_environment", admin_id,
+        delete_payload(GHOST), t0 + 12000, "unknown-environment",
+        "deleting an id no create_environment ever named is unknown-environment",
+    )
+    # Precedence pins on the deletion itself
+    add_es(
+        "authz-delete-env-role-precedes-unknown", 20, head19, "delete_environment", allmember_id,
+        delete_payload(GHOST), T19, "insufficient-role",
+        "an insufficient-role × unknown-environment compound violation is judged by the role rule first (delete_environment: role → unknown-environment)",
+    )
+    add_es(
+        "authz-delete-env-unknown-precedes-out-of-scope", 20, head19, "delete_environment", devadmin_id,
+        delete_payload(GHOST), T19, "unknown-environment",
+        "an unknown-environment × out-of-scope compound violation is judged as unknown-environment first (delete_environment: unknown-environment → environment-deleted → environment-out-of-scope)",
+    )
+    # Structure (invalid-payload precedes authorization)
+    add_es(
+        "delete-env-id-empty", 13, head12, "delete_environment", admin_id,
+        delete_payload(""), t0 + 12000, "invalid-payload",
+        "environment_id must be a non-empty string (§6.2 structure check — before authorization)",
+    )
+    add_es(
+        "delete-env-format-precedes-role", 20, head19, "delete_environment", prodreader_id,
+        delete_payload(""), T19, "invalid-payload",
+        "a structure violation × insufficient-role compound violation is judged by the structure check first (check-stage order: structure → authorization)",
+    )
+    # Four-eyes exclusion
+    add_es(
+        "authz-propose-delete-env-not-required", 25, head24, "propose", owner_id,
+        propose_payload("delete_environment", delete_payload(DEV), EXPIRES), T24, "approval-not-required",
+        "delete_environment can never be a policy target, so its propose is approval-not-required (§6.2 four-eyes)",
+    )
+    add_es(
+        "policy-ops-delete-environment", 20, head19, "set_approval_policy", owner_id,
+        policy_payload(["delete_environment"], 2), T19, "invalid-payload",
+        "ops cannot name delete_environment (it is outside the closed set of targetable ops — §6.2). Rejected at the structural stage",
+    )
+    # References after the deletion (chain environment-deleted, seq 21)
+    ON_DELETED = {"chain": "environment-deleted"}
+    add_es(
+        "authz-delete-env-twice", 21, deleted_head, "delete_environment", admin_id,
+        delete_payload(STAGE), T20, "environment-deleted",
+        "a second deletion of the same environment is environment-deleted (at most once — §6.2)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-delete-env-deleted-precedes-out-of-scope", 21, deleted_head, "delete_environment",
+        devadmin_id, delete_payload(STAGE), T20, "environment-deleted",
+        "devadmin-0011's scope lost env-stage-0003 at the deletion, so a second deletion by it is both deleted and out of scope — judged as environment-deleted first",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-delete-env-role-precedes-deleted", 21, deleted_head, "delete_environment",
+        devmember_id, delete_payload(STAGE), T20, "insufficient-role",
+        "an insufficient-role × environment-deleted compound violation is judged by the role rule first",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-rotate-deleted-environment", 21, deleted_head, "rotate_epoch", allmember_id,
+        rotate_payload(STAGE, 2), T20, "environment-deleted",
+        "a rotate_epoch naming a deleted environment is environment-deleted (no later entry may reference it — there is nothing left to protect)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-rotate-deleted-precedes-out-of-scope", 21, deleted_head, "rotate_epoch", devmember_id,
+        rotate_payload(STAGE, 2), T20, "environment-deleted",
+        "devmember-0010's scope lost the id at the deletion — the rotate is judged as environment-deleted before environment-out-of-scope",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-checkpoint-deleted-environment", 21, deleted_head, "checkpoint", admin_id,
+        checkpoint_payload([checkpoint_env_entry(STAGE, 1, 1)]), T20, "environment-deleted",
+        "a checkpoint tuple for a deleted environment is invalid (the former acceptance-policy refusal became a consensus rule — §6.2 / §6.4)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-checkpoint-unknown-precedes-deleted", 21, deleted_head, "checkpoint", admin_id,
+        checkpoint_payload([checkpoint_env_entry(GHOST, 1, 1), checkpoint_env_entry(STAGE, 1, 1)]),
+        T20, "unknown-environment",
+        "the checkpoint stages run across every tuple: unknown-environment (the ghost tuple) is judged before environment-deleted (the stage tuple)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-checkpoint-deleted-precedes-out-of-scope", 21, deleted_head, "checkpoint", devmember_id,
+        checkpoint_payload([checkpoint_env_entry(STAGE, 1, 1)]), T20, "environment-deleted",
+        "a member whose scope lost the deleted id gets environment-deleted before environment-out-of-scope",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-create-env-reuse-deleted-id", 21, deleted_head, "create_environment", owner_id,
+        create_env_payload(STAGE), T20, "duplicate-environment",
+        "re-creating a deleted environment's id is duplicate-environment (the id is never reusable — §6.2)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-add-member-scope-deleted-environment", 21, deleted_head, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [STAGE]), T20, "environment-deleted",
+        "a listed scope naming a deleted environment is environment-deleted (no new scope over an environment without a DEK)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-add-member-unknown-precedes-deleted", 21, deleted_head, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "member", "listed", [STAGE, GHOST]), T20, "unknown-environment",
+        "the scope checks are stage-wise: with a deleted id listed before an unknown one, unknown-environment is still judged first (an implementation checking id by id would report environment-deleted)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-add-member-deleted-precedes-scope-role-mismatch", 21, deleted_head, "add_member", owner_id,
+        add_payload(newcomer_id, newcomer, "owner", "listed", [STAGE]), T20, "environment-deleted",
+        "an environment-deleted × scope-role-mismatch compound violation is judged as environment-deleted first (add_member: unknown-environment → environment-deleted → scope-role-mismatch)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-change-role-scope-deleted-environment", 21, deleted_head, "change_role", owner_id,
+        change_payload(devmember_id, "member", "listed", [DEV, STAGE]), T20, "environment-deleted",
+        "a change_role whose new scope still names the deleted id is environment-deleted (the pruned state already dropped it — the generator lists live ids only)",
+        **ON_DELETED,
+    )
+    add_es(
+        "authz-add-device-scope-deleted-environment", 21, deleted_head, "add_device", allmember_id,
+        device_payload(fresh_device, "member", "listed", [STAGE]), T20, "environment-deleted",
+        "an add_device whose scope names a deleted environment is environment-deleted",
+        **ON_DELETED,
+    )
+    # grant_server references (chain environment-deleted-granted, seq 11)
+    ON_GRANTED = {"chain": "environment-deleted-granted"}
+    add_es(
+        "authz-grant-scope-deleted-environment", 11, granted_head, "grant_server", owner_id,
+        grant_payload_for([PROD, DEV], grant_lease_policy), t0 + 10000, "environment-deleted",
+        "a grant_server whose scope_environments names a deleted environment is environment-deleted",
+        **ON_GRANTED,
+    )
+    add_es(
+        "authz-grant-role-precedes-deleted", 11, granted_head, "grant_server", admin_id,
+        grant_payload_for([PROD, DEV], grant_lease_policy), t0 + 10000, "insufficient-role",
+        "an insufficient-role × environment-deleted compound violation is judged by the role rule first",
+        **ON_GRANTED,
+    )
+    add_es(
+        "authz-grant-deleted-precedes-narrowed", 11, granted_head, "grant_server", owner_id,
+        grant_payload_for([DEV], grant_lease_policy), t0 + 10000, "environment-deleted",
+        "a re-grant naming only the deleted id (which also drops prod — a narrowing) is judged as environment-deleted before the re-grant rule",
+        **ON_GRANTED,
+    )
+    negatives += authz_cases[del_start:]
+
+    # --- Signature negatives (based on chain environment-deleted's seq 20) ---
+    e_delete = deleted_steps[0]
+    tampered_delete = resign_actor(
+        "delete-env-tampered-environment-id", e_delete, delete_payload(DEV),
+        "substituting delete_environment's environment_id fails signature verification (the target is signed)",
+    )
+    tampered_delete["chain"] = "environment-deleted"
+
+    def relabeled(name, base_entry, *, op=None, entry_suite=None, note):
+        # The original signature verified over signed_bytes whose op label
+        # (or suite) is swapped and whose payload bytes are kept → must
+        # fail. remove_member's payload is also [one id], so the op label
+        # is the only thing separating the two (the chain's domain
+        # separation — §6.1 / §6.2)
+        signed = lp_encode([
+            entry_suite or suite, base_entry["seq"], base_entry["prev_hash_hex"],
+            op or base_entry["op"], base_entry["actor"]["user_id"],
+            base_entry["actor"]["key_fingerprint_hex"], bytes.fromhex(base_entry["payload_bytes_hex"]),
+            base_entry["timestamp_ms"],
+        ])
+        return {
+            "name": name,
+            "chain": "environment-deleted",
+            "base_seq": base_entry["seq"],
+            "signed_bytes_hex": signed.hex(),
+            "signature_hex": base_entry["signature_hex"],
+            "verify_key_hex": users[base_entry["actor"]["user_id"]]["sig_pub_hex"],
+            "must_fail": True,
+            "note": note,
+        }
+
+    negatives += [
+        tampered_delete,
+        relabeled(
+            "delete-env-op-confusion", e_delete, op="remove_member",
+            note="the delete_environment signature over the same payload bytes relabeled as remove_member (whose payload is also one id) fails verification — the op name inside signed_bytes is the domain separation of chain entries (no separate domain string)",
+        ),
+        relabeled(
+            "delete-env-suite-mismatch", e_delete, entry_suite="maruhi/v2",
+            note="the same signature over signed_bytes declaring another suite fails verification (the suite is signed)",
+        ),
+    ]
+
     device_keys = {
         f"{owner_id}@reserve": ("reserve", owner_id, reserve, 0x5A, 0x6A),
         f"{owner_id}@phone": ("phone", owner_id, phone, 0x5B, 0x6B),
@@ -4022,6 +4376,7 @@ def gen_chain_entries():
                 "lease_policy": "constraint = LP(claim_name, claim_value), element = LP(issuer_url, audience, LP(constraint...)), lease_policy_lp_hex = lower_hex(LP(element...)) (3-level nested LP — §6.2). The list order (of both elements and constraints) is part of the signed data. An empty list is the hex empty string = no lease path. Caps: 8 elements / 8 constraints per element / each string 1024 bytes (§6.1) → needs review",
                 "dek_commitment": "dek_commitment_hex = lower_hex(SHA-256(LP(\"maruhi/v1/dek-commit\", project_id, environment_id, epoch, dek_hex))) (§5.2). project_id = the genesis entry hash. The form is lowercase hex 64 chars (the form check is at the payload structure stage — §6.2). Content matching is the receiver's §5.2 verification; chain verification checks the form only",
                 "checkpoint_environments": "an environment entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex, values_digest_hex), environments_lp_hex = lower_hex(LP(entry...)) (the same nested LP as scope_environments — §6.2). The list order is part of the signed data (generators SHOULD emit environment_id in byte-ascending order — verification is not normative about order). A duplicate environment_id is invalid at payload-structure checking (invalid-payload). manifest_sig_hash_hex / values_digest_hex are lowercase hex 64 chars; audit_head_hash_hex is the empty string (no attestation) or lowercase hex 64 chars. Tuple contents (manifest, values, audit head) cannot be verified by chain verification; matching is done by the server's acceptance check (§6.4) and the client's distribution-time comparison (§6.3) → needs review",
+                "environment_deletion": "delete_environment = LP(environment_id) (§6.2 — 2026-10-07). Admin or above with the environment in the actor's effective scope, only after its create_environment (unknown-environment), at most once and never referenced by a later entry (environment-deleted — rotate / delete targets, checkpoint tuples, add_member / change_role / add_device scope lists, grant_server scope_environments; reuse of the id stays duplicate-environment). The derived state keeps the environment (expected_deleted_environments = environment_id → the deletion seq; absent = none deleted) and removes the id from every listed member / device / grant scope. Not a four-eyes target. The positive column is the valid appends delete-environment-* / regrant-after-environment-deleted and the derived chains environment-deleted (base 19) / environment-deleted-granted (base 9) → needs review",
                 "env_values_digest": "values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m))), v_j = LP(variable_id, version, value_sig_hash_hex) (UTF-8 byte-ascending order of variable_id. Active variables only — tombstones are captured by the manifest side, §4.3). The empty set is also valid. Unit vectors are in the values_digests section → needs review",
             },
             "keys": {
@@ -5293,13 +5648,6 @@ def gen_metadata_signature():
         "an environment rename (metaVersion 2, member or above). prev = SHA-256 of env-create-meta's signed_bytes",
         prev_base="env-create-meta",
     )
-    env_delete = make_statement(
-        "env-delete-admin", "environment", "env-prod-0001", None, "Production EU",
-        "deleted", 3, env_rename["signed_bytes_sha256_hex"], admin_id, 12,
-        "an environment deletion (status deleted). Only environment deletion needs admin-or-above at the declared-head time (the level difference in §4.2 / §12-3). "
-        "user-admin-0003 is admin at head 12. name keeps the preceding active name",
-        prev_base="env-rename",
-    )
     vectors = [
         var_create,
         var_rename,
@@ -5307,7 +5655,6 @@ def gen_metadata_signature():
         var_nfc,
         env_create,
         env_rename,
-        env_delete,
         make_statement(
             "removed-author-in-tenure", "variable", "env-prod-0001", "var-legacy-0002",
             "LEGACY_TOKEN", "active", 1, "", member_id, 4,
@@ -5710,14 +6057,6 @@ def gen_metadata_signature():
             "deleting a variable needs member-or-above at the declared-head time (§4.2 / §6.3-3)",
         ),
         rule_negative(
-            "env-delete-role-insufficient", "environment", "env-prod-0001", None, "Production",
-            "deleted", 2, env_create["signed_bytes_sha256_hex"], member_id, head_hash(4), 4,
-            "author-role-insufficient-at-head",
-            "at head 4, user-member-0002 is member. Only an environment-deletion statement needs admin-or-above "
-            "at the declared-head time (pins the level difference in §4.2 / §12-3 — environment creation "
-            "and renames are at member level)",
-        ),
-        rule_negative(
             "key-from-other-tenure", "variable", "env-prod-0001", "var-rule-0004", "RULE_VAR",
             "active", 1, "", member_id,
             tenure_extension["entry"]["entry_hash_hex"], readd_seq,
@@ -5961,6 +6300,16 @@ def gen_metadata_signature():
         return signed_case(name, "invalid-input", ctx, "InvalidInput", note)
 
     invalid_input_negatives = [
+        invalid_input_negative(
+            "env-status-deleted",
+            make_context("environment", "env-prod-0001", None, "Production EU",
+                         "deleted", 3, env_rename["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            "an environment statement takes only status active (2026-10-07 — CRYPTO_SPEC 0.17-draft §4.2: an "
+            "environment's deletion is the chain op delete_environment, §6.2, and no statement records it). "
+            "The former deletion statement (status deleted, metaVersion 3 after env-rename) is a structural "
+            "violation rejected with InvalidInput — the signature is valid for this byte string; the rejection "
+            "is not by cryptographic verification",
+        ),
         invalid_input_negative(
             "v1-declared-status",
             make_context("variable", "env-prod-0001", "var-rule-0006", "DECLARED_V1",

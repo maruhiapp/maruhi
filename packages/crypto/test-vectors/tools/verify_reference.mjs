@@ -103,6 +103,10 @@ const PAYLOAD_FIELD_ORDER = {
   // device_fingerprints_lp_hex is a nested LP of the FP list
   add_device: ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind", "scope_environments_lp_hex"],
   revoke_device: ["target_user_id", "device_fingerprints_lp_hex"],
+  // 2026-10-07 (CRYPTO_SPEC 0.17-draft §6.2 — environment deletion on the
+  // chain): one field. Domain separation is the op name inside
+  // signed_bytes (no separate domain string)
+  delete_environment: ["environment_id"],
 };
 
 // Nested LP for member scopes / policy ops (§6.2 — same shape as
@@ -528,6 +532,48 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         e.payload.device_fingerprints.every((fp) => canonicalFps.has(fp)),
       );
     }
+  }
+  // Environment deletion (2026-10-07 — §6.2): every positive
+  // delete_environment (derived chains / valid_appends) names an
+  // environment created earlier on its own chain, and at most once. The
+  // consensus judgment itself is the implementation tests' job; this pins
+  // that the positive column is internally consistent
+  {
+    const positives = [
+      ...Object.entries(doc.extended_chains ?? {}).map(([name, ext]) => ({
+        name,
+        chain: [...doc.entries.slice(0, ext.base_seq), ...ext.entries],
+      })),
+      ...doc.valid_appends.map((a) => ({
+        name: a.name,
+        chain: [
+          ...(a.chain === undefined
+            ? doc.entries.slice(0, a.entry.seq - 1)
+            : [
+                ...doc.entries.slice(0, doc.extended_chains[a.chain].base_seq),
+                ...doc.extended_chains[a.chain].entries,
+              ]),
+          a.entry,
+        ],
+      })),
+    ];
+    let deletions = 0;
+    for (const { name, chain } of positives) {
+      const created = new Set();
+      const deleted = new Set();
+      for (const e of chain) {
+        if (e.op === "create_environment") created.add(e.payload.environment_id);
+        if (e.op !== "delete_environment") continue;
+        deletions += 1;
+        const id = e.payload.environment_id;
+        check(
+          `chain ${name} seq ${e.seq}: delete_environment follows its create and is the only one`,
+          typeof id === "string" && id.length > 0 && created.has(id) && !deleted.has(id),
+        );
+        deleted.add(id);
+      }
+    }
+    check("chain: delete_environment positives exist", deletions > 0);
   }
   // checkpoint (§6.2 — PR-F3a): nested-LP reconstruction from the
   // structured representation (environments) matches environments_lp_hex.
@@ -1406,6 +1452,24 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
+  // An environment statement is active only (2026-10-07 — §4.2: the
+  // environment's deletion is the chain op delete_environment). No
+  // positive carries an environment deletion statement, and the retired
+  // form is pinned as an invalid-input negative
+  check(
+    "meta-sig: no positive environment statement is deleted",
+    doc.vectors.every((v) => v.context.kind !== "environment" || v.context.status === "active"),
+  );
+  check(
+    "meta-sig: env-status-deleted is an invalid-input negative",
+    doc.negative.some(
+      (n) =>
+        n.name === "env-status-deleted" &&
+        n.kind === "invalid-input" &&
+        n.context.kind === "environment" &&
+        n.context.status === "deleted",
+    ),
+  );
   // A deletion statement retains the name of the immediately preceding
   // active (§4.2 — deletion does not empty name)
   {

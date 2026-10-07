@@ -250,29 +250,6 @@
       "prev_base": "env-create-meta"
     },
     {
-      "name": "env-delete-admin",
-      "context": {
-        "kind": "environment",
-        "suite": "maruhi/v1",
-        "domain": "maruhi/v1/env-meta-sig",
-        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
-        "environment_id": "env-prod-0001",
-        "name": "Production EU",
-        "status": "deleted",
-        "meta_version": 3,
-        "prev_meta_sig_hash_hex": "deee5615e2bdb16794bb36bb6257af76357fc5daec298ec4ccb6d1e709da90cb",
-        "author_user_id": "user-admin-0003",
-        "chain_head_hash_hex": "da24caae007eb9f641db7f12844e70b97d872b2697beba145fdc4e34cce5ec1e",
-        "chain_head_seq": 12
-      },
-      "author_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
-      "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000d50726f64756374696f6e2045550000000764656c65746564000000013300000040646565653536313565326264623136373934626233366262363235376166373633353766633564616563323938656334636362366431653730396461393063620000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
-      "signed_bytes_sha256_hex": "57043131f8c75dfa801d575fc2deed96c3f5724713755da57ac7c00869a8230b",
-      "signature_hex": "1bac2f1f1364b79d40c6d0675272eb13be725dc3ef0e34b3257928f60783dcf31b084655aa080fadcdac15c3fd60224251149b795d778db0b487f8bce583240a",
-      "note": "an environment deletion (status deleted). Only environment deletion needs admin-or-above at the declared-head time (the level difference in §4.2 / §12-3). user-admin-0003 is admin at head 12. name keeps the preceding active name",
-      "prev_base": "env-rename"
-    },
-    {
       "name": "removed-author-in-tenure",
       "context": {
         "kind": "variable",
@@ -1136,33 +1113,6 @@
       "note": "at head 6, user-admin-0003 is a reader (the change_role is seq 7). Creating / renaming / deleting a variable needs member-or-above at the declared-head time (§4.2 / §6.3-3)"
     },
     {
-      "name": "env-delete-role-insufficient",
-      "kind": "authorization",
-      "chain": "canonical",
-      "context": {
-        "kind": "environment",
-        "suite": "maruhi/v1",
-        "domain": "maruhi/v1/env-meta-sig",
-        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
-        "environment_id": "env-prod-0001",
-        "name": "Production",
-        "status": "deleted",
-        "meta_version": 2,
-        "prev_meta_sig_hash_hex": "b90c55afb00d38d35c8a99cf3bf958fb910647aa8ec29382a0eef1386d77ea10",
-        "author_user_id": "user-member-0002",
-        "chain_head_hash_hex": "cc51255a6316d33f2e47426349a9f8559ab5650a44d3d7713144e7192fe9a6d4",
-        "chain_head_seq": 4
-      },
-      "author_key_fingerprint_hex": "698bea8339cac559b649017917e7bbeb",
-      "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000a50726f64756374696f6e0000000764656c657465640000000132000000406239306335356166623030643338643335633861393963663362663935386662393130363437616138656332393338326130656566313338366437376561313000000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
-      "signed_bytes_sha256_hex": "acd0e21ea7ec29dbca8e7510e1c3234ee821ceef20de200a6b5404ba157abb26",
-      "signature_hex": "5a4cbbd7f3ad0f379bca82d806067623074ddc08981ea42926e6c559c79936fe4994b7af65d1c4d551a961ef013dcd460b25e4d9a2e3a01eb82079efcb09ad0c",
-      "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
-      "expected_reason": "author-role-insufficient-at-head",
-      "must_fail": true,
-      "note": "at head 4, user-member-0002 is member. Only an environment-deletion statement needs admin-or-above at the declared-head time (pins the level difference in §4.2 / §12-3 — environment creation and renames are at member level)"
-    },
-    {
       "name": "key-from-other-tenure",
       "kind": "authorization",
       "chain": "tenure-extension",
@@ -1843,6 +1793,32 @@
         "status": "active",
         "layout_version": 3
       }
+    },
+    {
+      "name": "env-status-deleted",
+      "kind": "invalid-input",
+      "context": {
+        "kind": "environment",
+        "suite": "maruhi/v1",
+        "domain": "maruhi/v1/env-meta-sig",
+        "project_id": "2453f34943463c0471a6e68179c5a5a978dc0a0a9c96bfb8b0de4afd00dc6969",
+        "environment_id": "env-prod-0001",
+        "name": "Production EU",
+        "status": "deleted",
+        "meta_version": 3,
+        "prev_meta_sig_hash_hex": "deee5615e2bdb16794bb36bb6257af76357fc5daec298ec4ccb6d1e709da90cb",
+        "author_user_id": "user-admin-0003",
+        "chain_head_hash_hex": "da24caae007eb9f641db7f12844e70b97d872b2697beba145fdc4e34cce5ec1e",
+        "chain_head_seq": 12
+      },
+      "author_key_fingerprint_hex": "06f6220c286340e6d81c9ba0355cdcfe",
+      "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000d50726f64756374696f6e2045550000000764656c65746564000000013300000040646565653536313565326264623136373934626233366262363235376166373633353766633564616563323938656334636362366431653730396461393063620000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
+      "signed_bytes_sha256_hex": "57043131f8c75dfa801d575fc2deed96c3f5724713755da57ac7c00869a8230b",
+      "signature_hex": "1bac2f1f1364b79d40c6d0675272eb13be725dc3ef0e34b3257928f60783dcf31b084655aa080fadcdac15c3fd60224251149b795d778db0b487f8bce583240a",
+      "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+      "expected_error": "InvalidInput",
+      "must_fail": true,
+      "note": "an environment statement takes only status active (2026-10-07 — CRYPTO_SPEC 0.17-draft §4.2: an environment's deletion is the chain op delete_environment, §6.2, and no statement records it). The former deletion statement (status deleted, metaVersion 3 after env-rename) is a structural violation rejected with InvalidInput — the signature is valid for this byte string; the rejection is not by cryptographic verification"
     },
     {
       "name": "v1-declared-status",
