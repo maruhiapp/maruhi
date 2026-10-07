@@ -28,7 +28,6 @@ import { Effect } from "effect";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
-import type { CliError } from "./errors.ts";
 import type {
   VerifiedEnvironmentStatement,
   VerifiedMetaEvidence,
@@ -496,6 +495,17 @@ export async function verifyEnvironmentStatement(
   environmentId: string,
   statement: DistributedEnvironmentMetaStatement,
 ): Promise<VerifyOutcome<VerifiedEnvironmentStatement>> {
+  // The verified chain is the authority for deletion (CRYPTO_SPEC §6.3
+  // "Chain-deleted environments"): a server distributing a chain-deleted
+  // environment as live is resurrecting it
+  const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
+  if (deletedAtSeq !== null) {
+    return {
+      kind: "rejected",
+      evidence: true,
+      message: `Environment ${displayText(environmentId)} is deleted on the verified chain (delete_environment at seq ${deletedAtSeq}), yet the server distributed it as live (an unauthorized resurrection — a deleted environment is never distributed)`,
+    };
+  }
   if (statement.environmentId !== environmentId) {
     return {
       kind: "rejected",
@@ -512,13 +522,6 @@ export async function verifyEnvironmentStatement(
   );
   if (result.kind !== "ok") {
     return result;
-  }
-  if (statement.status !== "active") {
-    return {
-      kind: "rejected",
-      evidence: true,
-      message: `Environment ${environmentId} was served a deleted statement (distribution of a deleted environment — an inconsistent server response)`,
-    };
   }
   return {
     kind: "ok",
@@ -769,68 +772,4 @@ export async function verifyActiveVariables(
     values.push(outcome.value);
   }
   return { kind: "ok", value: { values, ids: seenIds } };
-}
-
-/**
- * Returns the set of "verified deleted environments" from an environment
- * list's signed statements (§12-4 — a deletion is also a signed
- * statement). Statements that fail verification, whose coordinates don't
- * match, or whose status is not deleted are not included (fail-closed —
- * the caller keeps them as targets without trusting the deletion; §7 never
- * silently skips on the server's claim alone).
- */
-export const verifiedDeletedEnvironments = Effect.fn("values-verify.verifiedDeletedEnvironments")(
-  function* (
-    verified: VerifiedProject,
-    environments: readonly {
-      readonly environmentId: string;
-      readonly statement: DistributedEnvironmentMetaStatement;
-    }[],
-  ): Effect.fn.Return<ReadonlySet<string>, CliError> {
-    const deleted = new Set<string>();
-    for (const environment of environments) {
-      const outcome = yield* Effect.promise(() =>
-        verifyEnvironmentTombstone(verified, environment.environmentId, environment.statement),
-      );
-      if (outcome?.kind === "ok") {
-        deleted.add(environment.environmentId);
-      }
-    }
-    return deleted;
-  },
-);
-
-/**
- * Verifying an environment's deletion statement (§12-4 — the environment
- * list keeps distributing it as the detection material for a denied or a
- * silently revived deletion). null = the listed statement is not a deletion
- * statement for these coordinates (no tombstone is claimed at all).
- */
-export async function verifyEnvironmentTombstone(
-  verified: VerifiedProject,
-  environmentId: string,
-  statement: DistributedEnvironmentMetaStatement,
-): Promise<VerifyOutcome<VerifiedEnvironmentStatement> | null> {
-  if (statement.environmentId !== environmentId || statement.status !== "deleted") {
-    return null;
-  }
-  const outcome = await verifyStatement(
-    verified,
-    environmentId,
-    { kind: "environment" },
-    statement,
-    `environment ${displayText(environmentId)}'s deletion statement`,
-  );
-  if (outcome.kind !== "ok") {
-    return outcome;
-  }
-  return {
-    kind: "ok",
-    value: {
-      status: "deleted",
-      // deleted keeps the immediately preceding active name (§4.2)
-      name: statement.name,
-      ...metaEvidenceFields(statement, outcome.value.signedBytesHashHex),
-    },
-  };
 }

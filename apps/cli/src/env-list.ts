@@ -7,23 +7,27 @@
 //   - The **set** of environments is the verified chain's create_environment
 //     entries (complete and verified — every environment is created on the
 //     chain, and the chain never forgets one, even after a deletion — §6.2)
-//   - The **name and status** come from the environment's latest signed
-//     statement in the environment list (§12-4 — the list keeps distributing
-//     a deleted environment's deletion statement). Each one is verified
-//     against the chain (signature, author's role and scope at its declared
-//     head — the same verification as pull and env rm)
+//   - The **status** is chain-derived too: an environment whose
+//     delete_environment entry is on the verified chain is deleted
+//     (CRYPTO_SPEC §6.2 / §6.3 — the server cannot hide or undo it)
+//   - The **name** of a live environment comes from its latest signed
+//     statement in the environment list, verified against the chain
+//     (signature, author's role and scope at its declared head — the same
+//     verification as pull). A deleted environment has no name: nothing of
+//     it is distributed any more (AUTH_SPEC §12-7)
 //   - The **epoch** is chain-derived (the server's advisory currentEpoch is
 //     not read)
 //   - **In scope** is the caller's effective scope (member scope ∩ this
 //     machine's device cap — §6.2); without a usable device key it falls
 //     back to the member scope and says so
 //
-// Fail-closed: a chain environment missing from the list, an ID listed
-// twice, or a statement that fails verification is an error — nothing is
-// silently skipped. A statement declaring a chain head beyond this run's
-// view (or a listed ID the view has not seen created yet) re-syncs once.
+// Fail-closed: a live chain environment missing from the list, a deleted
+// one present in it (a resurrection), an ID listed twice, or a statement
+// that fails verification is an error — nothing is silently skipped. A
+// statement declaring a chain head beyond this run's view (or a listed ID
+// the view has not seen created yet) re-syncs once.
 
-import type { ChainDevice, ChainMember, MemberScope } from "@maruhi/crypto";
+import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -34,35 +38,29 @@ import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedEnvironmentStatement } from "./floor-check.ts";
 import { compareCodePoints } from "./scope.ts";
-import {
-  verifyEnvironmentStatement,
-  verifyEnvironmentTombstone,
-  type VerifyOutcome,
-} from "./values-verify.ts";
+import { verifyEnvironmentStatement } from "./values-verify.ts";
 import { pullWithBoundedResync } from "./values.ts";
 
 /** An environment's lifecycle status. */
 export type EnvironmentStatus = "active" | "deleted";
 
 /**
- * The one place an environment's status is derived. Today the source is the
- * verified environment statement (a deletion is a signed status-deleted
- * statement — §12-4); keeping the derivation here lets that source change
- * without touching the listing.
+ * The one place an environment's status is derived: the verified chain
+ * (a deletion is the chain op delete_environment — CRYPTO_SPEC §6.2).
  */
-function environmentStatusOf(statement: VerifiedEnvironmentStatement): EnvironmentStatus {
-  return statement.status === "deleted" ? "deleted" : "active";
+function environmentStatusOf(environment: EnvironmentChainState): EnvironmentStatus {
+  return environment.deletedAtSeq === null ? "active" : "deleted";
 }
 
-/** One listed environment (verified-chain set × verified statement). */
+/** One listed environment (the verified chain's set, with a live environment's verified name). */
 export interface EnvironmentListRow {
   readonly environmentId: string;
-  /** The verified statement's display name (a deleted environment keeps its last active name — §4.2). */
-  readonly name: string;
+  /** The verified statement's display name; null for a deleted environment (none is distributed — §12-7). */
+  readonly name: string | null;
   readonly status: EnvironmentStatus;
   /** The chain-derived current epoch. */
   readonly currentEpoch: number;
-  /** Whether the caller's scope (see `scopeBasis`) covers the environment. */
+  /** Whether the caller's scope (see `scopeBasis`) covers the environment (never for a deleted one — a deletion leaves no permission in it). */
   readonly inScope: boolean;
 }
 
@@ -82,36 +80,20 @@ export interface EnvironmentList {
 type ListWire = Effect.Success<ReturnType<MaruhiClient["environments"]["list"]>>;
 type ListedStatement = ListWire["environments"][number]["statement"];
 
-/** One chain environment joined with its verified listed statement. */
+/** One chain environment joined with its verified listed statement (null = deleted on the chain). */
 interface JoinedEnvironment {
   readonly environmentId: string;
-  readonly statement: VerifiedEnvironmentStatement;
-  /** The chain-derived current epoch. */
-  readonly currentEpoch: number;
-}
-
-/** Verifies one listed statement: an active statement, or a deletion statement (a tombstone). */
-async function verifyListedStatement(
-  view: VerifiedProject,
-  environmentId: string,
-  statement: ListedStatement,
-): Promise<VerifyOutcome<VerifiedEnvironmentStatement>> {
-  if (statement.status !== "deleted") {
-    return await verifyEnvironmentStatement(view, environmentId, statement);
-  }
-  return (
-    (await verifyEnvironmentTombstone(view, environmentId, statement)) ?? {
-      kind: "rejected",
-      evidence: true,
-      message: `The deletion statement listed for environment ${displayText(environmentId)} has coordinates that do not match it (possible transplantation)`,
-    }
-  );
+  readonly statement: VerifiedEnvironmentStatement | null;
+  readonly chain: EnvironmentChainState;
 }
 
 /**
- * Joins the verified chain's environment set with the listed statements.
- * `future` = a statement declares a head beyond the view, or a listed ID was
- * not created in the view yet (both resolved by the one bounded resync).
+ * Joins the verified chain's environment set with the listed statements: a
+ * live environment must be listed and its statement must verify; a deleted
+ * one must not be listed (verifyEnvironmentStatement refuses a chain-deleted
+ * environment as a resurrection). `future` = a statement declares a head
+ * beyond the view, or a listed ID was not created in the view yet (both
+ * resolved by the one bounded resync).
  */
 const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   view: VerifiedProject,
@@ -139,14 +121,18 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   for (const [environmentId, chainEnvironment] of view.state.environments) {
     const statement = listed.get(environmentId);
     if (statement === undefined) {
+      if (chainEnvironment.deletedAtSeq !== null) {
+        joined.push({ environmentId, statement: null, chain: chainEnvironment });
+        continue;
+      }
       return yield* Effect.fail(
         evidenceError(
-          `The environment list omits environment ${displayText(environmentId)}, which the verified chain created (create_environment at seq ${chainEnvironment.createdAtSeq}) — the server withholds an environment it must keep listing, deleted or not`,
+          `The environment list omits environment ${displayText(environmentId)}, which the verified chain created (create_environment at seq ${chainEnvironment.createdAtSeq}) and has not deleted — the server withholds a live environment it must list`,
         ),
       );
     }
     const outcome = yield* Effect.promise(() =>
-      verifyListedStatement(view, environmentId, statement),
+      verifyEnvironmentStatement(view, environmentId, statement),
     );
     if (outcome.kind === "future") {
       return { kind: "future" } as const;
@@ -156,11 +142,7 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
         outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
       );
     }
-    joined.push({
-      environmentId,
-      statement: outcome.value,
-      currentEpoch: chainEnvironment.currentEpoch,
-    });
+    joined.push({ environmentId, statement: outcome.value, chain: chainEnvironment });
   }
   return { kind: "ok", value: joined } as const;
 });
@@ -222,13 +204,17 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
   }
   const scope = scopeOf(member, input.ownKeyFingerprintHex);
   const rows = joined
-    .map((environment): EnvironmentListRow => ({
-      environmentId: environment.environmentId,
-      name: environment.statement.name,
-      status: environmentStatusOf(environment.statement),
-      currentEpoch: environment.currentEpoch,
-      inScope: scopeIncludesEnvironment(scope.scope, environment.environmentId),
-    }))
+    .map((environment): EnvironmentListRow => {
+      const status = environmentStatusOf(environment.chain);
+      return {
+        environmentId: environment.environmentId,
+        name: environment.statement?.name ?? null,
+        status,
+        currentEpoch: environment.chain.currentEpoch,
+        inScope:
+          status === "active" && scopeIncludesEnvironment(scope.scope, environment.environmentId),
+      };
+    })
     .toSorted((a, b) => compareCodePoints(a.environmentId, b.environmentId));
   return {
     rows,
@@ -264,7 +250,7 @@ export function envListJson(list: EnvironmentList, all: boolean): string {
   );
 }
 
-/** The human-readable row (ID, name, status, epoch, scope; the name is neutralized). */
+/** The human-readable row (ID, name, status, epoch, scope; the name is neutralized; a deleted environment has no name — "-"). */
 export function formatEnvListRow(row: EnvironmentListRow): string {
-  return `${displayText(row.environmentId)}\t${displayText(row.name)}\t${row.status}\tepoch=${row.currentEpoch}\tin-scope=${row.inScope ? "yes" : "no"}`;
+  return `${displayText(row.environmentId)}\t${row.name === null ? "-" : displayText(row.name)}\t${row.status}\tepoch=${row.currentEpoch}\tin-scope=${row.inScope ? "yes" : "no"}`;
 }

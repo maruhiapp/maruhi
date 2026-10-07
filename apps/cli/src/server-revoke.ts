@@ -37,6 +37,7 @@ import {
 } from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -45,7 +46,6 @@ import {
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
-  verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import { compareCodePoints } from "./scope.ts";
 
@@ -63,7 +63,7 @@ export interface RevokeSummary extends SweepOutcome {
   /** Whether it was appended to the chain (false = no valid grant / already revoked by a concurrent revoke — resume from the post-revoke rest). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
-  /** Environments skipped due to a verified deletion statement. */
+  /** Environments skipped because the verified chain shows them deleted (delete_environment). */
   readonly skippedDeleted: readonly string[];
 }
 
@@ -154,14 +154,12 @@ export const sweepAfterRevoke = Effect.fn("server-revoke.sweepAfterRevoke")(func
   readonly revokeSeq: number;
   readonly rotate: SweepRotate<R>;
 }): Effect.fn.Return<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
-  // Excludes verified-deleted environments from the rotation
-  // targets (a deleted environment returns 404 for both rotate
-  // and pull, and no wrap remains to rotate). The only basis for
-  // exclusion is **verification of a signed deletion statement**
-  // — never skipped silently on the server's 404 declaration
-  // alone (§7). If unverifiable it stays a target and surfaces
-  // as a failure
-  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  // Excludes chain-deleted environments from the rotation targets
+  // (a deleted environment returns 404 for both rotate and pull, and
+  // no wrap remains to rotate). The only basis for exclusion is the
+  // **delete_environment entry on the verified chain** — never
+  // skipped silently on the server's 404 declaration alone (§7)
+  const deletedVerified = chainDeletedEnvironments(input.verified);
   const skippedDeleted = [...input.verified.state.environments.keys()]
     .filter((environmentId) => deletedVerified.has(environmentId))
     .toSorted(compareCodePoints);

@@ -141,10 +141,10 @@ export function compareCodePoints(a: string, b: string): number {
 }
 
 /**
- * Each id of `listed` exists on the chain (the pre-communication
- * judgment of the consensus rule `unknown-environment` — stops a
- * typo before issuance / append). A deleted environment may be
- * listed (§6.2).
+ * Each id of `listed` exists on the chain and is not deleted there
+ * (the pre-communication judgment of the consensus rules
+ * `unknown-environment` and `environment-deleted` — stops a typo or a
+ * stale ID before issuance / append; §6.2).
  */
 export function requireScopeEnvironmentsExist(
   verified: VerifiedProject,
@@ -154,14 +154,24 @@ export function requireScopeEnvironmentsExist(
     return Effect.void;
   }
   const unknown = scope.environmentIds.filter((id) => !verified.state.environments.has(id));
-  if (unknown.length === 0) {
-    return Effect.void;
+  if (unknown.length > 0) {
+    return Effect.fail(
+      cliError(
+        `Environment ${unknown.map((id) => displayText(id)).join(", ")} does not exist on this project's chain (a scope may list only environments whose create_environment entry precedes it — CRYPTO_SPEC §6.2 unknown-environment). Check the ID with \`maruhi env list\``,
+      ),
+    );
   }
-  return Effect.fail(
-    cliError(
-      `Environment ${unknown.map((id) => displayText(id)).join(", ")} does not exist on this project's chain (a scope may list only environments whose create_environment entry precedes it — CRYPTO_SPEC §6.2 unknown-environment). Check the ID with \`maruhi env list\``,
-    ),
+  const deleted = scope.environmentIds.filter(
+    (id) => (verified.state.environments.get(id)?.deletedAtSeq ?? null) !== null,
   );
+  if (deleted.length > 0) {
+    return Effect.fail(
+      cliError(
+        `Environment ${deleted.map((id) => displayText(id)).join(", ")} is deleted on this project's chain (a scope may not list a deleted environment — CRYPTO_SPEC §6.2 environment-deleted). Check the IDs with \`maruhi env list\``,
+      ),
+    );
+  }
+  return Effect.void;
 }
 
 /** The wording for when I point at an environment outside my scope (K4-C — does not wait for the server's 403). */

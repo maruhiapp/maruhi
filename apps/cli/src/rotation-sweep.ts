@@ -23,9 +23,9 @@
 // several mandates (a narrowing followed by a remove), take the maximum
 // baseline seq per environment.
 //
-// Excluding a deleted environment is grounded only in a **verified
-// deletion statement** (never silently skipped on the server's 404 claim
-// alone — §7).
+// Excluding a deleted environment is grounded only in its
+// **delete_environment entry on the verified chain** (never silently
+// skipped on the server's 404 claim alone — §7; CRYPTO_SPEC §6.2).
 
 import {
   ALL_SCOPE,
@@ -38,18 +38,16 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
 import type { AppliedOperation } from "./chain-applied.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { displayText } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
 import type { CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { logNote, logWarning } from "./notice.ts";
+import { logWarning } from "./notice.ts";
 import { compareCodePoints, environmentsOfScopeAt, scopeChangeAt } from "./scope.ts";
-import { verifiedDeletedEnvironments } from "./values-verify.ts";
 
 /** The injected rotation's mode: force = a new epoch is mandatory / verify = resume-or-confirm only. */
 export type SweepRotateMode = "force" | "verify";
@@ -434,37 +432,16 @@ function narrowingAdvice(
 }
 
 /**
- * Resolving unconverged mandates: when the chain-derived-only prologue
- * judgment is empty, return empty with zero communication; only when
- * candidates exist, run the verified filter for deleted environments
- * (one GET of the environment list). A fetch / verification failure is
- * null (= cannot judge. The caveat was already emitted) — never fails
- * the caller's command (the chain verification itself succeeded).
- * Shared by the standing warning (warnUnconvergedMandates) and project
- * verify's detail display.
+ * Resolving unconverged mandates — chain-derived only, so no request is
+ * made (deleted environments come from the verified chain's
+ * delete_environment entries — CRYPTO_SPEC §6.2). Shared by the standing
+ * warning (warnUnconvergedMandates) and project verify's detail display.
  */
-export const resolveUnconvergedMandates = Effect.fn("rotation-sweep.resolveUnconvergedMandates")(
-  function* (input: {
-    readonly client: MaruhiClient;
-    readonly verified: VerifiedProject;
-  }): Effect.fn.Return<readonly UnconvergedMandate[] | null, never, CliIo> {
-    const candidates = unconvergedMandates(input.verified, new Set());
-    if (candidates.length === 0) {
-      return candidates;
-    }
-    return yield* verifiedDeletedEnvironmentSet(input.client, input.verified).pipe(
-      Effect.map((deletedVerified) => unconvergedMandates(input.verified, deletedVerified)),
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          yield* logNote(
-            `there are candidate unconverged rotation mandates, but they cannot be confirmed because verification of a deleted environment failed (${error.message})`,
-          );
-          return null;
-        }),
-      ),
-    );
-  },
-);
+export function resolveUnconvergedMandates(input: {
+  readonly verified: VerifiedProject;
+}): readonly UnconvergedMandate[] {
+  return unconvergedMandates(input.verified, chainDeletedEnvironments(input.verified));
+}
 
 /** One mandate's warning line (shared by the standing warning and project verify's detail display). */
 export function describeUnconvergedMandate(
@@ -478,17 +455,13 @@ export function describeUnconvergedMandate(
  * The standing warning for unconverged rotation mandates (the B2
  * ruling). Called after every command's chain sync (converging commands
  * — member remove / change-role / server revoke / env rotate — do not
- * call it, since their own sweep report carries it). The warning is a
- * SHOULD — a fetch / verification failure never stops the command
- * itself (it says so and continues).
+ * call it, since their own sweep report carries it). Chain-derived only
+ * (no request).
  */
 export const warnUnconvergedMandates = Effect.fn("rotation-sweep.warnUnconvergedMandates")(
-  function* (input: {
-    readonly client: MaruhiClient;
-    readonly verified: VerifiedProject;
-  }): Effect.fn.Return<void, never, CliIo> {
-    const filtered = yield* resolveUnconvergedMandates(input);
-    if (filtered === null || filtered.length === 0) {
+  function* (input: { readonly verified: VerifiedProject }): Effect.fn.Return<void, never, CliIo> {
+    const filtered = resolveUnconvergedMandates(input);
+    if (filtered.length === 0) {
       return;
     }
     const io = yield* CliIo;
@@ -500,19 +473,6 @@ export const warnUnconvergedMandates = Effect.fn("rotation-sweep.warnUnconverged
     }
   },
 );
-
-/** The verified set of deleted environments (one GET of the environment list + deletion-statement verification — §7). */
-export const verifiedDeletedEnvironmentSet = Effect.fn(
-  "rotation-sweep.verifiedDeletedEnvironmentSet",
-)(function* (
-  client: MaruhiClient,
-  verified: VerifiedProject,
-): Effect.fn.Return<ReadonlySet<string>, CliError> {
-  const listed = yield* client.environments
-    .list({ params: { projectId: verified.projectId } })
-    .pipe(Effect.mapError(toCliError));
-  return yield* verifiedDeletedEnvironments(verified, listed.environments);
-});
 
 /** Turning one environment's rotation into a result (failures are collected, not thrown — for §7's all-environment sweep). */
 function rotateOutcome<R>(

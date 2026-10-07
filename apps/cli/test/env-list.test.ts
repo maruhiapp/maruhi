@@ -3,10 +3,13 @@
 //
 // Invariants pinned down:
 //  1. The set of environments is the verified chain's create_environment
-//     entries; each row carries the verified statement's name and status, the
-//     chain-derived epoch, and whether the caller's effective scope covers it.
-//     Deleted environments appear only with --all; --json is one document
-//  2. Fail-closed: a chain environment missing from the list, or a listed
+//     entries; the status is chain-derived (delete_environment — CRYPTO_SPEC
+//     §6.2); a live row carries the verified statement's name, the
+//     chain-derived epoch, and whether the caller's effective scope covers
+//     it. Deleted environments (no name — nothing of them is distributed)
+//     appear only with --all; --json is one document
+//  2. Fail-closed: a live chain environment missing from the list, a
+//     chain-deleted one served as live (a resurrection), or a listed
 //     statement failing verification, is an error — never silently skipped
 //  3. Zero values: no agent gate, and no master key required. Without this
 //     machine's device key the scope column falls back to the member scope
@@ -21,11 +24,11 @@ import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   environmentStatementFor,
   genesisOp,
   makeTestUser,
   rotateEpochOp,
-  statementHashOf,
   type TestUser,
   type WireDistributedEnvironmentStatement,
 } from "./support/crypto.ts";
@@ -37,9 +40,8 @@ let devMember: TestUser;
 let built: BuiltChain;
 let devStatement: WireDistributedEnvironmentStatement;
 let prodStatement: WireDistributedEnvironmentStatement;
+/** env-old's statement from before its chain deletion (serving it is a resurrection). */
 let oldStatement: WireDistributedEnvironmentStatement;
-/** env-old's deletion statement (metaVersion 2, the last active name kept — §4.2). */
-let oldTombstone: WireDistributedEnvironmentStatement;
 
 const servers: MockServer[] = [];
 
@@ -54,6 +56,7 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp("env-old", dek()) },
     { actor: owner, operation: rotateEpochOp("env-prod", 2, dek()) },
     { actor: owner, operation: addScopedMemberOp(devMember, "member", ["env-dev"]) },
+    { actor: owner, operation: deleteEnvironmentOp("env-old") },
   ]);
   const head = { seq: 1, hashHex: built.projectId };
   const statementOf = (environmentId: string, name: string) =>
@@ -67,16 +70,6 @@ beforeAll(async () => {
   devStatement = await statementOf("env-dev", "Development");
   prodStatement = await statementOf("env-prod", "Production");
   oldStatement = await statementOf("env-old", "Legacy");
-  oldTombstone = await environmentStatementFor({
-    projectId: built.projectId,
-    environmentId: "env-old",
-    name: "Legacy",
-    author: owner,
-    head,
-    status: "deleted",
-    metaVersion: 2,
-    prevMetaSigHashHex: await statementHashOf(built.projectId, oldStatement),
-  });
 });
 
 afterEach(async () => {
@@ -113,11 +106,7 @@ function listHandler(statements: readonly WireDistributedEnvironmentStatement[])
 
 async function startEnv(
   user: TestUser,
-  statements: readonly WireDistributedEnvironmentStatement[] = [
-    devStatement,
-    prodStatement,
-    oldTombstone,
-  ],
+  statements: readonly WireDistributedEnvironmentStatement[] = [devStatement, prodStatement],
 ): Promise<TestEnv & { readonly server: MockServer }> {
   const server = await MockServer.start([chainHandler(), listHandler(statements)]);
   servers.push(server);
@@ -131,7 +120,7 @@ interface ListDocument {
   readonly scopeBasis: string;
   readonly environments: readonly {
     readonly environmentId: string;
-    readonly name: string;
+    readonly name: string | null;
     readonly status: string;
     readonly currentEpoch: number;
     readonly inScope: boolean;
@@ -153,12 +142,12 @@ describe("maruhi env list", () => {
     expect(env.errors.join("\n")).toContain("1 deleted environment not shown (--all lists them)");
   });
 
-  it("--all adds deleted environments with their last active name", async () => {
+  it("--all adds chain-deleted environments (no name, never in scope)", async () => {
     const env = await startEnv(owner);
     expect(await runCli(["env", "list", "--all"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("Environments (3)");
-    expect(logs).toContain("env-old\tLegacy\tdeleted\tepoch=1\tin-scope=yes");
+    expect(logs).toContain("env-old\t-\tdeleted\tepoch=1\tin-scope=no");
   });
 
   it("judges the scope column by the caller's effective scope", async () => {
@@ -188,10 +177,10 @@ describe("maruhi env list", () => {
     const env = await startEnv(owner);
     expect(await runCli(["env", "list", "--json", "--all"], env.layer)).toBe(0);
     const document = JSON.parse(env.logs.join("\n")) as ListDocument;
-    expect(document.environments.map((row) => [row.environmentId, row.status])).toEqual([
-      ["env-dev", "active"],
-      ["env-old", "deleted"],
-      ["env-prod", "active"],
+    expect(document.environments.map((row) => [row.environmentId, row.name, row.status])).toEqual([
+      ["env-dev", "Development", "active"],
+      ["env-old", null, "deleted"],
+      ["env-prod", "Production", "active"],
     ]);
   });
 
@@ -209,18 +198,27 @@ describe("maruhi env list", () => {
     );
   });
 
-  it("refuses a listing that omits an environment the chain created (never skipped)", async () => {
-    const env = await startEnv(owner, [devStatement, prodStatement]);
+  it("refuses a listing that omits a live environment the chain created (never skipped)", async () => {
+    const env = await startEnv(owner, [devStatement]);
     expect(await runCli(["env", "list"], env.layer)).not.toBe(0);
     expect(env.errors.join("\n")).toContain(
-      "The environment list omits environment env-old, which the verified chain created",
+      "The environment list omits environment env-prod, which the verified chain created",
+    );
+    expect(env.logs).toEqual([]);
+  });
+
+  it("refuses a listing that serves a chain-deleted environment as live (a resurrection — §6.3)", async () => {
+    const env = await startEnv(owner, [devStatement, prodStatement, oldStatement]);
+    expect(await runCli(["env", "list", "--all"], env.layer)).not.toBe(0);
+    expect(env.errors.join("\n")).toContain(
+      `Environment env-old is deleted on the verified chain (delete_environment at seq ${built.entries.length}), yet the server distributed it as live`,
     );
     expect(env.logs).toEqual([]);
   });
 
   it("refuses a listed statement that fails verification (never skipped)", async () => {
     const forged = { ...prodStatement, name: "Production (forged)" };
-    const env = await startEnv(owner, [devStatement, forged, oldTombstone]);
+    const env = await startEnv(owner, [devStatement, forged]);
     expect(await runCli(["env", "list"], env.layer)).not.toBe(0);
     expect(env.errors.join("\n")).toContain(
       "Verification of environment env-prod's meta statement failed (reason=signature-invalid)",
@@ -236,7 +234,7 @@ describe("maruhi env list", () => {
       author: owner,
       head: { seq: 1, hashHex: built.projectId },
     });
-    const env = await startEnv(owner, [devStatement, prodStatement, oldTombstone, ghost]);
+    const env = await startEnv(owner, [devStatement, prodStatement, ghost]);
     expect(await runCli(["env", "list"], env.layer)).not.toBe(0);
     expect(env.errors.join("\n")).toContain(
       "The environment list still names a chain head or an environment the verified chain does not have after a resync",

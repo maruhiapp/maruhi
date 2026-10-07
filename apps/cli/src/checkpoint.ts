@@ -51,12 +51,12 @@ import { Effect, Schedule } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
-import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 
@@ -107,7 +107,7 @@ interface CheckpointInput {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /**
    * The coverage target. "all" = every environment in the verified view
-   * (except environments with a verified deletion statement — §6.3). An
+   * (except environments deleted on the verified chain — §6.3). An
    * explicit list is for trigger (i) (the environment whose rotate just
    * completed).
    */
@@ -218,7 +218,7 @@ const resolveTargets = Effect.fn("checkpoint.resolveTargets")(function* (
   if (self === undefined) {
     return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  const deleted = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const deleted = chainDeletedEnvironments(input.verified);
   const active = all.filter((environmentId) => !deleted.has(environmentId));
   return {
     targets: active

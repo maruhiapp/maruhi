@@ -1,6 +1,8 @@
 // Test "honest in-memory environment" handlers that accept meta operations
-// (declaration create, activation, removal, and the environment's own rename
-// / deletion) and advance the state. Lets the
+// (declaration create, activation, removal, the environment's own rename) and
+// the environment deletion composite (the delete_environment chain entry —
+// CRYPTO_SPEC §6.2 — appended to the served chain), and advance the state.
+// Lets the
 // schema import (serial registration of many variables — pins down the O(N)
 // round trips) and var rm (transition to tombstone + the 1-E′ confirmation)
 // tests run without hand-editing the echo base on every acceptance.
@@ -10,7 +12,9 @@
 // (§6.3) is done by the client implementation (this mock only keeps the wire
 // shape consistent).
 
-import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
+import type { ChainEntry } from "@maruhi/crypto";
+
+import { acceptAppendedEntry, deksHandlerOf, servedChainResponse } from "./chain-handler.ts";
 import {
   type BuiltChain,
   headOf,
@@ -25,10 +29,13 @@ import type { MockHandler, MockRequest } from "./server.ts";
 
 /** The environment state the mock advances (exposed for assertions). */
 export interface MetaEnvironmentState {
-  /** The environment's latest statement (advanced by rename / deletion). */
+  /** The environment's latest statement (advanced by rename). */
   envStatement: WireDistributedEnvironmentStatement;
-  /** true once a deletion was accepted (the pulls answer 404; the list keeps the tombstone — §12-4). */
+  /** true once a deletion was accepted (the pulls answer 404 and the list omits the environment — §12-7). */
   environmentDeleted: boolean;
+  /** The served chain (the built chain plus accepted delete_environment entries) and its entry hashes. */
+  readonly chainEntries: ChainEntry[];
+  readonly chainHashes: string[];
   variables: WireDistributedVariableStatement[];
   tombstones: WireDistributedVariableStatement[];
   /** The latest accepted manifest (null = still serving the initial form). */
@@ -53,6 +60,8 @@ export interface MetaEnvironmentServerInput {
   readonly ignoreRemovals?: boolean;
   /** Accepts environment renames / deletions without advancing state (the 1-E′ failure path). */
   readonly ignoreEnvironmentMutations?: boolean;
+  /** Serves the environment as live in the list and the pulls even after its deletion (a resurrection — §6.3). */
+  readonly resurrectDeleted?: boolean;
 }
 
 interface MutationBody {
@@ -82,6 +91,8 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
   const state: MetaEnvironmentState = {
     envStatement: input.envStatement,
     environmentDeleted: false,
+    chainEntries: [...input.chain.entries],
+    chainHashes: [...input.chain.hashes],
     variables: [...(input.initialVariables ?? [])],
     tombstones: [...(input.initialTombstones ?? [])],
     manifest: null,
@@ -95,6 +106,8 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
   };
   const activatePattern = new RegExp(`^${base}/variables/([^/]+)/activate$`);
   const removePattern = new RegExp(`^${base}/variables/([^/]+)$`);
+  /** Whether the environment is hidden from reads (deleted, unless resurrected). */
+  const hidden = (): boolean => state.environmentDeleted && input.resurrectDeleted !== true;
 
   const acceptStatement = (body: MutationBody): void => {
     const accepted = distributed(body.statement, input.owner, "author");
@@ -106,8 +119,11 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
   };
 
   const handlers: MockHandler[] = [
-    // Chain distribution (full length)
-    chainHandlerOf(input.chain),
+    // Chain distribution (full length, reflecting accepted deletions)
+    (request) =>
+      request.method === "GET" && request.path === `/projects/${input.chain.projectId}/chain`
+        ? servedChainResponse(input.chain.projectId, state.chainEntries, state.chainHashes)
+        : null,
     // Self-addressed DEK (activation's value push; stays 404 if wrap is not wired)
     ...(input.wrap === undefined
       ? []
@@ -117,7 +133,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {
         return null;
       }
-      if (state.environmentDeleted) {
+      if (hidden()) {
         return notFound;
       }
       const manifest =
@@ -193,24 +209,24 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       }
       return { status: 204, bodyText: "" };
     },
-    // The value pull of a deleted environment (§12-4 — 404; a live one is left to other handlers)
+    // The value pull of a deleted environment (§12-7 — 404; a live one is left to other handlers)
     (request) =>
-      request.method === "GET" && request.path === `${base}/pull` && state.environmentDeleted
-        ? notFound
-        : null,
-    // The environment list (deleted environments stay listed with their tombstone statement — §12-4)
+      request.method === "GET" && request.path === `${base}/pull` && hidden() ? notFound : null,
+    // The environment list (a chain-deleted environment is not listed — §12-7)
     (request) =>
       request.method === "GET" && request.path === list
         ? {
             status: 200,
             json: {
-              environments: [
-                {
-                  environmentId: input.environmentId,
-                  currentEpoch: 1,
-                  statement: state.envStatement,
-                },
-              ],
+              environments: hidden()
+                ? []
+                : [
+                    {
+                      environmentId: input.environmentId,
+                      currentEpoch: 1,
+                      statement: state.envStatement,
+                    },
+                  ],
               schemaPolicy: "enabled" as const,
             },
           }
@@ -234,18 +250,35 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       }
       return { status: 204, bodyText: "" };
     },
-    // Environment deletion (tombstone + cascade — §12-4)
-    (request) => {
+    // Environment deletion (the delete_environment entry + cascade — §12-4;
+    // the parent-head CAS answers 409 ChainHeadConflict)
+    async (request) => {
       if (request.method !== "DELETE" || request.path !== base) {
         return null;
       }
-      if (state.environmentDeleted) {
-        return notFound;
+      const body = request.body as {
+        readonly parentHeadHashHex: string;
+        readonly entry: ChainEntry;
+      };
+      const headHashHex = state.chainHashes[state.chainHashes.length - 1];
+      if (body.parentHeadHashHex !== headHashHex) {
+        return {
+          status: 409,
+          json: {
+            _tag: "ChainHeadConflict",
+            currentHeadSeq: state.chainEntries.length,
+            currentHeadHashHex: headHashHex,
+          },
+        };
       }
       state.mutations.push({ kind: "remove-environment", request });
       if (input.ignoreEnvironmentMutations !== true) {
-        const body = request.body as { readonly statement: WireDistributedEnvironmentStatement };
-        state.envStatement = distributed(body.statement, input.owner, "author");
+        await acceptAppendedEntry(
+          input.chain.projectId,
+          state.chainEntries,
+          state.chainHashes,
+          body.entry,
+        );
         state.environmentDeleted = true;
         state.variables = [];
         state.tombstones = [];

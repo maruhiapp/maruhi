@@ -318,7 +318,7 @@ describe("maruhi env rotate", () => {
     // §7's dedicated message comes out (never collapsed into the generic "environment not found")
     expect(env.errors).toEqual(
       expect.arrayContaining([
-        `maruhi: Rotation for environment ${ENV_ID} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+        `maruhi: Rotation for environment ${ENV_ID} was rejected with 404, yet the verified chain shows it as live (no delete_environment entry). A malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
       ]),
     );
     expect(errors).not.toContain("safe to simply re-run");

@@ -121,17 +121,26 @@ const ConflictSchema = Schema.Struct({
   secondHashHex: Schema.String,
 });
 
-const IntentSchema = Schema.Struct({
-  id: IntentId,
-  op: Schema.Literals(["create_environment", "rotate_epoch", "meta-op"]),
-  environmentId: EnvironmentIdSchema,
-  epoch: PositiveInt,
-  dekCommitmentHex: Schema.NullOr(HashHex),
-  variableId: Schema.NullOr(VariableIdSchema),
-  manifestVersion: PositiveInt,
-  manifestSigHashHex: HashHex,
-  declaredHead: ChainHeadFloorSchema,
-});
+const IntentSchema = Schema.Union([
+  Schema.Struct({
+    id: IntentId,
+    op: Schema.Literals(["create_environment", "rotate_epoch", "meta-op"]),
+    environmentId: EnvironmentIdSchema,
+    epoch: PositiveInt,
+    dekCommitmentHex: Schema.NullOr(HashHex),
+    variableId: Schema.NullOr(VariableIdSchema),
+    manifestVersion: PositiveInt,
+    manifestSigHashHex: HashHex,
+    declaredHead: ChainHeadFloorSchema,
+  }),
+  // An environment deletion issues no manifest (2026-10-07 — CRYPTO_SPEC §6.2)
+  Schema.Struct({
+    id: IntentId,
+    op: Schema.Literal("delete_environment"),
+    environmentId: EnvironmentIdSchema,
+    declaredHead: ChainHeadFloorSchema,
+  }),
+]);
 
 const SnapshotStateSchema = Schema.Struct({
   chainHead: Schema.NullOr(ChainHeadFloorSchema),

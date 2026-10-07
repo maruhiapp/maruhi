@@ -31,6 +31,7 @@ import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { IdentityBacking } from "./config.ts";
 import { deviceReceivesEnvironment, ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
+import { chainDeletedEnvironments } from "./deks.ts";
 import { devicesOf, memberHasKeys } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -60,7 +61,6 @@ import {
 } from "./member.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
-import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { compareCodePoints, describeScope, scopeContains } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
@@ -478,12 +478,12 @@ export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironm
     Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
     CliError
   > {
-    // The target scope's environments (chain-derived, verified-deletions
+    // The target scope's environments (chain-derived, chain-deleted ones
     // excluded) × every epoch (CRYPTO_SPEC §7 "every epoch DEK of every
     // environment in the target's scope" — 2026-09-15 ES K4. The
     // `environments` explicit list is used for change-role's widening
     // backfill)
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+    const deletedVerified = chainDeletedEnvironments(input.verified);
     const environments = (input.environments ?? [...input.verified.state.environments.keys()])
       .filter(
         (environmentId) =>

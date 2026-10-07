@@ -214,6 +214,11 @@ export function createEnvironmentOp(environmentId: string, dek: Uint8Array): Laz
   });
 }
 
+/** delete_environment (CRYPTO_SPEC §6.2 — the environment's terminal lifecycle entry). */
+export function deleteEnvironmentOp(environmentId: string): ChainOperation {
+  return { op: "delete_environment", payload: { environmentId } };
+}
+
 /** rotate_epoch (with the new epoch's commitment — §6.2). */
 export function rotateEpochOp(
   environmentId: string,

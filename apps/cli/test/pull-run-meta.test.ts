@@ -26,7 +26,6 @@ import {
   fixture,
   genesisHead,
   pullEntry,
-  pullEnvStatement,
   pullHandler,
   servers,
   startEnv,
@@ -90,7 +89,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
     expect(env.errors.join("\n")).toContain("reason=author-unknown");
   });
 
-  it("refuses tampered / deleted environment-statement distribution", async () => {
+  it("refuses tampered environment-statement distribution", async () => {
     // Signature bit-flip
     const flipped = `${fixture.envStatement.signatureHex.slice(0, -1)}${
       fixture.envStatement.signatureHex.endsWith("0") ? "1" : "0"
@@ -101,28 +100,10 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
     ]);
     expect(await runCli(["pull"], tampered.layer)).toBe(1);
     expect(tampered.errors.join("\n")).toContain("meta statement failed");
-
-    // Distributing a deleted statement (pulling a deleted environment should 404 on the server)
-    const deletedStatement = await pullEnvStatement(fixture.built.projectId);
-    const deleted = await startEnv([
-      chainHandler(),
-      pullHandler({
-        statement: {
-          ...(await environmentStatementFor({
-            projectId: fixture.built.projectId,
-            environmentId: ENV_ID,
-            name: ENV_ID,
-            author: fixture.owner,
-            head: genesisHead(fixture.built.projectId),
-            status: "deleted",
-            metaVersion: 2,
-          })),
-        },
-      }),
-    ]);
-    void deletedStatement;
-    expect(await runCli(["pull"], deleted.layer)).toBe(1);
-    expect(deleted.errors.join("\n")).toContain("was served a deleted statement");
+    // A status-deleted environment statement cannot be signed at all (an
+    // environment deletion is the chain op delete_environment — CRYPTO_SPEC
+    // §4.2 / §6.2); a chain-deleted environment is refused before any pull
+    // (env-rename-rm.test.ts)
   });
 
   it("a deleted variable's tombstone is verified; co-listing it with active (the carriage form of unauthorized resurrection) is refused", async () => {

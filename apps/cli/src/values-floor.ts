@@ -18,6 +18,7 @@ import {
   type VerifiedVariableStatement,
 } from "./floor-check.ts";
 import { formatFloorViolation } from "./floor-evidence.ts";
+import type { ManifestFloorIntent } from "./floor.ts";
 import type { VerifiedManifest } from "./manifest.ts";
 
 /**
@@ -38,7 +39,9 @@ function resolveMetaIntents(
   manifest: VerifiedManifest,
 ): Effect.Effect<void, CliError> {
   return Effect.forEach(
-    floor.unresolvedIntents().filter((intent) => intent.op === "meta-op"),
+    floor
+      .unresolvedIntents()
+      .filter((intent): intent is ManifestFloorIntent => intent.op === "meta-op"),
     (intent) => {
       if (manifest.manifestVersion > intent.manifestVersion) {
         return floor.resolveIntent(intent.id, "superseded");

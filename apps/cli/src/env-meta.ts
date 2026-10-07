@@ -1,9 +1,11 @@
-// Shared resolution and signing for the operations on an environment's own
-// meta statement — `maruhi env rename` (env-rename.ts) and `maruhi env rm`
-// (env-rm.ts). Both follow §12-5's meta rules (AUTH_SPEC §12-4): the next
-// statement is metaVersion + 1, chains its prev to the verified current
-// statement, and declares the last verified chain head; a metaVersion CAS
-// conflict (409) refetches, re-verifies and re-signs.
+// Shared resolution and signing for the operations on an environment —
+// `maruhi env rename` (env-rename.ts) and `maruhi env rm` (env-rm.ts). A
+// rename signs the environment's next meta statement under §12-5's meta
+// rules (AUTH_SPEC §12-4): metaVersion + 1, prev chained to the verified
+// current statement, the last verified chain head declared; a metaVersion
+// CAS conflict (409) refetches, re-verifies and re-signs. A deletion is a
+// chain entry (CRYPTO_SPEC §6.2 delete_environment) and shares only the
+// verified resolution and the pre-signing permission check.
 //
 // The current statement comes only from a verified metadata-only pull
 // (§12-7 — no values are fetched and no `var.read` is recorded): the
@@ -79,7 +81,8 @@ export interface EnvironmentMetaState {
 /**
  * The pre-signing permission check on the verified chain (the server's 403
  * is not waited for): the signing device's effective role and scope
- * (rename = member, deletion = admin — §12-3 / CRYPTO_SPEC §4.2).
+ * (rename = member — §12-3 / CRYPTO_SPEC §4.2; deletion = admin —
+ * CRYPTO_SPEC §6.2 delete_environment).
  */
 export function requireEnvironmentMetaAuthor(
   input: EnvironmentMetaInput,
@@ -129,12 +132,11 @@ export const resolveEnvironmentMeta = Effect.fn("env-meta.resolveEnvironmentMeta
  * context that was signed (meta-statement.ts's discipline).
  */
 export const signNextEnvironmentStatement = Effect.fn("env-meta.signNextEnvironmentStatement")(
-  function* <Status extends "active" | "deleted">(input: {
+  function* (input: {
     readonly state: EnvironmentMetaState;
     readonly environmentId: string;
-    /** The NFC-normalized name (deletion = the current active name — §4.2). */
+    /** The NFC-normalized name. */
     readonly name: string;
-    readonly status: Status;
     readonly authorUserId: string;
     readonly signingKey: CryptoKey;
   }) {
@@ -144,7 +146,9 @@ export const signNextEnvironmentStatement = Effect.fn("env-meta.signNextEnvironm
       environmentId: input.environmentId,
       target: { kind: "environment" },
       name: input.name,
-      status: input.status,
+      // An environment statement is always active (a deletion is the chain
+      // op delete_environment — CRYPTO_SPEC §4.2 / §6.2)
+      status: "active",
       metaVersion: input.state.environment.metaVersion + 1,
       prevMetaSigHashHex: input.state.environment.metaSigHashHex,
       authorUserId: input.authorUserId,

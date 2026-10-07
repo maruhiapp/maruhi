@@ -15,8 +15,8 @@
 //     the command's sync (never when converged). project verify shows the
 //     same derivation's detail. Guidance adapts to the target's current
 //     state (no re-running a destructive op on a re-added target), and a
-//     deleted environment's verification failure is a notice only — the
-//     command still succeeds (the chain verification succeeded)
+//     deleted environment is known from the chain alone (no environment
+//     list read — CRYPTO_SPEC §6.2 delete_environment)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -30,6 +30,7 @@ import {
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   environmentStatementFor,
   genesisOp,
   headOf,
@@ -114,10 +115,8 @@ async function makeRotationServer(input: {
   readonly onDismiss?: () => { status: number; json?: unknown } | undefined;
   /** Whether the metadata pull works (false = 404 — the degraded name-resolution path). */
   readonly metadataAvailable?: boolean;
-  /** Whether the environment-list GET works (false = 500 — the deleted-environment verification failure path). */
+  /** Whether the environment-list GET works (false = 500 — nothing in these flows may depend on it). */
   readonly environmentsAvailable?: boolean;
-  /** An environment of the chain the list reports as deleted (a signed deletion statement); its metadata pull is 404 (A-13). */
-  readonly deletedEnvironment?: string;
   /** When set, a layout-v3 variable with max age 30 days exists, last pushed at this time (PF6 R9). */
   readonly expiringPushedAtMs?: number;
   /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
@@ -170,24 +169,6 @@ async function makeRotationServer(input: {
     schema: { varType: "string", required: true, description: "", maxAgeDays: 30 },
   });
   const expiringStatements = input.expiringPushedAtMs === undefined ? [] : [expiringStatement];
-  const deletedEnvironments =
-    input.deletedEnvironment === undefined
-      ? []
-      : [
-          {
-            environmentId: input.deletedEnvironment,
-            currentEpoch: 1,
-            statement: await environmentStatementFor({
-              projectId,
-              environmentId: input.deletedEnvironment,
-              name: input.deletedEnvironment,
-              author: owner,
-              head: headOf(input.built, 1),
-              status: "deleted",
-              metaVersion: 2,
-            }),
-          },
-        ];
   const manifest = await manifestFor({
     projectId,
     environmentId: ENV_ID,
@@ -215,10 +196,7 @@ async function makeRotationServer(input: {
         : {
             status: 200,
             json: {
-              environments: [
-                { environmentId: ENV_ID, currentEpoch, statement: envStatement },
-                ...deletedEnvironments,
-              ],
+              environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
               schemaPolicy: "enabled",
             },
           },
@@ -399,32 +377,24 @@ describe("maruhi rotation list", () => {
     );
   });
 
-  it("--fail-on-due skips an environment verified as deleted, and cannot pass when the environment list is unreadable (A-13)", async () => {
+  it("--fail-on-due skips an environment deleted on the chain, without reading the environment list (A-13)", async () => {
     const GONE = "env-gone";
     const withGone = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
+      { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
-    // The deleted environment stays in the chain's set forever (its
-    // deletion is a signed statement, not a chain op): verified deleted, it
-    // is not walked and the check passes
+    // The deleted environment stays in the chain's set forever, marked by its
+    // delete_environment entry (CRYPTO_SPEC §6.2): it is not walked and the
+    // check passes — even with the environment list unreadable, since the
+    // deletion is chain-derived
     const deleted = await startEnv(
-      await makeRotationServer({ built: withGone, flags: [], deletedEnvironment: GONE }),
+      await makeRotationServer({ built: withGone, flags: [], environmentsAvailable: false }),
       withGone.projectId,
     );
     expect(await runCli(["rotation", "list", "--fail-on-due"], deleted.layer)).toBe(0);
     expect(deleted.errors.join("\n")).not.toContain(GONE);
-    // Without the list, deleted and unreadable cannot be told apart: both
-    // are unknown parts of the check
-    const listless = await startEnv(
-      await makeRotationServer({ built: withGone, flags: [], environmentsAvailable: false }),
-      withGone.projectId,
-    );
-    expect(await runCli(["rotation", "list", "--fail-on-due"], listless.layer)).toBe(1);
-    const errors = listless.errors.join("\n");
-    expect(errors).toContain("Cannot judge the check: the environment list could not be read (");
-    expect(errors).toContain(`the expiring values of 1 environment could not be listed (${GONE})`);
     // A scoped member's check covers every environment: the metadata-only
     // pull and the history are read under scope "any" (A-15)
     const scoped = await buildChain([
@@ -432,8 +402,9 @@ describe("maruhi rotation list", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+      { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
-    const state = await makeRotationServer({ built: scoped, flags: [], deletedEnvironment: GONE });
+    const state = await makeRotationServer({ built: scoped, flags: [] });
     const server = await MockServer.start([...state.handlers]);
     servers.push(server);
     const asScoped = await makeTestEnv();
@@ -450,11 +421,11 @@ describe("maruhi rotation list", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [GONE]) },
+      { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
     const dueState = await makeRotationServer({
       built: outOfScope,
       flags: [],
-      deletedEnvironment: GONE,
       expiringPushedAtMs: Date.now() - 60 * 24 * 60 * 60 * 1000,
     });
     const dueServer = await MockServer.start([...dueState.handlers]);
@@ -940,7 +911,7 @@ describe("the always-on warning for unconverged rotation mandates (CRYPTO_SPEC �
     expect(errors).not.toContain("role-demoted");
   });
 
-  it("project verify doesn't fail on a deleted environment's verification failure (it notices and defers only the convergence judgement)", async () => {
+  it("project verify judges the convergence without reading the environment list (deletions are chain-derived)", async () => {
     const built = await unconvergedChain();
     const state = await makeRotationServer({
       built,
@@ -949,13 +920,9 @@ describe("the always-on warning for unconverged rotation mandates (CRYPTO_SPEC �
       environmentsAvailable: false,
     });
     const env = await startEnv(state, built.projectId);
-    // Chain verification succeeded, so exit 0 (the verification failure
-    // is a notice only)
     expect(await runCli(["project", "verify", "--project", built.projectId], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("Chain verification OK");
-    const errors = env.errors.join("\n");
-    expect(errors).toContain("cannot be confirmed");
-    expect(errors).not.toContain("Unconverged rotation mandate:");
+    expect(env.errors.join("\n")).toContain("Unconverged rotation mandate:");
   });
 
   it("project verify shows the same derivation's detail (none when converged)", async () => {

@@ -227,7 +227,7 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   yield* warnOutOfScopeMandates(sweep.outOfScope ?? []);
   if (sweep.skippedDeleted.length > 0) {
     yield* io.log(
-      `Skipped deleted environments (signed deletion statements verified): ${sweep.skippedDeleted.join(", ")}`,
+      `Skipped deleted environments (delete_environment on the verified chain): ${sweep.skippedDeleted.join(", ")}`,
     );
   }
   if (sweep.alreadyRotated.length > 0) {
@@ -251,7 +251,7 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
     // believed active (never make selective rotation blocking by a
     // malicious server invisible)
     yield* logWarning(
-      `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (if the environment was deleted, check for a verified deletion statement)`,
+      `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (an environment deleted on the verified chain is never rotated, so this one is live)`,
     );
     exitCode = 1;
   }

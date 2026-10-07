@@ -161,20 +161,16 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
     yield* io.log(`  ${formatMemberListRow(row)}`);
   }
   for (const [environmentId, environment] of verified.state.environments) {
+    const deleted =
+      environment.deletedAtSeq === null ? "" : `, deleted at seq=${environment.deletedAtSeq}`;
     yield* io.log(
-      `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq})`,
+      `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq}${deleted})`,
     );
   }
-  // The unconverged rotation duties (§7 — chain-derived, verified
-  // deletions excluded) are also part of verify (the always-on warning —
-  // rotation-sweep.ts — detail display. With zero candidates it settles
-  // with no communication). A deleted environment's verification failure
-  // is only the caveat "could not be confirmed" — verify itself counts
-  // as successful (the chain verification is done)
-  const pending = yield* resolveUnconvergedMandates({ client: context.client, verified });
-  if (pending === null) {
-    return;
-  }
+  // The unconverged rotation duties (§7 — chain-derived, chain-deleted
+  // environments excluded) are also part of verify (the always-on warning
+  // — rotation-sweep.ts — detail display; no request)
+  const pending = resolveUnconvergedMandates({ verified });
   if (pending.length === 0) {
     yield* io.log("Rotation mandates: none unconverged (CRYPTO_SPEC §7)");
     return;

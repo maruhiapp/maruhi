@@ -147,7 +147,47 @@ function verifyAndUnwrapOne(input: {
   });
 }
 
-/** Chain-derived environment state (§6.2). Distributing a not-yet-created environment contradicts the chain in the server response. */
+/**
+ * The environments deleted on the verified chain (`delete_environment` —
+ * CRYPTO_SPEC §6.2). The chain is the only authority for deletion: no
+ * server listing or statement is consulted, so this needs no request and
+ * cannot be withheld.
+ */
+export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<string> {
+  const deleted = new Set<string>();
+  for (const [environmentId, environment] of verified.state.environments) {
+    if (environment.deletedAtSeq !== null) {
+      deleted.add(environmentId);
+    }
+  }
+  return deleted;
+}
+
+/** The refusal for operating on an environment the verified chain shows as deleted (§6.3 "Chain-deleted environments"). */
+export function deletedEnvironmentMessage(environmentId: string, deletedAtSeq: number): string {
+  return `Environment ${displayText(environmentId)} is deleted (delete_environment at chain seq ${deletedAtSeq}). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused`;
+}
+
+/**
+ * Refuses an environment the verified chain shows as deleted, before any
+ * request about it (§6.3 "Chain-deleted environments"). An environment the
+ * chain does not know is left to each path's own existence check.
+ */
+export function refuseChainDeletedEnvironment(
+  verified: VerifiedProject,
+  environmentId: string,
+): Effect.Effect<void, CliError> {
+  const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
+  return deletedAtSeq === null
+    ? Effect.void
+    : Effect.fail(cliError(deletedEnvironmentMessage(environmentId, deletedAtSeq)));
+}
+
+/**
+ * Chain-derived environment state (§6.2) of a live environment. Distributing
+ * a not-yet-created environment contradicts the chain in the server
+ * response; a deleted one is never read, written or rotated (§6.3).
+ */
 export function requireChainEnvironment(
   verified: VerifiedProject,
   environmentId: string,
@@ -158,6 +198,11 @@ export function requireChainEnvironment(
       cliError(
         `Environment ${environmentId} does not exist on the chain (no create_environment observed). It may have just been created — if re-running does not resolve this, the server response contradicts the chain`,
       ),
+    );
+  }
+  if (environment.deletedAtSeq !== null) {
+    return Effect.fail(
+      cliError(deletedEnvironmentMessage(environmentId, environment.deletedAtSeq)),
     );
   }
   return Effect.succeed(environment);

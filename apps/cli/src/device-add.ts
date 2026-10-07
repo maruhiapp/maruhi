@@ -467,8 +467,7 @@ type KeyReachIssue =
     }
   | {
       readonly kind: "unchecked";
-      /** null = enumerating the environments itself failed. */
-      readonly environmentId: string | null;
+      readonly environmentId: string;
       readonly message: string;
     };
 
@@ -489,24 +488,18 @@ const checkKeyReach = Effect.fn("device-add.checkKeyReach")(function* (input: {
   readonly keys: MasterKeys;
 }): Effect.fn.Return<readonly KeyReachIssue[]> {
   const { client, verified } = input.context;
-  const environments = yield* Effect.result(
-    deviceEnvironmentsOf({
-      client,
-      verified,
-      targetMember: input.member,
-      targetDevice: input.device,
-    }),
-  );
-  if (Result.isFailure(environments)) {
-    return [{ kind: "unchecked", environmentId: null, message: environments.failure.message }];
-  }
+  const environments = deviceEnvironmentsOf({
+    verified,
+    targetMember: input.member,
+    targetDevice: input.device,
+  });
   const recipient: DekRecipient = {
     userId: input.context.session.userId,
     encPubHex: input.keys.record.encPubHex,
     encKeyPair: input.keys.encKeyPair,
   };
   const issues: KeyReachIssue[] = [];
-  for (const environmentId of environments.success) {
+  for (const environmentId of environments) {
     const opened = yield* Effect.result(
       environmentKeysFor({ client, verified, environmentId, recipient }),
     );
@@ -534,9 +527,7 @@ function reportKeyReachIssue(
     );
   }
   return logNote(
-    issue.environmentId === null
-      ? `${project}: could not list its environments to check that their keys reached this device (${issue.message}); \`maruhi pull --project ${project} --env <environment>\` on this machine reports any missing epochs`
-      : `${project}: could not check that the keys of environment ${displayText(issue.environmentId)} reached this device (${issue.message}); \`${gapFillCommandOf(projectId, issue.environmentId)}\` on this machine reports any missing epochs`,
+    `${project}: could not check that the keys of environment ${displayText(issue.environmentId)} reached this device (${issue.message}); \`${gapFillCommandOf(projectId, issue.environmentId)}\` on this machine reports any missing epochs`,
   );
 }
 

@@ -1,22 +1,26 @@
-// Tests for `maruhi env rename` and `maruhi env rm` (the environment's own
-// meta statement — AUTH_SPEC §12-4 → the §12-5 meta rules).
+// Tests for `maruhi env rename` (the environment's own meta statement —
+// AUTH_SPEC §12-4 → the §12-5 meta rules) and `maruhi env rm` (the
+// delete_environment chain entry — AUTH_SPEC §12-4 / CRYPTO_SPEC §6.2).
 //
 // Invariants pinned down:
-//  1. Both sign over the verified current statement: metaVersion + 1, prev
-//     chained to its signed-bytes hash, NFC name. A rename bundles the next
-//     manifest (manifestVersion + 1, envMeta = the new statement); a
-//     deletion carries no manifest and keeps the last active name
-//  2. A metaVersion / manifestVersion CAS conflict (409) refetches,
-//     re-verifies and re-signs (both the statement and the manifest for a
-//     rename); a determinate refusal is rendered and not retried
+//  1. A rename signs over the verified current statement: metaVersion + 1,
+//     prev chained to its signed-bytes hash, NFC name, bundled with the next
+//     manifest (manifestVersion + 1, envMeta = the new statement). A
+//     deletion is a delete_environment entry at the verified head (no
+//     statement, no manifest)
+//  2. A CAS conflict (409 — metaVersion / manifestVersion for a rename,
+//     the chain head for a deletion) re-syncs, re-verifies and re-signs; a
+//     determinate refusal is rendered and not retried
 //  3. Deletion is terminal: an interactive run requires retyping the
 //     environment ID, a non-interactive run refuses without --force, and a
 //     non-admin is refused before any prompt or send
 //  4. Success is the verified effect (1-E′), not the 2xx: a rename shows up
-//     in the verified metadata pull, a deletion in the verified environment
-//     list; afterwards the deleted environment is refused by pull and by a
-//     second `env rm`
+//     in the verified metadata pull, a deletion as its own entry on the
+//     verified chain; afterwards the deleted environment is refused by pull
+//     and by a second `env rm` from the chain alone, and a server serving it
+//     as live again is refused
 
+import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -28,6 +32,7 @@ import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   environmentStatementFor,
   genesisOp,
   headOf,
@@ -51,6 +56,8 @@ const ENV_NAME = "Development";
 let owner: TestUser;
 let member: TestUser;
 let built: BuiltChain;
+/** `built` plus the owner's delete_environment of ENV_ID (seq 4 — a concurrent deletion). */
+let deletedChain: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let port: WireDistributedVariableStatement;
 let manifestV1: WireDistributedManifest;
@@ -59,13 +66,19 @@ let servers: MockServer[] = [];
 beforeAll(async () => {
   owner = await makeTestUser("user-owner-1111");
   member = await makeTestUser("user-member-2222");
-  built = await buildChain([
+  const steps = [
     { actor: owner, operation: genesisOp(owner) },
     {
       actor: owner,
       operation: createEnvironmentOp(ENV_ID, crypto.getRandomValues(new Uint8Array(32))),
     },
     { actor: owner, operation: addMemberOp(member, "member") },
+  ];
+  built = await buildChain(steps);
+  // Same steps (Ed25519 signing is deterministic), so the prefix is identical
+  deletedChain = await buildChain([
+    ...steps,
+    { actor: owner, operation: deleteEnvironmentOp(ENV_ID) },
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
@@ -94,6 +107,7 @@ async function startEnv(options?: {
   readonly user?: TestUser;
   readonly before?: (state: MetaEnvironmentState) => readonly MockHandler[];
   readonly ignoreEnvironmentMutations?: boolean;
+  readonly resurrectDeleted?: boolean;
 }): Promise<{ env: TestEnv; state: MetaEnvironmentState; requests: () => MockRequest[] }> {
   const { state, handlers } = makeMetaEnvironmentServer({
     chain: built,
@@ -104,6 +118,9 @@ async function startEnv(options?: {
     ...(options?.ignoreEnvironmentMutations === undefined
       ? {}
       : { ignoreEnvironmentMutations: options.ignoreEnvironmentMutations }),
+    ...(options?.resurrectDeleted === undefined
+      ? {}
+      : { resurrectDeleted: options.resurrectDeleted }),
   });
   state.manifest = manifestV1;
   const server = await MockServer.start([...(options?.before?.(state) ?? []), ...handlers]);
@@ -128,6 +145,26 @@ function bodyOf(request: MockRequest | undefined): {
   return request?.body as {
     statement: Record<string, unknown>;
     manifest?: Record<string, unknown>;
+  };
+}
+
+/** The environment deletion composite's body (AUTH_SPEC §12-4). */
+function deletionBodyOf(request: MockRequest | undefined): {
+  parentHeadHashHex: string;
+  entry: Record<string, unknown>;
+} {
+  return request?.body as { parentHeadHashHex: string; entry: Record<string, unknown> };
+}
+
+/** A chain-head CAS conflict answer (the head the mock claims is irrelevant: the client re-syncs). */
+function headConflict(): { readonly status: number; readonly json: unknown } {
+  return {
+    status: 409,
+    json: {
+      _tag: "ChainHeadConflict",
+      currentHeadSeq: built.entries.length,
+      currentHeadHashHex: built.hashes[built.hashes.length - 1],
+    },
   };
 }
 
@@ -337,34 +374,48 @@ describe("maruhi env rename", () => {
 });
 
 describe("maruhi env rm", () => {
-  it("deletes after the ID is retyped, keeps the last active name, and confirms the tombstone", async () => {
+  it("deletes after the ID is retyped and confirms its delete_environment entry on the verified chain", async () => {
     const { env, state } = await startEnv();
     env.setPromptResponses([ENV_ID]);
     expect(await runCli(["env", "rm", ENV_ID], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["remove-environment"]);
-    const body = bodyOf(state.mutations[0]?.request);
-    expect(body.statement).toMatchObject({
-      name: ENV_NAME,
-      status: "deleted",
-      metaVersion: 2,
-      prevMetaSigHashHex: await statementHashOf(built.projectId, envStatement),
+    const body = deletionBodyOf(state.mutations[0]?.request);
+    // The deletion is a chain entry at the verified head (parent-head CAS)
+    expect(body.parentHeadHashHex).toBe(built.hashes[built.hashes.length - 1]);
+    expect(body.entry).toMatchObject({
+      op: "delete_environment",
+      seq: built.entries.length + 1,
+      payload: { environmentId: ENV_ID },
+      actor: { userId: owner.userId, keyFingerprintHex: owner.fingerprintHex },
     });
-    // No manifest is re-issued on deletion (§12-4)
+    // No statement or manifest travels with a deletion (§12-4)
+    expect(body).not.toHaveProperty("statement");
     expect(body).not.toHaveProperty("manifest");
+    expect(state.chainEntries).toHaveLength(built.entries.length + 1);
     expect(env.errors.join("\n")).toContain(
       "You are about to delete environment dev (Development)",
     );
-    expect(env.logs.join("\n")).toContain("Deleted environment dev (Development; metaVersion=2)");
+    expect(env.logs.join("\n")).toContain(
+      "Deleted environment dev (Development; delete_environment at chain seq 4)",
+    );
   });
 
-  it("afterwards pull refuses the environment and a second rm reports it as already deleted", async () => {
-    const { env, state } = await startEnv();
+  it("afterwards pull refuses the environment and a second rm reports it as deleted, from the chain alone", async () => {
+    const { env, state, requests } = await startEnv();
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
+    const before = requests().length;
     expect(await runCli(["pull", "--env", ENV_ID], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("Environment not found: dev");
+    expect(env.errors.join("\n")).toContain(
+      "Environment dev is deleted (delete_environment at chain seq 4)",
+    );
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("dev (Development) is already deleted");
     expect(state.mutations.map((m) => m.kind)).toEqual(["remove-environment"]);
+    // The refusals are chain-derived: neither run asked about the environment itself
+    expect(
+      requests()
+        .slice(before)
+        .filter((request) => request.path.includes(`/environments/${ENV_ID}`)),
+    ).toEqual([]);
   });
 
   it("aborts on a mistyped ID without signing or sending", async () => {
@@ -401,25 +452,22 @@ describe("maruhi env rm", () => {
     expect(environmentCalls(requests(), "DELETE")).toEqual([]);
   });
 
-  it("retries a metaVersion conflict over the re-verified statement (the then-current name)", async () => {
+  it("retries a chain-head conflict over a re-synced view (the then-current name)", async () => {
     const { env, requests } = await startEnv({
       before: (current) => [
-        conflictOnce(
-          "DELETE",
-          { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } },
-          () => concurrentRename(current, "Renamed"),
-        ),
+        conflictOnce("DELETE", headConflict(), () => concurrentRename(current, "Renamed")),
       ],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
     const deletes = environmentCalls(requests(), "DELETE");
     expect(deletes).toHaveLength(2);
-    expect(bodyOf(deletes[1]).statement).toMatchObject({
-      name: "Renamed",
-      status: "deleted",
-      metaVersion: 3,
+    expect(deletionBodyOf(deletes[1]).entry).toMatchObject({
+      op: "delete_environment",
+      payload: { environmentId: ENV_ID },
     });
-    expect(env.logs.join("\n")).toContain("Deleted environment dev (Renamed; metaVersion=3)");
+    expect(env.logs.join("\n")).toContain(
+      "Deleted environment dev (Renamed; delete_environment at chain seq 4)",
+    );
     // The name the confirmation showed changed: one line says so (the
     // confirmation binds the ID, so there is no second prompt)
     expect(env.errors.join("\n")).toContain(
@@ -430,50 +478,89 @@ describe("maruhi env rm", () => {
 
   it("prints no rename notice when a conflict re-resolves the same name", async () => {
     const { env, requests } = await startEnv({
-      before: () => [
-        conflictOnce("DELETE", {
-          status: 409,
-          json: { _tag: "MetaVersionConflict", currentMetaVersion: 1 },
-        }),
-      ],
+      before: () => [conflictOnce("DELETE", headConflict())],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(2);
     expect(env.errors.join("\n")).not.toContain("renamed concurrently");
   });
 
-  it("renders a MetaStatementRejected refusal and does not retry it", async () => {
+  it("reports a concurrent deletion seen after a chain-head conflict as already done, without resending", async () => {
     const { env, requests } = await startEnv({
-      before: () => [
-        conflictOnce("DELETE", {
-          status: 422,
-          json: { _tag: "MetaStatementRejected", reason: "chain-head-state-mismatch" },
+      before: (current) => [
+        conflictOnce("DELETE", headConflict(), async () => {
+          current.chainEntries.push(deletedChain.entries[built.entries.length] as ChainEntry);
+          current.chainHashes.push(deletedChain.hashes[built.hashes.length] as string);
+          current.environmentDeleted = true;
         }),
       ],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
-      "The meta statement was rejected by server-side validation (reason=chain-head-state-mismatch",
+      "Environment dev is deleted (delete_environment at chain seq 4). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused. Nothing was changed by this run",
     );
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(1);
   });
 
-  it("renders a name payload-mismatch as a statement refusal (a hard stop — the server judges it after the CAS), not an AAD mismatch", async () => {
+  it("renders a ChainEntryInvalid refusal and does not retry it", async () => {
     const { env, requests } = await startEnv({
       before: () => [
-        conflictOnce("DELETE", { status: 422, json: { _tag: "PayloadMismatch", field: "name" } }),
+        conflictOnce("DELETE", {
+          status: 422,
+          json: { _tag: "ChainEntryInvalid", seq: 4, reason: "environment-out-of-scope" },
+        }),
       ],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
-    const errors = env.errors.join("\n");
-    expect(errors).toContain(
-      "The server refused the deletion statement: its name does not match environment dev's current state",
+    expect(env.errors.join("\n")).toContain(
+      "The chain entry was rejected by server-side validation (seq=4, reason=environment-out-of-scope)",
     );
-    expect(errors).not.toContain("declared AAD");
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(1);
   });
 
-  it("fails when the 2xx is not reflected in the verified environment list (1-E′)", async () => {
+  it("refuses a server that keeps serving the environment as live after its chain deletion (resurrection — §6.3)", async () => {
+    const { env } = await startEnv({ resurrectDeleted: true });
+    expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
+    expect(await runCli(["env", "list"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "Environment dev is deleted on the verified chain (delete_environment at seq 4), yet the server distributed it as live",
+    );
+  });
+
+  it("reconciles a deletion whose response was lost on the next run (journal-before-send — 3-F)", async () => {
+    const { env } = await startEnv({
+      before: (current) => [
+        // The server applies the deletion, but the response is lost (a
+        // gateway error with no server error body leaves the intent open)
+        async (request) => {
+          if (
+            request.method !== "DELETE" ||
+            request.path !== `/projects/${built.projectId}/environments/${ENV_ID}`
+          ) {
+            return null;
+          }
+          const body = request.body as { readonly entry: ChainEntry };
+          current.chainEntries.push(body.entry);
+          current.chainHashes.push(await computeChainEntryHash(body.entry));
+          current.environmentDeleted = true;
+          return { status: 502, bodyText: "bad gateway" };
+        },
+      ],
+    });
+    expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
+    expect(env.logs.join("\n")).not.toContain("Deleted environment");
+    // The next run's prologue finds this machine's entry in the slot after
+    // the declared head and closes the intent as accepted
+    expect(await runCli(["env", "list", "--all"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain(
+      "an earlier delete_environment for environment dev (interrupted before its confirmation) is confirmed as accepted on the chain",
+    );
+    expect(env.logs.join("\n")).toContain("dev\t-\tdeleted");
+    const floor = await loadFloor(env);
+    expect(floor.intents).toEqual([]);
+  });
+
+  it("fails when the 2xx is not reflected on the verified chain (1-E′)", async () => {
     const { env } = await startEnv({ ignoreEnvironmentMutations: true });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");

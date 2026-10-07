@@ -1,117 +1,77 @@
 // `maruhi env rm <environment-id>` — deleting an environment (AUTH_SPEC
-// §12-4 → the §12-5 meta rules; admin or above — §12-3).
+// §12-4's deletion composite; CRYPTO_SPEC §6.2 `delete_environment` — admin
+// or above with the environment in the signing device's scope).
 //
-// The request carries only the signed deletion statement: status deleted,
-// name = the immediately preceding active name (CRYPTO_SPEC §4.2 — the
-// server refuses any other name with 422 payload-mismatch), metaVersion + 1
-// with prev chained to the verified current statement. **No manifest is
-// re-issued** (§12-4): the server deletes the environment's variables,
-// versions (ciphertexts), DEK wraps, variable statements (tombstones
-// included), manifests and checkpoint value snapshot immediately, so no
-// distribution channel remains for them; the environment row stays as a
-// tombstone whose deletion statement keeps being distributed in the
-// environment list (the detection material for a denied or silently
-// revived deletion). The ID can never be reused (CRYPTO_SPEC §6.2 — the
-// chain does not observe deletion).
+// The request carries the signed `delete_environment` chain entry appended
+// onto the verified head (parent-head CAS). The server appends it and
+// deletes the environment's variables, versions (ciphertexts), DEK wraps,
+// variable and environment statements, manifest and checkpoint value
+// snapshot in the same transaction. The chain entry is the deletion's
+// record: every client that verifies the chain treats the environment as
+// deleted and refuses any distribution of it (a server that hides the
+// deletion must roll the chain back; one that serves the environment as live
+// is refused — §6.3), and the ID can never be reused (§6.2).
 //
 // Deletion is terminal and destroys every value, so it is gated by the same
 // explicit confirmation as `maruhi var rm` (deletion-confirm.ts: retyping
 // the environment ID interactively, or --force).
 //
+// Journal-before-send (3-F — §6.3's recording discipline (ii)): an intent
+// (op delete_environment, the environment, the declared head) is appended
+// before sending, so a lost response or a crash leaves the duty to confirm;
+// the next run's prologue reconciles it against the chain slot after the
+// declared head (context.ts).
+//
 // Effect confirmation (1-E′ — §12-10 (3)): a 2xx is a transport fact; the
-// deletion counts as done only once the environment list distributes a
-// verified deletion statement at or past the issued one. There is no 3-F
-// intent: an intent records a manifest coordinate to reconcile on a later
-// pull, and a deleted environment has neither a manifest nor a pull — a
-// lost response is settled by re-running, which finds the verified
-// tombstone and reports the environment as already deleted.
+// deletion counts as done only once a chain sync shows this run's own
+// entry on the verified chain.
 
-import { PayloadMismatchError } from "@maruhi/api-schema";
+import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { Effect, Stdio } from "effect";
 
-import type { VerifiedProject } from "./chain-sync.ts";
+import { signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
+import { deletedEnvironmentMessage } from "./deks.ts";
 import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
 import { displayText } from "./display.ts";
 import {
   type EnvironmentMetaInput,
   type EnvironmentMetaState,
-  isEnvironmentMetaConflict,
   requireEnvironmentMetaAuthor,
   resolveEnvironmentMeta,
-  signNextEnvironmentStatement,
 } from "./env-meta.ts";
-import { cliError, type CliError, evidenceError } from "./errors.ts";
+import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { VerifiedEnvironmentStatement } from "./floor-check.ts";
+import { rejectIntentOnServerRejection } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
-import { confirmsIssuedStatement } from "./meta-confirm.ts";
 import { retryOnConflict } from "./retry.ts";
-import { verifyEnvironmentTombstone } from "./values-verify.ts";
 
 const MAX_ATTEMPTS = 5;
 
 interface EnvRmSummary {
-  /** The deleted environment's last active name (kept by the deletion statement — §4.2). */
+  /** The deleted environment's last verified display name. */
   readonly name: string;
-  readonly metaVersion: number;
+  /** The chain seq of this run's delete_environment entry. */
+  readonly deletedAtSeq: number;
   readonly warnings: readonly string[];
 }
 
 /**
- * The verified deletion statement the environment list distributes for this
- * environment (the highest metaVersion when several verify), or null when
- * none is listed. A listed deletion statement that fails verification is a
- * refusal, never silently treated as "not deleted".
+ * Resolves the deletion target on a verified view: an environment the
+ * chain already shows as deleted is a typed error (deletion is terminal —
+ * the desired state holds, but this run's precondition does not);
+ * otherwise the verified current statement (its name drives the
+ * confirmation).
  */
-const listedEnvironmentTombstone = Effect.fn("env-rm.listedEnvironmentTombstone")(function* (
-  input: EnvironmentMetaInput,
-  verified: VerifiedProject,
-): Effect.fn.Return<VerifiedEnvironmentStatement | null, CliError> {
-  const listed = yield* input.client.environments
-    .list({ params: { projectId: verified.projectId } })
-    .pipe(Effect.mapError(toCliError));
-  let latest: VerifiedEnvironmentStatement | null = null;
-  for (const entry of listed.environments) {
-    if (entry.environmentId !== input.environmentId) {
-      continue;
-    }
-    const outcome = yield* Effect.promise(() =>
-      verifyEnvironmentTombstone(verified, input.environmentId, entry.statement),
-    );
-    if (outcome === null) {
-      continue;
-    }
-    if (outcome.kind === "future") {
-      return yield* Effect.fail(
-        cliError(
-          `The deletion statement listed for environment ${input.environmentId} declares a chain head this run has not verified yet. Re-run the command to resync`,
-        ),
-      );
-    }
-    if (outcome.kind === "rejected") {
-      return yield* Effect.fail(
-        outcome.evidence ? evidenceError(outcome.message) : cliError(outcome.message),
-      );
-    }
-    if (latest === null || outcome.value.metaVersion > latest.metaVersion) {
-      latest = outcome.value;
-    }
-  }
-  return latest;
-});
-
-/** Resolves the deletion target: an already-deleted environment is a typed error, otherwise the verified current statement. */
 const resolveDeletionTarget = Effect.fn("env-rm.resolveDeletionTarget")(function* (
   input: EnvironmentMetaInput,
   verified: VerifiedProject,
 ): Effect.fn.Return<EnvironmentMetaState, CliError> {
-  const tombstone = yield* listedEnvironmentTombstone(input, verified);
-  if (tombstone !== null) {
-    // Deletion is terminal (§4.2) — the desired state holds, but this
-    // run's precondition (it deletes the environment) does not
+  const deletedAtSeq = verified.state.environments.get(input.environmentId)?.deletedAtSeq ?? null;
+  if (deletedAtSeq !== null) {
     return yield* Effect.fail(
       cliError(
-        `Environment ${input.environmentId} (${displayText(tombstone.name)}) is already deleted (deletion is terminal — a deleted environment cannot be restored). Nothing was changed by this run`,
+        `${deletedEnvironmentMessage(input.environmentId, deletedAtSeq)}. Nothing was changed by this run`,
       ),
     );
   }
@@ -137,8 +97,10 @@ function ensureDeletionConfirmed(
 
 interface AcceptedDeletion {
   readonly state: EnvironmentMetaState;
-  readonly metaVersion: number;
-  readonly metaSigHashHex: string;
+  /** This run's delete_environment entry (seq = the declared head + 1). */
+  readonly seq: number;
+  readonly signatureHex: string;
+  readonly intentId: string;
 }
 
 /** One attempt's failure channel: own failures plus the environments.remove endpoint's declared errors. */
@@ -146,78 +108,87 @@ type DeletionAttemptError =
   | CliError
   | Effect.Error<ReturnType<EnvironmentMetaInput["client"]["environments"]["remove"]>>;
 
-/** One attempt (sign the deletion statement, send). */
+/** One attempt (sign the entry at the verified head, record the intent, send). */
 const attemptDeletion = Effect.fn("env-rm.attemptDeletion")(function* (
   input: EnvironmentMetaInput,
   state: EnvironmentMetaState,
 ): Effect.fn.Return<AcceptedDeletion, DeletionAttemptError> {
-  const signed = yield* signNextEnvironmentStatement({
-    state,
+  const entry = yield* signEntryAtHead({
+    verified: state.verified,
+    signerUserId: input.signerUserId,
+    operation: { op: "delete_environment", payload: { environmentId: input.environmentId } },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "Failed to sign the delete_environment entry",
+  });
+  if (entry.op !== "delete_environment") {
+    return yield* Effect.fail(cliError("Failed to sign the delete_environment entry"));
+  }
+  const declaredHead = {
+    seq: state.verified.state.headSeq,
+    hashHex: state.verified.state.headHashHex,
+  };
+  // journal-before-send (3-F): if persisting the intent fails, nothing is
+  // sent (fail-closed)
+  const intentId = yield* input.floor.appendIntent({
+    op: "delete_environment",
     environmentId: input.environmentId,
-    // name keeps the last active name as-is (§4.2 — deletion never empties it)
-    name: state.environment.name,
-    status: "deleted",
-    authorUserId: input.signerUserId,
-    signingKey: input.signingKeyPair.privateKey,
+    declaredHead,
   });
-  yield* input.client.environments.remove({
-    params: { projectId: state.verified.projectId, environmentId: input.environmentId },
-    payload: { statement: signed.statement },
-  });
-  return { state, metaVersion: signed.metaVersion, metaSigHashHex: signed.metaSigHashHex };
+  yield* input.client.environments
+    .remove({
+      params: { projectId: state.verified.projectId, environmentId: input.environmentId },
+      payload: { parentHeadHashHex: declaredHead.hashHex, entry },
+    })
+    .pipe(
+      // A refusal with the server's own error body (CAS 409 included) =
+      // the effect did not occur (settled) — close the intent
+      Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)),
+    );
+  return { state, seq: entry.seq, signatureHex: entry.signatureHex, intentId };
 });
 
 /**
- * The deletion refusal the generic rendering would misdescribe:
- * payload-mismatch here is about the statement, not a value's AAD — the
- * server stores a different active name than the one signed (§4.2). The
- * server judges it after the metaVersion CAS (§12-5's check order), so it is
- * never a concurrent rename (that is a 409, retried): the statement was
- * signed over the verified current state and the server disagrees — a hard
- * stop, not retried.
- */
-function deletionRefusal(
-  input: EnvironmentMetaInput,
-  error: DeletionAttemptError,
-): CliError | null {
-  return error instanceof PayloadMismatchError
-    ? cliError(
-        `The server refused the deletion statement: its ${displayText(error.field)} does not match environment ${input.environmentId}'s current state (payload-mismatch — a deletion must keep the last active name). It was signed over the verified current state, so the server disagrees with what it distributes — investigate the server before retrying`,
-      )
-    : null;
-}
-
-/**
- * Effect confirmation (1-E′ — §12-10 (3)): the environment list must
- * distribute a verified deletion statement at or past the issued one.
+ * Effect confirmation (1-E′ — §12-10 (3)): a chain sync must show this
+ * run's own entry — the delete_environment at its seq — on the verified
+ * chain.
  */
 const confirmDeletion = Effect.fn("env-rm.confirmDeletion")(function* (
   input: EnvironmentMetaInput,
   accepted: AcceptedDeletion,
 ): Effect.fn.Return<void, CliError> {
-  const tombstone = yield* listedEnvironmentTombstone(input, accepted.state.verified).pipe(
+  const view = yield* resyncExtended(input.resync, accepted.state.verified).pipe(
     Effect.mapError((error) =>
       cliError(
-        `The environment deletion was accepted (2xx), but the post-acceptance confirmation against the verified environment list failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}`,
+        `The environment deletion was accepted (2xx), but the chain sync for the post-acceptance confirmation failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}. Re-run any command against this project after restoring connectivity; the recorded intent will be reconciled against the chain`,
       ),
     ),
   );
-  if (tombstone === null || !confirmsIssuedStatement(tombstone, accepted)) {
+  const landed = view.entries[accepted.seq - 1];
+  const confirmed =
+    landed !== undefined &&
+    landed.op === "delete_environment" &&
+    landed.signatureHex === accepted.signatureHex &&
+    view.state.environments.get(input.environmentId)?.deletedAtSeq === accepted.seq;
+  if (!confirmed) {
     return yield* Effect.fail(
       cliError(
-        `The environment deletion was accepted (2xx), but the environment list does not distribute a verified deletion statement at the issued metaVersion ${accepted.metaVersion} or later. Treating the environment deletion as unconfirmed (AUTH_SPEC §12-10 (3)) — re-run \`maruhi env rm\` after investigating the server`,
+        `The environment deletion was accepted (2xx), but the verified chain does not carry this run's delete_environment entry at seq ${accepted.seq}. The server response contradicts the chain — treating the environment deletion as unconfirmed (AUTH_SPEC §12-10 (3)); re-run \`maruhi env rm\` after investigating the server`,
       ),
     );
   }
+  // An intent left open is the safe direction (the next run's
+  // reconciliation redoes the same decision)
+  yield* Effect.ignore(input.floor.resolveIntent(accepted.intentId, "accepted"));
 });
 
 /**
- * Deletes an environment (AUTH_SPEC §12-4): an admin-signed deletion
- * statement (status deleted, the last active name, metaVersion + 1), gated
- * by an explicit confirmation (interactive ID re-entry, or --force),
- * retried on a metaVersion CAS conflict over a re-verified view (§12-5), and
- * confirmed against the verified environment list before success is
- * reported (1-E′ — §12-10 (3)).
+ * Deletes an environment (AUTH_SPEC §12-4): an admin-signed
+ * `delete_environment` chain entry at the verified head, gated by an
+ * explicit confirmation (interactive ID re-entry, or --force), retried on a
+ * chain-head CAS conflict over a re-synced view (the head moved — including
+ * a concurrent deletion, which then surfaces as "already deleted"), and
+ * confirmed against the verified chain before success is reported (1-E′ —
+ * §12-10 (3)).
  */
 export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
   input: EnvironmentMetaInput & { readonly force: boolean },
@@ -235,18 +206,16 @@ export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
   yield* ensureDeletionConfirmed(input, initial);
   const accepted = yield* retryOnConflict(initial, {
     maxAttempts: MAX_ATTEMPTS,
-    attempt: (state) =>
-      attemptDeletion(input, state).pipe(
-        Effect.mapError((error) => deletionRefusal(input, error) ?? error),
-      ),
-    classify: (error) => (isEnvironmentMetaConflict(error) ? "re-resolve" : null),
-    // A concurrent meta operation (a rename) re-resolves: refetch → verify
-    // → re-sign with the then-current name (§12-5), saying so when the
-    // name differs from the one the confirmation showed. Losing to a
-    // concurrent deletion surfaces as the determinate "already deleted"
-    // error
+    attempt: (state) => attemptDeletion(input, state),
+    classify: (error) => (error instanceof ChainHeadConflictError ? "re-resolve" : null),
+    // The head moved: re-sync → re-verify → re-sign at the new head (the
+    // entry's prev is signed). A concurrent deletion surfaces as the
+    // determinate "already deleted" error; a concurrent rename re-resolves
+    // the name, saying so when it differs from the one the confirmation
+    // showed
     recover: (state) =>
-      resolveDeletionTarget(input, state.verified).pipe(
+      resyncExtended(input.resync, state.verified).pipe(
+        Effect.flatMap((fresh) => resolveDeletionTarget(input, fresh)),
         Effect.tap((next) =>
           noteConcurrentRename({
             subject: `Environment ${input.environmentId}`,
@@ -256,11 +225,11 @@ export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
         ),
       ),
     exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
-  });
+  }).pipe(Effect.mapError((error) => (error instanceof Error ? toCliError(error) : error)));
   yield* confirmDeletion(input, accepted);
   return {
     name: accepted.state.environment.name,
-    metaVersion: accepted.metaVersion,
+    deletedAtSeq: accepted.seq,
     warnings: accepted.state.warnings,
   };
 });

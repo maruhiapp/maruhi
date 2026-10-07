@@ -412,7 +412,7 @@ export const appendRotation = Effect.fn("env-rotate-send.appendRotation")(functi
                     EnvironmentNotFound: () =>
                       Effect.fail(
                         cliError(
-                          `Rotation for environment ${input.environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+                          `Rotation for environment ${input.environmentId} was rejected with 404, yet the verified chain shows it as live (no delete_environment entry). A malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
                         ),
                       ),
                     // A CAS conflict on the bundled manifest (§12-5 (6))

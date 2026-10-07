@@ -29,6 +29,7 @@ import {
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   environmentStatementFor,
   genesisOp,
   headOf,
@@ -107,8 +108,6 @@ async function makeRemoveServer(input: {
   readonly chainAfterConflict?: BuiltChain;
   /** The principal sending the rotate composite (default = owner). Issuer of accepted manifests and recipient of the self-destined wrap it stores. */
   readonly rotator?: TestUser;
-  /** Environments listed with a status = "deleted" meta statement (verified deletion). */
-  readonly deletedEnvironments?: readonly string[];
   /** Rotation flags the server reports after the removal (PF6 R3 — the checklist's input). */
   readonly flags?: readonly WireFlag[];
   /** Verified variable statements per environment (the checklist resolves names from them). */
@@ -129,19 +128,14 @@ async function makeRemoveServer(input: {
   const manifests = new Map<string, WireDistributedManifest>();
   /** Per-environment stored checkpoint snapshot (§16-2 — no variables = empty enumeration). */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
-  const deletedEnvironments = input.deletedEnvironments ?? [];
   const listedStatements = await Promise.all(
-    [...new Set([...Object.keys(environments), ...deletedEnvironments])].map((environmentId) =>
+    Object.keys(environments).map((environmentId) =>
       environmentStatementFor({
         projectId,
         environmentId,
         name: environmentId,
         author: owner,
         head: headOf(input.built, 1),
-        // Deletion is a tombstone (status deleted, metaVersion + 1 — §12-5)
-        ...(deletedEnvironments.includes(environmentId)
-          ? { status: "deleted" as const, metaVersion: 2 }
-          : {}),
       }),
     ),
   );
@@ -1227,11 +1221,12 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     );
   });
 
-  it("a verified-deleted environment leaves the widened portion and doesn't appear in the out-of-scope note (pullfrog)", async () => {
+  it("a chain-deleted environment leaves the widened portion and doesn't appear in the out-of-scope note (pullfrog)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
     // Same "someone else's widening is unconverged" as the case above, but
-    // prod has since been deleted. No one can fill it, so no note is
-    // emitted (the §12-6 mandate vanishes with the deletion)
+    // prod has since been deleted on the chain (which also pruned it from
+    // the target's scope — CRYPTO_SPEC §6.2). No one can fill it, so no note
+    // is emitted (the §12-6 mandate vanishes with the deletion)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1239,22 +1234,28 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: deleteEnvironmentOp(ENV_PROD) },
     ]);
-    const state = await makeRemoveServer({
-      built,
-      environments: {},
-      deletedEnvironments: [ENV_PROD],
-    });
+    const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, devAdmin);
+    expect(
+      await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
+    ).toBe(0);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.registerBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
+    // A scope naming the deleted environment is refused before signing (the
+    // verifier's environment-deleted)
     expect(
       await runCli(
         ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
         env.layer,
       ),
-    ).toBe(0);
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `Environment ${ENV_PROD} is deleted on this project's chain`,
+    );
     expect(state.appendedEntries).toHaveLength(0);
-    expect(state.registerBodies).toHaveLength(0);
-    expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
   });
 
   it("a listed admin cannot remove a target outside their scope (principle 1's pre-judgement — pullfrog)", async () => {
