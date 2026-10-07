@@ -14,6 +14,7 @@ import type {
   GrantServerPayload,
   ProposableOperation,
   SigningKeyPair,
+  UserId,
 } from "@maruhi/crypto";
 import {
   computeDekCommitment,
@@ -47,6 +48,7 @@ import type {
 import {
   buildChainWith,
   hexBytes,
+  testUserId,
   unwrapResult,
   valueSignedBytesHashOf,
 } from "@maruhi/crypto/test-support";
@@ -56,7 +58,7 @@ export { hexBytes, valueSignedBytesHashOf as valueHashOf } from "@maruhi/crypto/
 
 /** A test user with freshly generated (exportable) master keys. */
 export interface TestUser {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly encPubHex: string;
   readonly encSkHex: string;
   readonly sigPubHex: string;
@@ -75,7 +77,7 @@ export async function makeTestUser(userId: string): Promise<TestUser> {
   const sigSeed = unwrapResult(await exportSigningPrivateSeed(sigKeyPair.privateKey), "exportSig");
   const fingerprint = unwrapResult(await computeUserKeyFingerprint(encPub, sigPub), "fingerprint");
   return {
-    userId,
+    userId: testUserId(userId),
     encPubHex: encodeHex(encPub),
     encSkHex: encodeHex(encSk),
     sigPubHex: encodeHex(sigPub),

@@ -15,6 +15,7 @@
 // A plain async function: the restore worker has no Effect runtime.
 // Drizzle stays inside this package (ADR-0006).
 
+import type { ProviderUserId, UserId } from "@maruhi/core";
 import { and, eq, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
@@ -34,9 +35,9 @@ type Db = ReturnType<typeof drizzle>;
 
 /** One identity as the export's companion lists it (api-schema's ExportIdentitySchema). */
 export interface ImportedIdentity {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly provider: "github";
-  readonly providerUserId: string;
+  readonly providerUserId: ProviderUserId;
   readonly providerLogin: string | null;
 }
 
@@ -44,7 +45,7 @@ export interface ImportProjectInput {
   /** The genesis hash the DO was restored under. */
   readonly projectId: string;
   /** The exporting owner (the project is attached to their personal org). */
-  readonly exportedBy: string;
+  readonly exportedBy: UserId;
   readonly identities: readonly ImportedIdentity[];
 }
 
@@ -90,8 +91,8 @@ function personalOrgSlug(userId: string): string {
 /** The IN chunk (inside D1's bound-parameter cap with headroom — the same width as identities.ts identitiesOf). */
 const IN_CHUNK = 90;
 
-function chunked(values: readonly string[]): readonly (readonly string[])[] {
-  const chunks: (readonly string[])[] = [];
+function chunked<T extends string>(values: readonly T[]): readonly (readonly T[])[] {
+  const chunks: (readonly T[])[] = [];
   for (let start = 0; start < values.length; start += IN_CHUNK) {
     chunks.push(values.slice(start, start + IN_CHUNK));
   }
@@ -115,7 +116,7 @@ async function classify(
 > {
   const ids = input.identities.map((identity) => identity.userId);
   const providerIds = input.identities.map((identity) => identity.providerUserId);
-  const linkedByProvider = new Map<string, string>();
+  const linkedByProvider = new Map<ProviderUserId, UserId>();
   for (const chunk of chunked(providerIds)) {
     const linked = await db
       .select({

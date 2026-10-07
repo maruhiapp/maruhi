@@ -13,7 +13,7 @@
 // Session / token raw values appear in a response only once, at issuance
 // (the cliPoll approved response in auth-cli-api.ts).
 
-import { OrgRoleSchema, TokenScopeSchema } from "@maruhi/core";
+import { OrgRoleSchema, TokenScopeSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -180,7 +180,7 @@ export const UserOrgSchema = Schema.Struct({
 
 /** The authenticated user and their orgs (project creation needs an org id — §11-3). */
 export const MeSchema = Schema.Struct({
-  userId: Schema.String,
+  userId: UserIdSchema,
   orgs: Schema.Array(UserOrgSchema),
   /**
    * Only for token principals: the scopes of the presented token

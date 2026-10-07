@@ -7,6 +7,8 @@
 // server, so it appears in no type. Only public values sit on the row
 // (issue document, signatures).
 
+import type { UserId } from "@maruhi/core";
+
 /** Chain roles grantable via an invite (owner is never granted through invites — §15-1). */
 export type InviteRole = "reader" | "member" | "admin";
 
@@ -33,7 +35,7 @@ export interface InviteIssuance {
 
 /** The acceptance block (status accepted and onward — §15-1). */
 export interface InviteAcceptance {
-  readonly inviteeUserId: string;
+  readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;
   /** The §6.5 accept signature (the acceptor's chain sig key) — material for the inviter client's independent verification */
@@ -73,7 +75,7 @@ export type InviteIssueDecision =
  */
 export interface InviteAcceptInput {
   readonly inviteId: string;
-  readonly inviteeUserId: string;
+  readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;
   readonly acceptSignatureHex: string;
@@ -85,7 +87,7 @@ export interface InviteAcceptInput {
 /** The target of the accepted → completed comparison at add_member acceptance (§15-2). */
 export interface InviteCompletionTarget {
   readonly projectId: string;
-  readonly inviteeUserId: string;
+  readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;
 }

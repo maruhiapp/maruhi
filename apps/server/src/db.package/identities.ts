@@ -3,13 +3,13 @@
 // §1–§3, §9-1).
 
 import type { SignupPolicy } from "@maruhi/api-schema";
-import type { OrgRole } from "@maruhi/core";
+import type { OrgRole, ProviderUserId, UserId } from "@maruhi/core";
 import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect, Ref } from "effect";
 
 import type { ResolvedUser, SignupGateResult, UserOrg, VerifiedIdentity } from "../auth-domain.ts";
-import { ulid } from "../ids.ts";
+import { newUserId, ulid } from "../ids.ts";
 import { type D1AuditActor, guardedAuditSelectColumns } from "./audit.ts";
 import { type D1Error, type D1FailureError, tryD1 } from "./errors.ts";
 import {
@@ -58,21 +58,21 @@ interface IdentityRepoShape {
    * Used by the browser leg of CLI login: a missing account ends in
    * signup guidance and produces no irreversible side effect.
    */
-  readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<string | null>;
+  readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<UserId | null>;
   /** The orgs the user belongs to (for discovering where to create a project. §11-3). */
-  readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
+  readonly listUserOrgs: (userId: UserId) => Effect.Effect<readonly UserOrg[]>;
   /**
    * The GitHub display login snapshot (`/auth/me`'s providerLogin — the
    * input of AUTH_SPEC §15-3's `il`). null when unlinked or unstored.
    */
-  readonly providerLoginOf: (userId: string) => Effect.Effect<string | null>;
+  readonly providerLoginOf: (userId: UserId) => Effect.Effect<string | null>;
   /**
    * The linked GitHub identities of the given users (the identities
    * companion of a project export — AUTH_SPEC §11-6, PF3). Users without
    * a link are absent from the result (never invented).
    */
   readonly identitiesOf: (
-    userIds: readonly string[],
+    userIds: readonly UserId[],
   ) => Effect.Effect<readonly LinkedIdentityRecord[]>;
   /**
    * The signupPolicy at acceptance time (AUTH_SPEC §3). No row = 'open'
@@ -99,9 +99,9 @@ export class IdentityRepo extends Context.Service<IdentityRepo, IdentityRepoShap
 
 /** One linked provider identity as the export carries it (AUTH_SPEC §2's lookup key plus the display login). */
 interface LinkedIdentityRecord {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly provider: "github";
-  readonly providerUserId: string;
+  readonly providerUserId: ProviderUserId;
   readonly providerLogin: string | null;
 }
 
@@ -110,7 +110,7 @@ const IDENTITY_IN_CHUNK = 90;
 
 function identitiesOf(
   db: Db,
-  userIds: readonly string[],
+  userIds: readonly UserId[],
 ): Effect.Effect<readonly LinkedIdentityRecord[], D1Error> {
   return tryD1(async () => {
     const rows: LinkedIdentityRecord[] = [];
@@ -135,7 +135,7 @@ function identitiesOf(
 function lookupLinkedUser(
   db: Db,
   identity: VerifiedIdentity,
-): Effect.Effect<string | null, D1Error> {
+): Effect.Effect<UserId | null, D1Error> {
   return tryD1(async () => {
     const row = await db
       .select({ userId: linkedIdentities.userId })
@@ -235,8 +235,8 @@ function createUserBatch(
   identity: VerifiedIdentity,
   nowMs: number,
   gate: SignupGate,
-): Effect.Effect<string, InsertConflictError | SignupGateLostError | D1FailureError> {
-  const userId = ulid(nowMs);
+): Effect.Effect<UserId, InsertConflictError | SignupGateLostError | D1FailureError> {
+  const userId = newUserId(nowMs);
   const orgId = ulid(nowMs);
   const actor: D1AuditActor = { userId };
   const chained = sql`changes() = 1`;
@@ -399,7 +399,7 @@ function createUserBatch(
  */
 function refreshVerifiedEmail(
   db: Db,
-  userId: string,
+  userId: UserId,
   identity: VerifiedIdentity,
   nowMs: number,
 ): Effect.Effect<void, D1Error> {
@@ -522,7 +522,7 @@ function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<Resolved
   );
 }
 
-function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null, D1Error> {
+function providerLoginOf(db: Db, userId: UserId): Effect.Effect<string | null, D1Error> {
   return tryD1(async () => {
     const row = await db
       .select({ login: linkedIdentities.providerLogin })
@@ -533,7 +533,7 @@ function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null, D
   });
 }
 
-function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[], D1Error> {
+function listUserOrgs(db: Db, userId: UserId): Effect.Effect<readonly UserOrg[], D1Error> {
   return tryD1(async () => {
     const rows = await db
       .select({

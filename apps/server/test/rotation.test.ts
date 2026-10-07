@@ -43,6 +43,7 @@
 //   untouched)
 
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -118,7 +119,7 @@ async function readFlags(asUserId: string = READER): Promise<readonly WireRotati
 async function removeMember(targetUserId: string): Promise<number> {
   await appendOperation(fixture, OWNER, {
     op: "remove_member",
-    payload: { targetUserId },
+    payload: { targetUserId: testUserId(targetUserId) },
   });
   return fixture.head.seq;
 }
@@ -129,7 +130,7 @@ async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"
   await appendOperation(fixture, OWNER, {
     op: "add_member",
     payload: {
-      targetUserId,
+      targetUserId: testUserId(targetUserId),
       encPubHex: keys.enc_pub_hex,
       sigPubHex: keys.sig_pub_hex,
       role,

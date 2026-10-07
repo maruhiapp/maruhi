@@ -7,7 +7,7 @@
 // onto api-schema's typed errors).
 
 import type { AuditActor } from "@maruhi/core";
-import { auditPayloadWith } from "@maruhi/core";
+import { auditPayloadWith, decodeUserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -1120,4 +1120,21 @@ export function dataEvent(
     ...(actor.apiTokenId === undefined ? {} : { actorApiTokenId: actor.apiTokenId }),
     ...(Object.keys(payload).length === 0 ? {} : { payload }),
   };
+}
+
+/**
+ * The audit target of a DEK wrap row (AUDIT_SPEC §3.3): the recipient
+ * position holds a member's user id, or the server key FP for recipient
+ * class server (CRYPTO_SPEC §9). A server recipient has no user_id (the
+ * §2 actor model), so its FP goes on target_key_fingerprint, never into
+ * the user-id column. The class is what makes the position a user id, so
+ * reading it by class is where the member's id is minted.
+ */
+export function dekRecipientTarget(
+  recipientClass: DekRecipientClass,
+  recipientUserId: string,
+): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
+  return recipientClass === "server"
+    ? { targetKeyFingerprintHex: recipientUserId }
+    : { targetUserId: decodeUserId(recipientUserId) };
 }

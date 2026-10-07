@@ -22,7 +22,7 @@ import {
   MIN_CLI_POLL_INTERVAL_SECONDS,
   TokenLimitError,
 } from "@maruhi/api-schema";
-import type { TokenScope } from "@maruhi/core";
+import type { TokenScope, UserId } from "@maruhi/core";
 import { parseTokenScopes, TokenService } from "@maruhi/core";
 import { Clock, Effect, Option } from "effect";
 import type { HttpServerRequest } from "effect/http";
@@ -194,7 +194,7 @@ function restoreFlowBinding(
  */
 const admitAndRenderApproval = Effect.fn("handlers-auth-cli.admitAndRenderApproval")(function* (
   params: CliVerifyParams,
-  userId: string,
+  userId: UserId,
   identityLabel: string,
 ): Effect.fn.Return<HttpServerResponse.HttpServerResponse, never, CliFlowRepo | OpsRepo> {
   const ticket = randomHex(32);

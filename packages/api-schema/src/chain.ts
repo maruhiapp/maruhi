@@ -12,7 +12,7 @@
 // verifyChain's `invalid-payload` (a reason code pinned by test vectors),
 // so that a Schema 400 does not become a second refusal path.
 
-import { EnvironmentIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, UserIdSchema } from "@maruhi/core";
 import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
 import { Schema } from "effect";
 
@@ -24,7 +24,7 @@ export const RoleSchema = Schema.Literals(["owner", "admin", "member", "reader"]
 /** Entry actor: internal user id + key fingerprint only (CRYPTO_SPEC §6.1). */
 export const ChainActorSchema = Schema.Struct({
   // userId is deliberately unbounded (verifyChain checks the §6.1 free-string limit)
-  userId: Schema.String,
+  userId: UserIdSchema,
   keyFingerprintHex: KeyFingerprintHex,
 });
 
@@ -56,17 +56,17 @@ const scopePayloadFields = {
 const GenesisPayloadSchema = Schema.Struct({ encPubHex: PublicKeyHex, sigPubHex: PublicKeyHex });
 
 const AddMemberPayloadSchema = Schema.Struct({
-  targetUserId: Schema.String,
+  targetUserId: UserIdSchema,
   encPubHex: PublicKeyHex,
   sigPubHex: PublicKeyHex,
   role: RoleSchema,
   ...scopePayloadFields,
 });
 
-const RemoveMemberPayloadSchema = Schema.Struct({ targetUserId: Schema.String });
+const RemoveMemberPayloadSchema = Schema.Struct({ targetUserId: UserIdSchema });
 
 const ChangeRolePayloadSchema = Schema.Struct({
-  targetUserId: Schema.String,
+  targetUserId: UserIdSchema,
   newRole: RoleSchema,
   ...scopePayloadFields,
 });
@@ -277,7 +277,7 @@ const AddDevicePayloadSchema = Schema.Struct({
  * and no duplicates are consensus rules (`invalid-payload`), not Schema checks.
  */
 const RevokeDevicePayloadSchema = Schema.Struct({
-  targetUserId: Schema.String,
+  targetUserId: UserIdSchema,
   deviceFingerprintsHex: Schema.Array(KeyFingerprintHex),
 });
 

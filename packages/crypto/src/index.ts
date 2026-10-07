@@ -203,6 +203,7 @@ export {
   signChainEntry,
   soleDeviceOf,
   type UnsignedChainEntry,
+  type UserId,
   verifyChain,
   verifyChainWithHistory,
   type WithdrawPayload,

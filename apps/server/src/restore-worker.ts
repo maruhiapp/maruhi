@@ -23,6 +23,8 @@
 // entry_hash_hex) (no capability is carried on keys, jobs, or
 // results).
 
+import { decodeProviderUserId, decodeUserId, type UserId } from "@maruhi/core";
+
 import type {
   ImportClassification,
   ImportedIdentity,
@@ -170,7 +172,7 @@ function parseJob(text: string): RestoreJob | null {
 
 /** The identities companion as `maruhi project export` writes it (api-schema's ExportIdentitiesSchema). */
 interface IdentitiesFile {
-  readonly exportedBy: string;
+  readonly exportedBy: UserId;
   /** The chain head the companion was read at (the pre-check binds it to the file's). */
   readonly chainHeadHashHex: string;
   readonly identities: readonly ImportedIdentity[];
@@ -192,7 +194,13 @@ function parseIdentity(entry: unknown): ImportedIdentity | null {
   ) {
     return null;
   }
-  return { userId, provider: "github", providerUserId, providerLogin: providerLogin ?? null };
+  // The companion is a wire input: its ids are minted here, where they are parsed
+  return {
+    userId: decodeUserId(userId),
+    provider: "github",
+    providerUserId: decodeProviderUserId(providerUserId),
+    providerLogin: providerLogin ?? null,
+  };
 }
 
 function parseIdentities(text: string): IdentitiesFile | null {
@@ -218,7 +226,7 @@ function parseIdentities(text: string): IdentitiesFile | null {
     }
     identities.push(identity);
   }
-  return { exportedBy, chainHeadHashHex, identities };
+  return { exportedBy: decodeUserId(exportedBy), chainHeadHashHex, identities };
 }
 
 type ImportJob = RestoreJob & { readonly identitiesKey: string };

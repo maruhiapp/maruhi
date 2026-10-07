@@ -16,6 +16,7 @@
 //   keychain
 
 import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
+import type { UserId } from "@maruhi/core";
 import { Cause, Clock, Duration, Effect, Option, Pull, Redacted, Schedule, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
@@ -216,7 +217,7 @@ type PollOutcome =
       readonly kind: "approved";
       readonly token: string;
       readonly tokenId: string;
-      readonly userId: string;
+      readonly userId: UserId;
       readonly expiresAtMs: number;
     };
 

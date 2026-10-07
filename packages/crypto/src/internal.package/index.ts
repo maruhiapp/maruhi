@@ -58,6 +58,7 @@ export {
   type ServerGrant,
   type SetApprovalPolicyPayload,
   type UnsignedChainEntry,
+  type UserId,
   type WithdrawPayload,
 } from "./chain-types.ts";
 export {

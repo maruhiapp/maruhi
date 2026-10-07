@@ -23,6 +23,7 @@ import {
   signChainEntry,
   verifyChainWithHistory,
 } from "../../src/index.ts";
+import { testUserId } from "../support/fixture.ts";
 import {
   toTypedEntry,
   typedEntries,
@@ -207,7 +208,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
     suite: "maruhi/v1",
     seq: 15,
     prevHashHex: await computeChainEntryHash(head14),
-    actor: { userId: "user-admin-0003", keyFingerprintHex: admin.key_fingerprint_hex },
+    actor: { userId: testUserId("user-admin-0003"), keyFingerprintHex: admin.key_fingerprint_hex },
     timestampMs: head14.timestampMs + 1000,
     op: "checkpoint",
     payload: {

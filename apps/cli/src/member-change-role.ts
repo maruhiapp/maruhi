@@ -2,6 +2,7 @@
 // widening backfill + demotion / narrowing sweep (§7 — the group's overview
 // lives in member.ts).
 
+import type { UserId } from "@maruhi/core";
 import {
   ALL_SCOPE,
   type ChainEntry,
@@ -62,7 +63,7 @@ import {
 export interface MemberChangeRoleSummary {
   /** Whether it was appended to the chain (false = already at the target (role, scope) — only the duty resumes). */
   readonly appended: boolean;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly newRole: Role;
   readonly newScope: MemberScope;
   /** Of the widened environments (new \ old — the actor's backfill duty. §12-6), those inside the actor's scope. */
@@ -242,7 +243,7 @@ const ensureRoleChangeable = Effect.fn("member-change-role.ensureRoleChangeable"
   function* (input: {
     readonly verified: VerifiedProject;
     readonly signerUserId: string;
-    readonly targetUserId: string;
+    readonly targetUserId: UserId;
     readonly request: ChangeRoleRequest;
     readonly proposing: boolean;
     readonly signingKeyPair: SigningKeyPair;
@@ -314,7 +315,7 @@ const ensureRoleChangeable = Effect.fn("member-change-role.ensureRoleChangeable"
 function signChangeRoleEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly newRole: Role;
   readonly newScope: MemberScope;
   readonly signingKeyPair: SigningKeyPair;
@@ -348,7 +349,7 @@ const signChangeRoleAtView = Effect.fn("member-change-role.signChangeRoleAtView"
   function* (input: {
     readonly verified: VerifiedProject;
     readonly signerUserId: string;
-    readonly targetUserId: string;
+    readonly targetUserId: UserId;
     readonly request: ChangeRoleRequest;
     readonly signingKeyPair: SigningKeyPair;
   }): Effect.fn.Return<ChainEntry, CliError> {
@@ -446,7 +447,7 @@ const splitWidenedByActorScope = Effect.fn("member-change-role.splitWidenedByAct
 
 /** change_role's inner op (proposal-ization — the omitted side is already resolved against the target's state on the proposal-time view). */
 function changeRoleOperation(input: {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly newRole: Role;
   readonly newScope: MemberScope;
 }): Extract<ProposableOperation, { readonly op: "change_role" }> {
@@ -504,7 +505,7 @@ function proposeRoleChange(
 const appendRoleChange = Effect.fn("member-change-role.appendRoleChange")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly request: ChangeRoleRequest;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
@@ -654,7 +655,7 @@ export const memberChangeRoleOp = Effect.fn("member-change-role.memberChangeRole
 >(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly request: ChangeRoleRequest;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;

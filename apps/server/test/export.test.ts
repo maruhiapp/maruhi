@@ -20,6 +20,7 @@
 //   refuses a colliding account without writing anything, and reports the
 //   static codes
 
+import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -617,7 +618,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
   it("the identities companion lists the current members' provider identities and names an unlinked member", async () => {
     await seedProjectActivity();
     // A member on the chain with no linked identity on this deployment
-    const DEV = "user-devmember-0010";
+    const DEV = testUserId("user-devmember-0010");
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member"));
     const response = await requestJson("GET", "/export/identities", token(OWNER));
     expect(response.status).toBe(200);

@@ -55,9 +55,27 @@ export const APPROVAL_TARGET_OPS: readonly ApprovalTargetOp[] = [
   "set_approval_policy",
 ];
 
+declare const userIdBrand: unique symbol;
+
+/**
+ * The internal user id (AUTH_SPEC §2 `users.id`) — the only person identifier
+ * the membership log may carry. A plain TypeScript nominal brand (this
+ * package is Effect-free): it has no runtime form and adds no format rule
+ * (AUTH_SPEC §11-1 — chain validity stays independent of the user id's
+ * format). What it records is provenance, which no runtime check can see: the
+ * string came out of a user-id slot, so a provider identity (a GitHub id or
+ * login, an email) is a compile error wherever a `UserId` is required.
+ *
+ * Nothing in this package's source mints one. A `UserId` is minted only at a trust
+ * boundary of an upper layer — Schema decoding at the wire (`UserIdSchema` in
+ * `@maruhi/core`), DB row mapping inside the server's repository service, and
+ * user-id generation.
+ */
+export type UserId = string & { readonly [userIdBrand]: "UserId" };
+
 /** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly keyFingerprintHex: string;
 }
 
@@ -73,14 +91,14 @@ export interface GenesisPayload {
  * `owner` must carry `scopeKind = "all"` (`scope-role-mismatch`).
  */
 export interface AddMemberPayload extends ScopePayloadFields {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly role: Role;
 }
 
 export interface RemoveMemberPayload {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
 }
 
 /**
@@ -89,7 +107,7 @@ export interface RemoveMemberPayload {
  * duty; the grown part is a backfill).
  */
 export interface ChangeRolePayload extends ScopePayloadFields {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly newRole: Role;
 }
 
@@ -284,7 +302,7 @@ export interface AddDevicePayload extends ScopePayloadFields {
  * least one device must remain (`last-device-protected`).
  */
 export interface RevokeDevicePayload {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly deviceFingerprintsHex: readonly string[];
 }
 
@@ -328,7 +346,7 @@ export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
  * Callers still written for a single device use `soleDeviceOf` (fail-closed).
  */
 export interface ChainMember {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly role: Role;
   /** Environment scope (CRYPTO_SPEC §6.2 — the input of R(E) / environment-targeting ops / §6.3's 3′). */
   readonly scope: MemberScope;
@@ -351,7 +369,7 @@ export interface ApprovalPolicy {
  * (2026-09-15 — a key change lapses the compromised key's votes).
  */
 export interface ApprovalVote {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly keyFingerprintHex: string;
 }
 
@@ -367,7 +385,7 @@ export interface ApprovalVote {
 export interface PendingProposal {
   readonly proposalSeq: number;
   readonly proposalHashHex: string;
-  readonly proposerUserId: string;
+  readonly proposerUserId: UserId;
   /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
   readonly proposerKeyFingerprintHex: string;
   /**

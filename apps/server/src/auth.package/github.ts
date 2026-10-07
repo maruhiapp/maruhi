@@ -11,7 +11,7 @@
 // - Tests stub GitHub via miniflare's outboundService (real network is
 //   forbidden). No stub branch exists in production code
 
-import { egressHttpClientLayer } from "@maruhi/core";
+import { decodeProviderUserId, egressHttpClientLayer } from "@maruhi/core";
 import { type Cause, Context, Data, Duration, Effect, Redacted, Schema } from "effect";
 import {
   type HttpClientError,
@@ -164,7 +164,7 @@ const toIdentity = Effect.fn("github.toIdentity")(function* (
   }
   return {
     provider: "github" as const,
-    providerUserId: String(user.id),
+    providerUserId: decodeProviderUserId(String(user.id)),
     providerLogin: user.login ?? null,
     verifiedEmail: yield* fetchVerifiedPrimaryEmail(accessToken),
   };

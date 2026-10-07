@@ -29,7 +29,7 @@ import type {
   DekWrapInput,
   MemberWithDevice,
 } from "./data/data-plane.ts";
-import { dataEvent, rejectData, withSigningDevice } from "./data/data-plane.ts";
+import { dataEvent, dekRecipientTarget, rejectData, withSigningDevice } from "./data/data-plane.ts";
 import { DataStore } from "./data/data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
@@ -446,9 +446,7 @@ export function dekRegisteredEvent(
   return dataEvent(actor, nowMs, "dek.registered", {
     environmentId,
     epoch: wrap.epoch,
-    ...(wrap.recipientClass === "server"
-      ? { targetKeyFingerprintHex: wrap.recipientUserId }
-      : { targetUserId: wrap.recipientUserId }),
+    ...dekRecipientTarget(wrap.recipientClass, wrap.recipientUserId),
     actorKeyFingerprintHex: signer.keyFingerprintHex,
   });
 }

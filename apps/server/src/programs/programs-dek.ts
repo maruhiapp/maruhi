@@ -13,6 +13,7 @@ import type { DataActor, DekWrapInput, DekWrapRefInput } from "../data/data-plan
 import {
   currentEpochOf,
   dataEvent,
+  dekRecipientTarget,
   ensureDevicePermission,
   rejectData,
   requireEnvironmentAccess,
@@ -175,9 +176,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
         dataEvent(actor, now, "dek.deleted", {
           environmentId,
           epoch: ref.epoch,
-          ...(ref.recipientClass === "server"
-            ? { targetKeyFingerprintHex: ref.recipientUserId }
-            : { targetUserId: ref.recipientUserId }),
+          ...dekRecipientTarget(ref.recipientClass, ref.recipientUserId),
         }),
       ),
     );

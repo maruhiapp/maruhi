@@ -24,7 +24,7 @@
 // never persisted (the issuance pin holds only the public key). The
 // server never receives the seed.
 
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type UserId } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -61,7 +61,7 @@ export interface InviteIssuance {
 
 /** An invite's acceptance block (a listing response row — §15-1). */
 export interface InviteAcceptance {
-  readonly inviteeUserId: string;
+  readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;
   readonly signatureHex: string;

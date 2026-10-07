@@ -36,6 +36,7 @@ import {
   importSigningKeyPair,
   signHeadAttestation,
 } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -152,7 +153,10 @@ async function revokeDevice(
 ): Promise<number> {
   await appendOperation(fixture, actorUserId, {
     op: "revoke_device",
-    payload: { targetUserId, deviceFingerprintsHex: fingerprints.toSorted() },
+    payload: {
+      targetUserId: testUserId(targetUserId),
+      deviceFingerprintsHex: fingerprints.toSorted(),
+    },
   });
   return fixture.head.seq;
 }

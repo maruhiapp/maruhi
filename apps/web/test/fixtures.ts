@@ -7,6 +7,8 @@
 // check against the real Schemas lives in e2e.test.ts (ruling BV).
 // This is a test-process-only module and never enters the shipped
 // bundle (only screenshots.ts and e2e.test.ts import it).
+import { testUserId } from "@maruhi/crypto/test-support";
+
 import type {
   AuditEvent,
   ChainSnapshot,
@@ -23,6 +25,9 @@ import type {
 export const PROJECT_1 = "ab".repeat(32);
 export const PROJECT_2 = "cd".repeat(32);
 const HEX64 = "12".repeat(32);
+const USER_E2E = testUserId("user_e2e");
+const USER_COLLEAGUE = testUserId("user_colleague");
+const USER_GHOST = testUserId("user_ghost");
 const SIG = "34".repeat(64);
 const FP = "56".repeat(16);
 const ROW_ID_1 = "78".repeat(16);
@@ -36,7 +41,7 @@ export const FP_D2 = "d2".repeat(16);
 const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
 const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
 
-export const meFixture: Me = { userId: "user_e2e", orgs: [] };
+export const meFixture: Me = { userId: USER_E2E, orgs: [] };
 
 export const PROJECT_GHOST_CURSOR = "ef".repeat(32);
 
@@ -69,7 +74,7 @@ export const chainFixture: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 1,
       prevHashHex: "00".repeat(32),
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP },
       timestampMs: 1_756_000_000_000,
       signatureHex: SIG,
       op: "genesis",
@@ -79,12 +84,12 @@ export const chainFixture: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 2,
       prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP },
       timestampMs: 1_756_000_100_000,
       signatureHex: SIG,
       op: "add_member",
       payload: {
-        targetUserId: "user_colleague",
+        targetUserId: USER_COLLEAGUE,
         encPubHex: HEX64,
         sigPubHex: HEX64,
         role: "reader",
@@ -96,7 +101,7 @@ export const chainFixture: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 3,
       prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP },
       timestampMs: 1_756_000_200_000,
       signatureHex: SIG,
       op: "add_device",
@@ -111,7 +116,7 @@ export const chainFixture: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 4,
       prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP_D2 },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP_D2 },
       timestampMs: 1_756_000_300_000,
       signatureHex: SIG,
       op: "add_device",
@@ -121,11 +126,11 @@ export const chainFixture: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 5,
       prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP },
       timestampMs: 1_756_000_400_000,
       signatureHex: SIG,
       op: "revoke_device",
-      payload: { targetUserId: "user_e2e", deviceFingerprintsHex: [FP_D2] },
+      payload: { targetUserId: USER_E2E, deviceFingerprintsHex: [FP_D2] },
     },
   ],
   attestations: [],
@@ -142,11 +147,11 @@ export const chainWithUnreadableEntry: ChainSnapshot = {
       suite: "maruhi/v1",
       seq: 6,
       prevHashHex: HEX64,
-      actor: { userId: "user_e2e", keyFingerprintHex: FP },
+      actor: { userId: USER_E2E, keyFingerprintHex: FP },
       timestampMs: 1_756_000_500_000,
       signatureHex: SIG,
       op: "revoke_device",
-      payload: { targetUserId: "user_ghost", deviceFingerprintsHex: [FP_D2] },
+      payload: { targetUserId: USER_GHOST, deviceFingerprintsHex: [FP_D2] },
     },
   ],
 };
@@ -302,7 +307,7 @@ const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
 const PAST_MS = 1_700_000_000_000; // 2023-11-14
 
 const acceptanceFixture = {
-  inviteeUserId: "user_colleague",
+  inviteeUserId: USER_COLLEAGUE,
   inviteeEncPubHex: HEX64,
   inviteeSigPubHex: HEX64,
   signatureHex: SIG,

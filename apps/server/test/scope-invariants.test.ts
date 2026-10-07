@@ -8,6 +8,7 @@
 //     listed members too (the visibility predicate takes no environment
 //     axis)
 
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { fetchEvents } from "./support/audit-read-scenario.ts";
@@ -38,8 +39,8 @@ import { makeOidcToken } from "./support/lease.ts";
 
 registerDataScenario();
 
-const DEV = "user-devmember-0010";
-const DEVADMIN = "user-devadmin-0011";
+const DEV = testUserId("user-devmember-0010");
+const DEVADMIN = testUserId("user-devadmin-0011");
 const OTHER = "env-other-0002";
 
 describe("the lease path is unchanged (AUTH_SPEC §14-1)", () => {

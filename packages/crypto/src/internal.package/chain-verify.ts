@@ -58,6 +58,7 @@ import {
   type ProposableOperation,
   type Role,
   type ServerGrant,
+  type UserId,
 } from "./chain-types.ts";
 import type { ChainInvalidReason, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -106,7 +107,7 @@ interface MutableEnvironmentState {
 interface MutablePendingProposal {
   readonly proposalSeq: number;
   readonly proposalHashHex: string;
-  readonly proposerUserId: string;
+  readonly proposerUserId: UserId;
   readonly proposerKeyFingerprintHex: string;
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
@@ -149,7 +150,7 @@ interface MutableChainState {
  * to the checks).
  */
 interface ActorContext {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly device: ChainDevice;
   readonly permission: EffectivePermission;
 }

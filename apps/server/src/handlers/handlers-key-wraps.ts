@@ -34,7 +34,7 @@ import {
   MAX_HANDOFF_APPROVALS_PER_REQUEST,
   MAX_PASSKEY_WRAPS_PER_USER,
 } from "@maruhi/api-schema";
-import { auditActorOf, RequestAuth } from "@maruhi/core";
+import { auditActorOf, RequestAuth, type UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -196,7 +196,7 @@ function guardianPolicyViolation(input: {
 function rolesFor(
   repo: KeyWrapRepoShape,
   request: HandoffRequestRecord,
-  principalUserId: string,
+  principalUserId: UserId,
 ): Effect.Effect<readonly HandoffRole[] | null> {
   if (request.userId === principalUserId) {
     return Effect.succeed([] as const);
@@ -266,7 +266,7 @@ function noContentOrNotFound(deleted: boolean) {
 const visibleRequest = Effect.fn("handlers-key-wraps.visibleRequest")(function* (
   repo: KeyWrapRepoShape,
   requestId: string,
-  principalUserId: string,
+  principalUserId: UserId,
   nowMs: number,
 ) {
   const request = yield* repo.handoffFind(requestId, nowMs);

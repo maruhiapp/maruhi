@@ -27,6 +27,7 @@ import {
   openProposedValue,
   sealProposedValue,
 } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -756,7 +757,7 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
   it("an expired proposal is not listed but is still resolvable until swept, and a listed member of another environment sees nothing", async () => {
     await grantedProject();
     // A member listed on another environment is not in W(ENV) and sees no proposal there
-    const DEV = "user-devmember-0010";
+    const DEV = testUserId("user-devmember-0010");
     await createEnvironmentOk(fixture, "env-other", "Other");
     await seedMemberToken(fixture, DEV, 9010);
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", ["env-other"]));

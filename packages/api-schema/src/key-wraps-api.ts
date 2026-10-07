@@ -14,6 +14,7 @@
 //   (CRYPTO_SPEC §8.4 — the code is carried by a human). All the server
 //   learns is request_id (a value derived from E.pub)
 
+import { UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -136,7 +137,7 @@ export const GuardianShareSchema = Schema.Struct({
   shareIndex: Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: MAX_GUARDIAN_SHARES_PER_GROUP }),
   ),
-  guardianUserId: Schema.String,
+  guardianUserId: UserIdSchema,
   guardianEncPubHex: EncPubHex,
   guardianKeyFingerprintHex: KeyFingerprintHex,
   encHex: HpkeEncHex,

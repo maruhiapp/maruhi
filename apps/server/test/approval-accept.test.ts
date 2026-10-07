@@ -19,6 +19,7 @@
 
 import type { ApprovalTargetOp, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -105,7 +106,7 @@ const proposeOp = (inner: ProposableOperation, expiresAtMs: number): ChainOperat
 
 const removeMemberOp = (targetUserId: string): ProposableOperation => ({
   op: "remove_member",
-  payload: { targetUserId },
+  payload: { targetUserId: testUserId(targetUserId) },
 });
 
 /** Get a proposal accepted and return the proposal entry's hash (the reference approve / withdraw point at). */

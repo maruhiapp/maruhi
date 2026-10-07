@@ -7,7 +7,7 @@
 // create a route that puts key material into the process environment.
 // session-11.md handoff).
 
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, type UserId } from "@maruhi/core";
 import type { EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
 import {
   computeUserKeyFingerprint,
@@ -59,7 +59,7 @@ export interface CliSession {
   /** Normalized server origin (keychain scoping key and API base URL). */
   readonly origin: string;
   readonly token: Redacted.Redacted<string>;
-  readonly userId: string;
+  readonly userId: UserId;
 }
 
 /**

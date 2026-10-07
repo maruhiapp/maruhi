@@ -15,6 +15,7 @@
 // - Wraps and segments are opaque to the server; this file does not
 //   interpret their contents
 
+import type { UserId } from "@maruhi/core";
 import { and, count, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -70,7 +71,7 @@ const HANDOFF_SWEEP_GRACE_MS = 60 * 60 * 1000;
 
 export interface GuardianShareInput {
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
   readonly guardianKeyFingerprintHex: string;
   readonly encHex: string;
@@ -124,9 +125,9 @@ export interface KeyWrapRepoShape {
 
   // --- Class G (guardian groups)-------------------------------------------
   /** Returns the user_ids that do not exist (guardian existence check). */
-  readonly missingUsers: (userIds: readonly string[]) => Effect.Effect<readonly string[]>;
+  readonly missingUsers: (userIds: readonly UserId[]) => Effect.Effect<readonly UserId[]>;
   readonly guardianCreate: (input: {
-    readonly userId: string;
+    readonly userId: UserId;
     readonly groupId: string;
     readonly mode: GuardianMode;
     readonly wrap: MasterKeyWrapBlob;
@@ -136,26 +137,26 @@ export interface KeyWrapRepoShape {
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "limit" | "conflict">;
   readonly guardianFind: (
-    userId: string,
+    userId: UserId,
     groupId: string,
   ) => Effect.Effect<GuardianGroupRecord | null>;
-  readonly guardianList: (userId: string) => Effect.Effect<readonly GuardianGroupRecord[]>;
+  readonly guardianList: (userId: UserId) => Effect.Effect<readonly GuardianGroupRecord[]>;
   readonly guardianDelete: (
-    userId: string,
+    userId: UserId,
     groupId: string,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
   /** The guardian's own segments as the guardian sees them (optionally narrowed by ward). */
   readonly sharesOfGuardian: (
-    guardianUserId: string,
-    wardUserId?: string,
+    guardianUserId: UserId,
+    wardUserId?: UserId,
   ) => Effect.Effect<readonly WardShareRecord[]>;
 
   // --- Class H (handoff)----------------------------------------------------
   readonly handoffCreate: (input: {
     readonly requestId: string;
-    readonly userId: string;
+    readonly userId: UserId;
     readonly ttlMs: number;
     readonly nowMs: number;
     readonly actor: D1AuditActor;
@@ -167,7 +168,7 @@ export interface KeyWrapRepoShape {
   ) => Effect.Effect<HandoffRequestRecord | null>;
   readonly handoffApprove: (input: {
     readonly requestId: string;
-    readonly wardUserId: string;
+    readonly wardUserId: UserId;
     readonly approverUserId: string;
     readonly approval: HandoffApprovalInput;
     readonly limit: number;
@@ -182,11 +183,11 @@ export interface KeyWrapRepoShape {
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
-  readonly handoffDelete: (requestId: string, userId: string) => Effect.Effect<boolean>;
+  readonly handoffDelete: (requestId: string, userId: UserId) => Effect.Effect<boolean>;
   /** Opportunistic deletion of requests past expiry + grace (approvals are removed by cascade). */
   readonly handoffSweep: (nowMs: number) => Effect.Effect<void>;
   /** The login snapshot for display (github). */
-  readonly loginOf: (userId: string) => Effect.Effect<string | null>;
+  readonly loginOf: (userId: UserId) => Effect.Effect<string | null>;
 }
 
 export class KeyWrapRepo extends Context.Service<KeyWrapRepo, KeyWrapRepoShape>()("KeyWrapRepo") {}
@@ -216,7 +217,7 @@ function toMode(value: string): GuardianMode {
 
 function toShare(row: {
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
   readonly guardianKeyFingerprintHex: string;
   readonly encHex: string;
@@ -257,7 +258,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         .where(condition),
     );
 
-  const loginQuery = (userId: string) =>
+  const loginQuery = (userId: UserId) =>
     db
       .select({ login: linkedIdentities.providerLogin })
       .from(linkedIdentities)
@@ -267,7 +268,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   const groupsWithShares = async (
     rows: readonly {
       readonly id: string;
-      readonly userId: string;
+      readonly userId: UserId;
       readonly mode: string;
       readonly suite: string;
       readonly nonceHex: string;
@@ -301,7 +302,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   };
 
   const findGroup = async (
-    userId: string,
+    userId: UserId,
     groupId: string,
   ): Promise<GuardianGroupRecord | null> => {
     const rows = await db

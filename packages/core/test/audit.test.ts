@@ -12,15 +12,16 @@
 // should-fix 3).
 
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
+import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { chainMirrorEvents, indexProposals } from "../src/audit.ts";
 
-const PROPOSER = { userId: "user-owner-0001", keyFingerprintHex: "aa".repeat(16) };
-const APPROVER = { userId: "user-owner-0014", keyFingerprintHex: "bb".repeat(16) };
+const PROPOSER = { userId: testUserId("user-owner-0001"), keyFingerprintHex: "aa".repeat(16) };
+const APPROVER = { userId: testUserId("user-owner-0014"), keyFingerprintHex: "bb".repeat(16) };
 const INNER: ProposableOperation = {
   op: "remove_member",
-  payload: { targetUserId: "user-member-0002" },
+  payload: { targetUserId: testUserId("user-member-0002") },
 };
 
 /** Dummy hash of a seq (deterministic — used as the index's reference target). */
