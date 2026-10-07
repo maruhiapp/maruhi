@@ -73,7 +73,9 @@ export type OperationOf<Op extends ProposableEntry["op"]> = Extract<ProposableEn
 // proposal — the inclusive convention). create_environment /
 // rotate_epoch / checkpoint / genesis are not here (they do not affect
 // the member/server sets; genesis is folded by deriveReportedView with
-// key-FP tracking)
+// key-FP tracking). delete_environment and the 2 device ops are not
+// here either: they are never four-eyes targets, so they fold only as
+// direct entries (chain-view.ts ENTRY_FOLDERS — K5-4)
 const OPERATION_FOLDERS: {
   readonly [Op in ProposableEntry["op"]]?: (
     state: FoldState,

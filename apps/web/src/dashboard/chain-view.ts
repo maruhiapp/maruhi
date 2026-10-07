@@ -45,6 +45,15 @@
 // by the count of unbound devices (the device count is always exact;
 // which ones is honestly shown as "unresolved"). Four-eyes votes are
 // counted in device vocabulary (§6.2).
+//
+// Environment deletion (CRYPTO_SPEC §6.2 `delete_environment` —
+// 2026-10-07): the deleted id leaves every listed scope — each member's,
+// each of their devices' caps, each granted server's — by the same
+// pruning rule as crypto's `scopeWithout` (`all` is never pruned; a
+// listed scope stays listed, possibly empty). Like the device ops it
+// is never a four-eyes target (a propose carrying it is
+// `approval-not-required`), so it folds only as a direct entry (K5-4's
+// line).
 
 import { applyAddDevice, applyRevokeDevice } from "./chain-view-devices.ts";
 import { applyOperation } from "./chain-view-operations.ts";
@@ -64,6 +73,7 @@ import {
   hasStrings,
   isRecord,
   ownProp,
+  scopeIdsWithout,
   startTenure,
   type EntryFolder,
   type EntryOf,
@@ -91,12 +101,48 @@ function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
     bindFingerprint(state, member.userId, first, entry.actor.keyFingerprintHex);
 }
 
+/**
+ * delete_environment: prunes the deleted id from every member's listed
+ * scope (a pruned member's sinceSeq moves to the deletion — it set the
+ * scope, the same change point as crypto's history index), from every
+ * device's listed cap, and from every granted server's scope. The
+ * environment set itself is not folded (the dashboard lists live
+ * environments from the server's listing — AUTH_SPEC §12-7).
+ */
+function applyDeleteEnvironment(state: FoldState, entry: EntryOf<"delete_environment">): void {
+  const environmentId = entry.payload.environmentId;
+  if (typeof environmentId !== "string") {
+    state.unreadableEntries += 1;
+    return;
+  }
+  for (const member of state.members.values()) pruneMember(member, environmentId, entry.seq);
+  for (const [fingerprint, server] of state.servers) {
+    state.servers.set(fingerprint, {
+      ...server,
+      scopeEnvironmentIds: server.scopeEnvironmentIds.filter((id) => id !== environmentId),
+    });
+  }
+}
+
+/** One member's share of a deletion: its own listed scope (a change point at `seq`) and its devices' listed caps. */
+function pruneMember(member: MutableMember, environmentId: string, seq: number): void {
+  const memberIds = scopeIdsWithout(member, environmentId);
+  if (memberIds !== null) {
+    member.scopeEnvironmentIds = memberIds;
+    member.sinceSeq = seq;
+  }
+  for (const device of member.devices) {
+    device.scopeEnvironmentIds =
+      scopeIdsWithout(device, environmentId) ?? device.scopeEnvironmentIds;
+  }
+}
+
 // The fold of the entries themselves (genesis, the 4 four-eyes ops,
-// the 2 device ops). The 2 device ops cannot be proposed
-// (§6.2 `approval-not-required`), so they fold only as direct entries
-// (ignored as inner ops — K5-4). Any other state-changing op goes to
-// applyOperation (the applied-op table — shared with a completed
-// approve's inner op)
+// the 2 device ops, delete_environment). The 2 device ops and
+// delete_environment cannot be proposed (§6.2 `approval-not-required`),
+// so they fold only as direct entries (ignored as inner ops — K5-4).
+// Any other state-changing op goes to applyOperation (the applied-op
+// table — shared with a completed approve's inner op)
 const ENTRY_FOLDERS: {
   readonly [Op in ChainEntry["op"]]?: (
     state: FoldState,
@@ -116,6 +162,7 @@ const ENTRY_FOLDERS: {
   },
   add_device: applyAddDevice,
   revoke_device: applyRevokeDevice,
+  delete_environment: applyDeleteEnvironment,
 };
 
 /** The fold of one entry. */
@@ -143,7 +190,9 @@ function foldEntry(state: FoldState, entry: ChainEntry, hash: string | undefined
 // member/server sets, so they are not here. scope (the trailing 2
 // fields of add_member / change_role) was added by K4 (2026-09-15 ES —
 // design record K4-D), the 4 four-eyes ops by K6 (design record K6-J),
-// and the 2 device ops by DK K5 (design record dk-design.md §10)
+// the 2 device ops by DK K5 (design record dk-design.md §10), and
+// delete_environment (which prunes member / device / server scopes) at
+// 2026-10-07
 const ENTRY_KINDS: { readonly [Op in ChainEntry["op"]]?: true } = {
   genesis: true,
   add_member: true,
@@ -157,6 +206,7 @@ const ENTRY_KINDS: { readonly [Op in ChainEntry["op"]]?: true } = {
   withdraw: true,
   add_device: true,
   revoke_device: true,
+  delete_environment: true,
 };
 
 /** A mutable record → the public row (the vote material is not emitted). */
