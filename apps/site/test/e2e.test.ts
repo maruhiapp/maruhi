@@ -326,6 +326,10 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     // A link from the body to the LP (site root) is an absolute URL not
     // rewritten by basePath
     await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
+    // ...and so is the banner's link to the LP's access section
+    await expect(page.locator("[data-blume-banner] a").first().getAttribute("href")).resolves.toBe(
+      "https://maruhi.app/#access",
+    );
     await page.locator("a[data-blume-card][href='/docs/getting-started']").click();
     await page.locator("h1", { hasText: "Getting started" }).waitFor();
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");

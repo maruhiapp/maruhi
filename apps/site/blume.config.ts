@@ -51,7 +51,11 @@ export default defineConfig({
   },
   banner: {
     content: "maruhi is in private preview. Sign-up is invite-only for now.",
-    link: { text: "How to get access", href: "/#access" },
+    // Absolute: Blume 2 mounts a root-relative banner link under basePath
+    // unless it exactly names a custom page route, and `/#access` (with its
+    // fragment) does not, so it would become `/docs/#access`. The docs body
+    // links to the LP the same way
+    link: { text: "How to get access", href: "https://maruhi.app/#access" },
     dismissible: true,
     id: "private-preview",
   },
