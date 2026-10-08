@@ -22,7 +22,6 @@
 //   single implementation. Test vectors: test-vectors/audit-head.json
 
 import { concatBytes, encodeHex, utf8Encode } from "./bytes.ts";
-import type { EnvironmentId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -49,8 +48,8 @@ export interface AuditHeadRow {
   readonly actorApiTokenId: string | null;
   readonly targetUserId: string | null;
   readonly targetKeyFingerprintHex: string | null;
-  readonly environmentId: EnvironmentId | null;
-  readonly variableId: VariableId | null;
+  readonly environmentId: string | null;
+  readonly variableId: string | null;
   readonly epoch: number | null;
   readonly version: number | null;
   readonly chainSeq: number | null;

@@ -66,12 +66,13 @@ export const AuditActorSchema = Schema.Struct({
  * wire shape; fields a given store never records are simply absent.
  *
  * Identifier fields (environmentId etc.) stay plain strings whenever the
- * brand's schema asserts a format: the write-time Schema already enforced
- * it, and re-asserting the format on the read side would 500 on encode
- * failure when serving historical rows (rows accepted before an
- * acceptance-policy revision) — breaking faithful audit replay. Brands
- * that carry no format (UserId, OrgId) encode any string, so those fields
- * are branded directly.
+ * brand's schema asserts a format. The audit log is a faithful replay of
+ * stored rows: the head hash is what detects tampering (a modified value
+ * changes the digest), so a second format gate on the read side buys
+ * nothing and turns a stored artifact into a defect — a value the
+ * write-time acceptance policy once let through must still round-trip.
+ * Brands that carry no format (UserId, OrgId) encode any string, so those
+ * fields are branded directly.
  */
 export const AuditEventSchema = Schema.Struct({
   /**

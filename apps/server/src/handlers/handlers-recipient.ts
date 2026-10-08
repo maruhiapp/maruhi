@@ -4,6 +4,7 @@
 // endpoints (deks, environments).
 
 import {
+  decodeKeyFingerprintHex,
   decodeUserId,
   isKeyFingerprintHex,
   type KeyFingerprintHex,
@@ -22,6 +23,6 @@ export const recipientOf = (d: {
 }): UserId | KeyFingerprintHex =>
   d.recipientClass === "server"
     ? isKeyFingerprintHex(d.recipientUserId)
-      ? d.recipientUserId
+      ? decodeKeyFingerprintHex(d.recipientUserId)
       : decodeUserId(d.recipientUserId)
     : decodeUserId(d.recipientUserId);

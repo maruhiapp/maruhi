@@ -30,6 +30,7 @@
 import {
   decodeUserId,
   type EnvironmentId,
+  decodeKeyFingerprintHex,
   isKeyFingerprintHex,
   type KeyFingerprintHex,
   type UserId,
@@ -389,7 +390,8 @@ function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): 
         mandate,
       );
     case "server-revoked":
-      return isKeyFingerprintHex(mandate.target) && verified.state.serverGrants.has(mandate.target)
+      return isKeyFingerprintHex(mandate.target) &&
+        verified.state.serverGrants.has(decodeKeyFingerprintHex(mandate.target))
         ? reversedAdvice("the target server key has been re-granted")
         : "re-running `maruhi server revoke` converges the mandate";
     case "device-revoked":

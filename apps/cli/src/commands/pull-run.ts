@@ -1,6 +1,6 @@
 // `maruhi pull` / `maruhi run` (discipline: see commands/index.ts).
 
-import { type ProjectId, isProjectId } from "@maruhi/core";
+import { decodeProjectId, isProjectId, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
@@ -111,7 +111,7 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
     });
   const early = input.flags.project ?? config.projectId ?? (yield* loadCliConfig).defaultProject;
   if (early !== undefined && isProjectId(early)) {
-    yield* accepted(early);
+    yield* accepted(decodeProjectId(early));
   }
   // The read may be retried against the configured mirror (PF2); the proxy then starts once
   const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>

@@ -37,12 +37,10 @@
 
 import type {
   AuditEventRecordOf,
-  EnvironmentId,
   KeyFingerprintHex,
   ROTATION_BASES,
   ROTATION_TRIGGERS,
   UserId,
-  VariableId,
 } from "@maruhi/core";
 
 import type {
@@ -70,8 +68,8 @@ export type RecommendedEvent = AuditEventRecordOf<"rotation.recommended">;
 
 /** A currently-effective rotation-needed flag (the §4.1 step 5 derivation result; crosses the RPC boundary). */
 export interface EffectiveRotationFlag {
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
+  readonly environmentId: string;
+  readonly variableId: string;
   readonly basis: RotationBasis;
   /** Only on the remove_member / change_role variants. */
   readonly targetUserId?: UserId;
@@ -103,16 +101,14 @@ interface SeqInterval {
 
 /** A variable's existence interval (Q2 of §4.1 step 2 — var.created to var.deleted). */
 interface VariableLifetime {
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
+  readonly environmentId: string;
+  readonly variableId: string;
   readonly start: number;
   end: number;
 }
 
-const pairKey = (row: {
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
-}): string => `${row.environmentId}\u0000${row.variableId}`;
+const pairKey = (row: { readonly environmentId: string; readonly variableId: string }): string =>
+  `${row.environmentId}\u0000${row.variableId}`;
 
 /** Overlap of two open intervals (includes the real-time window between integer seqs — see the header comment). */
 function overlaps(a: SeqInterval, bStart: number, bEnd: number): boolean {
@@ -144,7 +140,7 @@ interface ScopeTransition {
 
 const ALL_SCOPE: ScopeSnapshot = { kind: "all" };
 
-function scopeIncludes(scope: ScopeSnapshot, environmentId: EnvironmentId): boolean {
+function scopeIncludes(scope: ScopeSnapshot, environmentId: string): boolean {
   return scope.kind === "all" || scope.environmentIds.includes(environmentId);
 }
 
@@ -161,7 +157,7 @@ function scopeIncludes(scope: ScopeSnapshot, environmentId: EnvironmentId): bool
  */
 function accessWindows(
   transitions: readonly ScopeTransition[],
-  environmentId: EnvironmentId,
+  environmentId: string,
 ): readonly SeqInterval[] {
   const windows: SeqInterval[] = [];
   // Window-derivation state: whether inside a membership / grant interval, and
@@ -225,7 +221,7 @@ function grantTransitions(
   events: readonly {
     readonly seq: number;
     readonly event: string;
-    readonly scopeEnvironmentIds: readonly EnvironmentId[] | null;
+    readonly scopeEnvironmentIds: readonly string[] | null;
   }[],
 ): readonly ScopeTransition[] {
   const transitions: ScopeTransition[] = [];
@@ -233,7 +229,7 @@ function grantTransitions(
   // an interval containing a grant row whose scope is unreadable (fail-safe to
   // all environments — the same handling as an unknown scope on the member
   // axis. K3-F)
-  let disclosed: Set<EnvironmentId> | "all" | null = null;
+  let disclosed: Set<string> | "all" | null = null;
   for (const event of events) {
     if (event.event === "chain.server_revoked") {
       transitions.push({ seq: event.seq, kind: "close", scope: ALL_SCOPE });
@@ -283,7 +279,7 @@ function variableLifetimes(
 /** Lazily derive and memoize windows per environment (candidates are judged per variable; windows are per environment). */
 function windowsByEnvironment(
   transitions: readonly ScopeTransition[],
-): (environmentId: EnvironmentId) => readonly SeqInterval[] {
+): (environmentId: string) => readonly SeqInterval[] {
   const memo = new Map<string, readonly SeqInterval[]>();
   return (environmentId) => {
     const cached = memo.get(environmentId);
@@ -307,7 +303,7 @@ function windowsByEnvironment(
  */
 function exposureBound(
   epochRows: readonly EnvironmentEpochRow[],
-  environmentId: EnvironmentId,
+  environmentId: string,
   windows: readonly SeqInterval[],
 ): number {
   const end = Math.max(...windows.map((window) => window.end));
@@ -375,7 +371,7 @@ function detectForMember(input: {
   readonly nowMs: number;
   readonly selectWindows: (
     windows: readonly SeqInterval[],
-    environmentId: EnvironmentId,
+    environmentId: string,
   ) => readonly SeqInterval[];
   readonly transitions: readonly ScopeTransition[];
   readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];

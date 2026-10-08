@@ -30,7 +30,7 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { isProjectId, type ProjectId, type EnvironmentId } from "@maruhi/core";
+import { decodeProjectId, isProjectId, type ProjectId, type EnvironmentId } from "@maruhi/core";
 import { Data, Effect, FileSystem, type PlatformError, Predicate, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -449,7 +449,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         for (const name of names) {
           const match = /^(.+)\.jsonl$/.exec(name);
           if (match?.[1] !== undefined && isProjectId(match[1])) {
-            ids.add(match[1]);
+            ids.add(decodeProjectId(match[1]));
           }
         }
         return [...ids].toSorted();

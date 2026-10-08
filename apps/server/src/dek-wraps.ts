@@ -11,7 +11,12 @@
 // remaining wraps are verified with that key alone.
 
 import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
-import { cryptoEffect, decodeUserId, isKeyFingerprintHex } from "@maruhi/core";
+import {
+  cryptoEffect,
+  decodeKeyFingerprintHex,
+  decodeUserId,
+  isKeyFingerprintHex,
+} from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -157,7 +162,7 @@ function checkServerRecipient(
   wrap: DekWrapInput,
 ): DataRejection | null {
   const grant = isKeyFingerprintHex(wrap.recipientUserId)
-    ? state.serverGrants.get(wrap.recipientUserId)
+    ? state.serverGrants.get(decodeKeyFingerprintHex(wrap.recipientUserId))
     : undefined;
   if (grant === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };

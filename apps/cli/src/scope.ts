@@ -282,11 +282,7 @@ export function environmentsOfScopeAt(
 ): readonly EnvironmentId[] {
   const ids: EnvironmentId[] = [];
   for (const [environmentId, environment] of verified.state.environments) {
-    if (
-      environment.createdAtSeq <= seq &&
-      isEnvironmentId(environmentId) &&
-      scopeIncludesEnvironment(scope, environmentId)
-    ) {
+    if (environment.createdAtSeq <= seq && scopeIncludesEnvironment(scope, environmentId)) {
       ids.push(environmentId);
     }
   }

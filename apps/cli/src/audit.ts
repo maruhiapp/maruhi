@@ -32,6 +32,7 @@ import {
   type AuditReadVariable,
   type ProposalIndex,
   decodeEnvironmentId,
+  isEnvironmentId,
   type EnvironmentId,
   type ProjectId,
   type UserId,
@@ -542,7 +543,13 @@ function environmentIdsForNames(
     if (event.environmentId === undefined) {
       continue;
     }
-    if (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) {
+    // A wire env id out of §12-1's form cannot mint — skip it from name
+    // resolution (degrades to identifier display, never a defect — the
+    // same SHOULD-level treatment as a failed metadata pull)
+    if (
+      (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) &&
+      isEnvironmentId(event.environmentId)
+    ) {
       ids.add(decodeEnvironmentId(event.environmentId));
     }
   }

@@ -3,7 +3,7 @@
 // standing report (the group's overview lives in device.ts).
 
 import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
-import { type EnvironmentId, type ProjectId, isProjectId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
@@ -297,9 +297,8 @@ const unlistedFloorProjects = Effect.fn("device-add.unlistedFloorProjects")(func
   const ids = yield* floor
     .listProjectIds()
     .pipe(Effect.orElseSucceed((): readonly ProjectId[] => []));
-  const brandedIds = ids.filter(isProjectId);
   const listed = new Set(standings.projects.map((project) => project.projectId));
-  const unlisted = brandedIds.filter((id) => !listed.has(id));
+  const unlisted = ids.filter((id) => !listed.has(id));
   if (unlisted.length === 0) {
     return "";
   }

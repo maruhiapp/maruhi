@@ -77,12 +77,12 @@
       // config / record parsers, the server's row mapping (Drizzle columns
       // and the data store's branded reads), handler decoding, generation,
       // and the provider API's subject. The `is*` guards are NOT restricted:
-      // isProjectId / isUserId / isKeyFingerprintHex narrow, which is itself
-      // a format-verified mint wherever it legitimately happens (unique
-      // formats), while isEnvironmentId / isVariableId are non-narrowing
-      // format checks — a guard that cannot mint needs no boundary, and the
-      // actual mint next to them (decode* / a schema) is what this list
-      // pins. The egress and test-support bans above are restated because
+      // isUserId narrows ("non-empty" is the brand's definition, so the
+      // check is a mint by construction), while isProjectId /
+      // isEnvironmentId / isVariableId / isKeyFingerprintHex are
+      // non-narrowing format checks — a guard that cannot mint needs no
+      // boundary, and the actual mint next to them (decode* / a schema) is
+      // what this list pins. The egress and test-support bans above are restated because
       // an override replaces the rule's options
       "files": [
         "packages/api-schema/src/**",
@@ -93,6 +93,8 @@
         "apps/cli/src/commands/env.ts",
         "apps/cli/src/commands/rotation.ts",
         "apps/cli/src/commands/server.ts",
+        "apps/cli/src/commands/mirror-write.ts",
+        "apps/cli/src/commands/pull-run.ts",
         "apps/cli/src/keychain.ts",
         "apps/cli/src/context.ts",
         "apps/cli/src/anchor.ts",
@@ -101,6 +103,7 @@
         "apps/cli/src/config-schema.ts",
         "apps/cli/src/device-revoke.ts",
         "apps/cli/src/env-list.ts",
+        "apps/cli/src/floor-log.ts",
         "apps/cli/src/floor-log-decode.ts",
         "apps/cli/src/floor.ts",
         "apps/cli/src/invite-link.ts",
@@ -109,6 +112,7 @@
         "apps/cli/src/meta-statement.ts",
         "apps/cli/src/own-devices.ts",
         "apps/cli/src/pins.ts",
+        "apps/cli/src/proxy.package/command.ts",
         "apps/cli/src/proxy.package/proxy-accept.ts",
         "apps/cli/src/rotation-sweep.ts",
         "apps/cli/src/scope.ts",
@@ -135,6 +139,7 @@
         "apps/server/src/handlers/handlers-lease.ts",
         "apps/server/src/handlers/handlers-membership.ts",
         "apps/server/src/handlers/handlers-recipient.ts",
+        "apps/server/src/handlers/handlers-rotation.ts",
         "apps/server/src/import-check.ts",
         "apps/server/src/ops/ops-backup.ts",
         "apps/server/src/server-key.ts"

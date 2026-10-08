@@ -1,6 +1,6 @@
 // `maruhi proxy` (discipline: see commands/index.ts).
 
-import { isProjectId } from "@maruhi/core";
+import { decodeProjectId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
@@ -117,7 +117,7 @@ export function makeProxyCommands(onExitCode: (code: number) => void) {
       const outcome = yield* acceptProxyConfig({
         path: configPath,
         content: loaded.content,
-        projectId,
+        projectId: decodeProjectId(projectId),
       });
       yield* logNote(
         outcome === "unchanged"

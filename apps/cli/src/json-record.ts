@@ -12,7 +12,7 @@
 import { dirname } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { isProjectId, type ProjectId, EnvironmentIdSchema } from "@maruhi/core";
+import { decodeProjectId, isProjectId, type ProjectId, EnvironmentIdSchema } from "@maruhi/core";
 import { MAX_SCOPE_ENVIRONMENTS } from "@maruhi/crypto";
 import { Effect, FileSystem, type PlatformError, Result, Schema } from "effect";
 
@@ -63,7 +63,7 @@ export function parseConfigHeader(
   if (project !== undefined && (typeof project !== "string" || !isProjectId(project))) {
     return "project must be the project ID (64 hex digits) when present";
   }
-  return { projectId: project };
+  return { projectId: project === undefined ? undefined : decodeProjectId(project) };
 }
 
 /**

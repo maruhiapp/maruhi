@@ -13,6 +13,7 @@
 // declaration (api-schema).
 
 import { maruhiApi } from "@maruhi/api-schema";
+import { decodeEnvironmentId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -32,7 +33,15 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         // rather than stripped at the boundary, leaving no room to
         // forget)
         invoke: (stub, actor) => stub.rotationFlags(actor),
-      }).pipe(Effect.map((flags) => ({ flags }))),
+      }).pipe(
+        Effect.map((flags) => ({
+          flags: flags.map((flag) => ({
+            ...flag,
+            environmentId: decodeEnvironmentId(flag.environmentId),
+            variableId: decodeVariableId(flag.variableId),
+          })),
+        })),
+      ),
     )
     .handle("dismiss", ({ params, payload, endpoint }) =>
       callProjectData<void>()({

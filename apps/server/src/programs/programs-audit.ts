@@ -21,7 +21,7 @@
 // programs-*.
 
 import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
-import type { EnvironmentId, KeyFingerprintHex, OrgId, UserId, VariableId } from "@maruhi/core";
+import type { KeyFingerprintHex, OrgId, UserId } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 
 import type { StoredAuditEventRow } from "../audit-store.ts";
@@ -43,8 +43,8 @@ export interface AuditEventsQueryInput {
   readonly chainSeqPresent?: true;
   readonly actorUserId?: UserId;
   readonly targetUserId?: UserId;
-  readonly variableId?: VariableId;
-  readonly environmentId?: EnvironmentId;
+  readonly variableId?: string;
+  readonly environmentId?: string;
   /**
    * The worker-judged token-scope half (whether the admin scope
    * covers the target project). The DO composites it with "× chain
@@ -74,8 +74,8 @@ export interface AuditEventValue {
   readonly actor: AuditActorValue;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
-  readonly environmentId?: EnvironmentId;
-  readonly variableId?: VariableId;
+  readonly environmentId?: string;
+  readonly variableId?: string;
   readonly epoch?: number;
   readonly version?: number;
   readonly chainSeq?: number;

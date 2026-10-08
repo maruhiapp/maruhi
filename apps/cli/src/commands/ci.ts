@@ -255,7 +255,7 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
   yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
     ciSyncOp({
       origin: where.origin,
-      projectId: projectFlag,
+      projectId: decodeProjectId(projectFlag),
       audience: where.audience,
       anchorPath: values.anchor,
       target,

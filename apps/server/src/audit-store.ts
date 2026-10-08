@@ -14,20 +14,8 @@
 //   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
 //   mirror verification — `maruhi audit verify` — uses)
 
-import type {
-  AuditEventRecord,
-  EnvironmentId,
-  KeyFingerprintHex,
-  UserId,
-  VariableId,
-} from "@maruhi/core";
-import {
-  decodeEnvironmentId,
-  decodeKeyFingerprintHex,
-  decodeUserId,
-  decodeVariableId,
-  isEnvironmentId,
-} from "@maruhi/core";
+import type { AuditEventRecord, KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import {
   assertProjectAuditPayload,
   auditPayloadWith,
@@ -66,7 +54,7 @@ export type AuditEventInput = AuditEventRecord;
  */
 export type ScopeSnapshot =
   | { readonly kind: "all" }
-  | { readonly kind: "listed"; readonly environmentIds: readonly EnvironmentId[] };
+  | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
 
 /**
  * Q1: the membership-interval events of the target user_id
@@ -108,22 +96,22 @@ export interface GrantEventRow {
    * derivation treats it as every environment, fail-safe — design
    * record §9 K3-F).
    */
-  readonly scopeEnvironmentIds: readonly EnvironmentId[] | null;
+  readonly scopeEnvironmentIds: readonly string[] | null;
 }
 
 /** Q2: a variable's existence-interval events (var.created / var.deleted). */
 export interface VariableLifecycleRow {
   readonly seq: number;
   readonly event: string;
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
+  readonly environmentId: string;
+  readonly variableId: string;
 }
 
 /** Q3: the target user_id's var.read (expansion of the aggregate form's payload — §3.3). */
 export interface VariableReadRow {
   readonly seq: number;
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
+  readonly environmentId: string;
+  readonly variableId: string;
 }
 
 /**
@@ -142,15 +130,15 @@ export interface SeqRange {
 export interface ServerAccessRow {
   readonly seq: number;
   readonly event: string;
-  readonly environmentId: EnvironmentId;
+  readonly environmentId: string;
   /** server.lease_issued is per-environment distribution, so null (§3.5). */
-  readonly variableId: VariableId | null;
+  readonly variableId: string | null;
 }
 
 /** One epoch transition of an environment, from the chain mirror (§4.1-5 — VH). */
 export interface EnvironmentEpochRow {
   readonly seq: number;
-  readonly environmentId: EnvironmentId;
+  readonly environmentId: string;
   readonly epoch: number;
 }
 
@@ -159,8 +147,8 @@ export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;
   readonly event: string;
-  readonly environmentId: EnvironmentId;
-  readonly variableId: VariableId;
+  readonly environmentId: string;
+  readonly variableId: string;
   /** The version column (var.version_pushed only — the lineage fold's key; NULL otherwise). */
   readonly version: number | null;
   /**
@@ -191,8 +179,8 @@ export interface AuditRotationRead {
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
   /** The same rows narrowed to one (variable × environment) pair (the history's flagsIfCurrent — ae_var). */
   readonly rotationFlagEventsFor: (
-    environmentId: EnvironmentId,
-    variableId: VariableId,
+    environmentId: string,
+    variableId: string,
   ) => readonly RotationFlagSourceRow[];
 }
 
@@ -296,8 +284,8 @@ interface AuditEventsQuery {
   readonly chainSeqPresent: boolean;
   readonly actorUserId: UserId | null;
   readonly targetUserId: UserId | null;
-  readonly variableId: VariableId | null;
-  readonly environmentId: EnvironmentId | null;
+  readonly variableId: string | null;
+  readonly environmentId: string | null;
   readonly visibility: AuditVisibility;
 }
 
@@ -650,8 +638,8 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
     actorApiTokenId: textOrNull(row["actor_api_token_id"]),
     targetUserId: brandOrNull(row["target_user_id"], decodeUserId),
     targetKeyFingerprintHex: brandOrNull(row["target_key_fingerprint"], decodeKeyFingerprintHex),
-    environmentId: brandOrNull(row["environment_id"], decodeEnvironmentId),
-    variableId: brandOrNull(row["variable_id"], decodeVariableId),
+    environmentId: textOrNull(row["environment_id"]),
+    variableId: textOrNull(row["variable_id"]),
     epoch: numberOrNull(row["epoch"]),
     version: numberOrNull(row["version"]),
     chainSeq: numberOrNull(row["chain_seq"]),
@@ -997,8 +985,8 @@ function selectPage(
  */
 function aggregatedReadContains(
   sql: SqlStorage,
-  variableId: VariableId,
-  environmentId: EnvironmentId | null,
+  variableId: string,
+  environmentId: string | null,
   visibility: AuditVisibility,
 ): SqlConditions | null {
   // Per-environment (first-value seq, last-deleted seq). Grouped per
@@ -1196,12 +1184,10 @@ function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null 
  * or containing non-string elements — is null (a silently narrowed
  * enumeration would create a missed window — design record §9 K3-F).
  */
-function scopeOf(
-  payload: Readonly<Record<string, unknown>> | null,
-): readonly EnvironmentId[] | null {
+function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
-  return Array.isArray(scope) && scope.every((id) => typeof id === "string" && isEnvironmentId(id))
-    ? scope.map((id) => decodeEnvironmentId(String(id)))
+  return Array.isArray(scope) && scope.every((id) => typeof id === "string")
+    ? scope.map((id) => String(id))
     : null;
 }
 
@@ -1329,8 +1315,8 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .map((row) => ({
         seq: Number(row["seq"]),
         event: String(row["event"]),
-        environmentId: decodeEnvironmentId(String(row["environment_id"])),
-        variableId: decodeVariableId(String(row["variable_id"])),
+        environmentId: String(row["environment_id"]),
+        variableId: String(row["variable_id"]),
       })),
   // Q3: the (actor_user_id, seq) index (ae_actor). Expands the
   // aggregate-form var.read (the payload's variables enumeration — §3.3)
@@ -1362,11 +1348,11 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .toArray()
       .flatMap((row): VariableReadRow[] => {
         const seq = Number(row["seq"]);
-        const environmentId = decodeEnvironmentId(String(row["environment_id"]));
+        const environmentId = String(row["environment_id"]);
         return (auditReadVariablesOf(parsePayload(row["payload"])) ?? []).map((variable) => ({
           seq,
           environmentId,
-          variableId: decodeVariableId(variable.variableId),
+          variableId: variable.variableId,
         }));
       }),
   // The (a) input of Q6: the (actor_key_fingerprint, seq) index (ae_actor_fp)
@@ -1383,9 +1369,8 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .map((row) => ({
         seq: Number(row["seq"]),
         event: String(row["event"]),
-        environmentId: decodeEnvironmentId(String(row["environment_id"])),
-        variableId:
-          row["variable_id"] === null ? null : decodeVariableId(String(row["variable_id"])),
+        environmentId: String(row["environment_id"]),
+        variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
       })),
   // Q5: the (event, seq) index (ae_event)
   environmentEpochEvents: () =>
@@ -1399,7 +1384,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .toArray()
       .map((row) => ({
         seq: Number(row["seq"]),
-        environmentId: decodeEnvironmentId(String(row["environment_id"])),
+        environmentId: String(row["environment_id"]),
         epoch: Number(row["epoch"]),
       })),
   rotationFlagEvents: () =>
@@ -1413,7 +1398,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(rotationFlagSourceRow),
-  rotationFlagEventsFor: (environmentId: EnvironmentId, variableId: VariableId) =>
+  rotationFlagEventsFor: (environmentId: string, variableId: string) =>
     sql
       .exec(
         `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
@@ -1434,8 +1419,8 @@ function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFl
     seq: Number(row["seq"]),
     serverTs: Number(row["server_ts"]),
     event: String(row["event"]),
-    environmentId: decodeEnvironmentId(String(row["environment_id"])),
-    variableId: decodeVariableId(String(row["variable_id"])),
+    environmentId: String(row["environment_id"]),
+    variableId: String(row["variable_id"]),
     version: row["version"] === null ? null : Number(row["version"]),
     epoch: row["epoch"] === null ? null : Number(row["epoch"]),
     targetUserId:

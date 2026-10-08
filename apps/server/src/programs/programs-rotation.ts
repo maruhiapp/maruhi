@@ -31,7 +31,7 @@ export interface RotationDismissTargetInput {
   readonly variableId: VariableId;
 }
 
-const pairKey = (target: RotationDismissTargetInput): string =>
+const pairKey = (target: { readonly environmentId: string; readonly variableId: string }): string =>
   `${target.environmentId} ${target.variableId}`;
 
 export const rotationFlagsProgram = Effect.fn("programs-rotation.rotationFlagsProgram")(function* (

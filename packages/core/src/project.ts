@@ -20,15 +20,18 @@
 //
 // The `is*` guards have two policies:
 //
-// - `isProjectId` narrows. Its format is unique to the brand (64-hex), so a
-//   narrowing check is a verified mint — deliberate, like the `UserId` /
-//   `KeyFingerprintHex` guards in identity.ts.
-// - `isEnvironmentId` / `isVariableId` are non-narrowing predicates. The two
-//   brands share one wire format, so a `value is` guard on either would let
-//   any file mint `VariableId` from an environment id string — the very
-//   confusion the brands exist to prevent. Minting is consolidated in the
-//   schemas and `decode*` below (`.oxlintrc.json`-restricted); a boolean
-//   check mints nothing, so it needs no restriction.
+// - `isUserId` narrows (identity.ts): "non-empty" IS the brand's definition,
+//   so a narrowing check is a verified mint by construction.
+// - `isProjectId` / `isEnvironmentId` / `isVariableId` (and
+//   `isKeyFingerprintHex` in identity.ts) are non-narrowing predicates —
+//   every one of these formats collides with another domain's: env and var
+//   ids share one regex, a 64-hex project id has the shape of every SHA-256
+//   hex (chain head hashes, proposal ids), and a 32-hex fingerprint matches
+//   proposal / audit row ids. A `value is` guard would let any file mint
+//   one brand from another domain's same-shaped string — the very confusion
+//   the brands exist to prevent. Minting is consolidated in the schemas and
+//   `decode*` below (`.oxlintrc.json`-restricted); a boolean check mints
+//   nothing, so it needs no restriction.
 
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
 import { Schema } from "effect";
@@ -37,15 +40,31 @@ export type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
 
 const PROJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
-/** Runtime guard matching {@link ProjectIdSchema}; narrowing mints the brand. */
-export function isProjectId(value: string): value is ProjectId {
+/**
+ * Format check matching {@link ProjectIdSchema}. Non-narrowing on purpose
+ * (see the header): minting is the schema's and `decodeProjectId`'s job.
+ */
+export function isProjectId(value: string): boolean {
   return PROJECT_ID_PATTERN.test(value);
 }
 
+const narrowsProjectId = (value: string): value is ProjectId => PROJECT_ID_PATTERN.test(value);
+
+/**
+ * The schemas' `expected` annotations, exported for the CLI's diagnostic
+ * formatter (SAFE_EXPECTATIONS echoes them next to a refused flag — the
+ * annotation carries no input, so the echo is safe by construction).
+ */
+export const PROJECT_ID_EXPECTED = "project id (lowercase hex SHA-256 of the genesis entry)";
+export const ENVIRONMENT_ID_EXPECTED =
+  "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)";
+export const VARIABLE_ID_EXPECTED =
+  "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)";
+
 /** Schema for a project id: the lowercase-hex SHA-256 hash of the genesis entry. Decoding mints a {@link ProjectId}. */
 export const ProjectIdSchema = Schema.String.pipe(
-  Schema.refine(isProjectId, {
-    expected: "project id (lowercase hex SHA-256 of the genesis entry)",
+  Schema.refine(narrowsProjectId, {
+    expected: PROJECT_ID_EXPECTED,
   }),
 );
 
@@ -83,7 +102,7 @@ const narrowsEnvironmentId = (value: string): value is EnvironmentId =>
 /** Schema for a client-issued environment id (AUTH_SPEC §12-1). Decoding mints an {@link EnvironmentId}. */
 export const EnvironmentIdSchema = Schema.String.pipe(
   Schema.refine(narrowsEnvironmentId, {
-    expected: "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+    expected: ENVIRONMENT_ID_EXPECTED,
   }),
 );
 
@@ -115,7 +134,7 @@ const narrowsVariableId = (value: string): value is VariableId => RESOURCE_ID_PA
 /** Schema for a client-issued variable id (AUTH_SPEC §12-1). Decoding mints a {@link VariableId}. */
 export const VariableIdSchema = Schema.String.pipe(
   Schema.refine(narrowsVariableId, {
-    expected: "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+    expected: VARIABLE_ID_EXPECTED,
   }),
 );
 

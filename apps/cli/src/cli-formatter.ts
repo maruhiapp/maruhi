@@ -22,6 +22,7 @@
 // `Expected even number, got ${n}`) leaks plaintext from the expectation
 // side. Show it **only when it matches wording we wrote**.
 
+import { ENVIRONMENT_ID_EXPECTED, PROJECT_ID_EXPECTED, VARIABLE_ID_EXPECTED } from "@maruhi/core";
 import type { HelpDoc } from "effect/cli";
 import { CliError, CliOutput } from "effect/cli";
 
@@ -67,14 +68,13 @@ export const PASSKEY_LABEL_MESSAGE =
 const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([
   NON_BLANK_MESSAGE,
   PASSKEY_LABEL_MESSAGE,
-  // The branded-id schemas' refine annotations (project.ts) — the "Expected"
-  // render prefix below is stripped before the match, so the allowlist keeps
-  // the authored wording. A rewording there drops the parenthetical (never
-  // the typed value — the annotation carries no input); effect-cli.test.ts's
-  // --env case pins the positive side.
-  "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
-  "project id (lowercase hex SHA-256 of the genesis entry)",
-  "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+  // The branded-id schemas' refine annotations — the "Expected" render
+  // prefix below is stripped before the match, so the allowlist keeps the
+  // authored wording. The annotation carries no input, so the echo is safe;
+  // effect-cli.test.ts's --env case pins the positive side.
+  ENVIRONMENT_ID_EXPECTED,
+  PROJECT_ID_EXPECTED,
+  VARIABLE_ID_EXPECTED,
 ]);
 
 /** The built-in global flags (CliConfig's builtIns — absent from the declaration table). */

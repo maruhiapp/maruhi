@@ -25,9 +25,8 @@ const BRAND_ASSERTION =
 /**
  * A hand-written type predicate returning a brand (`x is Brand`) is a mint
  * with no boundary: any caller's string becomes branded by `if` alone. Such
- * predicates live only in packages/core/src — the guard declarations
- * themselves (isProjectId / isUserId / isKeyFingerprintHex, and the private
- * narrows* that feed the Schema.refine mints in project.ts).
+ * predicates live only in packages/core/src — the one narrowing guard
+ * (isUserId) and the private narrows* that feed the Schema.refine mints.
  */
 const BRAND_PREDICATE =
   /\w+\s+is\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
@@ -35,10 +34,17 @@ const BRAND_PREDICATE =
 const PREDICATE_ROOT = "packages/core/src/";
 
 /**
- * The one sanctioned assertion: the chain verifier's fingerprint computation,
- * crypto's own mint (`encodeHex` over 16 digest bytes — chain-types.ts).
+ * The one sanctioned mint file: the chain verifier's own mints in crypto —
+ * the fingerprint computation (`encodeHex` over 16 digest bytes) and
+ * sealChainState's map-key mints (keys out of verified entry slots). The
+ * count is pinned so a sixth cast here fails loudly.
  */
 const ALLOWED = new Set(["packages/crypto/src/internal.package/chain-verify.ts"]);
+
+/** The expected number of `as Brand` assertions inside each ALLOWED file. */
+const ALLOWED_COUNTS: Readonly<Record<string, number>> = {
+  "packages/crypto/src/internal.package/chain-verify.ts": 5,
+};
 
 function shippedSources(): readonly string[] {
   return SOURCE_ROOTS.flatMap((root) =>
@@ -91,9 +97,11 @@ describe("identity brands are never asserted in shipped source", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the sanctioned assertion where the allowlist says", () => {
+  it("keeps the sanctioned mints where the allowlist says, at the pinned count", () => {
     for (const path of ALLOWED) {
-      expect(BRAND_ASSERTION.test(readFileSync(join(REPO_ROOT, path), "utf8")), path).toBe(true);
+      const text = readFileSync(join(REPO_ROOT, path), "utf8");
+      const count = text.split("\n").filter((line) => BRAND_ASSERTION.test(line)).length;
+      expect(count, path).toBe(ALLOWED_COUNTS[path]);
     }
   });
 });

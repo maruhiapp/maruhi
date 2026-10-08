@@ -34,6 +34,7 @@ import {
   decodeEnvironmentId,
   decodeUserId,
   isEnvironmentId,
+  decodeProjectId,
   isProjectId,
   type EnvironmentId,
   type ProjectId,
@@ -206,7 +207,7 @@ function parseScope(params: URLSearchParams): {
 /** Interprets `p=` (the project ID). */
 function parseProjectId(params: URLSearchParams): ProjectId | null {
   const value = params.get("p");
-  return value !== null && isProjectId(value) ? value : null;
+  return value !== null && isProjectId(value) ? decodeProjectId(value) : null;
 }
 
 /** Interprets the link data from the fragment (v=2 verified) (malformed = null). */
