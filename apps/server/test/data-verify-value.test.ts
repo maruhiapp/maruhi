@@ -28,7 +28,12 @@ import {
   valueSignedBytesHashOf,
   vectorKeyOf,
 } from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -377,7 +382,7 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
         nonceHex: pulled.value.nonceHex,
         ciphertextHex: pulled.value.ciphertextHex,
         prevValueSigHashHex: pulled.value.prevValueSigHashHex,
-        writerUserId: pulled.value.writerUserId,
+        writerUserId: testUserId(pulled.value.writerUserId),
         chainHeadHashHex: pulled.value.chainHeadHashHex,
         chainHeadSeq: pulled.value.chainHeadSeq,
       },
@@ -429,7 +434,7 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
         nonceHex: pulled.value.nonceHex,
         ciphertextHex: pulled.value.ciphertextHex,
         prevValueSigHashHex: pulled.value.prevValueSigHashHex,
-        writerUserId: pulled.value.writerUserId,
+        writerUserId: testUserId(pulled.value.writerUserId),
         chainHeadHashHex: pulled.value.chainHeadHashHex,
         chainHeadSeq: pulled.value.chainHeadSeq,
       },

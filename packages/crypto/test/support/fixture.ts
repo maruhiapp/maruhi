@@ -179,7 +179,7 @@ export function valueContextOf(
     nonceHex: payload.nonceHex,
     ciphertextHex: payload.ciphertextHex,
     prevValueSigHashHex: payload.prevValueSigHashHex,
-    writerUserId,
+    writerUserId: testUserId(writerUserId),
     chainHeadHashHex: payload.chainHeadHashHex,
     chainHeadSeq: payload.chainHeadSeq,
   };

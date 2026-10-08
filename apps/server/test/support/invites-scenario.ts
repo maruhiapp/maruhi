@@ -221,7 +221,7 @@ export async function signAcceptance(
     suite: SUITE_ID,
     projectId: testProjectId(projectId),
     linkPubHex: issued.linkPubHex,
-    inviteeUserId,
+    inviteeUserId: testUserId(inviteeUserId),
     inviteeEncPubHex: keys.encPubHex,
     inviteeSigPubHex: keys.sigPubHex,
     ...overrides,

@@ -410,7 +410,7 @@ async function guardianNegativeChecks(c: Checks): Promise<void> {
     { name: "guardian-transplant-share-index", context: { ...base, shareIndex: 2 } },
     {
       name: "guardian-transplant-guardian",
-      context: { ...base, guardianUserId: "user-admin-0003" },
+      context: { ...base, guardianUserId: testUserId("user-admin-0003") },
     },
     { name: "guardian-transplant-group", context: { ...base, groupId: any2.group_id } },
     { name: "guardian-mode-relabel", context: { ...base, mode: "any" } },
@@ -439,7 +439,7 @@ async function handoffNegativeChecks(c: Checks, pair: EncryptionKeyPair): Promis
     },
     {
       name: "handoff-transplant-approver",
-      context: { ...base, approverUserId: "user-admin-0003" },
+      context: { ...base, approverUserId: testUserId("user-admin-0003") },
     },
     // Relabeling the guardian segment's group (all-3 → any-2 — rebuilt from
     // the old → device shape in 2026-09-20 DK)
@@ -694,7 +694,7 @@ async function handoffRoundtrip(c: Checks): Promise<void> {
     requestId: requestId ?? "",
     source: "01JMKGRP0000000000ROUNDTRIP",
     shareIndex: 0,
-    approverUserId: "user-roundtrip",
+    approverUserId: testUserId("user-roundtrip"),
   };
   const kekH = generateMasterWrapKek();
   const sealed = await sealHandoffValue({

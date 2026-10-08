@@ -20,7 +20,7 @@
 // module holds only the low-level normalization, signing, and hashing.
 
 import { decodeHex, encodeHex } from "./bytes.ts";
-import type { EnvironmentId, ProjectId, VariableId } from "./chain-types.ts";
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -51,7 +51,7 @@ export interface ValueSignatureContext {
    */
   readonly prevValueSigHashHex: string;
   /** The writer's own internal user id (binds attribution to the identity). */
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   /** Entry hash of the chain head the writer last verified (§6.1). */
   readonly chainHeadHashHex: string;
   /** Seq of that head (both hash and seq are signed; mismatch fails). */
