@@ -13,6 +13,9 @@
 //     issuer can be retired by hand
 //  5. the list shows each proposal with its environment, variables, minter,
 //     facts and next step; `rotation list` counts them
+//  6. a list holding a proposal of an environment the verified chain shows
+//     as deleted is refused as a resurrection (CRYPTO_SPEC §6.3), and
+//     nothing is resolved from it
 
 import {
   decryptVariable,
@@ -27,6 +30,7 @@ import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
+  deleteEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
   genesisOp,
@@ -52,6 +56,9 @@ const FACT = "./rotate.sh: new credential produced";
 
 let owner: TestUser;
 let built: BuiltChain;
+/** `built` plus an environment created and then deleted (seq 3 / 4). */
+let withDeleted: BuiltChain;
+const DELETED_ENV_ID = "old";
 let dek: Uint8Array;
 let servers: MockServer[] = [];
 
@@ -61,6 +68,16 @@ beforeAll(async () => {
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+  ]);
+  // Same prefix (Ed25519 signing is deterministic)
+  withDeleted = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+    {
+      actor: owner,
+      operation: createEnvironmentOp(DELETED_ENV_ID, crypto.getRandomValues(new Uint8Array(32))),
+    },
+    { actor: owner, operation: deleteEnvironmentOp(DELETED_ENV_ID) },
   ]);
 });
 
@@ -170,7 +187,7 @@ interface Fixture {
   failResolutions: number;
 }
 
-async function startEnv(proposals: WireProposal[]): Promise<Fixture> {
+async function startEnv(proposals: WireProposal[], chain: BuiltChain = built): Promise<Fixture> {
   const wrap: WireRecipientDek = await wrapDekFor({
     projectId: built.projectId,
     environmentId: ENV_ID,
@@ -227,7 +244,7 @@ async function startEnv(proposals: WireProposal[]): Promise<Fixture> {
     head: headOf(built, 2),
   });
   const valueEnv = makeValueEnvironmentServer({
-    chain: built,
+    chain,
     owner,
     environmentId: ENV_ID,
     envStatement,
@@ -534,5 +551,17 @@ describe("maruhi rotation proposals / reject (PF7b)", () => {
     expect(logs).toContain(FACT);
     expect(await runCli(["rotation", "proposals"], fixture.env.layer)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("No sealed proposals are pending");
+  });
+
+  it("refuses a list holding a proposal of a chain-deleted environment as a resurrection, and resolves nothing", async () => {
+    const stale = { ...(await proposalFor({})), environmentId: DELETED_ENV_ID };
+    const fixture = await startEnv([stale], withDeleted);
+    expect(await runCli(["rotation", "proposals"], fixture.env.layer)).toBe(1);
+    const resurrection = `The server listed sealed proposal ${PROPOSAL_ID} for environment old, which is deleted on the verified chain (delete_environment at seq 4)`;
+    expect(fixture.env.errors.join("\n")).toContain(resurrection);
+    fixture.env.errors.length = 0;
+    expect(await runCli(["rotation", "reject", PROPOSAL_ID], fixture.env.layer)).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain(resurrection);
+    expect(fixture.resolutions).toEqual([]);
   });
 });

@@ -55,7 +55,7 @@ export const rotationProposalsOp = Effect.fn("rotation-proposals.rotationProposa
   options: { readonly environmentId?: string | undefined } = {},
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
-  const all = yield* fetchRotationProposals(context.client, context.projectId);
+  const all = yield* fetchRotationProposals(context);
   const proposals =
     options.environmentId === undefined
       ? all

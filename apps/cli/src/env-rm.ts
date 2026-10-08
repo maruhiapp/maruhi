@@ -14,7 +14,10 @@
 //
 // Deletion is terminal and destroys every value, so it is gated by the same
 // explicit confirmation as `maruhi var rm` (deletion-confirm.ts: retyping
-// the environment ID interactively, or --force).
+// the environment ID interactively, or --force). Before it, the variables'
+// verified names are printed with the ones carrying an open rotation flag:
+// the deletion takes every verified name with it, while the flags outlive
+// it (AUDIT_SPEC §7 — 2026-10-08).
 //
 // Journal-before-send (3-F — §6.3's recording discipline (ii)): an intent
 // (op delete_environment, the environment, the declared head) is appended
@@ -43,7 +46,9 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { rejectIntentOnServerRejection } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
+import { logNote } from "./notice.ts";
 import { retryOnConflict } from "./retry.ts";
+import { flaggedVariablesOf } from "./rotation.ts";
 import { deletedEnvironmentMessage } from "./scope.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -76,6 +81,56 @@ const resolveDeletionTarget = Effect.fn("env-rm.resolveDeletionTarget")(function
     );
   }
   return yield* resolveEnvironmentMeta(input, verified);
+});
+
+/**
+ * The pre-deletion name record (AUDIT_SPEC §7 — 2026-10-08): the deletion
+ * takes every verified name of the environment's variables with it (their
+ * statements are deleted — AUTH_SPEC §12-4), while a rotation flag on one of
+ * them outlives it (the upstream credential still needs rotating). So the
+ * names, and which of them carry an open flag, are printed while they can
+ * still be verified. A failed flag read is a note: the record is advisory
+ * and never stands in for the confirmation.
+ */
+const recordVariableNames = Effect.fn("env-rm.recordVariableNames")(function* (
+  input: EnvironmentMetaInput,
+  state: EnvironmentMetaState,
+): Effect.fn.Return<void, never, CliIo> {
+  if (state.variableNames.length === 0) {
+    return;
+  }
+  const io = yield* CliIo;
+  const flagged = yield* flaggedVariablesOf(
+    input.client,
+    state.verified.projectId,
+    input.environmentId,
+  ).pipe(
+    Effect.catch((error) =>
+      Effect.as(
+        logNote(
+          `could not read the rotation flags (${error.message}) — check \`maruhi rotation list\` before deleting`,
+        ),
+        null,
+      ),
+    ),
+  );
+  yield* io.logError(
+    `Variables of environment ${input.environmentId} by their verified names (after the deletion none of these names can be verified again, so a rotation flag on one of them shows only its variable ID):`,
+  );
+  for (const variable of state.variableNames) {
+    const notes = [
+      ...(variable.deleted ? ["deleted earlier"] : []),
+      ...(flagged?.has(variable.variableId) === true ? ["rotation flag open"] : []),
+    ];
+    yield* io.logError(
+      `  ${displayText(variable.name)} (${displayText(variable.variableId)})${notes.length === 0 ? "" : ` — ${notes.join(", ")}`}`,
+    );
+  }
+  if (flagged !== null && flagged.size > 0) {
+    yield* io.logError(
+      "The open rotation flags outlive the deletion: the upstream credentials behind them still need rotating, and the flags close only by dismissal — keep this list of names",
+    );
+  }
 });
 
 /** The explicit confirmation (fail-closed): retyping the environment ID, or --force. */
@@ -200,6 +255,7 @@ export const envRmOp = Effect.fn("env-rm.envRmOp")(function* (
       "Only admins and owners can delete environments (an environment deletion requires the admin role or above — AUTH_SPEC §12-3)",
   });
   const initial = yield* resolveDeletionTarget(input, input.verified);
+  yield* recordVariableNames(input, initial);
   // The confirmation happens exactly once, before signing, sending and the
   // retry loop. It binds the environment ID, which is never reused (§6.2),
   // so a re-resolution after a conflict cannot land on another environment

@@ -75,7 +75,19 @@ export interface EnvironmentMetaState {
   readonly manifestBase: ManifestIssueBase;
   /** The chain-derived current epoch (the next manifest's epoch — §4.3). */
   readonly currentEpoch: number;
+  /**
+   * Every variable's verified name, tombstones included (`deleted`) — the
+   * names `env rm` records before a deletion takes them (AUDIT_SPEC §7).
+   */
+  readonly variableNames: readonly VerifiedVariableName[];
   readonly warnings: readonly string[];
+}
+
+/** One variable's verified name (from its live statement or its tombstone). */
+export interface VerifiedVariableName {
+  readonly variableId: string;
+  readonly name: string;
+  readonly deleted: boolean;
 }
 
 /**
@@ -122,6 +134,10 @@ export const resolveEnvironmentMeta = Effect.fn("env-meta.resolveEnvironmentMeta
     environment: metadata.environment,
     manifestBase: manifestIssueBaseOf(metadata),
     currentEpoch: chainEnvironment.currentEpoch,
+    variableNames: [
+      ...metadata.variables.map(({ variableId, name }) => ({ variableId, name, deleted: false })),
+      ...metadata.tombstones.map(({ variableId, name }) => ({ variableId, name, deleted: true })),
+    ],
     warnings: metadata.warnings,
   };
 });

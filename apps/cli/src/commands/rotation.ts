@@ -209,10 +209,7 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       // keyless project context first, then the environment context (the
       // device key) is opened for its environment
       const lookup = yield* openMetadataProject(values);
-      const proposal = yield* findProposal(
-        yield* fetchRotationProposals(lookup.client, lookup.projectId),
-        values.id,
-      );
+      const proposal = yield* findProposal(yield* fetchRotationProposals(lookup), values.id);
       const context = yield* openEnvironment({ ...values, env: proposal.environmentId });
       const result = yield* rotationAcceptOp({ context, proposal, yes: values.yes });
       yield* logRotationWarnings(result.warnings);
@@ -236,10 +233,7 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliServices
     > {
       const context = yield* openMetadataProject(values);
-      const proposal = yield* findProposal(
-        yield* fetchRotationProposals(context.client, context.projectId),
-        values.id,
-      );
+      const proposal = yield* findProposal(yield* fetchRotationProposals(context), values.id);
       yield* rotationRejectOp({ context, proposal });
     }),
   ).pipe(

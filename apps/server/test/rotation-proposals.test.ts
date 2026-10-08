@@ -19,6 +19,10 @@
 //   audit rows (rotation.proposed actor system with the claims digest
 //   and grant seq; rotation.proposal_accepted / _rejected actor member)
 // - an expired proposal is neither listed nor resolvable
+// - the environment's deletion removes its proposals in the same
+//   transaction, closing each one's history (a pending one cancelled by the
+//   deleting member, an expired-but-unswept one expired), so even a member
+//   whose scope is `all` no longer lists or resolves them (AUTH_SPEC §12-4)
 
 import {
   encodeHex,
@@ -47,6 +51,7 @@ import {
 import {
   appendOperation,
   createEnvironmentOk,
+  deleteEnvironmentRequest,
   MEMBER,
   OWNER,
   projectId,
@@ -803,5 +808,66 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       [],
     );
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
+  });
+  it("the environment's deletion removes its proposals and closes each one's history: cancelled by the deleting member, or expired when already past its expiry", async () => {
+    const { dek } = await grantedProject();
+    const USER_VAR = "var-database-user-0002";
+    await createVariableOk(dek, USER_VAR, "DATABASE_USER", "app_a");
+    const EXPIRED_ID = "ffeeddccbbaa99887766554433221100";
+    await expectStatus(await mint({ proposal: await proposalFor() }), 200);
+    await expectStatus(
+      await mint({
+        proposal: await proposalFor({ proposalId: EXPIRED_ID, variableId: USER_VAR }),
+      }),
+      200,
+    );
+    // The second one is past its expiry and no sweep has dropped it yet
+    const expiredAtMs = Date.now() - 1000;
+    await queryProjectDo(
+      projectId,
+      "UPDATE rotation_proposals SET expires_at = ? WHERE proposal_id = ?",
+      expiredAtMs,
+      EXPIRED_ID,
+    );
+    expect(await proposalsOf(OWNER)).toHaveLength(1);
+    await expectStatus(await deleteEnvironmentRequest(fixture, ENV, OWNER), 204);
+    for (const table of [
+      "rotation_proposals",
+      "rotation_proposal_variables",
+      "rotation_proposal_wraps",
+    ]) {
+      expect(await queryProjectDo(projectId, `SELECT 1 FROM ${table}`)).toEqual([]);
+    }
+    const events = await readAuditEvents(projectId);
+    const cancelled = events.filter((event) => event["event"] === "rotation.proposal_cancelled");
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({
+      actor_type: "user",
+      actor_user_id: OWNER,
+      actor_key_fingerprint: vectorKeyOf(OWNER).key_fingerprint_hex,
+      environment_id: ENV,
+    });
+    expect(JSON.parse(String(cancelled[0]?.["payload"]))).toMatchObject({
+      proposalId: PROPOSAL_ID,
+    });
+    const expired = events.filter((event) => event["event"] === "rotation.proposal_expired");
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({ actor_type: "system", environment_id: ENV });
+    expect(JSON.parse(String(expired[0]?.["payload"]))).toEqual({
+      proposalId: EXPIRED_ID,
+      expiresAtMs: expiredAtMs,
+    });
+    // Both closing rows sit before env.deleted, in the deletion's transaction
+    const order = events.map((event) => event["event"]);
+    expect(order.indexOf("rotation.proposal_cancelled")).toBeLessThan(order.indexOf("env.deleted"));
+    // The owner's scope is `all`, which a scope filter alone would still
+    // match: the rows are gone, so nothing is listed and nothing resolves
+    expect(await proposalsOf(OWNER)).toEqual([]);
+    expect((await resolveAs(OWNER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
+    expect(
+      (await readAuditEvents(projectId)).filter(
+        (event) => event["event"] === "rotation.proposal_rejected",
+      ),
+    ).toEqual([]);
   });
 });

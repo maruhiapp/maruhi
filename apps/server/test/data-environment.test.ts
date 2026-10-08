@@ -217,6 +217,28 @@ describe("environment management (the §12-4 composite request)", () => {
     expect(listBody.environments.length).toBe(2);
   });
 
+  it("refuses a deletion whose declared parent is not the entry's prev (422 payload-mismatch — §12-4), whichever one is current", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    const current = fixture.head.hashHex;
+    const stale = "ab".repeat(32);
+    // A current parent with a stale prev, and a stale parent with a current
+    // prev: both are malformed before the CAS is judged (never a 409)
+    for (const options of [
+      { entryPrevHashHex: stale },
+      { parentHeadHashHex: stale, entryPrevHashHex: current },
+    ]) {
+      const response = await deleteEnvironmentRequest(fixture, ENV, OWNER, options);
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        _tag: "PayloadMismatch",
+        field: "parentHeadHashHex",
+      });
+    }
+    const list = await requestJson("GET", "/environments", token(READER));
+    const listBody = (await list.json()) as { environments: { environmentId: string }[] };
+    expect(listBody.environments.map((environment) => environment.environmentId)).toEqual([ENV]);
+  });
+
   it("rejects delete_environment on the generic chain append (422 CompositeRequired)", async () => {
     // AUTH_SPEC §6 / §12-4: an entry without its data deletion would leave
     // data the chain says no longer exists

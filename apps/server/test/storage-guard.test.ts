@@ -548,9 +548,14 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
       op: "checkpoint",
       payload: { environments: [], auditHeadHashHex: "" },
     });
-    const deleteEnv = await signedEntry({
-      op: "delete_environment",
-      payload: { environmentId: ENV },
+    // The deletion composite checks the declared parent against the entry's
+    // own prev before the CAS (§12-4), so its entry chains onto the stale
+    // parent to reach the CAS
+    const deleteEnv = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: staleParent,
+      actorUserId: OWNER,
+      operation: { op: "delete_environment", payload: { environmentId: ENV } },
     });
     const rotate = await signedEntry({
       op: "rotate_epoch",

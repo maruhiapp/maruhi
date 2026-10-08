@@ -14,7 +14,10 @@
 //  3. Deletion is terminal: an interactive run requires retyping the
 //     environment ID, a non-interactive run refuses without --force, and a
 //     non-admin is refused before any prompt or send
-//  4. Success is the verified effect (1-E′), not the 2xx: a rename shows up
+//  4. Before the confirmation, a deletion prints the variables' verified
+//     names and which of them carry an open rotation flag: the deletion
+//     takes the names, the flags outlive it (AUDIT_SPEC §7)
+//  5. Success is the verified effect (1-E′), not the 2xx: a rename shows up
 //     in the verified metadata pull, a deletion as its own entry on the
 //     verified chain; afterwards the deleted environment is refused by pull
 //     and by a second `env rm` from the chain alone, and a server serving it
@@ -48,7 +51,7 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const ENV_NAME = "Development";
@@ -416,6 +419,61 @@ describe("maruhi env rm", () => {
         .slice(before)
         .filter((request) => request.path.includes(`/environments/${ENV_ID}`)),
     ).toEqual([]);
+  });
+
+  it("prints the variables' verified names, marking open rotation flags, before the confirmation", async () => {
+    const { env } = await startEnv({
+      before: () => [
+        onRequest("GET", `/projects/${built.projectId}/rotation/flags`, () => ({
+          status: 200,
+          json: {
+            flags: [
+              {
+                environmentId: ENV_ID,
+                variableId: "v-port",
+                basis: "readable",
+                targetUserId: member.userId,
+                recommendedAtMs: 1_700_000_000_000,
+                triggerChainSeq: 3,
+                trigger: "remove_member",
+              },
+              {
+                environmentId: "prod",
+                variableId: "v-other",
+                basis: "read",
+                targetUserId: member.userId,
+                recommendedAtMs: 1_700_000_000_000,
+                triggerChainSeq: 3,
+                trigger: "remove_member",
+              },
+            ],
+          },
+        })),
+      ],
+    });
+    env.setPromptResponses([ENV_ID]);
+    expect(await runCli(["env", "rm", ENV_ID], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "Variables of environment dev by their verified names (after the deletion none of these names can be verified again",
+    );
+    expect(errors).toContain("  PORT (v-port) — rotation flag open");
+    expect(errors).toContain("The open rotation flags outlive the deletion");
+    expect(errors).not.toContain("v-other");
+    // The record comes before the confirmation line
+    expect(errors.indexOf("PORT (v-port)")).toBeLessThan(
+      errors.indexOf("You are about to delete environment dev"),
+    );
+  });
+
+  it("a failed flag read is a note and does not stop the deletion", async () => {
+    const { env, state } = await startEnv();
+    expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("could not read the rotation flags");
+    expect(errors).toContain("  PORT (v-port)\n");
+    expect(errors).not.toContain("The open rotation flags outlive the deletion");
+    expect(state.mutations.map((m) => m.kind)).toEqual(["remove-environment"]);
   });
 
   it("aborts on a mistyped ID without signing or sending", async () => {
