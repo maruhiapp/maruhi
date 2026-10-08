@@ -9,10 +9,13 @@
 // Tailwind / StyleX / Astryx React parts.
 //
 // "Say nothing": no analytics are declared (Blume injects nothing when
-// undeclared). Ask AI / MCP are off (the default). Fonts are local woff2
-// (self-hosted via the Astro Fonts API — replacing the default Google Fonts
-// build-time fetch). Open in chat (links to third-party AI) is off.
+// undeclared), and the "Was this page helpful?" widget, whose only channel
+// is analytics events, is off. The assistant / MCP are off. Fonts are local
+// woff2 (self-hosted via the Astro Fonts API — replacing the default Google
+// Fonts build-time fetch). Open in chat (links to third-party AI) is off.
 import { defineConfig } from "blume";
+import { cloudflare } from "blume/deploy";
+import { orama } from "blume/search";
 
 import { accent, background, border, foreground, mutedForeground } from "./theme/tokens.ts";
 
@@ -50,7 +53,11 @@ export default defineConfig({
   },
   banner: {
     content: "maruhi is in private preview. Sign-up is invite-only for now.",
-    link: { text: "How to get access", href: "/#access" },
+    // Absolute: Blume 2 mounts a root-relative banner link under basePath
+    // unless it exactly names a custom page route, and `/#access` (with its
+    // fragment) does not, so it would become `/docs/#access`. The docs body
+    // links to the LP the same way
+    link: { text: "How to get access", href: "https://maruhi.app/#access" },
     dismissible: true,
     id: "private-preview",
   },
@@ -87,19 +94,24 @@ export default defineConfig({
       },
     },
   },
-  search: { provider: "orama" },
+  // Local Orama search (self-hosted index, no hosted service). Pinned
+  // explicitly so a future default change cannot silently switch providers.
+  search: orama(),
   ai: {
-    // llms.txt / raw Markdown / Copy as Markdown are self-hosted static
-    // files, so they stay at the default. Open in chat (links to ChatGPT /
-    // Claude etc.) is not offered — it is a channel to third parties. Ask AI
-    // and MCP would become live external calls / resident endpoints, so they
-    // are explicitly off (Blume 1.7's default is also off; do not let a
-    // future default change silently enable them). The JSON docs API and AI
-    // catalog are static indexes of the public docs (same kind as llms.txt)
-    // and are not sent anywhere beyond the build output; they are kept
-    // intentionally — they became default-on in Blume 1.7.
+    // Open in chat (links to ChatGPT / Claude etc.) is not offered — it is a
+    // channel to third parties. The assistant (Ask AI in Blume 1) would
+    // become a live external call, so it is explicitly off (do not let a
+    // future default change silently enable it).
     openInChat: false,
-    ask: { enabled: false },
+    assistant: { enabled: false },
+  },
+  agents: {
+    // llms.txt / raw Markdown / Copy as Markdown are self-hosted static
+    // files, so they stay at the default. MCP would become a resident
+    // endpoint, so it is explicitly off. The JSON docs API and AI catalog
+    // are static indexes of the public docs (same kind as llms.txt) and are
+    // not sent anywhere beyond the build output; they are kept
+    // intentionally — they became default-on in Blume 1.7.
     mcp: { enabled: false },
     api: true,
     catalog: true,
@@ -119,8 +131,17 @@ export default defineConfig({
     },
     rss: { enabled: false },
   },
-  deployment: {
-    output: "static",
-    site: "https://maruhi.app",
-  },
+  // The page feedback widget sends its rating only as an analytics event.
+  // With no analytics it would thank the reader for feedback that goes
+  // nowhere, so it is off.
+  feedback: false,
+  // Served via the cf Workers Static Assets deploy. `cloudflare()` with
+  // `output: "static"` keeps the build static (the adapter package is never
+  // loaded) and writes only the host files Cloudflare reads (`_headers`,
+  // `_redirects` when there are redirects) — not the `vercel.json` an unnamed
+  // static host gets.
+  deployment: cloudflare({ site: "https://maruhi.app", output: "static" }),
+  // No `X-Powered-By: Blume` response header (Blume 2.1.2 default-on): the
+  // site does not advertise its build stack.
+  poweredBy: false,
 });
