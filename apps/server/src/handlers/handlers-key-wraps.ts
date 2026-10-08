@@ -35,7 +35,7 @@ import {
   MAX_PASSKEY_WRAPS_PER_USER,
 } from "@maruhi/api-schema";
 import type { KeyFingerprintHex } from "@maruhi/core";
-import { auditActorOf, decodeKeyFingerprintHex, RequestAuth, type UserId } from "@maruhi/core";
+import { auditActorOf, RequestAuth, type UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -424,11 +424,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        const shares = payload.shares.map((s) => ({
-          ...s,
-          // The guardian key FP is a wire value (format-checked by the schema — the boundary mint)
-          guardianKeyFingerprintHex: decodeKeyFingerprintHex(s.guardianKeyFingerprintHex),
-        }));
+        const shares = payload.shares;
         const violation = guardianPolicyViolation({
           wardUserId: principal.userId,
           mode: payload.mode,

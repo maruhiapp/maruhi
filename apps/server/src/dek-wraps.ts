@@ -11,12 +11,7 @@
 // remaining wraps are verified with that key alone.
 
 import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
-import {
-  cryptoEffect,
-  decodeKeyFingerprintHex,
-  decodeUserId,
-  isKeyFingerprintHex,
-} from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -159,11 +154,9 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
 function checkServerRecipient(
   state: ChainState,
   environmentId: EnvironmentId,
-  wrap: DekWrapInput,
+  wrap: Extract<DekWrapInput, { readonly recipientClass: "server" }>,
 ): DataRejection | null {
-  const grant = isKeyFingerprintHex(wrap.recipientUserId)
-    ? state.serverGrants.get(decodeKeyFingerprintHex(wrap.recipientUserId))
-    : undefined;
+  const grant = state.serverGrants.get(wrap.recipientUserId);
   if (grant === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
   }
@@ -179,11 +172,9 @@ function checkServerRecipient(
 function checkMemberRecipient(
   state: ChainState,
   environmentId: EnvironmentId,
-  wrap: DekWrapInput,
+  wrap: Extract<DekWrapInput, { readonly recipientClass: "member" }>,
 ): DataRejection | null {
-  // A member-class recipient is a user_id by declaration — reinterpret the
-  // union position as one (a member's id may itself be 32-hex-shaped).
-  const member = state.members.get(decodeUserId(wrap.recipientUserId));
+  const member = state.members.get(wrap.recipientUserId);
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
@@ -475,7 +466,7 @@ export function dekRegisteredEvent(
     event: "dek.registered",
     environmentId,
     epoch: wrap.epoch,
-    ...dekRecipientTarget(wrap.recipientClass, wrap.recipientUserId),
+    ...dekRecipientTarget(wrap),
     actorKeyFingerprintHex: signer.keyFingerprintHex,
   });
 }

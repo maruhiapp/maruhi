@@ -1,7 +1,7 @@
 // `maruhi mirror mark` / `maruhi mirror promote` (discipline: see commands/index.ts).
 
 import { type MirrorStatus } from "@maruhi/api-schema";
-import { decodeKeyFingerprintHex, isKeyFingerprintHex, type ProjectId } from "@maruhi/core";
+import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 import { type HttpClient } from "effect/http";
@@ -580,10 +580,7 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
       `Another server key is granted on this chain: ${grant.serverKeyFingerprintHex} (environments ${grant.scopeEnvironmentIds.map(displayText).join(", ")}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke --fingerprint ${grant.serverKeyFingerprintHex}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
     );
   }
-  if (
-    own !== null &&
-    (!isKeyFingerprintHex(own) || !verified.state.serverGrants.has(decodeKeyFingerprintHex(own)))
-  ) {
+  if (own !== null && !verified.state.serverGrants.has(own)) {
     lines.push(
       `This deployment's server key (${own}) is not granted on the chain: CI leases are not issued here until an owner runs \`maruhi server grant --server ${origin}\``,
     );

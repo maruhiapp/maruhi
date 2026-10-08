@@ -119,7 +119,7 @@ export {
   ENVIRONMENT_ID_EXPECTED,
   type EnvironmentId,
   EnvironmentIdSchema,
-  environmentIdSchema,
+  environmentIdSchemaWithMessage,
   isEnvironmentId,
   isProjectId,
   isVariableId,

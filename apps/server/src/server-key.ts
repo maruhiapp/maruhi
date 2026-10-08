@@ -27,7 +27,7 @@
 // the login path.
 
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
-import { cryptoEffect, cryptoPromise, decodeUserId, serverKeyFingerprintHex } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, serverKeyFingerprintHex } from "@maruhi/core";
 import {
   decodeHex,
   deriveEncryptionKeyPair,
@@ -231,7 +231,7 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
                 epoch: wrap.epoch,
                 // §9: a server-addressed wrap carries the server-key
                 // FP in the recipient position of its info
-                recipientUserId: decodeUserId(key.info.serverKeyFingerprintHex),
+                recipientUserId: key.info.serverKeyFingerprintHex,
               },
             }),
           ).pipe(

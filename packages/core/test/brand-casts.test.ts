@@ -4,9 +4,10 @@
 // this pins the other way around them — a type assertion to a brand in
 // shipped source. Tests mint their data through crypto's test-support
 // (`testUserId` / `testKeyFingerprintHex`), which the lint rule keeps out of
-// shipped source.
+// shipped source. The last block keeps the lint rule's mint-site allowlist
+// honest: every listed file must still import a mint.
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -103,5 +104,77 @@ describe("identity brands are never asserted in shipped source", () => {
       const count = text.split("\n").filter((line) => BRAND_ASSERTION.test(line)).length;
       expect(count, path).toBe(ALLOWED_COUNTS[path]);
     }
+  });
+});
+
+/** `.oxlintrc.json` is JSONC; its comments are whole lines, so dropping them leaves plain JSON. */
+function readOxlintConfig(): {
+  readonly overrides: readonly {
+    readonly files: readonly string[];
+    readonly rules?: Readonly<Record<string, unknown>>;
+  }[];
+  readonly rules: Readonly<Record<string, unknown>>;
+} {
+  const text = readFileSync(join(REPO_ROOT, ".oxlintrc.json"), "utf8");
+  return JSON.parse(
+    text
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("//"))
+      .join("\n"),
+  );
+}
+
+/** The `@maruhi/core` names the shipped-source rule restricts (the mints). */
+function restrictedMintNames(config: ReturnType<typeof readOxlintConfig>): readonly string[] {
+  const shipped = config.overrides.find((override) => override.files.includes("apps/*/src/**"));
+  const rule = shipped?.rules?.["no-restricted-imports"] as
+    | readonly [string, { readonly paths: readonly { name: string; importNames?: string[] }[] }]
+    | undefined;
+  return rule?.[1].paths.find((path) => path.name === "@maruhi/core")?.importNames ?? [];
+}
+
+/** The concrete files of the mint-site override (the one that lifts the mint restriction). */
+function mintSiteFiles(config: ReturnType<typeof readOxlintConfig>): readonly string[] {
+  const override = config.overrides.find((candidate) =>
+    candidate.files.includes("packages/api-schema/src/**"),
+  );
+  return (override?.files ?? []).filter((file) => !file.includes("*"));
+}
+
+/** The value (non-`type`) names a file imports from `@maruhi/core`. */
+function coreValueImports(text: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const match of text.matchAll(/import\s+(type\s+)?\{([^}]*)\}\s+from\s+"@maruhi\/core"/g)) {
+    if (match[1] !== undefined) {
+      continue;
+    }
+    for (const specifier of (match[2] ?? "").split(",")) {
+      const name = specifier.trim();
+      if (name !== "" && !name.startsWith("type ")) {
+        names.add(name);
+      }
+    }
+  }
+  return names;
+}
+
+describe("the mint-site allowlist in .oxlintrc.json", () => {
+  it("reads the restricted mints and the mint-site files", () => {
+    const config = readOxlintConfig();
+    expect(restrictedMintNames(config)).toContain("decodeUserId");
+    expect(mintSiteFiles(config)).toContain("apps/server/src/ids.ts");
+  });
+
+  it("lists only files that still import a mint (a stale entry widens the boundary silently)", () => {
+    const config = readOxlintConfig();
+    const mints = new Set(restrictedMintNames(config));
+    const stale = mintSiteFiles(config).filter((file) => {
+      const path = join(REPO_ROOT, file);
+      return (
+        !existsSync(path) ||
+        ![...coreValueImports(readFileSync(path, "utf8"))].some((name) => mints.has(name))
+      );
+    });
+    expect(stale).toEqual([]);
   });
 });

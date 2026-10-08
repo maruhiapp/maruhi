@@ -30,12 +30,7 @@
 // statement declaring a chain head beyond this run's view (or a listed ID
 // the view has not seen created yet) re-syncs once.
 
-import {
-  decodeEnvironmentId,
-  type EnvironmentId,
-  isEnvironmentId,
-  type UserId,
-} from "@maruhi/core";
+import type { EnvironmentId, UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -118,13 +113,7 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   CliError
 > {
   const listed = yield* indexListing(wire);
-  if (
-    [...listed.keys()].some(
-      (environmentId) =>
-        !isEnvironmentId(environmentId) ||
-        !view.state.environments.has(decodeEnvironmentId(environmentId)),
-    )
-  ) {
+  if ([...listed.keys()].some((environmentId) => !view.state.environments.has(environmentId))) {
     return { kind: "future" } as const;
   }
   const joined: JoinedEnvironment[] = [];
@@ -151,8 +140,8 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
 /** The listed statements by environment ID (an ID listed twice is an inconsistent response). */
 function indexListing(
   wire: ListWire,
-): Effect.Effect<ReadonlyMap<string, ListedStatement>, CliError> {
-  const listed = new Map<string, ListedStatement>();
+): Effect.Effect<ReadonlyMap<EnvironmentId, ListedStatement>, CliError> {
+  const listed = new Map<EnvironmentId, ListedStatement>();
   for (const entry of wire.environments) {
     if (listed.has(entry.environmentId)) {
       return Effect.fail(

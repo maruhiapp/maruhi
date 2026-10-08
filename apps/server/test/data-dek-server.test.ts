@@ -180,6 +180,18 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     expect(body["reason"]).toBe("recipient-not-granted");
   });
 
+  it("refuses a server-class wrap whose recipient is not fingerprint-shaped at decode (400)", async () => {
+    const dek1 = await createEnvironmentOk(fixture, ENV, "App");
+    const fpHex = await grantServer([ENV]);
+    const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
+    // The wire union types a server recipient as a key fingerprint, so a
+    // member's ULID in that position never reaches the DO's recipient check
+    const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
+      deks: [{ ...wrap, recipientUserId: OWNER }],
+    });
+    expect(response.status).toBe(400);
+  });
+
   it("rejects a server wrap whose enc pub differs from the grant with 422 (recipient-key-mismatch)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
@@ -442,8 +454,9 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
   it("rejects a wrap deletion whose recipientClass does not match the stored row (closing manipulation of the audit columns)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A deletion that points at a member wrap as class server: it
-    // mismatches the stored row's class = 404. If passed through, the
+    // A deletion that points at a member wrap as class server: the wire
+    // union types a server recipient as a key fingerprint, so a member's
+    // ULID there is refused at decode (400). If passed through, the
     // member's ULID would land on the target_key_fingerprint column and
     // this deletion would vanish from the (target_user_id, seq) index
     // (AUDIT_SPEC §1-2)
@@ -457,10 +470,11 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
         },
       ],
     });
-    expect(crossClass.status).toBe(404);
-    expect(((await crossClass.json()) as Record<string, unknown>)["_tag"]).toBe("DekWrapNotFound");
+    expect(crossClass.status).toBe(400);
 
-    // The reverse direction: deleting a server wrap by pointing at it as class member is also a 404
+    // The reverse direction: a key fingerprint is a valid user-id string,
+    // so pointing at a server wrap as class member decodes and then
+    // mismatches the stored row's class = 404
     const fpHex = await grantServer([ENV]);
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
@@ -495,9 +509,9 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   it("rejects class-only-differing refs in one deletion request (never stack 2 audit rows on 1 row)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     // Pointing at the same (epoch, recipient) as both member and server
-    // classes: duplicate detection passes on the class-including key, but
-    // the server side mismatches the stored row = 404, rejecting the
-    // whole request
+    // classes: the server arm types its recipient as a key fingerprint, so
+    // a member's ULID there is refused at decode (400), rejecting the
+    // whole request before either ref is resolved
     const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -514,7 +528,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
         },
       ],
     });
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
     const deleted = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",

@@ -17,7 +17,7 @@
 // and verifying mirrors are the client's domain).
 
 import { maruhiApi } from "@maruhi/api-schema";
-import { decodeEnvironmentId, decodeUserId, decodeVariableId, RequestAuth } from "@maruhi/core";
+import { RequestAuth } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -93,24 +93,12 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
                 "chainSeqPresent",
                 query.chainSeqPresent === undefined ? undefined : (true as const),
               ),
-              ...spreadIfDefined(
-                "actorUserId",
-                query.actorUserId === undefined ? undefined : decodeUserId(query.actorUserId),
-              ),
-              ...spreadIfDefined(
-                "targetUserId",
-                query.targetUserId === undefined ? undefined : decodeUserId(query.targetUserId),
-              ),
-              ...spreadIfDefined(
-                "variableId",
-                query.variableId === undefined ? undefined : decodeVariableId(query.variableId),
-              ),
-              ...spreadIfDefined(
-                "environmentId",
-                query.environmentId === undefined
-                  ? undefined
-                  : decodeEnvironmentId(query.environmentId),
-              ),
+              ...spreadIfDefined("actorUserId", query.actorUserId),
+              ...spreadIfDefined("targetUserId", query.targetUserId),
+              // Plain strings: audit rows replay stored text, so the id
+              // filters match it verbatim (audit-api.ts's AuditEventSchema)
+              ...spreadIfDefined("variableId", query.variableId),
+              ...spreadIfDefined("environmentId", query.environmentId),
               scopeAdmin,
             }),
         });

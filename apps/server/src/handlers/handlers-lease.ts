@@ -22,7 +22,7 @@ import {
   RotationProposalRejectedError,
 } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
-import { cryptoEffect, decodeUserId, decodeVariableId } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import { computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -258,8 +258,8 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
               params.environmentId,
               payload.ephemeralPubHex,
               facts,
-              payload.variables.map((v) => ({ ...v, variableId: decodeVariableId(v.variableId) })),
-              payload.recipients.map((r) => ({ ...r, userId: decodeUserId(r.userId) })),
+              payload.variables,
+              payload.recipients,
             ),
         );
         if (outcome.kind === "rejected") {
@@ -279,17 +279,12 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
           payload,
           request,
           (stub, facts) =>
-            stub.proposeRotation(params.environmentId, payload.ephemeralPubHex, facts, {
-              ...payload.proposal,
-              variables: payload.proposal.variables.map((v) => ({
-                ...v,
-                variableId: decodeVariableId(v.variableId),
-                wraps: v.wraps.map((w) => ({
-                  ...w,
-                  recipientUserId: decodeUserId(w.recipientUserId),
-                })),
-              })),
-            }),
+            stub.proposeRotation(
+              params.environmentId,
+              payload.ephemeralPubHex,
+              facts,
+              payload.proposal,
+            ),
         );
         return yield* unwrapProposalOutcome(outcome, params.projectId);
       }),

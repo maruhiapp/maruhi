@@ -29,8 +29,8 @@ import {
   MAX_DEVICE_REGISTRY_ROWS_PER_USER,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { cryptoEffect, decodeKeyFingerprintHex, RequestAuth } from "@maruhi/core";
-import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
+import { decodeKeyFingerprintHex, RequestAuth, userKeyFingerprintHex } from "@maruhi/core";
+import { decodeHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -57,8 +57,7 @@ const fingerprintOf = Effect.fn("handlers-devices.fingerprintOf")(function* (
   }
   // A wrapped crypto failure stays a defect, like the die the
   // pre-bridge code raised on a failed fingerprint computation
-  const digest = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(Effect.orDie);
-  return decodeKeyFingerprintHex(encodeHex(digest));
+  return yield* userKeyFingerprintHex(enc, sig).pipe(Effect.orDie);
 });
 
 /** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */
@@ -115,11 +114,10 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         yield* ensureFingerprintMatches(params.fp, payload.encPubHex, payload.sigPubHex);
-        const fp = decodeKeyFingerprintHex(params.fp);
         const repo = yield* DeviceRepo;
         const admitted = yield* repo.upsert({
           userId: principal.userId,
-          keyFingerprintHex: fp,
+          keyFingerprintHex: decodeKeyFingerprintHex(params.fp),
           encPubHex: payload.encPubHex,
           sigPubHex: payload.sigPubHex,
           label: payload.label,
