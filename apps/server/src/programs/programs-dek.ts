@@ -10,7 +10,12 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import type { DataActor, DekRecipient, DekWrapInput, DekWrapRefInput } from "../data/data-plane.ts";
+import type {
+  DataActor,
+  DekRecipientPosition,
+  DekWrapInput,
+  DekWrapRefInput,
+} from "../data/data-plane.ts";
 import {
   currentEpochOf,
   dataEvent,
@@ -95,7 +100,7 @@ export const registerDekWrapsProgram = Effect.fn("programs-dek.registerDekWrapsP
 });
 
 /** The stored slot a deletion reference points at (device key may be omitted — design record §8 K3-3). */
-type ResolvedWrapRef = DekRecipient & {
+type ResolvedWrapRef = DekRecipientPosition & {
   readonly epoch: number;
   readonly recipientEncPubHex: string;
 };

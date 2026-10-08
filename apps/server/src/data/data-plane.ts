@@ -80,7 +80,7 @@ export type DekRecipientClass = "member" | "server";
  * info / §5.1 signed target (CRYPTO_SPEC §9). Narrowing on recipientClass
  * narrows the id's brand with it.
  */
-export type DekRecipient =
+export type DekRecipientPosition =
   | { readonly recipientClass: "member"; readonly recipientUserId: UserId }
   | { readonly recipientClass: "server"; readonly recipientUserId: KeyFingerprintHex };
 
@@ -90,7 +90,7 @@ export type DekRecipient =
  * (CRYPTO_SPEC §5.1) — the signer matches the API calling principal
  * exactly (§12-6), so no signer ID rides the wire or the RPC boundary.
  */
-export type DekWrapInput = DekRecipient & {
+export type DekWrapInput = DekRecipientPosition & {
   readonly suite: WireSuite;
   readonly epoch: number;
   readonly recipientEncPubHex: string;
@@ -104,7 +104,7 @@ export type DekWrapInput = DekRecipient & {
  * path). `recipientEncPubHex` is on the device axis (2026-09-19 DK —
  * slots are per device).
  */
-export type DekWrapRefInput = DekRecipient & {
+export type DekWrapRefInput = DekRecipientPosition & {
   readonly epoch: number;
   readonly recipientEncPubHex: string;
 };
@@ -1179,10 +1179,10 @@ export function dataEvent(
  * class server (CRYPTO_SPEC §9). A server recipient has no user_id (the
  * §2 actor model), so its FP goes on target_key_fingerprint, never into
  * the user-id column. The class already decided the id's brand at the
- * wire (DekRecipient), so this only routes it to its column.
+ * wire (DekRecipientPosition), so this only routes it to its column.
  */
 export function dekRecipientTarget(
-  recipient: DekRecipient,
+  recipient: DekRecipientPosition,
 ): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
   return recipient.recipientClass === "server"
     ? { targetKeyFingerprintHex: recipient.recipientUserId }

@@ -34,6 +34,14 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         // forget)
         invoke: (stub, actor) => stub.rotationFlags(actor),
       }).pipe(
+        // Unlike the audit read filters, these decodes stay. Each flag's ids
+        // replay a var.created row whose ids passed EnvironmentIdSchema /
+        // VariableIdSchema when the variable was created, so only a corrupt
+        // store can fail here, and a corrupt store is a defect (500) like
+        // every other storage read. Two alternatives were rejected: skipping
+        // the flag would silently drop a rotation obligation, and a
+        // plain-string wire field would only move the same decode into the
+        // client
         Effect.map((flags) => ({
           flags: flags.map((flag) => ({
             ...flag,
