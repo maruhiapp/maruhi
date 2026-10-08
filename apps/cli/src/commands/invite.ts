@@ -6,16 +6,9 @@ import { Clock, Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import { identityBackingOf } from "../config.ts";
-import {
-  type CliServices,
-  type CommonFlags,
-  openMetadataProject,
-  openProject,
-  openSession,
-} from "../context.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
-import { inviteAcceptOp } from "../invite-accept.ts";
 import { inviteCreateOp } from "../invite-create.ts";
 import {
   type InviteInputRejection,
@@ -24,7 +17,6 @@ import {
   parseInviteAcceptInput,
 } from "../invite-link.ts";
 import { inviteListOp, inviteRevokeOp } from "../invite-list.ts";
-import { keyGenerateOp } from "../keygen.ts";
 import { PinStore } from "../pins.ts";
 import { scopeFromFlags } from "../scope.ts";
 import { NonBlank, projectFlags, scopeEnvFlag, singleFlag, singleValued } from "./flags.ts";
@@ -92,6 +84,8 @@ const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(fun
     readonly github?: string | undefined;
   },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+
   if (!isInviteRole(flags.role)) {
     return yield* Effect.fail(
       usageError(
@@ -164,6 +158,10 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
   readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
+  const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+  const { inviteAcceptOp } = yield* Effect.promise(() => import("../invite-accept.ts"));
+  const { keyGenerateOp } = yield* Effect.promise(() => import("../keygen.ts"));
+
   const link = yield* resolveAcceptLink(flags.target);
   const expectedFromLogin = yield* parseGithubLoginFlag("--from", flags.from);
   const expectInviterFingerprintHex = yield* parseUserFingerprintFlag(
@@ -192,6 +190,8 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
 const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+
   const context = yield* openMetadataProject(flags);
   const store = yield* PinStore;
   const loaded = yield* store.load(context.projectId);
@@ -244,6 +244,8 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     "revoke",
     inviteRevokeConfig,
     Effect.fn("commands-invite.inviteRevoke")(function* (values) {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+
       const context = yield* openMetadataProject(values);
       yield* inviteRevokeOp({
         client: context.client,

@@ -4,19 +4,15 @@ import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruh
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
-import { type MaruhiClient, makeApiClient } from "../api.ts";
-import { type CliServices, type CommonFlags, openProject } from "../context.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { countNoun } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseFingerprintFlag } from "../fingerprint-flag.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { loadLeasePolicy } from "../lease-policy.ts";
 import { logNote } from "../notice.ts";
-import { reportRotationChecklist } from "../rotation.ts";
-import { serverGrantOp } from "../server-grant.ts";
-import { REVOKE_ROTATION_REASON, type RevokeSummary, serverRevokeOp } from "../server-revoke.ts";
-import { normalizeHttpOrigin } from "../session.ts";
-import { sweepRotateFor } from "../sweep-rotate.ts";
+import type { RevokeSummary } from "../server-revoke.ts";
 import { projectFlags, proposalFlags, singleValued } from "./flags.ts";
 import { proposalInputOf, reportProposed, reportSweepOutcome } from "./shared.ts";
 
@@ -99,6 +95,8 @@ const grantKeySource = Effect.fn("commands-server.grantKeySource")(function* (
   keyOrigin: string | null,
   serverOrigin: string,
 ): Effect.fn.Return<GrantKeySource | null, CliError, CliServices> {
+  const { makeApiClient } = yield* Effect.promise(() => import("../api.ts"));
+
   if (keyOrigin === null) {
     return null;
   }
@@ -127,6 +125,10 @@ const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(funct
     readonly keyFrom?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { serverGrantOp } = yield* Effect.promise(() => import("../server-grant.ts"));
+  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+
   const io = yield* CliIo;
   const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
   const leasePolicy = yield* loadLeasePolicy(flags.leasePolicyPath);
@@ -183,6 +185,13 @@ const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(fun
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { reportRotationChecklist } = yield* Effect.promise(() => import("../rotation.ts"));
+  const { REVOKE_ROTATION_REASON, serverRevokeOp } = yield* Effect.promise(
+    () => import("../server-revoke.ts"),
+  );
+  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+
   const io = yield* CliIo;
   const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
   const proposal = yield* proposalInputOf(flags.expires);

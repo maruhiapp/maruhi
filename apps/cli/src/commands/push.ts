@@ -3,10 +3,8 @@
 import { Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { openEnvironment } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliIo } from "../io.ts";
-import { normalizeStdinValue, pushVariable } from "../push.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   decidePushSync,
@@ -49,6 +47,11 @@ export function makePushCommand() {
     "push",
     pushConfig,
     Effect.fn("commands-push.push")(function* (values) {
+      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
+      const { normalizeStdinValue, pushVariable } = yield* Effect.promise(
+        () => import("../push.ts"),
+      );
+
       const io = yield* CliIo;
       // The sync config is read **before any network**: detecting a broken
       // file or an explicitly-given other project's config is never placed

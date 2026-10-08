@@ -6,21 +6,9 @@ import { Command } from "effect/cli";
 
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
 import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
-import { type PolicyRequest, setApprovalPolicyOp } from "../approval.ts";
-import { syncProject, type VerifiedProject } from "../chain-sync.ts";
-import { issueCheckpoint } from "../checkpoint.ts";
-import {
-  type CliServices,
-  type CommonFlags,
-  checkInviteAnchor,
-  floorHandleFor,
-  loadCheckedFloor,
-  openMetadataProject,
-  openProject,
-  openSession,
-  reconcileGossip,
-  resolveProjectId,
-} from "../context.ts";
+import type { PolicyRequest } from "../approval.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { chainEnvironmentIds } from "../deks.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
@@ -43,7 +31,6 @@ import {
   noteServerDisclosure,
   serverDisclosures,
 } from "../server-disclosure.ts";
-import { loadMasterKeys } from "../session.ts";
 import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposalInputOf, reportProposed } from "./shared.ts";
 
@@ -113,6 +100,8 @@ export const projectPolicySchemaConfig = {
  */
 const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySchemaCommand")(
   function* (flags: CommonFlags & { readonly set?: string | undefined }) {
+    const { openSession, resolveProjectId } = yield* Effect.promise(() => import("../context.ts"));
+
     const tier = flags.set;
     if (tier !== undefined && !isSchemaPolicy(tier)) {
       return yield* Effect.fail(usageError(`--set must be one of ${SCHEMA_POLICIES.join(" | ")}`));
@@ -131,6 +120,10 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
   serverFlag: string | undefined,
   projectFlag: string | undefined,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
+  const { checkInviteAnchor, loadCheckedFloor, openSession, reconcileGossip, resolveProjectId } =
+    yield* Effect.promise(() => import("../context.ts"));
+
   const io = yield* CliIo;
   const context = yield* openSession(serverFlag);
   const projectId = yield* resolveProjectId(projectFlag, context.config);
@@ -274,6 +267,11 @@ const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyA
       readonly expires?: string | undefined;
     },
   ): Effect.fn.Return<number, CliError, CliServices> {
+    const { setApprovalPolicyOp } = yield* Effect.promise(() => import("../approval.ts"));
+    const { openMetadataProject, openProject } = yield* Effect.promise(
+      () => import("../context.ts"),
+    );
+
     const io = yield* CliIo;
     const request = yield* parsePolicyRequest(flags);
     const proposal = yield* proposalInputOf(flags.expires);
@@ -347,6 +345,9 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "init",
     projectInitConfig,
     Effect.fn("commands-project.projectInit")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { loadMasterKeys } = yield* Effect.promise(() => import("../session.ts"));
+
       const context = yield* openSession(values.server);
       const masterKeys = yield* loadMasterKeys(context.session);
       yield* projectInitOp({
@@ -362,6 +363,8 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "list",
     projectListConfig,
     Effect.fn("commands-project.projectList")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+
       const context = yield* openSession(values.server);
       yield* projectListOp({ client: context.client });
     }),
@@ -373,6 +376,11 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "export",
     projectExportConfig,
     Effect.fn("commands-project.projectExport")(function* (values) {
+      const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
+      const { loadCheckedFloor, openSession, resolveProjectId } = yield* Effect.promise(
+        () => import("../context.ts"),
+      );
+
       const io = yield* CliIo;
       if (values.out === undefined) {
         return yield* Effect.fail(
@@ -418,6 +426,8 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "anchor",
     projectAnchorConfig,
     Effect.fn("commands-project.projectAnchor")(function* (values) {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+
       const io = yield* CliIo;
       // The prologue is the same keyless class as verify (chain sync +
       // §6.3 checks + floor + the invite anchor's mechanical matching) —
@@ -483,6 +493,9 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "checkpoint",
     projectCheckpointConfig,
     Effect.fn("commands-project.projectCheckpoint")(function* (values) {
+      const { issueCheckpoint } = yield* Effect.promise(() => import("../checkpoint.ts"));
+      const { floorHandleFor, openProject } = yield* Effect.promise(() => import("../context.ts"));
+
       const io = yield* CliIo;
       // Issuance accompanies a chain append (an Ed25519 signature), so it
       // requires the master key. Building the verified view (the verified

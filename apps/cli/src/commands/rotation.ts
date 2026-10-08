@@ -4,24 +4,9 @@ import { decodeEnvironmentId, decodeVariableId, isEnvironmentId, isVariableId } 
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
-import { type CliServices, openEnvironment, openMetadataProject } from "../context.ts";
+import type { CliServices } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
-import {
-  describeAcceptance,
-  findProposal,
-  rotationAcceptOp,
-  rotationProposalsOp,
-  rotationRejectOp,
-} from "../rotation-proposals.ts";
-import {
-  fetchRotationProposals,
-  parseDismissRequest,
-  resolveDismissTargets,
-  rotationDismissOp,
-  rotationListOp,
-} from "../rotation.ts";
-import { logRotationWarnings } from "../var-rotate.ts";
 import { NonBlank, projectFlags, singleFlag, singleValued } from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, proposeCheckpointRefresh } from "./shared.ts";
 
@@ -98,6 +83,9 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "list",
     rotationListConfig,
     Effect.fn("commands-rotation.rotationList")(function* (values) {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { rotationListOp } = yield* Effect.promise(() => import("../rotation.ts"));
+
       const dueWithin = values["due-within"];
       if (
         dueWithin !== undefined &&
@@ -131,6 +119,10 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "dismiss",
     rotationDismissConfig,
     Effect.fn("commands-rotation.rotationDismiss")(function* (values) {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { parseDismissRequest, resolveDismissTargets, rotationDismissOp } =
+        yield* Effect.promise(() => import("../rotation.ts"));
+
       // The targets' format is checked before any network
       const environmentId = values.env;
       if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
@@ -183,6 +175,11 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { rotationProposalsOp } = yield* Effect.promise(
+        () => import("../rotation-proposals.ts"),
+      );
+
       const environmentId = values.env;
       if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
         return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
@@ -206,6 +203,15 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
+      const { openEnvironment, openMetadataProject } = yield* Effect.promise(
+        () => import("../context.ts"),
+      );
+      const { describeAcceptance, findProposal, rotationAcceptOp } = yield* Effect.promise(
+        () => import("../rotation-proposals.ts"),
+      );
+      const { fetchRotationProposals } = yield* Effect.promise(() => import("../rotation.ts"));
+      const { logRotationWarnings } = yield* Effect.promise(() => import("../var-rotate.ts"));
+
       const io = yield* CliIo;
       // The proposal decides the environment: it is looked up through a
       // keyless project context first, then the environment context (the
@@ -234,6 +240,12 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
+      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { findProposal, rotationRejectOp } = yield* Effect.promise(
+        () => import("../rotation-proposals.ts"),
+      );
+      const { fetchRotationProposals } = yield* Effect.promise(() => import("../rotation.ts"));
+
       const context = yield* openMetadataProject(values);
       const proposal = yield* findProposal(yield* fetchRotationProposals(context), values.id);
       yield* rotationRejectOp({ context, proposal });

@@ -50,7 +50,7 @@ import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
 
-interface VarRotateInput {
+export interface VarRotateInput {
   readonly context: EnvironmentContext;
   readonly config: RotateConfig;
   readonly configPath: string;
@@ -75,7 +75,7 @@ export interface VarRotateResult {
   readonly warnings: readonly string[];
 }
 
-interface VarFinalizeInput extends VarRotateInput {
+export interface VarFinalizeInput extends VarRotateInput {
   /** The version that held the credential to invalidate (null = the one before the latest). */
   readonly previousVersion: number | null;
 }
@@ -354,6 +354,7 @@ const pushOutcome = Effect.fn("var-rotate.pushOutcome")(function* (
 });
 
 /** `maruhi var rotate <NAME>`: a new credential at the issuer, pushed as a new version; the old one stays valid until finalized. */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   input: VarRotateInput,
 ): Effect.fn.Return<VarRotateResult, CliError, CliServices> {
@@ -413,6 +414,7 @@ export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
 });
 
 /** `maruhi var rotate <NAME> --finalize`: invalidates the credential the previous version held. */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<VarFinalizeResult, CliError, CliServices> {
@@ -493,6 +495,7 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
 });
 
 /** The report lines of a rotation (the command prints them; values never appear). */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export function describeRotation(
   result: VarRotateResult,
   environmentId: EnvironmentId,
@@ -523,6 +526,7 @@ export function describeRotation(
   return lines;
 }
 
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export function describeFinalization(
   result: VarFinalizeResult,
   environmentId: EnvironmentId,
@@ -537,6 +541,7 @@ export function describeFinalization(
 }
 
 /** Logs the warnings a rotation collected (a connection test that failed is one). */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export function logRotationWarnings(
   warnings: readonly string[],
 ): Effect.Effect<void, never, CliIo> {

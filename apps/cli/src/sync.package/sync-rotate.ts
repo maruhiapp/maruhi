@@ -44,7 +44,7 @@ import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
-import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
 import type { DekRecipient } from "../deks.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import type { ReencryptedVariable } from "../env-rotate.ts";
@@ -53,13 +53,12 @@ import type { FloorHandle } from "../floor-check.ts";
 import { CliIo } from "../io.ts";
 import { logWarning } from "../notice.ts";
 import type { SyncConfig, SyncTarget } from "./sync-config.ts";
-import {
-  loadReceipt,
-  receiptVariableName,
-  receiptVersionWarning,
-  storeReceipt,
-  type SyncReceipt,
-} from "./sync-receipt.ts";
+import type { SyncReceipt } from "./sync-receipt.ts";
+
+// P-6: chain-sync.ts / sync-receipt.ts (the verified-chain and receipt
+// machinery) are imported lazily inside the bodies that use them —
+// index.ts re-exports this file, so an eager import here would be paid by
+// every CLI run (see commands/shared.ts's P-6 note).
 
 /**
  * Collates the config's `project` against the project actually
@@ -177,6 +176,9 @@ const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   CliError,
   CliIo
 > {
+  const { loadReceipt, receiptVersionWarning, storeReceipt } = yield* Effect.promise(
+    () => import("./sync-receipt.ts"),
+  );
   const receiptsEnvironment = input.config.receiptsEnvironment;
   const loaded = yield* loadReceipt({
     client: input.client,
@@ -241,6 +243,7 @@ const reportTarget = Effect.fn("sync-rotate.reportTarget")(function* (
   receiptsEnvironment: string,
 ): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
+  const { receiptVariableName } = yield* Effect.promise(() => import("./sync-receipt.ts"));
   switch (outcome.kind) {
     case "no-receipt":
       // No receipt = never synced once. Says nothing
@@ -285,6 +288,7 @@ export const advanceReceiptsAfterRotation = Effect.fn("sync-rotate.advanceReceip
     // is already done, so keep it a warning (failing it outside
     // the envelope would turn the exit code into 1 after a
     // successful report)
+    const { resyncExtended } = yield* Effect.promise(() => import("../chain-sync.ts"));
     const synced = yield* asCleanupOutcome(resyncExtended(input.resync, input.verified));
     if (synced.kind === "failed") {
       yield* logWarning(

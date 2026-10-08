@@ -2,8 +2,11 @@
 
 import { Duration, Effect } from "effect";
 
-import { makeApiClient } from "../api.ts";
 import { type CliServices } from "../context.ts";
+
+// P-6: api.ts (the HttpApi client) is loaded lazily inside the probe body so
+// help / version never pay the client graph (discipline: see
+// commands/shared.ts's P-6 note).
 
 /**
  * Whether two origins publish one server key: equal strings, or equal
@@ -32,6 +35,7 @@ export function sameDeployment(a: string, b: string): Effect.Effect<boolean, nev
 const deploymentFingerprint = Effect.fn("commands-mirror-core.deploymentFingerprint")(function* (
   origin: string,
 ): Effect.fn.Return<string | null, never, CliServices> {
+  const { makeApiClient } = yield* Effect.promise(() => import("../api.ts"));
   const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(
     Effect.map((config) => config.serverKeyFingerprintHex ?? null),

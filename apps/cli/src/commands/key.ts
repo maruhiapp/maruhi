@@ -6,12 +6,7 @@ import { Argument, Command, Flag } from "effect/cli";
 
 import { PASSKEY_LABEL_MESSAGE } from "../cli-formatter.ts";
 import { identityBackingOf } from "../config.ts";
-import { openSession } from "../context.ts";
 import { usageError } from "../errors.ts";
-import { keyPublishOp } from "../key-publish.ts";
-import { keyRecoverOp, keyRecoveryOp, keyReserveRotateOp } from "../key-recover.ts";
-import { keyGenerateOp, keyShowOp } from "../keygen.ts";
-import { openLedgerReserveForChange } from "../ledger-open.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "../passkey.package/index.ts";
 import { NonBlank, serverOnlyFlags, singleFlag } from "./flags.ts";
 
@@ -96,6 +91,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "generate",
     keyGenerateConfig,
     Effect.fn("commands-key.keyGenerate")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyGenerateOp } = yield* Effect.promise(() => import("../keygen.ts"));
+
       const context = yield* openSession(values.server);
       yield* keyGenerateOp({
         session: context.session,
@@ -114,6 +112,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "show",
     keyShowConfig,
     Effect.fn("commands-key.keyShow")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyShowOp } = yield* Effect.promise(() => import("../keygen.ts"));
+
       const context = yield* openSession(values.server);
       yield* keyShowOp({ session: context.session, client: context.client });
     }),
@@ -127,6 +128,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "publish",
     keyPublishConfig,
     Effect.fn("commands-key.keyPublish")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyPublishOp } = yield* Effect.promise(() => import("../key-publish.ts"));
+
       const context = yield* openSession(values.server);
       yield* keyPublishOp({ session: context.session, viaGh: values.gh });
     }),
@@ -140,6 +144,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "recover",
     keyRecoverConfig,
     Effect.fn("commands-key.keyRecover")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyRecoverOp } = yield* Effect.promise(() => import("../key-recover.ts"));
+
       // A misspelling drops before the session resolution (network)
       if (values.handoff && values.passkey) {
         return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
@@ -162,6 +169,11 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "passkey",
     keySealPasskeyConfig,
     Effect.fn("commands-key.keySealPasskey")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { openLedgerReserveForChange } = yield* Effect.promise(
+        () => import("../ledger-open.ts"),
+      );
+
       const context = yield* openSession(values.server);
       const reserve = yield* openLedgerReserveForChange({
         session: context.session,
@@ -186,6 +198,8 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "list",
     keySealListConfig,
     Effect.fn("commands-key.keySealList")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+
       const context = yield* openSession(values.server);
       yield* listPasskeysOp({ client: context.client });
     }),
@@ -195,6 +209,8 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "remove",
     keySealRemoveConfig,
     Effect.fn("commands-key.keySealRemove")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+
       const context = yield* openSession(values.server);
       yield* removePasskeyOp({ client: context.client, wrapId: values["wrap-id"] });
     }),
@@ -209,6 +225,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "rotate",
     keyReserveRotateConfig,
     Effect.fn("commands-key.keyReserveRotate")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyReserveRotateOp } = yield* Effect.promise(() => import("../key-recover.ts"));
+
       const context = yield* openSession(values.server);
       onExitCode(
         yield* keyReserveRotateOp({
@@ -233,6 +252,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     "recovery",
     keyRecoveryConfig,
     Effect.fn("commands-key.keyRecovery")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { keyRecoveryOp } = yield* Effect.promise(() => import("../key-recover.ts"));
+
       const context = yield* openSession(values.server);
       onExitCode(
         yield* keyRecoveryOp({

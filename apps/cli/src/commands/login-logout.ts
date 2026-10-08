@@ -13,8 +13,6 @@ import { Command, Flag } from "effect/cli";
 import { ensureValueDisplayAllowed } from "../agent-gate.ts";
 import { loadCliConfig } from "../config.ts";
 import { CliError, usageError } from "../errors.ts";
-import { loginOp, logoutOp } from "../login.ts";
-import { resolveServerOrigin } from "../session.ts";
 import { serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 
 export const loginConfig = {
@@ -75,6 +73,9 @@ export function makeLoginLogoutCommands() {
     "login",
     loginConfig,
     Effect.fn("commands-login-logout.login")(function* (values) {
+      const { loginOp } = yield* Effect.promise(() => import("../login.ts"));
+      const { resolveServerOrigin } = yield* Effect.promise(() => import("../session.ts"));
+
       // Checked **before any communication**. The bound is shared with
       // api-schema (MAX_TOKEN_NAME_LENGTH). Without it, a too-long name
       // surfaces as start's encode failure (a diagnostic confusingly close
@@ -116,6 +117,9 @@ export function makeLoginLogoutCommands() {
     "logout",
     logoutConfig,
     Effect.fn("commands-login-logout.logout")(function* (values) {
+      const { logoutOp } = yield* Effect.promise(() => import("../login.ts"));
+      const { resolveServerOrigin } = yield* Effect.promise(() => import("../session.ts"));
+
       const config = yield* loadCliConfig;
       const origin = yield* resolveServerOrigin(values.server, config);
       yield* logoutOp({ origin });

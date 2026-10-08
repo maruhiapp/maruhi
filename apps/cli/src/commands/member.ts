@@ -5,30 +5,18 @@ import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import {
-  type CliServices,
-  type CommonFlags,
-  openMetadataProject,
-  openProject,
-} from "../context.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { countNoun, displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
-import { type MemberAddSummary, memberAddOp } from "../member-add.ts";
-import {
-  type ChangeRoleRequest,
-  memberChangeRoleOp,
-  type RoleChangeFulfilment,
-} from "../member-change-role.ts";
+import type { MemberAddSummary } from "../member-add.ts";
+import type { ChangeRoleRequest, RoleChangeFulfilment } from "../member-change-role.ts";
 import { formatMemberListRow, memberListJson, memberListRows } from "../member-list.ts";
-import { memberRemoveOp } from "../member-remove.ts";
 import type { MemberOpOutcome } from "../member.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { PinStore } from "../pins.ts";
-import { reportRotationChecklist } from "../rotation.ts";
 import { describeScope, scopeFromFlags } from "../scope.ts";
-import { sweepRotateFor } from "../sweep-rotate.ts";
 import {
   NonBlank,
   NonBlankUserId,
@@ -123,6 +111,9 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { memberAddOp } = yield* Effect.promise(() => import("../member-add.ts"));
+
   const io = yield* CliIo;
   const expectFingerprintHex = yield* parseUserFingerprintFlag(
     "--expect-fingerprint",
@@ -190,6 +181,10 @@ export const reportMemberAdd = Effect.fn("commands-member.reportMemberAdd")(func
 const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(function* (
   flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { memberRemoveOp } = yield* Effect.promise(() => import("../member-remove.ts"));
+  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+
   const io = yield* CliIo;
   const proposal = yield* proposalInputOf(flags.expires);
   // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
@@ -212,6 +207,8 @@ const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(fun
   }
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
+      const { reportRotationChecklist } = yield* Effect.promise(() => import("../rotation.ts"));
+
       if (summary.appended) {
         yield* io.log(
           `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
@@ -269,6 +266,10 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { memberChangeRoleOp } = yield* Effect.promise(() => import("../member-change-role.ts"));
+  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+
   const io = yield* CliIo;
   const request = yield* parseChangeRoleRequest(flags);
   const proposal = yield* proposalInputOf(flags.expires);
@@ -291,6 +292,8 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   });
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
+      const { reportRotationChecklist } = yield* Effect.promise(() => import("../rotation.ts"));
+
       yield* io.log(
         summary.appended
           ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
@@ -430,6 +433,8 @@ const reportChangeRoleMandates = Effect.fn("commands-member.reportChangeRoleMand
 const memberListCommand = Effect.fn("commands-member.memberListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const rows = memberListRows(context.verified);

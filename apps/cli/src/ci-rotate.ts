@@ -72,8 +72,6 @@ import {
 import type { ProcessRunner } from "./run.ts";
 import { callConnector, connectorFailure } from "./var-rotate.ts";
 
-/** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */
-export const MAX_PROPOSAL_DAYS = 30;
 /** AUTH_SPEC §14-5: at most 16 facts of 256 characters each. */
 const MAX_FACTS = 16;
 const MAX_FACT_LENGTH = 256;
@@ -416,6 +414,7 @@ function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
  * live in), runs the connector, seals the new values to W(E), and stores
  * the proposal under the lease's credential. Values are never displayed.
  */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
   input: CiRotateInput,
 ): Effect.fn.Return<
@@ -681,6 +680,7 @@ const mintTokenFor = Effect.fn("ci-rotate.mintTokenFor")(function* (
 });
 
 /** The report lines of a mint (the command prints them; values never appear). */
+// fallow-ignore-next-line unused-export -- P-6: consumed via `import()` inside commands/* handlers (fallow's static graph sees no edge)
 export function describeProposal(result: CiRotateResult, environmentId: EnvironmentId): string[] {
   const names = result.variables.map(
     (variable) => `${displayText(variable.name)} (replacing version ${variable.baseVersion})`,

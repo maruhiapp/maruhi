@@ -7,16 +7,8 @@ import { ALL_SCOPE } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { type CliServices, openSession } from "../context.ts";
-import { deviceAddOp } from "../device-add.ts";
-import { deviceApproveOp, parseApproveRef, reportApproveOutcomes } from "../device-approve.ts";
-import { deviceListOp } from "../device-list.ts";
-import {
-  type DeviceRevokeSummary,
-  type ProjectRevokeOutcome,
-  deviceRevokeOp,
-  parseCapRole,
-} from "../device-revoke.ts";
+import type { CliServices } from "../context.ts";
+import type { DeviceRevokeSummary, ProjectRevokeOutcome } from "../device-revoke.ts";
 import { displayText } from "../display.ts";
 import { CliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
@@ -152,6 +144,9 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "add",
     deviceAddConfig,
     Effect.fn("commands-device.deviceAdd")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { deviceAddOp } = yield* Effect.promise(() => import("../device-add.ts"));
+
       const context = yield* openSession(values.server);
       yield* deviceAddOp({
         session: context.session,
@@ -170,6 +165,12 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "approve",
     deviceApproveConfig,
     Effect.fn("commands-device.deviceApprove")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { deviceApproveOp, parseApproveRef, reportApproveOutcomes } = yield* Effect.promise(
+        () => import("../device-approve.ts"),
+      );
+      const { parseCapRole } = yield* Effect.promise(() => import("../device-revoke.ts"));
+
       const ref = yield* parseApproveRef(values.ref);
       const roleCap = yield* parseCapRole(values.cap);
       const scope =
@@ -198,6 +199,9 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "list",
     deviceListConfig,
     Effect.fn("commands-device.deviceList")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { deviceListOp } = yield* Effect.promise(() => import("../device-list.ts"));
+
       const context = yield* openSession(values.server);
       yield* deviceListOp({
         session: context.session,
@@ -215,6 +219,9 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "revoke",
     deviceRevokeConfig,
     Effect.fn("commands-device.deviceRevoke")(function* (values) {
+      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { deviceRevokeOp } = yield* Effect.promise(() => import("../device-revoke.ts"));
+
       const context = yield* openSession(values.server);
       const summary = yield* deviceRevokeOp({
         session: context.session,

@@ -25,7 +25,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { type CiLeaseInput, leaseEnvironments } from "../ci-lease.ts";
+import type { CiLeaseInput } from "../ci-lease.ts";
 import { countNoun, displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
@@ -33,17 +33,11 @@ import type { VerifiedLeaseMaterial } from "../lease-client.ts";
 import type { ProcessRunner } from "../run.ts";
 import type { SyncTarget } from "./sync-config.ts";
 import { DEFAULT_HTTP_RETRY, type HttpRetryPolicy, type IntegrationToken } from "./sync-http.ts";
-import {
-  computePlan,
-  failDriver,
-  integrationTokenOf,
-  prepareWork,
-  requireProductionConsent,
-  reviewPlan,
-  runDriver,
-  sourceVariablesOf,
-  writesOf,
-} from "./sync-plan.ts";
+
+// P-6: ci-lease.ts / sync-plan.ts (the lease and apply machinery) are
+// imported lazily inside ciSyncOp — index.ts re-exports this file, so an
+// eager import here would be paid by every CLI run (see commands/shared.ts's
+// P-6 note).
 
 /** `maruhi ci sync`'s input (flags + the repository config's target). */
 interface CiSyncInput extends CiLeaseInput {
@@ -74,6 +68,18 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
   input: CiSyncInput,
 ): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
+  const { leaseEnvironments } = yield* Effect.promise(() => import("../ci-lease.ts"));
+  const {
+    computePlan,
+    failDriver,
+    integrationTokenOf,
+    prepareWork,
+    requireProductionConsent,
+    reviewPlan,
+    runDriver,
+    sourceVariablesOf,
+    writesOf,
+  } = yield* Effect.promise(() => import("./sync-plan.ts"));
   const { target } = input;
   const tokenEnvironment =
     target.driver.kind === "http" && target.driver.token.environment !== target.environment

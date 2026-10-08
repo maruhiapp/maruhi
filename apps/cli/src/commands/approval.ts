@@ -4,7 +4,7 @@ import { type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { type Fulfilment, approveProposalOp } from "../approval-approve.ts";
+import type { Fulfilment } from "../approval-approve.ts";
 import {
   type ProposalView,
   describeInnerOperation,
@@ -18,20 +18,12 @@ import {
   resolveProposalRef,
   voteEligibility,
 } from "../approval-rules.ts";
-import { withdrawProposalOp } from "../approval.ts";
-import {
-  type CliServices,
-  type CommonFlags,
-  openMetadataProject,
-  openProject,
-} from "../context.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { type SweepOutcome } from "../rotation-sweep.ts";
-import { loadMasterKeys } from "../session.ts";
-import { sweepRotateFor } from "../sweep-rotate.ts";
 import { NonBlank, projectFlags, singleFlag } from "./flags.ts";
 import { reportMemberAdd, reportRoleChangeFulfilment } from "./member.ts";
 import { describeNeeded, reportSweepOutcome } from "./shared.ts";
@@ -128,6 +120,8 @@ function readyNote(view: ProposalView): string | null {
 const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const views = proposalViews(context.verified, yield* Clock.currentTimeMillis);
@@ -154,6 +148,9 @@ const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(f
 const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { loadMasterKeys } = yield* Effect.promise(() => import("../session.ts"));
+
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const resolution = resolveProposalRef(context.verified, flags.ref);
@@ -337,6 +334,10 @@ function reportFulfilment(
 const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { approveProposalOp } = yield* Effect.promise(() => import("../approval-approve.ts"));
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+
   const io = yield* CliIo;
   // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
   const context = yield* openProject(flags, { quietMandateWarning: true });
@@ -376,6 +377,9 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
 const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { withdrawProposalOp } = yield* Effect.promise(() => import("../approval.ts"));
+  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+
   const io = yield* CliIo;
   const context = yield* openProject(flags);
   const summary = yield* withdrawProposalOp({
