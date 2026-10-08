@@ -13,7 +13,7 @@ import { defineConfig, type Plugin } from "vite";
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
 // FunStack splits Vite environments into rsc / client / ssr. ssr emits
-// JS only and no CSS. @astryxdesign/build 0.6.6's astryx-build-layer-split
+// JS only and no CSS. @astryxdesign/build 0.6.5's astryx-build-layer-split
 // hard-errors when StyleX rules exist but no target CSS does, so it is
 // applied only to environments that emit CSS.
 //
@@ -32,9 +32,9 @@ const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 // keeps the legacy mode (prebuilt CSS consumption; no src alias).
 //
 // This is a local patch on a vendor plugin (awaiting the upstream fix of
-// ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.6 has neither an
+// ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.5 has neither an
 // environment scope nor a publicDir exclusion (re-verified at the 0.6.2 →
-// 0.6.6 upgrade). If the target plugin is not found or its shape changed,
+// 0.6.5 upgrade). If the target plugin is not found or its shape changed,
 // fail loudly rather than silently passing through: so that the next
 // upgrade cannot silently undo one part of the workaround and bring back
 // the ssr hard error / pollute invite.html / drop the product layer.
