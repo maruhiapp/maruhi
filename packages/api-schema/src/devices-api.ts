@@ -20,6 +20,7 @@
 //   device additions and revocations are recorded by the chain's mirror
 //   rows)
 
+import { KeyFingerprintHexSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -32,7 +33,7 @@ import {
   DeviceRegistryLimitError,
   ForbiddenError,
 } from "./errors/index.ts";
-import { EncPubHex, KeyFingerprintHex, PublicKeyHex } from "./hex.ts";
+import { EncPubHex, PublicKeyHex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /** Device-registry acceptance policy (AUTH_SPEC §13-11 — not a consensus rule). */
@@ -52,7 +53,7 @@ export const DeviceLabelSchema = TokenNameSchema.check(Schema.isMinLength(1));
 
 /** One registry row (`GET /auth/devices`). Carries no secrets. */
 export const DeviceSummarySchema = Schema.Struct({
-  keyFingerprintHex: KeyFingerprintHex,
+  keyFingerprintHex: KeyFingerprintHexSchema,
   encPubHex: EncPubHex,
   sigPubHex: PublicKeyHex,
   label: DeviceLabelSchema,
@@ -83,7 +84,7 @@ export const DeviceAddRequestSchema = Schema.Struct({
  * swapping the public key is caught by the FP comparison — §13-11).
  */
 export const DeviceAddRequestSummarySchema = Schema.Struct({
-  keyFingerprintHex: KeyFingerprintHex,
+  keyFingerprintHex: KeyFingerprintHexSchema,
   encPubHex: EncPubHex,
   sigPubHex: PublicKeyHex,
   label: DeviceLabelSchema,
@@ -106,7 +107,7 @@ export const DeviceAddRequestListSchema = Schema.Struct({
   requests: Schema.Array(DeviceAddRequestSummarySchema),
 });
 
-const fingerprintParams = { fp: KeyFingerprintHex };
+const fingerprintParams = { fp: KeyFingerprintHexSchema };
 
 /**
  * Device registry and device-add request endpoints (AUTH_SPEC §13-11 — DK K3).
