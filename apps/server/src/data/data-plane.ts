@@ -11,7 +11,6 @@ import type {
   AuditEventColumns,
   ChainMirrorEventName,
   EnvironmentId,
-  OrgId,
   ProjectAuditEventName,
   ProjectAuditEventPayload,
   ProjectId,

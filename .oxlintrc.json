@@ -86,7 +86,18 @@
         "apps/server/src/data/data-plane.ts",
         "apps/server/src/db.package/identities.ts",
         "apps/server/src/data/data-store-*.ts",
-        "apps/cli/src/context.ts"
+        "apps/server/src/audit-store.ts",
+        "apps/server/src/data/data-plane.ts",
+        "apps/server/src/dek-wraps.ts",
+        "apps/server/src/handlers/handlers-*.ts",
+        "apps/server/src/import-check.ts",
+        "apps/server/src/ops/ops-backup.ts",
+        "apps/server/src/server-key.ts",
+        "apps/cli/src/context.ts",
+        "apps/cli/src/anchor.ts",
+        "apps/cli/src/floor-log-decode.ts",
+        "apps/cli/src/json-record.ts",
+        "apps/cli/src/mcp.ts"
       ],
       "rules": {
         "no-restricted-imports": [
