@@ -591,6 +591,18 @@ export type SchemaPolicy = typeof SchemaPolicySchema.Type;
 const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
 
 /**
+ * A wrap's recipient position carries either a member's user_id or — for
+ * recipient class `server` — the server key fingerprint (32 lowercase hex
+ * chars, CRYPTO_SPEC §9's "HPKE info for server-destined wraps"). The user
+ * side keeps BoundedUserId's §6.1 wire bound; the fingerprint side asserts
+ * the 32-hex form (a class-member row could never hold a non-FP there).
+ */
+const BoundedRecipientId = Schema.Union([KeyFingerprintHexSchema, BoundedUserId]);
+
+/** The recipient identity position on wrap rows: a user_id or a server key fingerprint. */
+type BoundedRecipientId = typeof BoundedRecipientId.Type;
+
+/**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
  * recipient is identified by both user id and encryption public key; the
  * server requires both to match the chain-derived member exactly.
@@ -610,18 +622,6 @@ const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
  * could make a wrap for a legitimate member on the chain
  * unregistrable.
  */
-/**
- * A wrap's recipient position carries either a member's user_id or — for
- * recipient class `server` — the server key fingerprint (32 lowercase hex
- * chars, CRYPTO_SPEC §9's "HPKE info for server-destined wraps"). The user
- * side keeps BoundedUserId's §6.1 wire bound; the fingerprint side asserts
- * the 32-hex form (a class-member row could never hold a non-FP there).
- */
-const BoundedRecipientId = Schema.Union([KeyFingerprintHexSchema, BoundedUserId]);
-
-/** The recipient identity position on wrap rows: a user_id or a server key fingerprint. */
-type BoundedRecipientId = typeof BoundedRecipientId.Type;
-
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,

@@ -186,11 +186,14 @@ describe("the parser's 12 pitfall shapes fail at the argument layer", () => {
 
     const blank = await startEnv();
     expect(await runCli(["pull", "--env", "  "], blank.env.layer)).toBe(2);
-    // The flag's brand schema rejects a whitespace-only value at the
-    // argument layer (the environment id mints at the flag declaration); the
-    // parenthetical is suppressed — the schema's expectation text is not in
-    // SAFE_EXPECTATIONS wording
-    expect(blank.env.errors.join("\n")).toContain("Unacceptable value for flag --env");
+    // Also pin on the **positive side** that the allowlist (SAFE_EXPECTATIONS)
+    // is alive: the flag's brand schema's authored `expected` annotation is
+    // echoed in the parenthetical (the Schema machinery's "Expected" render
+    // prefix is stripped) — a rewording in project.ts drops it, so this side
+    // keeps the diagnostic honest rather than silently suppressed
+    expect(blank.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id",
+    );
     // The typed value (whitespace) never appears in the diagnostic
     expect(blank.env.errors.join("\n")).not.toContain('"  "');
   });

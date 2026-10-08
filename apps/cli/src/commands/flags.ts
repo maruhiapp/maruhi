@@ -34,6 +34,15 @@ export const NonBlankUserId = UserIdSchema.check(nonBlank);
  * true` the result is `string | undefined` = meshes directly with
  * context.ts's {@link CommonFlags} (no Option conversion).
  */
+export function singleValued(name: string, description: string) {
+  return Flag.String(name).pipe(
+    Flag.withDescription(description),
+    Flag.withSchema(NonBlank),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  );
+}
+
 /**
  * One value-taking option decoding through a branded-id schema — the flag
  * is where the id enters the CLI, so decoding mints the brand at the
@@ -47,15 +56,6 @@ export function singleValuedAs<A>(
   return Flag.String(name).pipe(
     Flag.withDescription(description),
     Flag.withSchema(schema),
-    Flag.atMost(1),
-    Flag.map((values) => values[0]),
-  );
-}
-
-export function singleValued(name: string, description: string) {
-  return Flag.String(name).pipe(
-    Flag.withDescription(description),
-    Flag.withSchema(NonBlank),
     Flag.atMost(1),
     Flag.map((values) => values[0]),
   );

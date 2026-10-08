@@ -64,7 +64,18 @@ export const NON_BLANK_MESSAGE = "a non-empty value (whitespace-only values are 
 export const PASSKEY_LABEL_MESSAGE =
   "1 to 64 characters without control or bidirectional-formatting characters";
 
-const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE, PASSKEY_LABEL_MESSAGE]);
+const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([
+  NON_BLANK_MESSAGE,
+  PASSKEY_LABEL_MESSAGE,
+  // The branded-id schemas' refine annotations (project.ts) — the "Expected"
+  // render prefix below is stripped before the match, so the allowlist keeps
+  // the authored wording. A rewording there drops the parenthetical (never
+  // the typed value — the annotation carries no input); effect-cli.test.ts's
+  // --env case pins the positive side.
+  "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+  "project id (lowercase hex SHA-256 of the genesis entry)",
+  "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
+]);
 
 /** The built-in global flags (CliConfig's builtIns — absent from the declaration table). */
 const GLOBAL_FLAGS = ["--help", "--version"] as const;
@@ -186,7 +197,12 @@ function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): 
   ) {
     return commandKey === "agent" ? AGENT_COMMAND_REQUIRED : RUN_COMMAND_REQUIRED;
   }
-  const expectation = error.expected.replace("Schema validation failed: ", "");
+  // The Schema machinery renders a refine's `expected` annotation as
+  // "Expected <annotation>" — strip the render prefix so the allowlist and
+  // the echo carry the authored wording alone.
+  const expectation = error.expected
+    .replace("Schema validation failed: ", "")
+    .replace(/^Expected /, "");
   const detail = SAFE_EXPECTATIONS.has(expectation) ? ` (expected: ${expectation})` : "";
   return error.kind === "argument"
     ? `Unacceptable value for positional argument ${name}${detail}`

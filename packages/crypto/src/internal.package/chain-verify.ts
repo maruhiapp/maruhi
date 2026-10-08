@@ -1978,53 +1978,36 @@ function freezePendingProposals(
   return frozen;
 }
 
-// The §12-1 acceptance-policy form of an environment id and the fingerprint
-// form of a server-grant key. Consensus itself checks only §6.1's free-string
-// bound during verification, so the map keys are re-checked at the seal
-// below.
-const ENVIRONMENT_ID_FORM = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const KEY_FINGERPRINT_HEX_FORM = /^[0-9a-f]{32}$/;
-
-type SealFailure = { readonly seq: number; readonly reason: ChainInvalidReason };
-
 /**
  * Seals the mutable verification state as the branded {@link ChainState}.
  * The map keys are minted here — a chain-verified mint like the fingerprint
- * computation above: member ids carry provenance by construction (the key
- * came out of a verified member slot), and environment / checkpoint ids and
- * grant-key fingerprints are re-checked against their forms. An out-of-form
- * key fails loudly (a `ReadonlyMap<EnvironmentId, …>` could not honestly
- * hold it) at the seq that introduced it, rather than being silently
- * dropped by every consumer of the map.
+ * computation above: every key came out of a verified entry slot (a member
+ * slot's user id, a grant_server's verified fingerprint, a create_environment
+ * payload's environment id), so the brand records that provenance. The seal
+ * deliberately does NOT re-check the keys' form: consensus verifies only
+ * §6.1's free-string bound, and §12-1's id form is the server's write-time
+ * acceptance policy — promoting it into chain validity would brick a whole
+ * project chain on one out-of-form entry.
  */
 function sealChainState(
   state: MutableChainState,
   headSeq: number,
   headHashHex: string,
-): ChainState | SealFailure {
+): ChainState {
   const members = new Map<UserId, ChainMember>();
   for (const [userId, member] of state.members) {
     members.set(userId as UserId, member);
   }
   const serverGrants = new Map<KeyFingerprintHex, ServerGrant>();
   for (const [fingerprint, grant] of state.serverGrants) {
-    if (!KEY_FINGERPRINT_HEX_FORM.test(fingerprint)) {
-      return { seq: grant.grantSeq, reason: "invalid-payload" };
-    }
     serverGrants.set(fingerprint as KeyFingerprintHex, grant);
   }
   const environments = new Map<EnvironmentId, EnvironmentChainState>();
   for (const [environmentId, environment] of state.environments) {
-    if (!ENVIRONMENT_ID_FORM.test(environmentId)) {
-      return { seq: environment.createdAtSeq, reason: "invalid-payload" };
-    }
     environments.set(environmentId as EnvironmentId, environment);
   }
   const checkpoints = new Map<EnvironmentId, EnvironmentCheckpointState>();
   for (const [environmentId, checkpoint] of state.checkpoints) {
-    if (!ENVIRONMENT_ID_FORM.test(environmentId)) {
-      return { seq: checkpoint.seq, reason: "invalid-payload" };
-    }
     checkpoints.set(environmentId as EnvironmentId, checkpoint);
   }
   return {
@@ -2082,14 +2065,7 @@ async function verifyChainCore(
     history?.recordEntryHash(prevHash);
   }
 
-  const sealed = sealChainState(state, entries.length, prevHash);
-  if ("reason" in sealed) {
-    return {
-      ok: false,
-      error: { kind: "ChainInvalid", seq: sealed.seq, reason: sealed.reason },
-    };
-  }
-  return { ok: true, value: sealed };
+  return { ok: true, value: sealChainState(state, entries.length, prevHash) };
 }
 
 /**
