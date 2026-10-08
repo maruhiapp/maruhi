@@ -1,6 +1,7 @@
 // Small pieces shared inside the worker: the Env and secrets services
 // and the DO RPC call helper (with its typed failure).
 
+import type { ProjectId } from "@maruhi/core";
 import { Context, Data, Effect, Redacted } from "effect";
 
 import type { Env, ProjectChainDO } from "./do/chain-do.ts";
@@ -68,7 +69,7 @@ export function readWorkerSecrets(env: {
 /** Resolves the project DO's stub (DO name = project ID). */
 export const projectStub = (
   env: Pick<Env, "PROJECT_CHAIN">,
-  projectId: string,
+  projectId: ProjectId,
 ): DurableObjectStub<ProjectChainDO> =>
   env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
 

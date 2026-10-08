@@ -34,6 +34,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import type { DataFixture } from "./support/data-fixture.ts";
 import {
   ALL_MEMBERS,
@@ -71,7 +72,13 @@ const token = (userId: string): string => tokenOf(fixture.tokens, userId);
 async function createVariableOk(dek: Uint8Array, variableId: string, name: string): Promise<void> {
   const value = await encryptValue(
     dek,
-    { projectId, environmentId: ENV, epoch: 1, variableId, version: 1 },
+    {
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(variableId),
+      version: 1,
+    },
     `secret-${variableId}`,
     { writerUserId: MEMBER, head: fixture.head },
   );
@@ -303,7 +310,7 @@ describe("chain mirror (§3.4)", () => {
       payload: {
         serverEncPubHex,
         serverKeyFingerprintHex,
-        scopeEnvironmentIds: [ENV],
+        scopeEnvironmentIds: [testEnvironmentId(ENV)],
         leasePolicy: [],
       },
     });
@@ -667,7 +674,7 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       operation: {
         op: "create_environment",
         payload: {
-          environmentId: "env-audit-0002",
+          environmentId: testEnvironmentId("env-audit-0002"),
           dekCommitmentHex: await commitmentOf(projectId, "env-audit-0002", 1, dek),
         },
       },

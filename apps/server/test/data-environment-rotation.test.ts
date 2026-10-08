@@ -23,6 +23,7 @@ import {
   valuesDigestOf,
   wrapDekForAll,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -159,7 +160,13 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     // flow
     const v2 = await encryptValue(
       dek2,
-      { projectId, environmentId: ENV, epoch: 2, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 2,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       "postgres://rotated",
       {
         writerUserId: MEMBER,
@@ -524,7 +531,11 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
       deks: await wrapsFor(ENV, [...ALL_MEMBERS], 2, MEMBER),
       dekCommitmentHex: await commitmentOf(projectId, ENV, 2, makeDek()),
       checkpointValues: [
-        { variableId: "var-phantom-0001", version: 1, valueSigHashHex: "ab".repeat(32) },
+        {
+          variableId: testVariableId("var-phantom-0001"),
+          version: 1,
+          valueSigHashHex: "ab".repeat(32),
+        },
       ],
     });
     expect(response.status).toBe(422);

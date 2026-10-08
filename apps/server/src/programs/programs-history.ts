@@ -11,6 +11,7 @@
 //   row enumerating every returned version
 
 import { MAX_VERSION_VALUES_PAGE } from "@maruhi/api-schema";
+import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
@@ -37,12 +38,12 @@ export interface VariableVersionHistoryRow extends StoredVersionMeta {
 }
 
 export interface VariableVersionHistoryValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly versions: readonly VariableVersionHistoryRow[];
 }
 
 export interface VariableVersionValuesValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly latestVersion: number;
   readonly values: readonly PulledVariableValue[];
 }
@@ -74,7 +75,12 @@ function sameValueAsOf(payload: Readonly<Record<string, unknown>> | null): numbe
 }
 
 export const variableHistoryProgram = Effect.fn("programs-history.variableHistoryProgram")(
-  function* (actor: DataActor, environmentId: string, variableId: string, cache: StateCache) {
+  function* (
+    actor: DataActor,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
+    cache: StateCache,
+  ) {
     yield* requireMemberState(actor.userId, "reader", cache);
     yield* requireActiveEnvironment(environmentId);
     yield* requireActiveVariable(environmentId, variableId);
@@ -113,8 +119,8 @@ export const variableVersionValuesProgram = Effect.fn(
   "programs-history.variableVersionValuesProgram",
 )(function* (
   actor: DataActor,
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   fromVersion: number,
   cache: StateCache,
 ) {

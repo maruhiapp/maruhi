@@ -18,8 +18,8 @@ import {
   ProjectAlreadyInitializedError,
   ProjectLimitError,
 } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal } from "@maruhi/core";
-import { auditActorOf, cryptoPromise, RequestAuth } from "@maruhi/core";
+import type { AuthenticatedPrincipal, OrgId, ProjectId } from "@maruhi/core";
+import { auditActorOf, cryptoPromise, decodeProjectId, RequestAuth } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -66,8 +66,8 @@ import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
  * of the same genesis = the actor always matches).
  */
 const repairOrConflict = Effect.fn("handlers-membership.repairOrConflict")(function* (
-  projectId: string,
-  orgId: string,
+  projectId: ProjectId,
+  orgId: OrgId,
   principal: AuthenticatedPrincipal,
   outcome: Extract<InitOutcome, { kind: "already-initialized" }>,
 ) {
@@ -88,8 +88,8 @@ const repairOrConflict = Effect.fn("handlers-membership.repairOrConflict")(funct
 
 const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
   endpoint: Endpoint,
-  projectId: string,
-  orgId: string,
+  projectId: ProjectId,
+  orgId: OrgId,
   principal: AuthenticatedPrincipal,
   outcome: InitOutcome,
 ) => {
@@ -149,6 +149,8 @@ const precheckAndComputeProjectId = Effect.fn("handlers-membership.precheckAndCo
       Effect.mapError(
         () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
       ),
+      // The genesis entry hash IS the project id (§6.4 — the mint of the computed hash)
+      Effect.map(decodeProjectId),
     );
   },
 );
@@ -296,7 +298,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           { concurrency: 10 },
         );
         const memberships = rows.filter(
-          (row): row is { readonly projectId: string; readonly role: Role } => row !== null,
+          (row): row is { readonly projectId: ProjectId; readonly role: Role } => row !== null,
         );
         return nextAfter === undefined
           ? { projects: memberships }

@@ -1,6 +1,13 @@
 // The data store's stored-row decoders, shared by every query file
 // (the service itself is data-store.ts).
 
+import {
+  decodeEnvironmentId,
+  decodeKeyFingerprintHex,
+  decodeUserId,
+  decodeVariableId,
+} from "@maruhi/core";
+
 import type {
   DistributedMetaStatementValue,
   DistributedVariableMetaStatementValue,
@@ -180,15 +187,17 @@ export function statementColumns<S extends MetaStatementStatusInput>(
     chainHeadHashHex: stringColumn(row, `${prefix}chain_head_hash_hex`),
     chainHeadSeq: numberColumn(row, `${prefix}chain_head_seq`),
     signatureHex: stringColumn(row, `${prefix}signature_hex`),
-    authorUserId: stringColumn(row, `${prefix}author_user_id`),
-    authorKeyFingerprintHex: stringColumn(row, `${prefix}author_key_fingerprint`),
+    authorUserId: decodeUserId(stringColumn(row, `${prefix}author_user_id`)),
+    authorKeyFingerprintHex: decodeKeyFingerprintHex(
+      stringColumn(row, `${prefix}author_key_fingerprint`),
+    ),
   };
 }
 
 /** An environment meta-statement row → the distributed form (author included; environmentId comes from the column). */
 export function statementOf(row: StoredRow): DistributedMetaStatementValue {
   return {
-    environmentId: stringColumn(row, "environment_id"),
+    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
     ...statementColumns(row, "", storedEnvStatus),
   };
 }
@@ -222,8 +231,8 @@ export function variableStatementV3Fields(
 
 export function variableStatementOf(row: StoredRow): DistributedVariableMetaStatementValue {
   return {
-    environmentId: stringColumn(row, "environment_id"),
-    variableId: stringColumn(row, "variable_id"),
+    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+    variableId: decodeVariableId(stringColumn(row, "variable_id")),
     ...statementColumns(row, "", storedVariableStatus),
     ...variableStatementV3Fields(row, ""),
   };

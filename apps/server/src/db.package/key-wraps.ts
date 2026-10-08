@@ -73,7 +73,7 @@ export interface GuardianShareInput {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
-  readonly guardianKeyFingerprintHex: string;
+  readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
@@ -96,18 +96,18 @@ export interface KeyWrapRepoShape {
    * this.
    */
   readonly consumeWindow: (input: {
-    readonly userId: string;
+    readonly userId: UserId;
     readonly kind: KeyWrapWindowKind;
     readonly limit: number;
     readonly nowMs: number;
     readonly audit?: D1AuditEventInput;
   }) => Effect.Effect<KeyWrapWindowDecision>;
   /** Window reset (recovery-code reissue — a new blob does not inherit the attempt history against the old one). */
-  readonly resetWindow: (userId: string, kind: KeyWrapWindowKind) => Effect.Effect<void>;
+  readonly resetWindow: (userId: UserId, kind: KeyWrapWindowKind) => Effect.Effect<void>;
 
   // --- Class S (passkey-prf)------------------------------------------------
   readonly passkeyInsert: (input: {
-    readonly userId: string;
+    readonly userId: UserId;
     readonly wrapId: string;
     readonly params: string;
     readonly wrap: MasterKeyWrapBlob;
@@ -115,10 +115,10 @@ export interface KeyWrapRepoShape {
     readonly nowMs: number;
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "limit" | "conflict">;
-  readonly passkeyFind: (userId: string, wrapId: string) => Effect.Effect<PasskeyWrapRecord | null>;
-  readonly passkeyList: (userId: string) => Effect.Effect<readonly PasskeyWrapRecord[]>;
+  readonly passkeyFind: (userId: UserId, wrapId: string) => Effect.Effect<PasskeyWrapRecord | null>;
+  readonly passkeyList: (userId: UserId) => Effect.Effect<readonly PasskeyWrapRecord[]>;
   readonly passkeyDelete: (
-    userId: string,
+    userId: UserId,
     wrapId: string,
     nowMs: number,
     actor: D1AuditActor,
@@ -170,7 +170,7 @@ export interface KeyWrapRepoShape {
   readonly handoffApprove: (input: {
     readonly requestId: string;
     readonly wardUserId: UserId;
-    readonly approverUserId: string;
+    readonly approverUserId: UserId;
     readonly approval: HandoffApprovalInput;
     readonly limit: number;
     readonly nowMs: number;
@@ -199,7 +199,7 @@ export class KeyWrapRepo extends Context.Service<KeyWrapRepo, KeyWrapRepoShape>(
  * appears once per guardian's device. Audit designation / revocation
  * events are per guardian).
  */
-function logicalShares<T extends { readonly shareIndex: number; readonly guardianUserId: string }>(
+function logicalShares<T extends { readonly shareIndex: number; readonly guardianUserId: UserId }>(
   rows: readonly T[],
 ): readonly T[] {
   const seen = new Set<number>();
@@ -220,7 +220,7 @@ function toShare(row: {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
-  readonly guardianKeyFingerprintHex: string;
+  readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }): GuardianShareRecord {
@@ -395,7 +395,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               db
                 .select({
                   id: sql<string>`${wrapId}`.as("id"),
-                  userId: sql<string>`${userId}`.as("user_id"),
+                  userId: sql<UserId>`${userId}`.as("user_id"),
                   kind: sql<string>`'passkey-prf'`.as("kind"),
                   suite: sql<string>`${wrap.suite}`.as("suite"),
                   params: sql<string>`${params}`.as("params"),
@@ -498,7 +498,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             db
               .select({
                 id: sql<string>`${groupId}`.as("id"),
-                userId: sql<string>`${userId}`.as("user_id"),
+                userId: sql<UserId>`${userId}`.as("user_id"),
                 mode: sql<string>`${mode}`.as("mode"),
                 suite: sql<string>`${wrap.suite}`.as("suite"),
                 nonceHex: sql<string>`${wrap.nonceHex}`.as("nonce_hex"),
@@ -522,13 +522,14 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .select({
                 groupId: sql<string>`${groupId}`.as("group_id"),
                 shareIndex: sql<number>`${share.shareIndex}`.as("share_index"),
-                guardianUserId: sql<string>`${share.guardianUserId}`.as("guardian_user_id"),
+                guardianUserId: sql<UserId>`${share.guardianUserId}`.as("guardian_user_id"),
                 guardianEncPubHex: sql<string>`${share.guardianEncPubHex}`.as(
                   "guardian_enc_pub_hex",
                 ),
-                guardianKeyFingerprintHex: sql<string>`${share.guardianKeyFingerprintHex}`.as(
-                  "guardian_key_fingerprint_hex",
-                ),
+                guardianKeyFingerprintHex:
+                  sql<KeyFingerprintHex>`${share.guardianKeyFingerprintHex}`.as(
+                    "guardian_key_fingerprint_hex",
+                  ),
                 encHex: sql<string>`${share.encHex}`.as("enc_hex"),
                 ciphertextHex: sql<string>`${share.ciphertextHex}`.as("ciphertext_hex"),
               })
@@ -836,7 +837,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
 /** The approval insert row (guardian segments only — the old device-path blob column was removed under DK K4). */
 function approvalRow(
   requestId: string,
-  approverUserId: string,
+  approverUserId: UserId,
   approval: HandoffApprovalInput,
   nowMs: number,
 ) {

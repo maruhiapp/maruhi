@@ -23,6 +23,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -123,7 +124,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       actorUserId: OWNER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
+        payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
     const created = await requestJson("POST", "/environments", token(OWNER), {

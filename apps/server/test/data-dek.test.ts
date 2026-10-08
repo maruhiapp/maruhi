@@ -44,6 +44,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -137,12 +138,23 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     const unwrapped = await unwrapDek({
       recipientKeyPair: encPair,
       wrapped: { enc: hexBytes(wrap.encHex), ciphertext: hexBytes(wrap.ciphertextHex) },
-      context: { projectId, environmentId: ENV, epoch: 1, recipientUserId: STRANGER },
+      context: {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        recipientUserId: STRANGER,
+      },
     });
     if (!unwrapped.ok) throw new Error("unwrap failed");
     const decrypted = await decryptVariable({
       dek: unwrapped.value,
-      context: pulled.value.aad,
+      context: {
+        projectId: testProjectId(pulled.value.aad.projectId),
+        environmentId: testEnvironmentId(pulled.value.aad.environmentId),
+        epoch: pulled.value.aad.epoch,
+        variableId: testVariableId(pulled.value.aad.variableId),
+        version: pulled.value.aad.version,
+      },
       nonce: hexBytes(pulled.value.nonceHex),
       ciphertext: hexBytes(pulled.value.ciphertextHex),
     });
@@ -167,7 +179,7 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       actorUserId: OWNER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
+        payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
     const statement = await createEnvironmentStatement({

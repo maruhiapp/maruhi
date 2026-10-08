@@ -28,6 +28,7 @@ import { runBackupSweep } from "../src/ops/ops-backup.ts";
 import { OPS_BACKUP_MAX_BYTES, OPS_HOURLY_CRON } from "../src/ops/ops-policy.ts";
 import { ServerLoggerLive } from "../src/server-logger.ts";
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import { OWNER, projectId, READER, requestJson } from "./support/data-fixture.ts";
 import { ENV, registerDataScenario, token } from "./support/data-scenario.ts";
 import { evictProjectDo, queryProjectDo, resetProjectDo } from "./support/project-do.ts";
@@ -541,7 +542,7 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
       failed: 0,
       truncated: false,
     });
-    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const record = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(record).not.toBeNull();
     expect(record?.doIdHex).toBe(doIdHex());
     expect(record?.lastSuccessAt).not.toBeNull();
@@ -551,7 +552,7 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
 
     const second = await sweep();
     expect(second).toMatchObject({ visited: 1, uploaded: 0, skipped: 1 });
-    const after = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const after = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(after?.lastObjectKey).toBe(record?.lastObjectKey);
     // The end was reached, so the cursor returns to the start (empty string)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
@@ -564,13 +565,13 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     // exercise the INSERT branch)
     await opsRepo()
       .recordBackupAttempt(
-        projectId,
+        testProjectId(projectId),
         doIdHex(),
         { kind: "failure", code: "rpc-failed", storageLevel: null },
         Date.now(),
       )
       .pipe(Effect.runPromise);
-    const before = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const before = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(before?.consecutiveFailures).toBe(1);
     const result = await Effect.runPromise(
       runBackupSweep(workerEnv, { maxBytes: 1 }).pipe(
@@ -579,7 +580,7 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
       ),
     );
     expect(result).toMatchObject({ visited: 1, oversize: 1, failed: 0 });
-    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const record = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(record?.lastFailureCode).toBe("oversize");
     expect(record?.consecutiveFailures).toBe(0);
     const summary = await opsRepo().backupSummary(Date.now()).pipe(Effect.runPromise);
@@ -607,7 +608,7 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     } finally {
       warn.mockRestore();
     }
-    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const record = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(record?.lastFailureCode).toBe("rpc-failed");
     expect(record?.consecutiveFailures).toBe(1);
   });
@@ -616,7 +617,9 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     const { OPS_BACKUP_BUCKET: _bucket, ...withoutBucket } = workerEnv;
     const result = await sweep(withoutBucket);
     expect(result).toMatchObject({ enabled: false, visited: 0 });
-    expect(await opsRepo().backupRecord(projectId).pipe(Effect.runPromise)).toBeNull();
+    expect(
+      await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise),
+    ).toBeNull();
   });
 
   it("honours the visit budget and keeps the cursor for the next run", async () => {
@@ -637,7 +640,7 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
       env,
       createExecutionContext(),
     );
-    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    const record = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(record?.lastSuccessAt).not.toBeNull();
   });
 });

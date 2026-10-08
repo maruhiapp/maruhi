@@ -36,6 +36,8 @@ import {
   valuesDigestOf,
   wrapDekForAll,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -78,7 +80,11 @@ async function writeScopedToken(userId: string): Promise<string> {
   if (githubId === undefined) {
     throw new Error(`no seeded github id for ${userId}`);
   }
-  return cliToken(githubId, [{ project: projectId, permission: "write" }], "write-scoped");
+  return cliToken(
+    githubId,
+    [{ project: testProjectId(projectId), permission: "write" }],
+    "write-scoped",
+  );
 }
 
 /** The stored latest-manifest tuple coordinates (material for the match side of acceptance-time cross-checking). */
@@ -106,7 +112,7 @@ async function matchingTuple(
 ): Promise<CheckpointEnvironmentEntry> {
   const manifest = await currentManifestTuple(environmentId);
   return {
-    environmentId,
+    environmentId: testEnvironmentId(environmentId),
     epoch: 1,
     manifestVersion: manifest.manifestVersion,
     manifestSigHashHex: manifest.manifestSigHashHex,
@@ -441,7 +447,9 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
     await createEnvironmentOk(fixture, ENV, "App");
     const unknown = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
-      environments: [await matchingTuple(ENV, { environmentId: "env-phantom-0001" })],
+      environments: [
+        await matchingTuple(ENV, { environmentId: testEnvironmentId("env-phantom-0001") }),
+      ],
     });
     expect(unknown.response.status).toBe(422);
     expect(((await unknown.response.json()) as { reason: string }).reason).toBe(
@@ -700,7 +708,11 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
       "var-skip-0002",
     ]);
     // digest of stored enumeration = the tuple row's digest (the invariant the skip judgment rests on)
-    expect(await valuesDigestOf(changedValues)).toBe(changedTuple.valuesDigestHex);
+    expect(
+      await valuesDigestOf(
+        changedValues.map((row) => ({ ...row, variableId: testVariableId(row.variableId) })),
+      ),
+    ).toBe(changedTuple.valuesDigestHex);
     expect((await pullBody(ENV)).checkpointSnapshot?.values).toEqual(changedValues);
 
     await queryProjectDo(

@@ -29,6 +29,7 @@ import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";
 import { detectMemberRemoval } from "../src/rotation-detect.ts";
 import { fetchEvents, type WireAuditEvent } from "./support/audit-read-scenario.ts";
+import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -489,14 +490,14 @@ describe("scan range of the variable_id filter (bounding the shared resource con
       (store, queries) => {
         const declared = store.queryEventsSync({
           ...baseQuery,
-          variableId: "v-declared",
+          variableId: testVariableId("v-declared"),
           visibility: { kind: "admin" },
         });
         const declaredScans = queries.filter((query) => query.includes("json_each")).length;
         queries.length = 0;
         const active = store.queryEventsSync({
           ...baseQuery,
-          variableId: "v-active",
+          variableId: testVariableId("v-active"),
           visibility: { kind: "admin" },
         });
         const activeScans = queries.filter((query) => query.includes("json_each")).length;
@@ -537,19 +538,19 @@ describe("scan range of the variable_id filter (bounding the shared resource con
       (store) => {
         const all = store.queryEventsSync({
           ...baseQuery,
-          variableId: "v-shared",
+          variableId: testVariableId("v-shared"),
           visibility: { kind: "admin" },
         });
         const onlyA = store.queryEventsSync({
           ...baseQuery,
-          environmentId: E,
-          variableId: "v-shared",
+          environmentId: testEnvironmentId(E),
+          variableId: testVariableId("v-shared"),
           visibility: { kind: "admin" },
         });
         const onlyB = store.queryEventsSync({
           ...baseQuery,
-          environmentId: B,
-          variableId: "v-shared",
+          environmentId: testEnvironmentId(B),
+          variableId: testVariableId("v-shared"),
           visibility: { kind: "admin" },
         });
         return {
@@ -575,7 +576,7 @@ describe("scan range of the variable_id filter (bounding the shared resource con
       (store, queries) => {
         const rows = store.queryEventsSync({
           ...baseQuery,
-          variableId: "v-active",
+          variableId: testVariableId("v-active"),
           visibility: { kind: "class1-or-self", selfUserId: READER },
         });
         const scan = queries.find((query) => query.includes("json_each")) ?? "";

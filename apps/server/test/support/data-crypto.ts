@@ -10,6 +10,7 @@
 // @maruhi/crypto/test-support (shared with the cli test support — session-11 §5 ruling).
 
 import type {
+  EnvironmentId,
   ChainEntry,
   ChainOperation,
   EnvValuesDigestEntry,
@@ -47,7 +48,11 @@ import {
   BASE_TIME_MS,
   buildChainWith,
   hexBytes,
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
   testUserId,
+  testVariableId,
   unwrapResult,
   valueContextOf,
   vectorKeys,
@@ -55,6 +60,13 @@ import {
 
 export type { BuiltChain, WireEncryptedPayload };
 export { hexBytes, valueSignedBytesHashOf } from "@maruhi/crypto/test-support";
+export {
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "@maruhi/crypto/test-support";
 
 /**
  * Key borrowing for user IDs not in the fixed vector key set. The data
@@ -152,7 +164,10 @@ export async function signEntryAt(input: {
     suite: SUITE_ID,
     seq: input.seq,
     prevHashHex: input.prevHashHex,
-    actor: { userId: testUserId(input.actorUserId), keyFingerprintHex: keys.key_fingerprint_hex },
+    actor: {
+      userId: testUserId(input.actorUserId),
+      keyFingerprintHex: testKeyFingerprintHex(keys.key_fingerprint_hex),
+    },
     timestampMs: BASE_TIME_MS + input.seq * 1000,
   };
   const entry = await signAs(input.actorUserId, unsigned);
@@ -193,7 +208,7 @@ export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChai
     steps.map((step) => ({
       actor: {
         userId: testUserId(step.actorUserId),
-        keyFingerprintHex: vectorKeyOf(step.actorUserId).key_fingerprint_hex,
+        keyFingerprintHex: testKeyFingerprintHex(vectorKeyOf(step.actorUserId).key_fingerprint_hex),
       },
       operation: step.operation,
       signEntry: (unsigned) => signAs(step.actorUserId, unsigned),
@@ -219,11 +234,11 @@ export type TestScope = readonly string[] | undefined;
 /** Map the scope test representation onto the wire's two fields. */
 function scopeFieldsOf(scope: TestScope): {
   readonly scopeKind: "all" | "listed";
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
 } {
   return scope === undefined
     ? { scopeKind: "all", scopeEnvironmentIds: [] }
-    : { scopeKind: "listed", scopeEnvironmentIds: scope };
+    : { scopeKind: "listed", scopeEnvironmentIds: scope.map(testEnvironmentId) };
 }
 
 /** Payload for add_member (the target's vector public key set; scope omitted = all). */
@@ -266,7 +281,12 @@ export async function commitmentOf(
 ): Promise<string> {
   return unwrapResult(
     await computeDekCommitment({
-      context: { suite: SUITE_ID, projectId, environmentId, epoch },
+      context: {
+        suite: SUITE_ID,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(environmentId),
+        epoch,
+      },
       dek,
     }),
     "computeDekCommitment",
@@ -278,7 +298,10 @@ export function createEnvironmentOperation(
   environmentId: string,
   dekCommitmentHex: string,
 ): ChainOperation {
-  return { op: "create_environment", payload: { environmentId, dekCommitmentHex } };
+  return {
+    op: "create_environment",
+    payload: { environmentId: testEnvironmentId(environmentId), dekCommitmentHex },
+  };
 }
 
 /** Canonical computation of values_digest (§6.2 — value-level latest form of active variables; empty set allowed). */
@@ -304,7 +327,7 @@ export function checkpointOperation(input: {
     payload: {
       environments: [
         {
-          environmentId: input.environmentId,
+          environmentId: testEnvironmentId(input.environmentId),
           epoch: input.epoch,
           manifestVersion: input.manifestVersion,
           manifestSigHashHex: input.manifestSigHashHex,
@@ -323,7 +346,15 @@ export function rotateEpochOperation(
   dekCommitmentHex: string,
   reason = "scheduled",
 ): ChainOperation {
-  return { op: "rotate_epoch", payload: { environmentId, newEpoch, reason, dekCommitmentHex } };
+  return {
+    op: "rotate_epoch",
+    payload: {
+      environmentId: testEnvironmentId(environmentId),
+      newEpoch,
+      reason,
+      dekCommitmentHex,
+    },
+  };
 }
 
 /** A new environment epoch DEK (256-bit random). */
@@ -368,14 +399,14 @@ export async function signWrapAs(
     await signDekWrap({
       context: {
         suite: wrap.suite,
-        projectId,
-        environmentId,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(environmentId),
         epoch: wrap.epoch,
-        recipientUserId: wrap.recipientUserId,
+        recipientUserId: testUserId(wrap.recipientUserId),
         recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
-        signerUserId,
+        signerUserId: testUserId(signerUserId),
       },
       signingKey: pair.privateKey,
     }),
@@ -411,14 +442,14 @@ export async function verifyDistributedWrapSignature(input: {
   const result = await verifyDekWrapSignature({
     context: {
       suite: input.wrap.suite,
-      projectId: input.projectId,
-      environmentId: input.environmentId,
+      projectId: testProjectId(input.projectId),
+      environmentId: testEnvironmentId(input.environmentId),
       epoch: input.wrap.epoch,
-      recipientUserId: input.recipientUserId,
+      recipientUserId: testUserId(input.recipientUserId),
       recipientEncPubHex: input.recipientEncPubHex,
       encHex: input.wrap.encHex,
       ciphertextHex: input.wrap.ciphertextHex,
-      signerUserId: input.wrap.signerUserId,
+      signerUserId: testUserId(input.wrap.signerUserId),
     },
     signatureHex: input.wrap.signatureHex,
     signerPublicKey: publicKey,
@@ -447,10 +478,10 @@ export async function wrapDekTo(input: {
       recipientPublicKey: publicKey,
       dek: input.dek,
       context: {
-        projectId: input.projectId,
-        environmentId: input.environmentId,
+        projectId: testProjectId(input.projectId),
+        environmentId: testEnvironmentId(input.environmentId),
         epoch: input.epoch,
-        recipientUserId: input.recipientUserId,
+        recipientUserId: testUserId(input.recipientUserId),
       },
     }),
     "wrapDek",
@@ -459,7 +490,7 @@ export async function wrapDekTo(input: {
     suite: SUITE_ID,
     epoch: input.epoch,
     recipientClass: "member",
-    recipientUserId: input.recipientUserId,
+    recipientUserId: testUserId(input.recipientUserId),
     recipientEncPubHex: encPubHex,
     encHex: encodeHex(wrapped.enc),
     ciphertextHex: encodeHex(wrapped.ciphertext),
@@ -484,13 +515,13 @@ export async function wrapDekToServer(input: {
   readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const wrap = await wrapDekTo({
-    projectId: input.projectId,
-    environmentId: input.environmentId,
+    projectId: testProjectId(input.projectId),
+    environmentId: testEnvironmentId(input.environmentId),
     epoch: input.epoch,
     dek: input.dek,
-    recipientUserId: input.serverKeyFingerprintHex,
+    recipientUserId: testUserId(input.serverKeyFingerprintHex),
     recipientEncPubHex: input.serverEncPubHex,
-    signerUserId: input.signerUserId,
+    signerUserId: testUserId(input.signerUserId),
   });
   return { ...wrap, recipientClass: "server" };
 }
@@ -625,7 +656,7 @@ export type WireEnvironmentMetaStatement = Omit<
 function metaTargetOf(statement: { readonly variableId?: string }): MetaStatementTarget {
   return statement.variableId === undefined
     ? { kind: "environment" }
-    : { kind: "variable", variableId: statement.variableId };
+    : { kind: "variable", variableId: testVariableId(statement.variableId) };
 }
 
 function metaContextOf(
@@ -637,8 +668,8 @@ function metaContextOf(
 ) {
   return {
     suite: statement.suite,
-    projectId,
-    environmentId: statement.environmentId,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(statement.environmentId),
     target: metaTargetOf(statement),
     name: statement.name,
     status: statement.status,
@@ -664,7 +695,7 @@ function metaContextOf(
         }),
     metaVersion: statement.metaVersion,
     prevMetaSigHashHex: statement.prevMetaSigHashHex,
-    authorUserId,
+    authorUserId: testUserId(authorUserId),
     chainHeadHashHex: statement.chainHeadHashHex,
     chainHeadSeq: statement.chainHeadSeq,
   };
@@ -743,7 +774,13 @@ export interface WireEnvironmentManifest {
 
 /** Canonical computation of variables_digest (empty set allowed — §4.3). */
 export async function digestOf(entries: readonly WireDigestEntry[]): Promise<string> {
-  return unwrapResult(await computeVariablesDigest(SUITE_ID, entries), "computeVariablesDigest");
+  return unwrapResult(
+    await computeVariablesDigest(
+      SUITE_ID,
+      entries.map((entry) => ({ ...entry, variableId: testVariableId(entry.variableId) })),
+    ),
+    "computeVariablesDigest",
+  );
 }
 
 function manifestContextOf(
@@ -753,15 +790,15 @@ function manifestContextOf(
 ) {
   return {
     suite: manifest.suite,
-    projectId,
-    environmentId: manifest.environmentId,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(manifest.environmentId),
     epoch: manifest.epoch,
     manifestVersion: manifest.manifestVersion,
     variablesDigestHex: manifest.variablesDigestHex,
     envMetaVersion: manifest.envMetaVersion,
     envMetaSigHashHex: manifest.envMetaSigHashHex,
     prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-    issuerUserId,
+    issuerUserId: testUserId(issuerUserId),
     chainHeadHashHex: manifest.chainHeadHashHex,
     chainHeadSeq: manifest.chainHeadSeq,
   };
@@ -821,8 +858,8 @@ export async function createVariableStatement(input: {
 }): Promise<WireVariableMetaStatement> {
   return signMetaStatementAs(input.authorUserId, input.projectId, {
     suite: SUITE_ID,
-    environmentId: input.environmentId,
-    variableId: input.variableId,
+    environmentId: testEnvironmentId(input.environmentId),
+    variableId: testVariableId(input.variableId),
     name: input.name,
     status: "active" as const,
     metaVersion: 1,
@@ -863,10 +900,10 @@ async function unwrapDistributedDek(input: {
         ciphertext: hexBytes(input.wrapped.ciphertextHex),
       },
       context: {
-        projectId: input.projectId,
-        environmentId: input.environmentId,
+        projectId: testProjectId(input.projectId),
+        environmentId: testEnvironmentId(input.environmentId),
         epoch: input.wrapped.epoch,
-        recipientUserId: input.recipientUserId,
+        recipientUserId: testUserId(input.recipientUserId),
       },
     }),
     "unwrapDek",
@@ -892,7 +929,13 @@ export async function unwrapAndDecrypt(input: {
   const plaintext = unwrapResult(
     await decryptVariable({
       dek,
-      context: input.payload.aad,
+      context: {
+        projectId: testProjectId(input.payload.aad.projectId),
+        environmentId: testEnvironmentId(input.payload.aad.environmentId),
+        epoch: input.payload.aad.epoch,
+        variableId: testVariableId(input.payload.aad.variableId),
+        version: input.payload.aad.version,
+      },
       nonce: hexBytes(input.payload.nonceHex),
       ciphertext: hexBytes(input.payload.ciphertextHex),
     }),

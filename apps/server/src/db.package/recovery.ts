@@ -1,6 +1,7 @@
 // Repository of the recovery-code wrap (AUTH_SPEC §13 — at most one
 // blob per user).
 
+import type { UserId } from "@maruhi/core";
 import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -41,12 +42,12 @@ interface RecoveryRepoShape {
    * acceptance, hence the same event).
    */
   readonly upsert: (
-    userId: string,
+    userId: UserId,
     wrap: { readonly suite: string; readonly nonceHex: string; readonly ciphertextHex: string },
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
-  readonly find: (userId: string) => Effect.Effect<RecoveryWrapRecord | null>;
+  readonly find: (userId: UserId) => Effect.Effect<RecoveryWrapRecord | null>;
   /**
    * Advances the fixed-window count and returns whether the fetch is
    * allowed (§13-3). When no row exists it is allowed (a 404 is not
@@ -58,7 +59,7 @@ interface RecoveryRepoShape {
    * is not recorded).
    */
   readonly recordFetch: (
-    userId: string,
+    userId: UserId,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<RecoveryFetchDecision>;

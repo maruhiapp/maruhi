@@ -14,6 +14,7 @@
 // programs-*. Derivation is a fold over the event sequence only (no
 // mutable store of flags — §4.1).
 
+import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -26,8 +27,8 @@ import { deriveEffectiveFlags } from "../rotation-detect.ts";
 
 /** A dismissal target (crosses the RPC boundary). */
 export interface RotationDismissTargetInput {
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
 }
 
 const pairKey = (target: RotationDismissTargetInput): string =>

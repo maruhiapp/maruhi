@@ -2,6 +2,8 @@
 // meta statements, checkpoint snapshot reads) — assembled into
 // DataStoreShape by dataStoreLayer in data-store.ts.
 
+import type { EnvironmentId, VariableId } from "@maruhi/core";
+import { decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { CheckpointSnapshotEntryValue, CheckpointSnapshotValue } from "./data-plane.ts";
@@ -18,7 +20,7 @@ import {
 import type { CheckpointValueEntryRow, VariableDigestEntryRow } from "./data-store.ts";
 
 export const makeVariableQueries = (sql: SqlStorage) => ({
-  findVariable: (environmentId: string, variableId: string) =>
+  findVariable: (environmentId: EnvironmentId, variableId: VariableId) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -38,7 +40,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        variableId: stringColumn(row, "variable_id"),
+        variableId: decodeVariableId(stringColumn(row, "variable_id")),
         name: stringColumn(row, "name"),
         latestMetaVersion: numberColumn(row, "latest_meta_version"),
         latestVersion: numberColumn(row, "latest_version"),
@@ -46,7 +48,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         deletedAtMs: nullableNumberColumn(row, "deleted_at"),
       };
     }),
-  variableMetaAnchor: (environmentId: string, variableId: string, metaVersion: number) =>
+  variableMetaAnchor: (environmentId: EnvironmentId, variableId: VariableId, metaVersion: number) =>
     Effect.sync(() =>
       variableAnchorOf(
         sql
@@ -62,7 +64,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
           .toArray()[0],
       ),
     ),
-  deletedVariableStatements: (environmentId: string) =>
+  deletedVariableStatements: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -84,7 +86,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
   // selected (never distributed, so never touched). The statements of
   // declared variables are included too (the latest form of every
   // non-deleted variable — status carries the discrimination)
-  activeVariableStatements: (environmentId: string) =>
+  activeVariableStatements: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -105,7 +107,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
   // of a value-bearing pull — §12-7; they never appear in
   // latestVersions because no value or version exists: the JOIN
   // naturally excludes the rows with latest_version 0)
-  declaredVariableStatements: (environmentId: string) =>
+  declaredVariableStatements: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -122,7 +124,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map(variableStatementOf),
     ),
-  countVariables: (environmentId: string) =>
+  countVariables: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -137,7 +139,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
   // form of every variable, tombstones included. The canonical order
   // (byte-ascending variable_id) is established internally by crypto's
   // computeVariablesDigest, so the order is not canonicalized here
-  variableDigestEntries: (environmentId: string) =>
+  variableDigestEntries: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -153,7 +155,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row): VariableDigestEntryRow => ({
-          variableId: stringColumn(row, "variable_id"),
+          variableId: decodeVariableId(stringColumn(row, "variable_id")),
           // declared naturally rides along as an entry's status value
           // (CRYPTO_SPEC §4.3 — the canonical form and encoder are
           // unchanged)
@@ -167,7 +169,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
   // hash. The canonical order (byte-ascending variable_id) is
   // established internally by crypto's computeEnvValuesDigest, so the
   // order is not canonicalized here
-  checkpointValueEntries: (environmentId: string) =>
+  checkpointValueEntries: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -183,14 +185,14 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row): CheckpointValueEntryRow => ({
-          variableId: stringColumn(row, "variable_id"),
+          variableId: decodeVariableId(stringColumn(row, "variable_id")),
           version: numberColumn(row, "version"),
           valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
   // The distributed checkpoint snapshot (§12-7 — the stored rows
   // themselves)
-  checkpointSnapshot: (environmentId: string) =>
+  checkpointSnapshot: (environmentId: EnvironmentId) =>
     Effect.sync((): CheckpointSnapshotValue | null => {
       const row = sql
         .exec(
@@ -210,7 +212,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((value): CheckpointSnapshotEntryValue => ({
-          variableId: stringColumn(value, "variable_id"),
+          variableId: decodeVariableId(stringColumn(value, "variable_id")),
           version: numberColumn(value, "version"),
           valueSigHashHex: stringColumn(value, "value_sig_hash_hex"),
         }));
@@ -220,7 +222,11 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         values,
       };
     }),
-  variableNameTaken: (environmentId: string, name: string, excludeVariableId: string | null) =>
+  variableNameTaken: (
+    environmentId: EnvironmentId,
+    name: string,
+    excludeVariableId: string | null,
+  ) =>
     Effect.sync(() => {
       const rows = sql
         .exec(
@@ -233,7 +239,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  listActiveVariables: (environmentId: string) =>
+  listActiveVariables: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -243,7 +249,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          variableId: stringColumn(row, "variable_id"),
+          variableId: decodeVariableId(stringColumn(row, "variable_id")),
           name: stringColumn(row, "name"),
         })),
     ),

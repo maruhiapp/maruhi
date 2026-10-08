@@ -14,6 +14,7 @@ import { Effect, Exit, Fiber, Redacted } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
+import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";
 
 // A dummy IKM, Redacted as worker-env.ts's readWorkerSecrets hands it over
 const IKM = Redacted.make("b0".repeat(32), { label: "SERVER_ENC_KEY_IKM" });
@@ -32,10 +33,10 @@ async function storedServerWrap(info: ServerKeyInfo) {
     recipientPublicKey: pubKey.value,
     dek: generateDek(),
     context: {
-      projectId: PROJECT_ID,
-      environmentId: "prod",
+      projectId: testProjectId(PROJECT_ID),
+      environmentId: testEnvironmentId("prod"),
       epoch: 1,
-      recipientUserId: info.serverKeyFingerprintHex,
+      recipientUserId: testUserId(info.serverKeyFingerprintHex),
     },
   });
   if (!wrapped.ok) throw new Error("wrapDek failed");
@@ -48,8 +49,8 @@ async function storedServerWrap(info: ServerKeyInfo) {
 }
 
 const resealInput = (wraps: readonly StoredServerWrap[]) => ({
-  projectId: PROJECT_ID,
-  environmentId: "prod",
+  projectId: testProjectId(PROJECT_ID),
+  environmentId: testEnvironmentId("prod"),
   claimsDigestHex: CLAIMS_DIGEST_HEX,
   workloadPubHex: WORKLOAD_PUB_HEX,
   wraps,

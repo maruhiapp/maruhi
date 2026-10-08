@@ -21,6 +21,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -247,7 +248,7 @@ describe("environment management (the §12-4 composite request)", () => {
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
       actorUserId: OWNER,
-      operation: { op: "delete_environment", payload: { environmentId: ENV } },
+      operation: { op: "delete_environment", payload: { environmentId: testEnvironmentId(ENV) } },
     });
     const response = await requestJson("POST", "/chain/entries", token(OWNER), {
       parentHeadHashHex: fixture.head.hashHex,
@@ -267,7 +268,7 @@ describe("environment management (the §12-4 composite request)", () => {
       actorUserId: MEMBER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
+        payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
     const createResponse = await requestJson("POST", "/chain/entries", token(MEMBER), {
@@ -286,7 +287,7 @@ describe("environment management (the §12-4 composite request)", () => {
       operation: {
         op: "rotate_epoch",
         payload: {
-          environmentId: ENV,
+          environmentId: testEnvironmentId(ENV),
           newEpoch: 2,
           reason: "bypass",
           dekCommitmentHex: "ab".repeat(32),
@@ -433,7 +434,7 @@ describe("environment management (the §12-4 composite request)", () => {
       actorUserId: OWNER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
+        payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
     // The boundary checkpoint is also signed by the same actor (OWNER) —

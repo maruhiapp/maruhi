@@ -1,7 +1,7 @@
 // Repository of org membership roles (AUTH_SPEC §9-1 — not involved
 // in project access).
 
-import type { OrgRole } from "@maruhi/core";
+import type { OrgId, OrgRole, UserId } from "@maruhi/core";
 import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -22,7 +22,7 @@ type Db = ReturnType<typeof drizzle>;
 // ---------------------------------------------------------------------------
 
 interface OrgRepoShape {
-  readonly roleOf: (orgId: string, userId: string) => Effect.Effect<OrgRole | null>;
+  readonly roleOf: (orgId: OrgId, userId: UserId) => Effect.Effect<OrgRole | null>;
 }
 
 export class OrgRepo extends Context.Service<OrgRepo, OrgRepoShape>()("OrgRepo") {}

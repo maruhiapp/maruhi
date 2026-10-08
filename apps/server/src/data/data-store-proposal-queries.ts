@@ -2,6 +2,8 @@
 // head / variables / wraps reads and the pending scans) — assembled
 // into DataStoreShape by dataStoreLayer in data-store.ts.
 
+import type { EnvironmentId, VariableId } from "@maruhi/core";
+import { decodeEnvironmentId, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
@@ -40,14 +42,14 @@ export const makeProposalQueries = (sql: SqlStorage) => {
       )
       .toArray()
       .map((variable): StoredProposalVariable => {
-        const variableId = stringColumn(variable, "variable_id");
+        const variableId = decodeVariableId(stringColumn(variable, "variable_id"));
         return {
           variableId,
           baseVersion: numberColumn(variable, "base_version"),
           wraps: wraps
             .filter((wrap) => stringColumn(wrap, "variable_id") === variableId)
             .map((wrap) => ({
-              recipientUserId: stringColumn(wrap, "recipient_user_id"),
+              recipientUserId: decodeUserId(stringColumn(wrap, "recipient_user_id")),
               recipientEncPubHex: stringColumn(wrap, "recipient_enc_pub_hex"),
               encHex: stringColumn(wrap, "enc_hex"),
               ciphertextHex: stringColumn(wrap, "ciphertext_hex"),
@@ -56,7 +58,7 @@ export const makeProposalQueries = (sql: SqlStorage) => {
       });
     return {
       proposalId,
-      environmentId: stringColumn(row, "environment_id"),
+      environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
       connector: stringColumn(row, "connector"),
       facts: storedFacts(stringColumn(row, "facts_json")),
       claimsDigestHex: stringColumn(row, "claims_digest_hex"),
@@ -102,7 +104,11 @@ export const makeProposalQueries = (sql: SqlStorage) => {
           "n",
         ),
       ),
-    variableHasPendingProposal: (environmentId: string, variableId: string, nowMs: number) =>
+    variableHasPendingProposal: (
+      environmentId: EnvironmentId,
+      variableId: VariableId,
+      nowMs: number,
+    ) =>
       Effect.sync(
         () =>
           sql

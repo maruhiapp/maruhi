@@ -1,7 +1,8 @@
 // Repository of project invitations (AUTH_SPEC §15 — invite records
 // and invite.* audit appended in the same batch).
 
-import type { UserId, UserOrgAuditEventPayload } from "@maruhi/core";
+import type { EnvironmentId, ProjectId, UserId, UserOrgAuditEventPayload } from "@maruhi/core";
+import { isEnvironmentId } from "@maruhi/core";
 import { and, count, eq, gt, gte, inArray, min, or, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -54,11 +55,11 @@ export const MAX_PENDING_INVITES_PER_PROJECT = 100;
 
 interface InviteCreateInput {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: InviteRole;
   /** The scope to be granted (part of the issuance text — §15-2, 2026-09-14 ES). */
   readonly scope: InviteScope;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   /** The issuance text (CRYPTO_SPEC §6.5 — the server stores it without verifying). */
   readonly issuance: InviteIssuance;
 }
@@ -82,9 +83,9 @@ interface InviteRepoShape {
   /** Resolution by link public key (the acceptance path — holding the link key is the capability). */
   readonly findByLinkPub: (linkPubHex: string) => Effect.Effect<InvitationRecord | null>;
   /** The id resolution under a project (the revocation path). */
-  readonly findById: (projectId: string, id: string) => Effect.Effect<InvitationRecord | null>;
+  readonly findById: (projectId: ProjectId, id: string) => Effect.Effect<InvitationRecord | null>;
   /** The list (§15-2). The acceptance block included — the input of the inviter client's §6.5 independent verification. */
-  readonly listForProject: (projectId: string) => Effect.Effect<readonly InvitationRecord[]>;
+  readonly listForProject: (projectId: ProjectId) => Effect.Effect<readonly InvitationRecord[]>;
   /**
    * The single-use CAS of acceptance (pending → accepted — §15-1). The
    * conditional UPDATE and the invite.accepted INSERT…SELECT guarded by
@@ -111,7 +112,7 @@ interface InviteRepoShape {
    * (the caller derives the 410 by re-reading).
    */
   readonly revokeCas: (
-    projectId: string,
+    projectId: ProjectId,
     id: string,
     payload: { readonly role: InviteRole },
     nowMs: number,
@@ -134,11 +135,11 @@ export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("
 /** An invitation row (the shape of the select result — the Drizzle type never leaves this boundary). */
 interface InvitationRow {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: string;
   readonly scopeKind: string;
   readonly scopeEnvironments: string;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   readonly status: string;
   readonly expiresAt: number;
   readonly inviteeUserId: UserId | null;
@@ -191,10 +192,13 @@ function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
  * environment)
  */
 function scopeOf(row: InvitationRow): InviteScope {
-  let ids: readonly string[] = [];
+  let ids: readonly EnvironmentId[] = [];
   try {
     const parsed: unknown = JSON.parse(row.scopeEnvironments);
-    if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) {
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((id): id is EnvironmentId => typeof id === "string" && isEnvironmentId(id))
+    ) {
       ids = parsed;
     }
   } catch {
@@ -254,7 +258,7 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
       db
         .select({
           id: sql<string>`${input.id}`.as("id"),
-          projectId: sql<string>`${input.projectId}`.as("project_id"),
+          projectId: sql<ProjectId>`${input.projectId}`.as("project_id"),
           linkPub: sql<string>`${input.issuance.linkPubHex}`.as("link_pub"),
           headHash: sql<string>`${input.issuance.headHashHex}`.as("head_hash"),
           headSeq: sql<number>`${input.issuance.headSeq}`.as("head_seq"),
@@ -264,7 +268,7 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
           scopeEnvironments: sql<string>`${JSON.stringify(input.scope.scopeEnvironmentIds)}`.as(
             "scope_environments",
           ),
-          inviterUserId: sql<string>`${input.inviterUserId}`.as("inviter_user_id"),
+          inviterUserId: sql<UserId>`${input.inviterUserId}`.as("inviter_user_id"),
           status: sql<string>`'pending'`.as("status"),
           expiresAt: sql<number>`${nowMs + INVITE_TTL_MS}`.as("expires_at"),
           createdAt: sql<number>`${nowMs}`.as("created_at"),
@@ -282,7 +286,7 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
  */
 async function inviteIssueRejection(
   db: Db,
-  projectId: string,
+  projectId: ProjectId,
   nowMs: number,
 ): Promise<Exclude<InviteIssueDecision, { readonly kind: "created" }> | null> {
   const pendingRow = await db

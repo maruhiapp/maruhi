@@ -97,7 +97,7 @@ export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(
 function continuationOf(
   cursorText: string | null,
   sql: SqlStorage,
-  userId: string,
+  userId: UserId,
 ): Effect.Effect<ExportCursorState | null, DataRejectedError> {
   if (cursorText === null) {
     return Effect.succeed(null);
@@ -183,7 +183,7 @@ const exportRowPayload = Schema.Struct({
 const decodeExportRowPayload = Schema.decodeUnknownOption(Schema.fromJsonString(exportRowPayload));
 
 /** Whether the cursor's `project.exported` row exists, is the requester's, and names the cursor's head (within the exported bound). */
-function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: string): boolean {
+function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: UserId): boolean {
   const row = sql
     .exec(
       "SELECT event, actor_user_id, payload FROM audit_events WHERE seq = ?",

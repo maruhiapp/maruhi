@@ -8,6 +8,7 @@
 // - The decision to forgo Drizzle is in the do-schema.ts head comment
 //   and docs/notes/session-07.md
 
+import type { EnvironmentId, KeyFingerprintHex, UserId, VariableId } from "@maruhi/core";
 import { Context, Effect, Layer } from "effect";
 
 import type { StoredServerWrap } from "../server-key.ts";
@@ -37,7 +38,7 @@ import { makeWrapQueries } from "./data-store-wrap-queries.ts";
 import { makeWriteOps } from "./data-store-write-ops.ts";
 
 interface EnvironmentRow {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly name: string;
   /** The latest statement's metaVersion (a derived cache — for the metaVersion CAS). */
   readonly latestMetaVersion: number;
@@ -45,7 +46,7 @@ interface EnvironmentRow {
 }
 
 export interface VariableRow {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly latestMetaVersion: number;
   readonly latestVersion: number;
@@ -63,8 +64,8 @@ export interface VariableRow {
 
 /** The signer of a wrap registration signature (stored into dek_wraps's signer_* columns). */
 export interface WrapSignerInfo {
-  readonly userId: string;
-  readonly keyFingerprintHex: string;
+  readonly userId: UserId;
+  readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -73,16 +74,16 @@ export interface WrapSignerInfo {
  * CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5).
  */
 export interface ValueWriterInfo {
-  readonly userId: string;
-  readonly keyFingerprintHex: string;
+  readonly userId: UserId;
+  readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
 /** One version-history row (metadata only — §12-7, 2026-09-27 VH). */
 export interface StoredVersionMeta {
   readonly version: number;
   readonly epoch: number;
-  readonly writerUserId: string;
-  readonly writerKeyFingerprintHex: string;
+  readonly writerUserId: UserId;
+  readonly writerKeyFingerprintHex: KeyFingerprintHex;
   /** The acceptance time (the row's created_at). */
   readonly pushedAtMs: number;
 }
@@ -103,8 +104,8 @@ interface VersionAnchor {
  * at acceptance time. CRYPTO_SPEC §4.2).
  */
 export interface MetaAuthorInfo {
-  readonly userId: string;
-  readonly keyFingerprintHex: string;
+  readonly userId: UserId;
+  readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -132,7 +133,7 @@ export interface MetaAnchor {
  * structural type because data-store does not depend on crypto).
  */
 export interface VariableDigestEntryRow {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly status: MetaStatementStatusInput;
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
@@ -144,7 +145,7 @@ export interface VariableDigestEntryRow {
  * as a structural type because data-store does not depend on crypto).
  */
 export interface CheckpointValueEntryRow {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly valueSigHashHex: string;
 }
@@ -204,7 +205,7 @@ interface StoredWrapRecipient {
  */
 export interface DataWriteOps {
   /** Insert an environment row. name / latest_meta_version are settled by the insertEnvironmentMetaStatement right after. */
-  readonly insertEnvironment: (environmentId: string, name: string, nowMs: number) => void;
+  readonly insertEnvironment: (environmentId: EnvironmentId, name: string, nowMs: number) => void;
   /**
    * Insert an environment statement row + synchronously update the
    * environment-row cache (name / latest_meta_version). Called from
@@ -212,7 +213,7 @@ export interface DataWriteOps {
    * delete.
    */
   readonly insertEnvironmentMetaStatement: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     statement: MetaStatementInput,
     signedBytesHashHex: string,
     author: MetaAuthorInfo,
@@ -227,24 +228,28 @@ export interface DataWriteOps {
    * environment's sealed value proposals (2026-10-08). Returns the removed
    * proposals so the caller can close each one's history with an audit row.
    */
-  readonly retireEnvironment: (environmentId: string, nowMs: number) => readonly RemovedProposal[];
+  readonly retireEnvironment: (environmentId: EnvironmentId, nowMs: number) => readonly RemovedProposal[];
   readonly insertVariable: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     name: string,
     nowMs: number,
   ) => void;
   /** Insert a variable statement row + synchronously update the variable-row cache (same shape as the environment one). */
   readonly insertVariableMetaStatement: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     signedBytesHashHex: string,
     author: MetaAuthorInfo,
     nowMs: number,
   ) => void;
   /** Tombstone + immediately delete every version (ciphertext). The deleted statement stays. */
-  readonly retireVariable: (environmentId: string, variableId: string, nowMs: number) => void;
+  readonly retireVariable: (
+    environmentId: EnvironmentId,
+    variableId: VariableId,
+    nowMs: number,
+  ) => void;
   /**
    * The upsert of an environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC
    * §12-5). Only **the latest one** is kept per environment (§12-5 — no
@@ -253,7 +258,7 @@ export interface DataWriteOps {
    * signature check).
    */
   readonly upsertEnvironmentManifest: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     manifest: EnvManifestInput,
     signedBytesHashHex: string,
     issuer: MetaAuthorInfo,
@@ -271,15 +276,15 @@ export interface DataWriteOps {
    * block as the chain append.
    */
   readonly upsertCheckpointSnapshot: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     checkpoint: CheckpointSnapshotInput,
     values: readonly CheckpointValueEntryRow[],
     nowMs: number,
   ) => void;
   /** Insert a version row and advance latest_version (called under the write lock). */
   readonly insertVersion: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     value: ValueInput,
     ciphertextBytes: number,
     signedBytesHashHex: string,
@@ -292,16 +297,16 @@ export interface DataWriteOps {
    * signature check — CRYPTO_SPEC §5.1).
    */
   readonly insertWrap: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     wrap: DekWrapInput,
     signer: WrapSignerInfo,
     nowMs: number,
   ) => void;
   /** The §12-6 repair path: delete one wrap (device slot); the caller has already done the existence check. */
   readonly deleteWrap: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     epoch: number,
-    recipientUserId: string,
+    recipientUserId: UserId | KeyFingerprintHex,
     recipientEncPubHex: string,
   ) => void;
   /**
@@ -314,7 +319,7 @@ export interface DataWriteOps {
    * the write phase (a single task) of an add_member acceptance.
    */
   readonly deleteStaleMemberWraps: (
-    recipientUserId: string,
+    recipientUserId: UserId | KeyFingerprintHex,
     keepEncPubHex: string,
   ) => readonly StaleWrapRef[];
   /**
@@ -332,13 +337,16 @@ export interface DataWriteOps {
    * same shape as the §12-6 old-key wrap cleanup). Called from inside a
    * single task, like the write phase of an add_member acceptance.
    */
-  readonly deleteHeadAttestation: (attesterUserId: string) => void;
+  readonly deleteHeadAttestation: (attesterUserId: UserId) => void;
   /**
    * Delete the attestation row of the revoked device at `revoke_device`
    * acceptance (AUTH_SPEC §16-1 — 2026-09-19 DK). The window row (per
    * member) is left alone.
    */
-  readonly deleteDeviceHeadAttestation: (attesterUserId: string, keyFingerprintHex: string) => void;
+  readonly deleteDeviceHeadAttestation: (
+    attesterUserId: UserId,
+    keyFingerprintHex: KeyFingerprintHex,
+  ) => void;
   /**
    * The upsert of schemaPolicy (AUTH_SPEC §12-11). Called in the same
    * synchronous block as the project.schema_policy_changed audit row
@@ -364,14 +372,14 @@ export interface DataWriteOps {
  */
 export interface RemovedProposal {
   readonly proposalId: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** When it expired (the row's history is exact whatever the sweep's time). */
   readonly expiresAtMs: number;
 }
 
 /** The coordinates of a wrap deleted by the cleanup (the input of a dek.deleted audit row). */
 export interface StaleWrapRef {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
 }
 
@@ -385,16 +393,16 @@ export interface StaleWrapRef {
  * absent from the distribution-material type from the start.
  */
 export interface StoredHeadAttestation {
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   readonly suite: WireSuite;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly signatureHex: string;
-  readonly attesterKeyFingerprintHex: string;
+  readonly attesterKeyFingerprintHex: KeyFingerprintHex;
 }
 
 export interface DataStoreShape {
-  readonly findEnvironment: (environmentId: string) => Effect.Effect<EnvironmentRow | null>;
+  readonly findEnvironment: (environmentId: EnvironmentId) => Effect.Effect<EnvironmentRow | null>;
   readonly countEnvironments: Effect.Effect<ResourceCounts>;
   readonly environmentNameTaken: (
     name: string,
@@ -402,15 +410,15 @@ export interface DataStoreShape {
   ) => Effect.Effect<boolean>;
   /** The list of all environments (deleted included) with their latest statements (for the environment-list response). */
   readonly listEnvironmentStatements: Effect.Effect<
-    readonly { environmentId: string; statement: DistributedMetaStatementValue }[]
+    readonly { environmentId: EnvironmentId; statement: DistributedMetaStatementValue }[]
   >;
   /** One environment's latest statement (for the pull response; a missing row is an invariant violation = null). */
   readonly environmentStatement: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<DistributedMetaStatementValue | null>;
   /** The environment statement's verification anchor (the prev check — the §12-5 meta rules). */
   readonly environmentMetaAnchor: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
   /**
@@ -420,7 +428,7 @@ export interface DataStoreShape {
    * created environment).
    */
   readonly environmentManifest: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<DistributedEnvManifestValue | null>;
   /**
    * The verification anchor of the latest manifest (the inputs of the
@@ -428,38 +436,38 @@ export interface DataStoreShape {
    * used for the predecessor's epoch-monotonicity check).
    */
   readonly environmentManifestAnchor: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<EnvManifestAnchor | null>;
 
   readonly findVariable: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
   ) => Effect.Effect<VariableRow | null>;
-  readonly countVariables: (environmentId: string) => Effect.Effect<ResourceCounts>;
+  readonly countVariables: (environmentId: EnvironmentId) => Effect.Effect<ResourceCounts>;
   readonly variableNameTaken: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     name: string,
     excludeVariableId: string | null,
   ) => Effect.Effect<boolean>;
   readonly listActiveVariables: (
-    environmentId: string,
-  ) => Effect.Effect<readonly { variableId: string; name: string }[]>;
+    environmentId: EnvironmentId,
+  ) => Effect.Effect<readonly { variableId: VariableId; name: string }[]>;
   /** The variable statement's verification anchor (the prev check — the §12-5 meta rules). */
   readonly variableMetaAnchor: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
   /** The deleted statements of deleted variables (kept being distributed on pull — §12-5). */
   readonly deletedVariableStatements: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
    * The latest statements of every non-deleted variable (declared
    * included) (the metadata-only mode — §12-7).
    */
   readonly activeVariableStatements: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
    * The latest statements of declared variables (the bundled material
@@ -467,7 +475,7 @@ export interface DataStoreShape {
    * exists).
    */
   readonly declaredVariableStatements: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
    * The digest tuples of the latest statements of all variables
@@ -476,7 +484,7 @@ export interface DataStoreShape {
    * server-recomputed signed_bytes hash.
    */
   readonly variableDigestEntries: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<readonly VariableDigestEntryRow[]>;
   /**
    * The recompute input of a checkpoint values_digest (the §6.4 content
@@ -486,7 +494,7 @@ export interface DataStoreShape {
    * variables only; the manifest side captures the tombstones).
    */
   readonly checkpointValueEntries: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<readonly CheckpointValueEntryRow[]>;
   /**
    * The distributed form of the checkpoint-time value snapshot (§12-7 /
@@ -496,12 +504,12 @@ export interface DataStoreShape {
    * carried on the response).
    */
   readonly checkpointSnapshot: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<CheckpointSnapshotValue | null>;
 
   /** Each active variable's latest version + latest statement (for the bulk pull). */
   readonly latestVersions: (
-    environmentId: string,
+    environmentId: EnvironmentId,
   ) => Effect.Effect<
     readonly (PulledVariableValue & { statement: DistributedVariableMetaStatementValue })[]
   >;
@@ -510,8 +518,8 @@ export interface DataStoreShape {
    * version history — §12-7, 2026-09-27 VH). No ciphertext is selected.
    */
   readonly versionHistory: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
   ) => Effect.Effect<readonly StoredVersionMeta[]>;
   /**
    * The distributed form of versions fromVersion … fromVersion + limit − 1
@@ -519,21 +527,24 @@ export interface DataStoreShape {
    * VH). Same columns as the bulk pull's value part.
    */
   readonly versionRange: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     fromVersion: number,
     limit: number,
   ) => Effect.Effect<readonly PulledVariableValue[]>;
   /** The stored version's verification anchor (the prev check — §12-5's 5). */
   readonly versionAnchor: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     version: number,
   ) => Effect.Effect<VersionAnchor | null>;
   /** The project's cumulative ciphertext bytes (the amount currently stored. §12-8). */
   readonly totalCiphertextBytes: Effect.Effect<number>;
 
-  readonly countWrapsForEpoch: (environmentId: string, epoch: number) => Effect.Effect<number>;
+  readonly countWrapsForEpoch: (
+    environmentId: EnvironmentId,
+    epoch: number,
+  ) => Effect.Effect<number>;
   /** The DEK wrap row count of the whole project (the amount currently stored. §12-8). */
   readonly countWrapRows: Effect.Effect<number>;
   /**
@@ -550,21 +561,21 @@ export interface DataStoreShape {
    * reference omits the device key (design record §8 K3-3).
    */
   readonly listWrapSlots: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     epoch: number,
-    recipientUserId: string,
+    recipientUserId: UserId | KeyFingerprintHex,
   ) => Effect.Effect<
     readonly { readonly recipientClass: string; readonly recipientEncPubHex: string }[]
   >;
   readonly wrapStoredRecipient: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     epoch: number,
-    recipientUserId: string,
+    recipientUserId: UserId | KeyFingerprintHex,
     recipientEncPubHex: string,
   ) => Effect.Effect<StoredWrapRecipient | null>;
   readonly listWrapsForRecipient: (
-    environmentId: string,
-    recipientUserId: string,
+    environmentId: EnvironmentId,
+    recipientUserId: UserId | KeyFingerprintHex,
   ) => Effect.Effect<readonly RecipientDekValue[]>;
   /**
    * Returns the wraps to the server key FP (recipient class server) for
@@ -577,8 +588,8 @@ export interface DataStoreShape {
    * unwrap → re-wrap does — server-key.ts).
    */
   readonly listServerWraps: (
-    environmentId: string,
-    serverKeyFingerprintHex: string,
+    environmentId: EnvironmentId,
+    serverKeyFingerprintHex: KeyFingerprintHex,
   ) => Effect.Effect<readonly StoredServerWrap[]>;
   /**
    * **Judgment only** of the fixed window (does not consume — §14-3 /
@@ -638,8 +649,8 @@ export interface DataStoreShape {
   readonly schemaPolicy: Effect.Effect<SchemaPolicy>;
   /** The stored attestation seq of the same device (user_id + key FP) (AUTH_SPEC §16-1 — per device; null when none was submitted — the input of the monotonic-advance check). */
   readonly headAttestationSeq: (
-    attesterUserId: string,
-    keyFingerprintHex: string,
+    attesterUserId: UserId,
+    keyFingerprintHex: KeyFingerprintHex,
   ) => Effect.Effect<number | null>;
   /**
    * Every member's stored head attestations (the distribution material
@@ -655,12 +666,12 @@ export interface DataStoreShape {
    * checkLeaseWindow).
    */
   readonly checkAttestationWindow: (
-    attesterUserId: string,
+    attesterUserId: UserId,
     limit: number,
     nowMs: number,
   ) => Effect.Effect<LeaseWindowDecision>;
   /** Consume the head-attestation fixed window (counts 1; serialized under the permit — nothing interposes with the judgment). */
-  readonly recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => void;
+  readonly recordAttestationWindowUse: (attesterUserId: UserId, nowMs: number) => void;
 
   /**
    * Sealed value proposals (AUTH_SPEC §14-5). "Pending" = stored and
@@ -676,8 +687,8 @@ export interface DataStoreShape {
   readonly countPendingProposals: (nowMs: number) => Effect.Effect<number>;
   /** Whether a pending proposal already targets the variable (the pre-flight's `variable-pending` — AUTH_SPEC §14-5 O-4). */
   readonly variableHasPendingProposal: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     nowMs: number,
   ) => Effect.Effect<boolean>;
 
@@ -696,14 +707,14 @@ interface LeaseWindowDecision {
 
 /** A proposed value sealed to one recipient device (a stored row — AUTH_SPEC §14-5). */
 export interface StoredProposalWrap {
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
 
 export interface StoredProposalVariable {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly baseVersion: number;
   readonly wraps: readonly StoredProposalWrap[];
 }
@@ -711,7 +722,7 @@ export interface StoredProposalVariable {
 /** One stored sealed value proposal with its variables and wraps (CRYPTO_SPEC §5.3). */
 export interface StoredProposal {
   readonly proposalId: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly connector: string;
   readonly facts: readonly string[];
   readonly claimsDigestHex: string;
@@ -724,7 +735,7 @@ export interface StoredProposal {
 /** What the mint program hands the store (the wire proposal + the lease's attribution). */
 export interface ProposalWriteInput {
   readonly proposalId: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly connector: string;
   readonly facts: readonly string[];
   readonly claimsDigestHex: string;

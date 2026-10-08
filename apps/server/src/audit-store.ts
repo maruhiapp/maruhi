@@ -14,7 +14,20 @@
 //   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
 //   mirror verification — `maruhi audit verify` — uses)
 
-import type { AuditEventRecord } from "@maruhi/core";
+import type {
+  AuditEventRecord,
+  EnvironmentId,
+  KeyFingerprintHex,
+  UserId,
+  VariableId,
+} from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  decodeKeyFingerprintHex,
+  decodeUserId,
+  decodeVariableId,
+  isEnvironmentId,
+} from "@maruhi/core";
 import {
   assertProjectAuditPayload,
   auditPayloadWith,
@@ -53,7 +66,7 @@ export type AuditEventInput = AuditEventRecord;
  */
 export type ScopeSnapshot =
   | { readonly kind: "all" }
-  | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
+  | { readonly kind: "listed"; readonly environmentIds: readonly EnvironmentId[] };
 
 /**
  * Q1: the membership-interval events of the target user_id
@@ -95,22 +108,22 @@ export interface GrantEventRow {
    * derivation treats it as every environment, fail-safe — design
    * record §9 K3-F).
    */
-  readonly scopeEnvironmentIds: readonly string[] | null;
+  readonly scopeEnvironmentIds: readonly EnvironmentId[] | null;
 }
 
 /** Q2: a variable's existence-interval events (var.created / var.deleted). */
 export interface VariableLifecycleRow {
   readonly seq: number;
   readonly event: string;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
 }
 
 /** Q3: the target user_id's var.read (expansion of the aggregate form's payload — §3.3). */
 export interface VariableReadRow {
   readonly seq: number;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
 }
 
 /**
@@ -129,15 +142,15 @@ export interface SeqRange {
 export interface ServerAccessRow {
   readonly seq: number;
   readonly event: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** server.lease_issued is per-environment distribution, so null (§3.5). */
-  readonly variableId: string | null;
+  readonly variableId: VariableId | null;
 }
 
 /** One epoch transition of an environment, from the chain mirror (§4.1-5 — VH). */
 export interface EnvironmentEpochRow {
   readonly seq: number;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
 }
 
@@ -146,8 +159,8 @@ export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;
   readonly event: string;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   /** The version column (var.version_pushed only — the lineage fold's key; NULL otherwise). */
   readonly version: number | null;
   /**
@@ -155,18 +168,18 @@ export interface RotationFlagSourceRow {
    * exposure bound (the environment's epoch at detection — VH). NULL otherwise.
    */
   readonly epoch: number | null;
-  readonly targetUserId: string | null;
-  readonly targetKeyFingerprintHex: string | null;
+  readonly targetUserId: UserId | null;
+  readonly targetKeyFingerprintHex: KeyFingerprintHex | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
 /** The synchronous read surface used by detection and flag derivation (indexes in §4.2 / do-schema.ts). */
 export interface AuditRotationRead {
-  readonly membershipEventsFor: (targetUserId: string) => readonly MembershipEventRow[];
-  readonly deviceEventsFor: (targetUserId: string) => readonly DeviceEventRow[];
+  readonly membershipEventsFor: (targetUserId: UserId) => readonly MembershipEventRow[];
+  readonly deviceEventsFor: (targetUserId: UserId) => readonly DeviceEventRow[];
   readonly serverGrantEventsFor: (fpHex: string) => readonly GrantEventRow[];
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
-  readonly variableReadsBy: (actorUserId: string, range?: SeqRange) => readonly VariableReadRow[];
+  readonly variableReadsBy: (actorUserId: UserId, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
   /**
    * Every environment's epoch transitions from the chain mirror
@@ -178,8 +191,8 @@ export interface AuditRotationRead {
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
   /** The same rows narrowed to one (variable × environment) pair (the history's flagsIfCurrent — ae_var). */
   readonly rotationFlagEventsFor: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
   ) => readonly RotationFlagSourceRow[];
 }
 
@@ -281,10 +294,10 @@ interface AuditEventsQuery {
   readonly eventPrefix: string | null;
   /** Return only rows whose chain_seq is not NULL (§7). */
   readonly chainSeqPresent: boolean;
-  readonly actorUserId: string | null;
-  readonly targetUserId: string | null;
-  readonly variableId: string | null;
-  readonly environmentId: string | null;
+  readonly actorUserId: UserId | null;
+  readonly targetUserId: UserId | null;
+  readonly variableId: VariableId | null;
+  readonly environmentId: EnvironmentId | null;
   readonly visibility: AuditVisibility;
 }
 
@@ -299,6 +312,10 @@ export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "paylo
   /** The wire row identifier (§5.1 row_id — 16 bytes random hex). */
   readonly rowId: string;
   readonly payload: Readonly<Record<string, unknown>> | null;
+  readonly actorUserId: UserId | null;
+  readonly actorKeyFingerprintHex: KeyFingerprintHex | null;
+  readonly targetUserId: UserId | null;
+  readonly targetKeyFingerprintHex: KeyFingerprintHex | null;
 }
 
 /**
@@ -628,13 +645,13 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
     clientTs: numberOrNull(row["client_ts"]),
     event: String(row["event"]),
     actorType: String(row["actor_type"]),
-    actorUserId: textOrNull(row["actor_user_id"]),
-    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
+    actorUserId: brandOrNull(row["actor_user_id"], decodeUserId),
+    actorKeyFingerprintHex: brandOrNull(row["actor_key_fingerprint"], decodeKeyFingerprintHex),
     actorApiTokenId: textOrNull(row["actor_api_token_id"]),
-    targetUserId: textOrNull(row["target_user_id"]),
-    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
-    environmentId: textOrNull(row["environment_id"]),
-    variableId: textOrNull(row["variable_id"]),
+    targetUserId: brandOrNull(row["target_user_id"], decodeUserId),
+    targetKeyFingerprintHex: brandOrNull(row["target_key_fingerprint"], decodeKeyFingerprintHex),
+    environmentId: brandOrNull(row["environment_id"], decodeEnvironmentId),
+    variableId: brandOrNull(row["variable_id"], decodeVariableId),
     epoch: numberOrNull(row["epoch"]),
     version: numberOrNull(row["version"]),
     chainSeq: numberOrNull(row["chain_seq"]),
@@ -980,8 +997,8 @@ function selectPage(
  */
 function aggregatedReadContains(
   sql: SqlStorage,
-  variableId: string,
-  environmentId: string | null,
+  variableId: VariableId,
+  environmentId: EnvironmentId | null,
   visibility: AuditVisibility,
 ): SqlConditions | null {
   // Per-environment (first-value seq, last-deleted seq). Grouped per
@@ -1136,6 +1153,10 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
+
+/** A NULL-or-brand column read (the mint is the stored-row decode boundary). */
+const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | null =>
+  value === null ? null : decode(String(value));
 const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
 
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
@@ -1148,6 +1169,10 @@ function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
     ...shared,
     rowId: String(row["row_id"]),
     payload: parsePayload(row["payload"]),
+    actorUserId: brandOrNull(shared.actorUserId, decodeUserId),
+    actorKeyFingerprintHex: brandOrNull(shared.actorKeyFingerprintHex, decodeKeyFingerprintHex),
+    targetUserId: brandOrNull(shared.targetUserId, decodeUserId),
+    targetKeyFingerprintHex: brandOrNull(shared.targetKeyFingerprintHex, decodeKeyFingerprintHex),
   };
 }
 
@@ -1171,10 +1196,13 @@ function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null 
  * or containing non-string elements — is null (a silently narrowed
  * enumeration would create a missed window — design record §9 K3-F).
  */
-function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
+function scopeOf(
+  payload: Readonly<Record<string, unknown>> | null,
+): readonly EnvironmentId[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
-  return Array.isArray(scope) && scope.every((id) => typeof id === "string")
-    ? (scope as readonly string[])
+  return Array.isArray(scope) &&
+    scope.every((id): id is EnvironmentId => typeof id === "string" && isEnvironmentId(id))
+    ? scope
     : null;
 }
 
@@ -1302,8 +1330,8 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .map((row) => ({
         seq: Number(row["seq"]),
         event: String(row["event"]),
-        environmentId: String(row["environment_id"]),
-        variableId: String(row["variable_id"]),
+        environmentId: decodeEnvironmentId(String(row["environment_id"])),
+        variableId: decodeVariableId(String(row["variable_id"])),
       })),
   // Q3: the (actor_user_id, seq) index (ae_actor). Expands the
   // aggregate-form var.read (the payload's variables enumeration — §3.3)
@@ -1335,11 +1363,11 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .toArray()
       .flatMap((row): VariableReadRow[] => {
         const seq = Number(row["seq"]);
-        const environmentId = String(row["environment_id"]);
+        const environmentId = decodeEnvironmentId(String(row["environment_id"]));
         return (auditReadVariablesOf(parsePayload(row["payload"])) ?? []).map((variable) => ({
           seq,
           environmentId,
-          variableId: variable.variableId,
+          variableId: decodeVariableId(variable.variableId),
         }));
       }),
   // The (a) input of Q6: the (actor_key_fingerprint, seq) index (ae_actor_fp)
@@ -1356,8 +1384,9 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .map((row) => ({
         seq: Number(row["seq"]),
         event: String(row["event"]),
-        environmentId: String(row["environment_id"]),
-        variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
+        environmentId: decodeEnvironmentId(String(row["environment_id"])),
+        variableId:
+          row["variable_id"] === null ? null : decodeVariableId(String(row["variable_id"])),
       })),
   // Q5: the (event, seq) index (ae_event)
   environmentEpochEvents: () =>
@@ -1371,7 +1400,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .toArray()
       .map((row) => ({
         seq: Number(row["seq"]),
-        environmentId: String(row["environment_id"]),
+        environmentId: decodeEnvironmentId(String(row["environment_id"])),
         epoch: Number(row["epoch"]),
       })),
   rotationFlagEvents: () =>
@@ -1385,7 +1414,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(rotationFlagSourceRow),
-  rotationFlagEventsFor: (environmentId: string, variableId: string) =>
+  rotationFlagEventsFor: (environmentId: EnvironmentId, variableId: VariableId) =>
     sql
       .exec(
         `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
@@ -1406,13 +1435,16 @@ function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFl
     seq: Number(row["seq"]),
     serverTs: Number(row["server_ts"]),
     event: String(row["event"]),
-    environmentId: String(row["environment_id"]),
-    variableId: String(row["variable_id"]),
+    environmentId: decodeEnvironmentId(String(row["environment_id"])),
+    variableId: decodeVariableId(String(row["variable_id"])),
     version: row["version"] === null ? null : Number(row["version"]),
     epoch: row["epoch"] === null ? null : Number(row["epoch"]),
-    targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
+    targetUserId:
+      row["target_user_id"] === null ? null : decodeUserId(String(row["target_user_id"])),
     targetKeyFingerprintHex:
-      row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),
+      row["target_key_fingerprint"] === null
+        ? null
+        : decodeKeyFingerprintHex(String(row["target_key_fingerprint"])),
     payload: parsePayload(row["payload"]),
   };
 }

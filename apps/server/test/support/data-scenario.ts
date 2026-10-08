@@ -4,6 +4,7 @@
 // registers its beforeEach (reset + re-seed) via registerDataScenario() and
 // then writes its describe blocks.
 
+import type { EncryptedPayload } from "@maruhi/api-schema";
 import { beforeEach, expect } from "vitest";
 
 import type {
@@ -19,6 +20,7 @@ import {
   signValueAs,
 } from "./data-crypto.ts";
 import { makeDek, resetDeviceKeys, wrapDekForAll } from "./data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./data-crypto.ts";
 import type { DataFixture, EnvManifestState } from "./data-fixture.ts";
 import {
   manifestForVariableOp,
@@ -32,7 +34,7 @@ import {
 import { queryProjectDo } from "./project-do.ts";
 
 export const ENV = "env-app-0001";
-export const VAR = "var-database-url";
+export const VAR = testVariableId("var-database-url");
 
 export let fixture: DataFixture;
 
@@ -264,19 +266,19 @@ export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
  * must match the subject of the PAT used for the request). The declared
  * head is the current head (fixture.head).
  */
-export function fakePayload(
+export async function fakePayload(
   writerUserId: string,
   aad: WireEncryptedPayload["aad"],
   options?: {
     readonly ciphertextBytes?: number;
     readonly prevValueSigHashHex?: string;
   },
-): Promise<WireEncryptedPayload> {
-  return signValueAs(
+): Promise<EncryptedPayload> {
+  return (await signValueAs(
     writerUserId,
     {
       suite: "maruhi/v1",
-      aad,
+      aad: brandedAad(aad),
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(options?.ciphertextBytes ?? 48),
       // The default prev for version > 1 is a dummy 64-hex (for tests
@@ -288,7 +290,7 @@ export function fakePayload(
       chainHeadSeq: fixture.head.seq,
     },
     fixture.head,
-  );
+  )) as EncryptedPayload;
 }
 
 /**
@@ -297,10 +299,10 @@ export function fakePayload(
  * vector key and cannot sign for real — carry a formally valid zero
  * signature.
  */
-export function unsignedPayload(aad: WireEncryptedPayload["aad"]): WireEncryptedPayload {
+export function unsignedPayload(aad: WireEncryptedPayload["aad"]): EncryptedPayload {
   return {
     suite: "maruhi/v1",
-    aad,
+    aad: brandedAad(aad),
     nonceHex: "00".repeat(12),
     ciphertextHex: "ab".repeat(48),
     prevValueSigHashHex: aad.version === 1 ? "" : "cd".repeat(32),
@@ -310,15 +312,24 @@ export function unsignedPayload(aad: WireEncryptedPayload["aad"]): WireEncrypted
   };
 }
 
+/** Wire `aad` (plain strings) -> the branded value-context fields crypto expects. */
+const brandedAad = (aad: WireEncryptedPayload["aad"]): EncryptedPayload["aad"] => ({
+  projectId: testProjectId(aad.projectId),
+  environmentId: testEnvironmentId(aad.environmentId),
+  epoch: aad.epoch,
+  variableId: testVariableId(aad.variableId),
+  version: aad.version,
+});
+
 export const aadFor = (
   epoch: number,
   version: number,
   overrides?: Partial<WireEncryptedPayload["aad"]>,
 ) => ({
-  projectId,
-  environmentId: ENV,
+  projectId: testProjectId(projectId),
+  environmentId: testEnvironmentId(ENV),
   epoch,
-  variableId: VAR,
+  variableId: testVariableId(VAR),
   version,
   ...overrides,
 });
@@ -332,7 +343,13 @@ export async function createVariableOk(
 ): Promise<WireEncryptedPayload> {
   const value = await encryptValue(
     dek,
-    { projectId, environmentId: ENV, epoch: 1, variableId, version: 1 },
+    {
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(variableId),
+      version: 1,
+    },
     plaintext,
     { writerUserId: MEMBER, head: fixture.head },
   );
@@ -462,10 +479,10 @@ export async function activateVariableRequest(input: {
   const value = await encryptValue(
     input.dek,
     {
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       epoch: input.epoch ?? 1,
-      variableId: input.variableId,
+      variableId: testVariableId(input.variableId),
       version: input.version ?? 1,
     },
     input.plaintext,

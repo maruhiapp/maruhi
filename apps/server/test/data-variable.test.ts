@@ -26,6 +26,12 @@ import {
   vectorKeyOf,
 } from "./support/data-crypto.ts";
 import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "./support/data-crypto.ts";
+import {
   createEnvironmentOk,
   dataUrl,
   deleteEnvironmentRequest,
@@ -115,7 +121,13 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     const v1 = variable.value;
     const v2 = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       "postgres://beta",
       {
         writerUserId: MEMBER,
@@ -221,7 +233,13 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       Array.from({ length: 8 }, (_v, index) =>
         encryptValue(
           dek,
-          { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+          {
+            projectId: testProjectId(projectId),
+            environmentId: testEnvironmentId(ENV),
+            epoch: 1,
+            variableId: testVariableId(VAR),
+            version: 2,
+          },
           `postgres://contender-${index}`,
           { writerUserId: MEMBER, head: fixture.head, prevValueSigHashHex: prevHash },
         ),
@@ -273,7 +291,13 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
         if (v1 === undefined) throw new Error("missing first version");
         return encryptValue(
           dek,
-          { projectId, environmentId: ENV, epoch: 1, variableId: id, version: 2 },
+          {
+            projectId: testProjectId(projectId),
+            environmentId: testEnvironmentId(ENV),
+            epoch: 1,
+            variableId: testVariableId(id),
+            version: 2,
+          },
           `next-${id}`,
           {
             writerUserId: MEMBER,
@@ -312,7 +336,9 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
     // A member's read scope: pull allowed, push denied (403 insufficient-permission)
-    const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
+    const readScope: readonly TokenScope[] = [
+      { project: testProjectId(projectId), permission: "read" },
+    ];
     const readToken = await cliToken(9002, readScope);
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, readToken);
     expect(pull.status).toBe(200);
@@ -338,7 +364,9 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(((await readerPush.json()) as { reason: string }).reason).toBe("insufficient-role");
 
     // An out-of-scope project is existence-hidden (404)
-    const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
+    const otherScope: readonly TokenScope[] = [
+      { project: testProjectId("ff".repeat(32)), permission: "admin" },
+    ];
     const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull`, scoped);
     expect(concealed.status).toBe(404);
@@ -598,14 +626,14 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
       history: verified.value.history,
       context: {
         suite: pulled.suite,
-        projectId,
-        environmentId: ENV,
-        target: { kind: "variable", variableId: pulled.variableId },
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        target: { kind: "variable", variableId: testVariableId(pulled.variableId) },
         name: pulled.name,
         status: pulled.status as "active" | "deleted",
         metaVersion: pulled.metaVersion,
         prevMetaSigHashHex: pulled.prevMetaSigHashHex,
-        authorUserId: pulled.authorUserId,
+        authorUserId: testUserId(pulled.authorUserId),
         chainHeadHashHex: pulled.chainHeadHashHex,
         chainHeadSeq: pulled.chainHeadSeq,
       },
@@ -620,7 +648,9 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
     // Obtainable with reader (chain role) + read scope (the same row as pull — §12-3)
-    const readScope: readonly TokenScope[] = [{ project: projectId, permission: "read" }];
+    const readScope: readonly TokenScope[] = [
+      { project: testProjectId(projectId), permission: "read" },
+    ];
     const readToken = await cliToken(9003, readScope);
     const allowed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
     expect(allowed.status).toBe(200);
@@ -634,7 +664,9 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     expect(stranger.status).toBe(404);
 
     // An out-of-scope project is also 404 (existence hiding precedes via the scope check)
-    const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
+    const otherScope: readonly TokenScope[] = [
+      { project: testProjectId("ff".repeat(32)), permission: "admin" },
+    ];
     const scoped = await cliToken(9002, otherScope);
     const concealed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, scoped);
     expect(concealed.status).toBe(404);

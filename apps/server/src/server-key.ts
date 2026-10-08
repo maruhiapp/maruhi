@@ -26,7 +26,8 @@
 // server key is an optional feature and there is no reason to block
 // the login path.
 
-import { cryptoEffect, cryptoPromise, serverKeyFingerprintHex } from "@maruhi/core";
+import type { EnvironmentId, ProjectId } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, decodeUserId, serverKeyFingerprintHex } from "@maruhi/core";
 import {
   decodeHex,
   deriveEncryptionKeyPair,
@@ -89,8 +90,8 @@ export interface ServerKeyShape {
    * ciphertext or key material).
    */
   readonly reseal: (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly claimsDigestHex: string;
     readonly workloadPubHex: string;
     readonly wraps: readonly StoredServerWrap[];
@@ -230,7 +231,7 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
                 epoch: wrap.epoch,
                 // §9: a server-addressed wrap carries the server-key
                 // FP in the recipient position of its info
-                recipientUserId: key.info.serverKeyFingerprintHex,
+                recipientUserId: decodeUserId(key.info.serverKeyFingerprintHex),
               },
             }),
           ).pipe(

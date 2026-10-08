@@ -49,6 +49,7 @@ import {
   type WireEncryptedPayload,
   type WireVariableMetaStatement,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -120,10 +121,10 @@ async function createVariableAs(input: {
   const value = await encryptValue(
     input.dek,
     {
-      projectId,
-      environmentId: input.environmentId,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(input.environmentId),
       epoch: 1,
-      variableId: input.variableId,
+      variableId: testVariableId(input.variableId),
       version: 1,
     },
     `${input.name}-plaintext`,
@@ -250,8 +251,8 @@ describe("scope authorization — reads (§12-3 rows 1-2 / §12-7)", () => {
 describe("scope authorization — writes (§12-3 rows 3-5)", () => {
   it("variable create / push / rename / delete, environment rename, and DEK-wrap registration require environment ∈ scope (403 outside, accepted inside)", async () => {
     const { envDek } = await setupListed();
-    const otherAad = (version: number, variableId = VAR) =>
-      aadFor(1, version, { environmentId: OTHER, variableId });
+    const otherAad = (version: number, variableId: string = VAR) =>
+      aadFor(1, version, { environmentId: OTHER, variableId: testVariableId(variableId) });
     // Create (same path whether declared / active)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/variables`, token(DEV), {
@@ -440,7 +441,13 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
     // outside scope → rejected by 3′
     const stale = await encryptValue(
       otherDek,
-      { projectId, environmentId: OTHER, epoch: 1, variableId: "var-o", version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(OTHER),
+        epoch: 1,
+        variableId: testVariableId("var-o"),
+        version: 2,
+      },
       "stale-head",
       {
         writerUserId: DEV,
@@ -530,7 +537,13 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
     // that only 3′ was dropping it)
     const fresh = await encryptValue(
       otherDek,
-      { projectId, environmentId: OTHER, epoch: 1, variableId: "var-o", version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(OTHER),
+        epoch: 1,
+        variableId: testVariableId("var-o"),
+        version: 2,
+      },
       "fresh-head",
       {
         writerUserId: DEV,

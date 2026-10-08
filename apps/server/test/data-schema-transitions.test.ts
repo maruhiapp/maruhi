@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
 import { encryptValue, vectorKeyOf } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -463,7 +464,13 @@ describe("max age (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", () => {
     });
     const value = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 1,
+      },
       "postgres://alpha",
       { writerUserId: MEMBER, head: fixture.head },
     );

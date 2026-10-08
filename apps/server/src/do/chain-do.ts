@@ -27,6 +27,7 @@
 //   DataStore / AuditStore). The DDL lives in do-schema.ts (applied by the
 //   constructor)
 
+import type { EnvironmentId, UserId, VariableId } from "@maruhi/core";
 import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Clock, Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
@@ -426,7 +427,7 @@ export type SnapshotOutcome = DataOutcome<ChainSnapshotValue>;
 /** §6.2 / §11-2: reject anything that is not a chain-derived member (reader included). */
 function ensureChainMember(
   members: ReadonlyMap<string, unknown>,
-  userId: string,
+  userId: UserId,
 ): Effect.Effect<void, DataRejectedError> {
   return members.has(userId) ? Effect.void : Effect.fail(rejectData({ kind: "not-member" }));
 }
@@ -489,7 +490,7 @@ const initProgram = Effect.fn("chain-do.initProgram")(function* (
  * the acceptance policy's decision (the worker maps not-member to 404).
  */
 const loadChainForMember = Effect.fn("chain-do.loadChainForMember")(function* (
-  callerUserId: string,
+  callerUserId: UserId,
   cache: StateCache,
 ) {
   const store = yield* ChainStore;
@@ -547,7 +548,7 @@ const isGrowthOp = (op: ChainEntry["op"]): boolean => op === "add_member" || op 
 export const appendProgram = Effect.fn("chain-do.appendProgram")(function* (
   parentHeadHashHex: string,
   entry: ChainEntry,
-  callerUserId: string,
+  callerUserId: UserId,
   cache: StateCache,
 ): Effect.fn.Return<
   AppendValue,
@@ -633,7 +634,7 @@ export const appendProgram = Effect.fn("chain-do.appendProgram")(function* (
 
 /** The chain get (public for tests — pins that reads pass under rejection). */
 export const snapshotProgram = Effect.fn("chain-do.snapshotProgram")(function* (
-  callerUserId: string,
+  callerUserId: UserId,
   cache: StateCache,
 ): Effect.fn.Return<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> {
   const chain = yield* loadChainForMember(callerUserId, cache);
@@ -665,7 +666,7 @@ export const snapshotProgram = Effect.fn("chain-do.snapshotProgram")(function* (
  * side (per-endpoint rules like "a role=admin invite only by an owner").
  */
 const memberRoleProgram = (
-  callerUserId: string,
+  callerUserId: UserId,
   cache: StateCache,
 ): Effect.Effect<Role, DataRejectedError, ChainStore> =>
   Effect.map(requireMemberState(callerUserId, "reader", cache), (context) => context.member.role);
@@ -786,7 +787,7 @@ export class ProjectChainDO extends DurableObject<Env> {
    * moves it.
    */
   #runWrite<T>(
-    callerUserId: string,
+    callerUserId: UserId,
     program: Effect.Effect<T, DataRejectedError, DoServices>,
   ): Promise<DataOutcome<T>> {
     return this.#runData(
@@ -843,7 +844,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   append(
     parentHeadHashHex: string,
     entry: ChainEntry,
-    callerUserId: string,
+    callerUserId: UserId,
   ): Promise<AppendOutcome> {
     return this.#runWrite(
       callerUserId,
@@ -852,13 +853,13 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
-  snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
+  snapshotFor(callerUserId: UserId): Promise<SnapshotOutcome> {
     return this.#runData(snapshotProgram(callerUserId, this.#stateCache));
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   putHeadAttestation(
-    callerUserId: string,
+    callerUserId: UserId,
     input: HeadAttestationSubmissionInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
@@ -868,7 +869,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
-  memberRoleFor(callerUserId: string): Promise<DataOutcome<Role>> {
+  memberRoleFor(callerUserId: UserId): Promise<DataOutcome<Role>> {
     return this.#runData(memberRoleProgram(callerUserId, this.#stateCache));
   }
 
@@ -898,7 +899,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotateEpoch(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     input: {
       readonly parentHeadHashHex: string;
       readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
@@ -916,7 +917,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameEnvironment(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
@@ -929,7 +930,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteEnvironment(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     input: {
       readonly parentHeadHashHex: string;
       readonly entry: ChainEntry & { readonly op: "delete_environment" };
@@ -952,9 +953,9 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createVariable(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     input: {
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly statement: MetaStatementInput;
       /** The version-1 value of an active creation. Omitted for a declared creation (§12-5). */
       readonly value?: ValueInput;
@@ -970,8 +971,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   activateVariable(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     input: {
       readonly value: ValueInput;
       readonly statement: MetaStatementInput;
@@ -989,8 +990,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pushVersion(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     value: ValueInput,
     sameValueAs: number | undefined,
   ): Promise<DataOutcome<VariableVersionValue>> {
@@ -1003,8 +1004,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   variableHistory(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
   ): Promise<DataOutcome<VariableVersionHistoryValue>> {
     // The version history (§12-7 — VH): metadata only, no var.read
     return this.#runData(
@@ -1015,8 +1016,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   variableVersionValues(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     fromVersion: number,
   ): Promise<DataOutcome<VariableVersionValuesValue>> {
     // The version value range (§12-7 — VH): records var.read
@@ -1028,8 +1029,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameVariable(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
@@ -1049,8 +1050,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteVariable(
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
@@ -1070,7 +1071,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironment(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
   ): Promise<DataOutcome<EnvironmentPullValue>> {
     return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
   }
@@ -1078,7 +1079,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironmentMetadata(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
   ): Promise<DataOutcome<EnvironmentMetadataPullValue>> {
     return this.#runData(pullEnvironmentMetadataProgram(actor, environmentId, this.#stateCache));
   }
@@ -1086,7 +1087,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   registerDekWraps(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     wraps: readonly DekWrapInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
@@ -1098,7 +1099,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listMyDekWraps(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
   ): Promise<DataOutcome<readonly RecipientDekValue[]>> {
     return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
   }
@@ -1106,7 +1107,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteDekWraps(
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
@@ -1158,7 +1159,7 @@ export class ProjectChainDO extends DurableObject<Env> {
    */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   proposeRotation(
-    environmentId: string,
+    environmentId: EnvironmentId,
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     proposal: RotationProposalInput,
@@ -1186,7 +1187,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   /** The mint's pre-flight (AUTH_SPEC §14-5 O-4 — programs-proposal.ts): the same split as proposeRotation, no value. */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   preflightRotation(
-    environmentId: string,
+    environmentId: EnvironmentId,
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     variables: readonly PreflightVariableInput[],
@@ -1305,7 +1306,7 @@ export class ProjectChainDO extends DurableObject<Env> {
    */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   issueLease(
-    environmentId: string,
+    environmentId: EnvironmentId,
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
   ): Promise<LeaseOutcome> {

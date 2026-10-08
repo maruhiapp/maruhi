@@ -15,12 +15,12 @@
 // A plain async function: the restore worker has no Effect runtime.
 // Drizzle stays inside this package (ADR-0006).
 
-import type { ProviderUserId, UserId } from "@maruhi/core";
+import type { OrgId, ProjectId, ProviderUserId, UserId } from "@maruhi/core";
 import { and, eq, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
 
-import { ulid } from "../ids.ts";
+import { newOrgId } from "../ids.ts";
 import { orgAuditInsert, userAuditInsert } from "./audit.ts";
 import {
   linkedIdentities,
@@ -43,7 +43,7 @@ export interface ImportedIdentity {
 
 export interface ImportProjectInput {
   /** The genesis hash the DO was restored under. */
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The exporting owner (the project is attached to their personal org). */
   readonly exportedBy: UserId;
   readonly identities: readonly ImportedIdentity[];
@@ -84,7 +84,7 @@ export type ImportClassification =
     };
 
 /** The personal org's slug, as first login names it (identities.ts createUserBatch). */
-function personalOrgSlug(userId: string): string {
+function personalOrgSlug(userId: UserId): string {
   return `u-${userId.toLowerCase()}`;
 }
 
@@ -134,7 +134,7 @@ async function classify(
       linkedByProvider.set(row.providerUserId, row.userId);
     }
   }
-  const existingUsers = new Set<string>();
+  const existingUsers = new Set<UserId>();
   for (const chunk of chunked(ids)) {
     const found = await db.select({ id: users.id }).from(users).where(inArray(users.id, chunk));
     for (const row of found) {
@@ -166,8 +166,8 @@ async function classify(
 /** Whether `orgId` is the personal org of one of the chain's owners. */
 async function ownedByChainOwner(
   db: Db,
-  orgId: string,
-  owners: readonly string[],
+  orgId: OrgId,
+  owners: readonly UserId[],
 ): Promise<boolean> {
   for (const owner of owners) {
     if ((await existingPersonalOrg(db, owner)) === orgId) {
@@ -178,7 +178,7 @@ async function ownedByChainOwner(
 }
 
 /** The personal org id of an already-existing exporter (by the slug first login assigned). */
-async function existingPersonalOrg(db: Db, userId: string): Promise<string | null> {
+async function existingPersonalOrg(db: Db, userId: UserId): Promise<OrgId | null> {
   const row = await db
     .select({ id: organizations.id })
     .from(organizations)
@@ -213,7 +213,7 @@ export async function classifyImportedProject(
   d1: D1Database,
   input: ImportProjectInput,
   /** The user ids the verified chain lists as owners: a project row under any of their personal orgs is a re-run (ruling I revision). */
-  owners: readonly string[],
+  owners: readonly UserId[],
 ): Promise<ImportClassification> {
   const invalid = validate(input);
   if (invalid !== null) {
@@ -249,7 +249,7 @@ export async function provisionImportedProject(
   d1: D1Database,
   input: ImportProjectInput,
   nowMs: number,
-  owners: readonly string[],
+  owners: readonly UserId[],
 ): Promise<ImportProvisionResult> {
   const classified = await classifyImportedProject(d1, input, owners);
   if (classified.kind === "refused") {
@@ -257,10 +257,10 @@ export async function provisionImportedProject(
   }
   const db = drizzle(d1);
   const statements: BatchItem<"sqlite">[] = [];
-  const orgOf = new Map<string, string>();
+  const orgOf = new Map<UserId, OrgId>();
   for (const identity of classified.toCreate) {
     const { userId } = identity;
-    const orgId = ulid(nowMs);
+    const orgId = newOrgId(nowMs);
     orgOf.set(userId, orgId);
     const actor = { userId };
     statements.push(

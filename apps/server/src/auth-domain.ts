@@ -6,6 +6,7 @@
 
 import type {
   AuthMethod,
+  OrgId,
   OrgRole,
   ProviderUserId,
   SignupDenialReason,
@@ -49,7 +50,7 @@ export type SignupGateResult = ResolvedUser | { readonly denied: SignupDenialRea
 
 /** The org an authenticated user belongs to (AUTH_SPEC §9-1). */
 export interface UserOrg {
-  readonly orgId: string;
+  readonly orgId: OrgId;
   readonly slug: string;
   readonly name: string;
   readonly role: OrgRole;

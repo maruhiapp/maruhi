@@ -27,6 +27,7 @@ import {
   resetAuthDb,
   sessionHeaders,
 } from "./support/auth.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 
 beforeEach(async () => {
   await resetAuthDb();
@@ -216,7 +217,9 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
   });
 
   it("rejects a project-scoped token (§13-2's key-material condition) and unknown fields (strict)", async () => {
-    const scoped = await cliToken(612, [{ project: "f0".repeat(32), permission: "admin" }]);
+    const scoped = await cliToken(612, [
+      { project: testProjectId("f0".repeat(32)), permission: "admin" },
+    ]);
     const forbidden = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(scoped) },

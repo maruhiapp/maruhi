@@ -25,6 +25,7 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
+import { testEnvironmentId, testUserId } from "./support/data-crypto.ts";
 
 /** Run body on the storage of this file's dedicated DO. */
 async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {
@@ -303,7 +304,10 @@ describe("project DO schema migrations", () => {
           return yield* DataStore;
         }).pipe(Effect.provide(dataStoreLayer(wrapped))),
       );
-      const stale = store.write.deleteStaleMemberWraps("user-a", "keep");
+      const stale = store.write.deleteStaleMemberWraps(
+        testUserId("user-a"),
+        testEnvironmentId("keep"),
+      );
 
       expect(stale).toEqual([{ environmentId: "env-dw", epoch: 1 }]);
       expect(

@@ -22,6 +22,7 @@ import { decryptVariable, encodeHex } from "@maruhi/crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { hexBytes } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -121,7 +122,7 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     // for the default token, under a binding key of its own)
     await expect(
       callProjectDo(projectId, async (instance) =>
-        instance.issueLease(ENV, workload.publicKeyHex, {
+        instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
           issuer: OIDC_ISSUER,
           subject: LEASE_SUBJECT,
           audiences: [LEASE_AUDIENCE],
@@ -186,7 +187,13 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       dek: opened.value,
       nonce: hexBytes(variable.value.nonceHex),
       ciphertext: hexBytes(variable.value.ciphertextHex),
-      context: { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      context: {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 1,
+      },
     });
     expect(plaintext.ok && new TextDecoder().decode(plaintext.value)).toBe("postgres://alpha");
   });

@@ -11,6 +11,7 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import { OWNER, projectId, STRANGER, tokenOf } from "./support/data-fixture.ts";
 import {
   acceptAs,
@@ -30,7 +31,10 @@ describe("scope on invite rows (§15 — format checking only)", () => {
   it("admits a listed issuance without checking environment existence, and carries scope on the list row and the acceptance response", async () => {
     const payload = await makeIssuePayload(inviteFixture, OWNER, "member", {
       scopeKind: "listed",
-      scopeEnvironmentIds: ["env-never-created-0001", "env-dev-0002"],
+      scopeEnvironmentIds: [
+        testEnvironmentId("env-never-created-0001"),
+        testEnvironmentId("env-dev-0002"),
+      ],
     });
     const issued = await issueInviteRequest(inviteFixture, OWNER, "member", payload);
     expect(issued.status).toBe(200);

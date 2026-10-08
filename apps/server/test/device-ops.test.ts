@@ -58,6 +58,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -140,7 +141,7 @@ async function addDevice(
       sigPubHex: device.sigPubHex,
       roleCap: cap.roleCap ?? "owner",
       scopeKind: cap.scopeKind ?? "all",
-      scopeEnvironmentIds: cap.scopeEnvironmentIds ?? [],
+      scopeEnvironmentIds: (cap.scopeEnvironmentIds ?? []).map(testEnvironmentId),
     },
   });
   return fixture.head.seq;
@@ -254,7 +255,13 @@ async function pushValue(
 ): Promise<Response> {
   const value = await encryptValue(
     dek,
-    { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version },
+    {
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version,
+    },
     `postgres://v${version}`,
     { writerUserId, head: fixture.head, prevValueSigHashHex },
   );
@@ -276,8 +283,8 @@ async function attest(userId: string): Promise<Response> {
   const signed = await signHeadAttestation({
     context: {
       suite: "maruhi/v1",
-      projectId,
-      attesterUserId: userId,
+      projectId: testProjectId(projectId),
+      attesterUserId: testUserId(userId),
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     },

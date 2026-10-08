@@ -20,6 +20,8 @@ import type {
   AUTH_FLOW_FAILURE_REASONS,
   AuditActor,
   AuthMethod,
+  OrgId,
+  ProjectId,
   SignupDenialReason,
   UserId,
   UserOrgAuditEventPayload,
@@ -60,8 +62,8 @@ export type D1AuditActor = Omit<AuditActor, "userId"> & { readonly userId?: User
 export type D1AuditEventInput = UserOrgAuditEventPayload & {
   readonly actor: D1AuditActor;
   readonly targetUserId?: UserId;
-  readonly orgId?: string;
-  readonly projectId?: string;
+  readonly orgId?: OrgId;
+  readonly projectId?: ProjectId;
 };
 
 /**
@@ -138,9 +140,9 @@ export function guardedAuditSelectColumns(
     serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
     event: sql<string>`${input.event}`.as("event"),
     actorType: sql<string>`'user'`.as("actor_type"),
-    actorUserId: sql<string | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
+    actorUserId: sql<UserId | null>`${input.actor.userId ?? null}`.as("actor_user_id"),
     actorApiTokenId: sql<string | null>`${input.actor.apiTokenId ?? null}`.as("actor_api_token_id"),
-    targetUserId: sql<string | null>`${input.targetUserId ?? null}`.as("target_user_id"),
+    targetUserId: sql<UserId | null>`${input.targetUserId ?? null}`.as("target_user_id"),
     payload: payloadSql.as("payload"),
   };
 }
@@ -235,11 +237,11 @@ export interface D1StoredAuditEventRow {
   readonly serverTs: number;
   readonly event: string;
   readonly actorType: string;
-  readonly actorUserId: string | null;
+  readonly actorUserId: UserId | null;
   readonly actorApiTokenId: string | null;
-  readonly targetUserId: string | null;
-  readonly orgId: string | null;
-  readonly projectId: string | null;
+  readonly targetUserId: UserId | null;
+  readonly orgId: OrgId | null;
+  readonly projectId: ProjectId | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
@@ -281,7 +283,7 @@ interface D1AuditRepoShape {
    * the predicate.
    */
   readonly readProjectInviteEvents: (
-    projectId: string,
+    projectId: ProjectId,
     page: D1AuditReadPage,
   ) => Effect.Effect<readonly D1StoredAuditEventRow[]>;
   /**

@@ -8,7 +8,8 @@
 // declaration (api-schema) — no hand-written enumeration.
 
 import { maruhiApi } from "@maruhi/api-schema";
-import { RequestAuth } from "@maruhi/core";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId, RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -31,6 +32,16 @@ import type { EnvironmentChainResultValue } from "../programs/composite-programs
  * (same acceptance policy as §11-1's generic append; the signer match
  * is carried by the DO's signature verification — §12-6).
  */
+
+/** The recipient position of a wrap: a member's user id for class member, the server key FP for class server (wire-boundary mint — AUTH_SPEC §12-6 / CRYPTO_SPEC §9). */
+const recipientOf = (d: {
+  readonly recipientClass: "member" | "server";
+  readonly recipientUserId: string;
+}): UserId | KeyFingerprintHex =>
+  d.recipientClass === "server"
+    ? decodeKeyFingerprintHex(d.recipientUserId)
+    : decodeUserId(d.recipientUserId);
+
 const ensureCompositeActor = Effect.fn("handlers-environments.ensureCompositeActor")(function* (
   entry: ChainEntry,
 ) {
@@ -84,7 +95,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               parentHeadHashHex: payload.parentHeadHashHex,
               entry: payload.entry,
               statement: toMetaStatementInput(payload.statement),
-              deks: payload.deks,
+              deks: payload.deks.map((d) => ({ ...d, recipientUserId: recipientOf(d) })),
               manifest: toManifestInput(payload.manifest),
               checkpoint: payload.checkpoint,
             }),
@@ -107,7 +118,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
             stub.rotateEpoch(actor, params.environmentId, {
               parentHeadHashHex: payload.parentHeadHashHex,
               entry: payload.entry,
-              deks: payload.deks,
+              deks: payload.deks.map((d) => ({ ...d, recipientUserId: recipientOf(d) })),
               manifest: toManifestInput(payload.manifest),
               checkpoint: payload.checkpoint,
             }),

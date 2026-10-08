@@ -2,6 +2,8 @@
 // environment meta statements, environment manifests) — assembled into
 // DataStoreShape by dataStoreLayer in data-store.ts.
 
+import type { EnvironmentId } from "@maruhi/core";
+import { decodeEnvironmentId, decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import {
@@ -17,7 +19,7 @@ import {
 } from "./data-store-rows.ts";
 
 export const makeEnvironmentQueries = (sql: SqlStorage) => ({
-  findEnvironment: (environmentId: string) =>
+  findEnvironment: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -29,7 +31,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        environmentId: stringColumn(row, "environment_id"),
+        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
         name: stringColumn(row, "name"),
         latestMetaVersion: numberColumn(row, "latest_meta_version"),
         deletedAtMs: nullableNumberColumn(row, "deleted_at"),
@@ -72,11 +74,11 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
       )
       .toArray()
       .map((row) => ({
-        environmentId: stringColumn(row, "environment_id"),
+        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
         statement: statementOf(row),
       })),
   ),
-  environmentStatement: (environmentId: string) =>
+  environmentStatement: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -91,7 +93,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return row === undefined ? null : statementOf(row);
     }),
-  environmentMetaAnchor: (environmentId: string, metaVersion: number) =>
+  environmentMetaAnchor: (environmentId: EnvironmentId, metaVersion: number) =>
     Effect.sync(() =>
       environmentAnchorOf(
         sql
@@ -107,7 +109,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
   // Distribution (§12-2) does not select signed_bytes_hash_hex = never
   // distributes it (a verifier recomputes it themselves — the same
   // discipline as statement distribution)
-  environmentManifest: (environmentId: string) =>
+  environmentManifest: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -123,7 +125,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        environmentId: stringColumn(row, "environment_id"),
+        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
         suite: storedSuite(columnValue(row, "suite")),
         epoch: numberColumn(row, "epoch"),
         manifestVersion: numberColumn(row, "manifest_version"),
@@ -134,11 +136,13 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
         chainHeadSeq: numberColumn(row, "chain_head_seq"),
         signatureHex: stringColumn(row, "signature_hex"),
-        issuerUserId: stringColumn(row, "issuer_user_id"),
-        issuerKeyFingerprintHex: stringColumn(row, "issuer_key_fingerprint"),
+        issuerUserId: decodeUserId(stringColumn(row, "issuer_user_id")),
+        issuerKeyFingerprintHex: decodeKeyFingerprintHex(
+          stringColumn(row, "issuer_key_fingerprint"),
+        ),
       };
     }),
-  environmentManifestAnchor: (environmentId: string) =>
+  environmentManifestAnchor: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql
         .exec(

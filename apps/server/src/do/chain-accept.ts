@@ -7,7 +7,13 @@
 // structurally prevents a cap-semantics fix from landing on only one side.
 // Errors travel as DataRejection; callers only fold them into an outcome.
 
-import type { ChainInvalidError, ChainMirrorSubject, ProposalIndex } from "@maruhi/core";
+import type {
+  ChainInvalidError,
+  ChainMirrorSubject,
+  KeyFingerprintHex,
+  ProposalIndex,
+  UserId,
+} from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -185,13 +191,13 @@ export interface ChainAcceptStores {
   readonly dataStore: {
     readonly write: {
       readonly deleteStaleMemberWraps: (
-        recipientUserId: string,
+        recipientUserId: UserId,
         keepEncPubHex: string,
       ) => readonly StaleWrapRef[];
-      readonly deleteHeadAttestation: (attesterUserId: string) => void;
+      readonly deleteHeadAttestation: (attesterUserId: UserId) => void;
       readonly deleteDeviceHeadAttestation: (
-        attesterUserId: string,
-        keyFingerprintHex: string,
+        attesterUserId: UserId,
+        keyFingerprintHex: KeyFingerprintHex,
       ) => void;
     };
   };

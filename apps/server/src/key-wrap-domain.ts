@@ -6,7 +6,7 @@
 // the server (hex strings); KEK material and plaintext segments never
 // appear.
 
-import type { UserId } from "@maruhi/core";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 
 /** The guardian group's threshold mode (CRYPTO_SPEC §8.3). */
 export type GuardianMode = "any" | "all";
@@ -32,7 +32,7 @@ export interface GuardianShareRecord {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
-  readonly guardianKeyFingerprintHex: string;
+  readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
@@ -56,7 +56,7 @@ export interface WardShareRecord {
   readonly mode: GuardianMode;
   readonly shareIndex: number;
   /** The sealed-to device key (the guardian's device — identifies the row) */
-  readonly guardianKeyFingerprintHex: string;
+  readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   readonly guardianEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -76,8 +76,8 @@ export interface HandoffRequestRecord {
 export interface HandoffApprovalRecord {
   readonly source: string;
   readonly shareIndex: number;
-  readonly approverUserId: string;
-  readonly approverKeyFingerprintHex: string;
+  readonly approverUserId: UserId;
+  readonly approverKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly createdAtMs: number;

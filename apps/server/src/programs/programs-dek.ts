@@ -6,6 +6,7 @@
 // The permit-serialization premise is the same as the former
 // data-programs.ts.
 
+import type { KeyFingerprintHex, EnvironmentId, UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
@@ -33,7 +34,7 @@ import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 export const registerDekWrapsProgram = Effect.fn("programs-dek.registerDekWrapsProgram")(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   wraps: readonly DekWrapInput[],
   cache: StateCache,
 ) {
@@ -96,7 +97,7 @@ export const registerDekWrapsProgram = Effect.fn("programs-dek.registerDekWrapsP
 /** The stored slot a deletion reference points at (device key may be omitted — design record §8 K3-3). */
 interface ResolvedWrapRef {
   readonly epoch: number;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
   readonly recipientClass: "member" | "server";
 }
@@ -110,7 +111,7 @@ interface ResolvedWrapRef {
  */
 export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgram")(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   refs: readonly DekWrapRefInput[],
   cache: StateCache,
 ) {
@@ -186,7 +187,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
 
 export const listMyDekWrapsProgram = Effect.fn("programs-dek.listMyDekWrapsProgram")(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   cache: StateCache,
 ) {
   // Fetching one's own DEK requires environment ∈ scope (§12-3's

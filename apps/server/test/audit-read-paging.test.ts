@@ -26,6 +26,7 @@ import {
   seedProjectActivity,
 } from "./support/audit-read-scenario.ts";
 import { BASE, bearer, loginSession, sessionHeaders } from "./support/auth.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   MEMBER,
   OWNER,
@@ -272,7 +273,7 @@ describe("user events read by the owner (§3.1 / §6 — self)", () => {
 
   it("a scope-limited token gets a 403 (same level as §13-2); a `*` × admin token is allowed", async () => {
     const limited = await scopedToken(9001, "self-limited", [
-      { project: projectId, permission: "admin" },
+      { project: testProjectId(projectId), permission: "admin" },
     ]);
     const denied = await SELF.fetch(`${BASE}/auth/audit/events`, {
       headers: bearer(limited),

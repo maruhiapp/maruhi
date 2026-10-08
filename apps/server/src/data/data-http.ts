@@ -56,7 +56,7 @@ import {
   VariableNotFoundError,
   VersionConflictError,
 } from "@maruhi/api-schema";
-import type { TokenPermission } from "@maruhi/core";
+import type { EnvironmentId, ProjectId, TokenPermission, VariableId } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Effect, Schema } from "effect";
@@ -109,9 +109,9 @@ export function checkValueSize(payload: EncryptedPayload): Effect.Effect<void, V
 }
 
 interface AadCoordinates {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
 }
 
 function aadMismatchField(payload: EncryptedPayload, coordinates: AadCoordinates): string | null {
@@ -150,8 +150,8 @@ export function checkAadCoordinates(
  * only on the request's contents, surfacing the disagreeing coordinates.
  */
 export function checkStatementCoordinates(
-  statement: { readonly environmentId: string; readonly variableId?: string },
-  coordinates: { readonly environmentId: string; readonly variableId?: string },
+  statement: { readonly environmentId: EnvironmentId; readonly variableId?: VariableId },
+  coordinates: { readonly environmentId: EnvironmentId; readonly variableId?: VariableId },
 ): Effect.Effect<void, PayloadMismatchError> {
   if (statement.environmentId !== coordinates.environmentId) {
     return Effect.fail(new PayloadMismatchError({ field: "statementEnvironmentId" }));
@@ -169,8 +169,8 @@ export function checkStatementCoordinates(
  * content from the URL / destination).
  */
 export function checkManifestCoordinates(
-  manifest: { readonly environmentId: string },
-  environmentId: string,
+  manifest: { readonly environmentId: EnvironmentId },
+  environmentId: EnvironmentId,
 ): Effect.Effect<void, PayloadMismatchError> {
   return manifest.environmentId === environmentId
     ? Effect.void
@@ -259,8 +259,8 @@ export function toMetaStatementInput(statement: WireMetaStatement): MetaStatemen
  * distributed for neither values nor statements.
  */
 export function toWireVariable(
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   row: EnvironmentPullValue["variables"][number],
 ) {
   return {
@@ -271,7 +271,11 @@ export function toWireVariable(
 }
 
 /** A stored value → the distributed wire form (§12-2 — the AAD is rebuilt from the coordinates). */
-export function toWireValue(projectId: string, environmentId: string, row: PulledVariableValue) {
+export function toWireValue(
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
+  row: PulledVariableValue,
+) {
   return {
     suite: row.suite,
     aad: {
@@ -451,7 +455,7 @@ const rejectionErrors = {
 } satisfies {
   readonly [K in DataRejection["kind"]]: (
     rejection: Extract<DataRejection, { kind: K }>,
-    projectId: string,
+    projectId: ProjectId,
   ) => DataApiError;
 };
 
@@ -463,7 +467,7 @@ const rejectionErrors = {
  */
 export function dataRejectionError<K extends DataRejection["kind"]>(
   rejection: Extract<DataRejection, { kind: K }>,
-  projectId: string,
+  projectId: ProjectId,
 ): ReturnType<(typeof rejectionErrors)[K]> {
   return rejectionErrors[rejection.kind](rejection as never, projectId) as ReturnType<
     (typeof rejectionErrors)[K]
@@ -510,7 +514,7 @@ function contractFilterOf(
  */
 export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
   outcome: DataOutcome<T>,
-  projectId: string,
+  projectId: ProjectId,
   endpoint: Endpoint,
 ): Effect.Effect<T, ContractDataError<Endpoint>> {
   if (outcome.kind === "ok") {
@@ -539,7 +543,7 @@ export const callProjectData =
   <T>() =>
   <Endpoint extends HttpApiEndpoint.Top>(options: {
     readonly endpoint: Endpoint;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly permission: TokenPermission;
     readonly invoke: (
       stub: DurableObjectStub<ProjectChainDO>,
@@ -566,7 +570,7 @@ export const callProjectData =
  */
 export const requireProjectChainAdmin = Effect.fn("data-http.requireProjectChainAdmin")(function* <
   Endpoint extends HttpApiEndpoint.Top,
->(projectId: string, endpoint: Endpoint) {
+>(projectId: ProjectId, endpoint: Endpoint) {
   const principal = yield* (yield* RequestAuth).principal;
   yield* ensureTokenScopeForProject(principal, projectId, "admin");
   const env = yield* WorkerEnv;

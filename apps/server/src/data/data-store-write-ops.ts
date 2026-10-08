@@ -3,6 +3,8 @@
 // one synchronous block) — assembled into the service's `write` by
 // dataStoreLayer in data-store.ts.
 
+import { decodeEnvironmentId } from "@maruhi/core";
+
 import type { MetaStatementInput } from "./data-plane.ts";
 import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
 import type { DataWriteOps, MetaAuthorInfo, RemovedProposal } from "./data-store.ts";
@@ -399,7 +401,7 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       )
       .toArray()
       .map((row) => ({
-        environmentId: stringColumn(row, "environment_id"),
+        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
         epoch: numberColumn(row, "epoch"),
       }));
     if (stale.length > 0) {
@@ -515,7 +517,7 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
 function removedProposalsOf(rows: readonly StoredRow[]): RemovedProposal[] {
   return rows.map((row): RemovedProposal => ({
     proposalId: stringColumn(row, "proposal_id"),
-    environmentId: stringColumn(row, "environment_id"),
+    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
     expiresAtMs: Number(row["expires_at"]),
   }));
 }

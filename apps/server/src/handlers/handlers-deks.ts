@@ -9,11 +9,22 @@
 // declaration (api-schema) — no hand-written enumeration.
 
 import { maruhiApi } from "@maruhi/api-schema";
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { callProjectData, noContent } from "../data/data-http.ts";
 import type { RecipientDekValue } from "../data/data-plane.ts";
+
+/** The recipient position of a wrap: a member's user id for class member, the server key FP for class server (wire-boundary mint — AUTH_SPEC §12-6 / CRYPTO_SPEC §9). */
+const recipientOf = (d: {
+  readonly recipientClass: "member" | "server";
+  readonly recipientUserId: string;
+}): UserId | KeyFingerprintHex =>
+  d.recipientClass === "server"
+    ? decodeKeyFingerprintHex(d.recipientUserId)
+    : decodeUserId(d.recipientUserId);
 
 export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
   handlers
@@ -22,7 +33,12 @@ export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
         endpoint,
         projectId: params.projectId,
         permission: "write",
-        invoke: (stub, actor) => stub.registerDekWraps(actor, params.environmentId, payload.deks),
+        invoke: (stub, actor) =>
+          stub.registerDekWraps(
+            actor,
+            params.environmentId,
+            payload.deks.map((d) => ({ ...d, recipientUserId: recipientOf(d) })),
+          ),
       }).pipe(Effect.as(noContent)),
     )
     .handle("listMine", ({ params, endpoint }) =>
@@ -41,7 +57,12 @@ export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
         endpoint,
         projectId: params.projectId,
         permission: "admin",
-        invoke: (stub, actor) => stub.deleteDekWraps(actor, params.environmentId, payload.wraps),
+        invoke: (stub, actor) =>
+          stub.deleteDekWraps(
+            actor,
+            params.environmentId,
+            payload.wraps.map((w) => ({ ...w, recipientUserId: recipientOf(w) })),
+          ),
       }).pipe(Effect.as(noContent)),
     ),
 );

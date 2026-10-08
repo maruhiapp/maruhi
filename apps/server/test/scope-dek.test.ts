@@ -26,6 +26,7 @@ import {
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -273,7 +274,7 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
     const state: ChainState = {
       members: new Map([
         memberOf("user-all", { kind: "all" }),
-        memberOf("user-dev", { kind: "listed", environmentIds: ["env-dev"] }),
+        memberOf("user-dev", { kind: "listed", environmentIds: [testEnvironmentId("env-dev")] }),
         memberOf("user-none", { kind: "listed", environmentIds: [] }),
       ]),
       serverGrants: new Map([
@@ -283,7 +284,7 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
             serverKeyFingerprintHex: fp,
             serverEncPubHex: "44".repeat(32),
             grantSeq: 1,
-            scopeEnvironmentIds: ["env-prod"],
+            scopeEnvironmentIds: [testEnvironmentId("env-prod")],
             leasePolicy: [],
           },
         ],
@@ -296,11 +297,11 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
       headHashHex: "00".repeat(32),
     };
     // env-dev: all + dev
-    expect(expectedWrapRecipientCount(state, "env-dev")).toBe(2);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-dev"))).toBe(2);
     // env-prod: all + grant (dev is out of scope, none is listed{})
-    expect(expectedWrapRecipientCount(state, "env-prod")).toBe(2);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-prod"))).toBe(2);
     // Unknown environment: all only (U includes future ones — the set
     // algebra's `all`)
-    expect(expectedWrapRecipientCount(state, "env-future")).toBe(1);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-future"))).toBe(1);
   });
 });

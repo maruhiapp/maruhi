@@ -31,6 +31,7 @@
 // chain — §6.4). The acceptance time is stored but not distributed (§16-1).
 // It is also not turned into an audit event (§16-3).
 
+import type { UserId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
@@ -76,7 +77,7 @@ const ATTESTATION_REJECT_REASONS: Readonly<
  */
 export const putHeadAttestationProgram = Effect.fn("attestation-accept.putHeadAttestationProgram")(
   function* (
-    callerUserId: string,
+    callerUserId: UserId,
     input: HeadAttestationSubmissionInput,
     cache: StateCache,
   ): Effect.fn.Return<void, DataRejectedError, DataStore | ChainStore> {

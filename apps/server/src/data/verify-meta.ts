@@ -1,5 +1,6 @@
 // Server-side verification of meta statements (the AUTH_SPEC §12-5 meta rules = CRYPTO_SPEC §4.2 / §6.4).
 
+import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
@@ -115,8 +116,8 @@ const ensureLayoutShape = (
  */
 export const ensureMetaStatementSignature = Effect.fn("verify-meta.ensureMetaStatementSignature")(
   function* (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly target: MetaStatementTarget;
     readonly history: ChainHistoryIndex;
     readonly member: MemberWithDevice;
@@ -376,8 +377,8 @@ const ensureMetaQuota = (
  * On success, returns the server-recomputed signed_bytes hash.
  */
 export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(function* (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly target: MetaStatementTarget;
   readonly operation: MetaOperation;
   readonly latestMetaVersion: number;

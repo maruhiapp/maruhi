@@ -10,6 +10,7 @@
 // quantity policy → atomic write. The environment list and
 // metadata-only pull are scope-agnostic (§12-3's table / §12-7).
 
+import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import type { ChainHistoryIndex, ChainMember } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -55,9 +56,9 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
     access: {
       readonly history: ChainHistoryIndex;
       readonly member: ChainMember;
-      readonly projectId: string;
+      readonly projectId: ProjectId;
     },
-    environment: { readonly environmentId: string; readonly latestMetaVersion: number },
+    environment: { readonly environmentId: EnvironmentId; readonly latestMetaVersion: number },
     statement: MetaStatementInput,
   ) {
     const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
@@ -82,7 +83,7 @@ const acceptEnvironmentStatement = Effect.fn("programs-environment.acceptEnviron
 export const renameEnvironmentProgram = Effect.fn("programs-environment.renameEnvironmentProgram")(
   function* (
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
     cache: StateCache,
@@ -185,7 +186,7 @@ export const listEnvironmentsProgram = Effect.fn("programs-environment.listEnvir
  */
 const requirePullContext = Effect.fn("programs-environment.requirePullContext")(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   mode: "values" | "metadata-only",
   cache: StateCache,
 ) {
@@ -211,7 +212,7 @@ const requirePullContext = Effect.fn("programs-environment.requirePullContext")(
 });
 
 export const pullEnvironmentProgram = Effect.fn("programs-environment.pullEnvironmentProgram")(
-  function* (actor: DataActor, environmentId: string, cache: StateCache) {
+  function* (actor: DataActor, environmentId: EnvironmentId, cache: StateCache) {
     const { state, store, statement, manifest } = yield* requirePullContext(
       actor,
       environmentId,
@@ -296,7 +297,7 @@ export const pullEnvironmentProgram = Effect.fn("programs-environment.pullEnviro
  */
 export const pullEnvironmentMetadataProgram = Effect.fn(
   "programs-environment.pullEnvironmentMetadataProgram",
-)(function* (actor: DataActor, environmentId: string, cache: StateCache) {
+)(function* (actor: DataActor, environmentId: EnvironmentId, cache: StateCache) {
   const { state, store, statement, manifest } = yield* requirePullContext(
     actor,
     environmentId,

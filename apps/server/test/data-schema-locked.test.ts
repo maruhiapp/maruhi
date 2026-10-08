@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
 import { encryptValue } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -49,7 +50,13 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
     const v1Statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const v1Value = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 1,
+      },
       "postgres://alpha",
       { writerUserId: MEMBER, head: fixture.head },
     );

@@ -29,6 +29,7 @@ import {
   sessionHeaders,
 } from "./support/auth.ts";
 import { vectorKeyNamed } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 
 beforeEach(async () => {
   await resetAuthDb();
@@ -202,7 +203,9 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
   });
 
   it("rejects writes from a token below `*` × admin with 403 (same level as §13-2)", async () => {
-    const scoped = await cliToken(607, [{ project: "f0".repeat(32), permission: "admin" }]);
+    const scoped = await cliToken(607, [
+      { project: testProjectId("f0".repeat(32)), permission: "admin" },
+    ]);
     expect((await registerDevice(bearer(scoped), PHONE.fp, registerBody(PHONE))).status).toBe(403);
     expect((await removeDevice(bearer(scoped), PHONE.fp)).status).toBe(403);
     expect((await createRequest(bearer(scoped), requestBody(RESERVE))).status).toBe(403);

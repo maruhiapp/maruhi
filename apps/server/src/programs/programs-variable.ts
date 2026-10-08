@@ -5,6 +5,7 @@
 // 2026-09-15 ES K3) → environment/variable existence → CAS → signature
 // verification → quantity policy → atomic write + audit (AUDIT_SPEC §3.3).
 
+import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/core";
 import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
@@ -54,7 +55,7 @@ import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 function variableIdUnavailable(
   existing: VariableRow | null,
-  variableId: string,
+  variableId: VariableId,
 ): DataRejection | null {
   if (existing === null) {
     return null;
@@ -83,8 +84,8 @@ function writeVersionWithAudit(
   appendAudit: (event: AuditEventInput) => void,
   actor: DataActor,
   writer: MemberWithDevice,
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   value: ValueInput,
   sameValueAs: number | undefined,
   signedBytesHashHex: string,
@@ -154,9 +155,9 @@ const ensureCreationSchemaGates = Effect.fn("programs-variable.ensureCreationSch
  * reuse) → quantity policy → NFC → name uniqueness.
  */
 const ensureVariableCreatable = Effect.fn("programs-variable.ensureVariableCreatable")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   statement: MetaStatementInput,
-  variableId: string,
+  variableId: VariableId,
 ) {
   const store = yield* DataStore;
   const existing = yield* store.findVariable(environmentId, variableId);
@@ -180,9 +181,9 @@ const acceptCreationValue = Effect.fn("programs-variable.acceptCreationValue")(f
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly value: ValueInput;
 }) {
   yield* ensureValueCas(context.state, context.environmentId, 0, context.value);
@@ -204,7 +205,12 @@ const acceptCreationValue = Effect.fn("programs-variable.acceptCreationValue")(f
  * three stages so the four paths do not repeat them.
  */
 const requireVariableWriteContext = Effect.fn("programs-variable.requireVariableWriteContext")(
-  function* (actor: DataActor, environmentId: string, variableId: string, cache: StateCache) {
+  function* (
+    actor: DataActor,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
+    cache: StateCache,
+  ) {
     const context = yield* requireEnvironmentAccess(actor.userId, "member", environmentId, cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
@@ -222,8 +228,8 @@ const requireVariableWriteContext = Effect.fn("programs-variable.requireVariable
 const requireVariableMetaOpContext = Effect.fn("programs-variable.requireVariableMetaOpContext")(
   function* (
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     cache: StateCache,
   ) {
@@ -241,9 +247,9 @@ const requireVariableMetaOpContext = Effect.fn("programs-variable.requireVariabl
  * the variable's digest entry.
  */
 const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")(function* (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   /** Selects the pipeline's predecessor-match checks (run after the metaVersion CAS — §12-5). */
   readonly operation: MetaOperation;
   readonly latestMetaVersion: number;
@@ -296,9 +302,9 @@ const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")
 export const createVariableProgram = Effect.fn("programs-variable.createVariableProgram")(
   function* (
     actor: DataActor,
-    environmentId: string,
+    environmentId: EnvironmentId,
     input: {
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly statement: MetaStatementInput;
       /** The version-1 value of an active creation. undefined for a declared creation (no value). */
       readonly value?: ValueInput;
@@ -448,8 +454,8 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
 
 export const pushVersionProgram = Effect.fn("programs-variable.pushVersionProgram")(function* (
   actor: DataActor,
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   value: ValueInput,
   sameValueAs: number | undefined,
   cache: StateCache,
@@ -544,8 +550,8 @@ export const pushVersionProgram = Effect.fn("programs-variable.pushVersionProgra
 export const activateVariableProgram = Effect.fn("programs-variable.activateVariableProgram")(
   function* (
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     input: {
       readonly value: ValueInput;
       readonly statement: MetaStatementInput;
@@ -659,8 +665,8 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
 export const renameVariableProgram = Effect.fn("programs-variable.renameVariableProgram")(
   function* (
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
     cache: StateCache,
@@ -739,8 +745,8 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
 export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariableProgram")(
   function* (
     actor: DataActor,
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
     cache: StateCache,

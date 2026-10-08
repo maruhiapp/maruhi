@@ -21,7 +21,8 @@ import {
   ProjectNotFoundError,
   RotationProposalRejectedError,
 } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import type { EnvironmentId, ProjectId } from "@maruhi/core";
+import { cryptoEffect, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -81,7 +82,7 @@ function claimsDigestFor(token: VerifiedOidcToken): Effect.Effect<string, LeaseU
  * one — do not create a response the caller can distinguish (§14-1's
  * existence hiding).
  */
-function leaseRejectionError(rejection: LeaseRejection, projectId: string) {
+function leaseRejectionError(rejection: LeaseRejection, projectId: ProjectId) {
   switch (rejection.kind) {
     case "rate-limited": {
       return new LeaseRateLimitedError({
@@ -107,7 +108,7 @@ function leaseRejectionError(rejection: LeaseRejection, projectId: string) {
   }
 }
 
-function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: string) {
+function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: ProjectId) {
   return outcome.kind === "ok"
     ? Effect.succeed(outcome.value)
     : Effect.fail(leaseRejectionError(outcome.rejection, projectId));
@@ -169,13 +170,13 @@ const authenticateWorkload = Effect.fn("handlers-lease.authenticateWorkload")(fu
 });
 
 /** The mint's rejections → api-schema errors: the lease vocabulary as-is, plus the §14-5 acceptance reasons (422). */
-function proposalRejectionError(rejection: ProposalRejection, projectId: string) {
+function proposalRejectionError(rejection: ProposalRejection, projectId: ProjectId) {
   return rejection.kind === "proposal-rejected"
     ? new RotationProposalRejectedError({ reason: rejection.reason })
     : leaseRejectionError(rejection, projectId);
 }
 
-function unwrapProposalOutcome(outcome: ProposalOutcome, projectId: string) {
+function unwrapProposalOutcome(outcome: ProposalOutcome, projectId: ProjectId) {
   return outcome.kind === "ok"
     ? Effect.succeed(outcome.value)
     : Effect.fail(proposalRejectionError(outcome.rejection, projectId));
@@ -183,8 +184,8 @@ function unwrapProposalOutcome(outcome: ProposalOutcome, projectId: string) {
 
 /** The coordinates of a workload call: the project and the environment. */
 interface WorkloadParams {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
 }
 
 /**
@@ -257,8 +258,8 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
               params.environmentId,
               payload.ephemeralPubHex,
               facts,
-              payload.variables,
-              payload.recipients,
+              payload.variables.map((v) => ({ ...v, variableId: decodeVariableId(v.variableId) })),
+              payload.recipients.map((r) => ({ ...r, userId: decodeUserId(r.userId) })),
             ),
         );
         if (outcome.kind === "rejected") {
@@ -278,12 +279,17 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
           payload,
           request,
           (stub, facts) =>
-            stub.proposeRotation(
-              params.environmentId,
-              payload.ephemeralPubHex,
-              facts,
-              payload.proposal,
-            ),
+            stub.proposeRotation(params.environmentId, payload.ephemeralPubHex, facts, {
+              ...payload.proposal,
+              variables: payload.proposal.variables.map((v) => ({
+                ...v,
+                variableId: decodeVariableId(v.variableId),
+                wraps: v.wraps.map((w) => ({
+                  ...w,
+                  recipientUserId: decodeUserId(w.recipientUserId),
+                })),
+              })),
+            }),
         );
         return yield* unwrapProposalOutcome(outcome, params.projectId);
       }),

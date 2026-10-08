@@ -9,7 +9,7 @@
 //   §11-2); if it covers it but the permission level is insufficient: 403
 
 import { ForbiddenError, ProjectNotFoundError } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
+import type { AuthenticatedPrincipal, ProjectId, TokenPermission } from "@maruhi/core";
 import { permissionAtLeast, scopePermissionFor } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -64,7 +64,7 @@ export function ensureActorMatches(
  */
 export function ensureTokenScopeForProject(
   principal: AuthenticatedPrincipal,
-  projectId: string,
+  projectId: ProjectId,
   required: TokenPermission,
 ): Effect.Effect<void, ProjectNotFoundError | ForbiddenError> {
   if (principal.kind !== "token") {
@@ -91,7 +91,7 @@ export function ensureTokenScopeForProject(
  */
 export function tokenScopeAllowsForProject(
   principal: AuthenticatedPrincipal,
-  projectId: string,
+  projectId: ProjectId,
   required: TokenPermission,
 ): boolean {
   if (principal.kind !== "token") {
@@ -114,14 +114,20 @@ export function tokenScopeAllowsForProject(
  * the candidate page, so filtering only at a later stage would leak
  * out-of-scope project_ids (ID = capability) onto the cursor.
  */
-export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly string[] | null {
+export function scopedProjectIdsFor(
+  principal: AuthenticatedPrincipal,
+): readonly ProjectId[] | null {
   if (principal.kind !== "token") {
     return null;
   }
   if (principal.scopes.some((scope) => scope.project === "*")) {
     return null;
   }
-  return [...new Set(principal.scopes.map((scope) => scope.project))];
+  return [
+    ...new Set<ProjectId>(
+      principal.scopes.flatMap((scope) => (scope.project === "*" ? [] : [scope.project])),
+    ),
+  ];
 }
 
 /**
@@ -207,7 +213,7 @@ export function ensureTokenManagementAccess(
  */
 export function ensureTokenScopeForInit(
   principal: AuthenticatedPrincipal,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.Effect<void, ForbiddenError> {
   if (principal.kind !== "token") {
     return Effect.void;

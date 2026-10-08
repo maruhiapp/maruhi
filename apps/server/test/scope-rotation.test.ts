@@ -24,7 +24,7 @@
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
-import type { AuditRotationRead, SeqRange } from "../src/audit-store.ts";
+import type { AuditRotationRead, ScopeSnapshot, SeqRange } from "../src/audit-store.ts";
 import {
   deriveEffectiveFlags,
   detectMemberRemoval,
@@ -42,6 +42,7 @@ import {
   valueSignedBytesHashOf,
   wrapDekForAll,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -95,10 +96,10 @@ async function createVariableAsOwner(input: {
   const value = await encryptValue(
     input.dek,
     {
-      projectId,
-      environmentId: input.environmentId,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(input.environmentId),
       epoch: 1,
-      variableId: input.variableId,
+      variableId: testVariableId(input.variableId),
       version: 1,
     },
     `${input.name}-plaintext`,
@@ -242,7 +243,13 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
     // A fresh value at OTHER's epoch 2 resolves the narrowing's flag
     const fresh = await encryptValue(
       otherDek2,
-      { projectId, environmentId: OTHER, epoch: 2, variableId: VAR_OTHER, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(OTHER),
+        epoch: 2,
+        variableId: testVariableId(VAR_OTHER),
+        version: 2,
+      },
       "rotated-upstream",
       {
         writerUserId: OWNER,
@@ -382,15 +389,26 @@ describe("the window-reconstruction material (AUDIT_SPEC §3.4's mirror payload 
 // Pure-function unit tests (no DO): the window derivation's fail-safes and trigger backfill
 // ---------------------------------------------------------------------------
 
+const membershipScopeOf = (
+  scope: { readonly kind: string; readonly environmentIds?: readonly string[] } | null,
+): ScopeSnapshot | null =>
+  scope === null || scope.kind !== "listed"
+    ? (scope as ScopeSnapshot | null)
+    : { kind: "listed", environmentIds: (scope.environmentIds ?? []).map(testEnvironmentId) };
+
 function fakeRead(input: {
-  readonly membership: AuditRotationRead["membershipEventsFor"] extends (id: string) => infer R
-    ? R
-    : never;
+  readonly membership: readonly {
+    readonly seq: number;
+    readonly event: string;
+    readonly role: string | null;
+    readonly scope: { readonly kind: string; readonly environmentIds?: readonly string[] } | null;
+  }[];
   readonly lifecycles: ReturnType<AuditRotationRead["variableLifecycles"]>;
   readonly reads?: ReturnType<AuditRotationRead["variableReadsBy"]>;
 }): AuditRotationRead {
   return {
-    membershipEventsFor: () => input.membership,
+    membershipEventsFor: () =>
+      input.membership.map((row) => ({ ...row, scope: membershipScopeOf(row.scope) })),
     deviceEventsFor: () => [],
     serverGrantEventsFor: () => [],
     variableLifecycles: () => input.lifecycles,
@@ -413,14 +431,33 @@ const grantRead = (
 ): AuditRotationRead => ({
   membershipEventsFor: () => [],
   deviceEventsFor: () => [],
-  serverGrantEventsFor: () => events,
+  serverGrantEventsFor: () =>
+    events.map((row) => ({
+      ...row,
+      scopeEnvironmentIds: row.scopeEnvironmentIds?.map(testEnvironmentId) ?? null,
+    })),
   variableLifecycles: () => [
-    { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
-    { seq: 1, event: "var.created", environmentId: "env-b", variableId: "w" },
+    {
+      seq: 1,
+      event: "var.created",
+      environmentId: testEnvironmentId("env-a"),
+      variableId: testVariableId("v"),
+    },
+    {
+      seq: 1,
+      event: "var.created",
+      environmentId: testEnvironmentId("env-b"),
+      variableId: testVariableId("w"),
+    },
   ],
   variableReadsBy: () => [],
   serverAccessEventsBy: () =>
-    access.map((row) => ({ ...row, event: "server.lease_issued", variableId: null })),
+    access.map((row) => ({
+      ...row,
+      environmentId: testEnvironmentId(row.environmentId),
+      event: "server.lease_issued",
+      variableId: null,
+    })),
   environmentEpochEvents: () => [],
   rotationFlagEvents: () => [],
   rotationFlagEventsFor: () => [],
@@ -435,8 +472,18 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           { seq: 10, event: "chain.member_removed", role: null, scope: null },
         ],
         lifecycles: [
-          { seq: 5, event: "var.created", environmentId: "env-a", variableId: "v" },
-          { seq: 6, event: "var.created", environmentId: "env-b", variableId: "w" },
+          {
+            seq: 5,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
+          {
+            seq: 6,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-b"),
+            variableId: testVariableId("w"),
+          },
         ],
       }),
       targetUserId: testUserId("u"),
@@ -457,29 +504,42 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
             seq: 2,
             event: "chain.member_added",
             role: "member",
-            scope: { kind: "listed", environmentIds: ["env-a"] },
+            scope: { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] },
           },
           {
             seq: 8,
             event: "chain.role_changed",
             role: "member",
-            scope: { kind: "listed", environmentIds: ["env-a", "env-b"] },
+            scope: {
+              kind: "listed" as const,
+              environmentIds: [testEnvironmentId("env-a"), testEnvironmentId("env-b")],
+            },
           },
           {
             seq: 12,
             event: "chain.role_changed",
             role: "member",
-            scope: { kind: "listed", environmentIds: ["env-a"] },
+            scope: { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] },
           },
         ],
         lifecycles: [
-          { seq: 3, event: "var.created", environmentId: "env-b", variableId: "w" },
-          { seq: 4, event: "var.created", environmentId: "env-a", variableId: "v" },
+          {
+            seq: 3,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-b"),
+            variableId: testVariableId("w"),
+          },
+          {
+            seq: 4,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
         ],
         // the seq 5 read is outside env-b's window (8-12) = assumed a pre-K3 / malformed row
         reads: [
-          { seq: 5, environmentId: "env-b", variableId: "w" },
-          { seq: 9, environmentId: "env-b", variableId: "w" },
+          { seq: 5, environmentId: testEnvironmentId("env-b"), variableId: testVariableId("w") },
+          { seq: 9, environmentId: testEnvironmentId("env-b"), variableId: testVariableId("w") },
         ],
       }),
       targetUserId: testUserId("u"),
@@ -495,7 +555,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
   });
 
   it("windows across a re-addition are separate intervals: reads during the absence do not count, and both intervals' candidates are included (§4.1 step 1)", () => {
-    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const listedA = { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] };
     const events = detectMemberRemoval({
       read: fakeRead({
         membership: [
@@ -505,12 +565,29 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           { seq: 10, event: "chain.member_removed", role: null, scope: null },
         ],
         lifecycles: [
-          { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
+          {
+            seq: 1,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
           // a variable that existed only during the absence (overlaps no window)
-          { seq: 5, event: "var.created", environmentId: "env-a", variableId: "gap" },
-          { seq: 5, event: "var.deleted", environmentId: "env-a", variableId: "gap" },
+          {
+            seq: 5,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("gap"),
+          },
+          {
+            seq: 5,
+            event: "var.deleted",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("gap"),
+          },
         ],
-        reads: [{ seq: 5, environmentId: "env-a", variableId: "v" }],
+        reads: [
+          { seq: 5, environmentId: testEnvironmentId("env-a"), variableId: testVariableId("v") },
+        ],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 9,
@@ -521,12 +598,12 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
   });
 
   it("Q3 receives the envelope of the chosen windows (the open interval min-start to max-end), and the result equals the unfiltered case", () => {
-    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const listedA = { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] };
     const reads = [
-      { seq: 1, environmentId: "env-a", variableId: "v" },
-      { seq: 3, environmentId: "env-a", variableId: "v" },
-      { seq: 5, environmentId: "env-a", variableId: "late" },
-      { seq: 12, environmentId: "env-a", variableId: "late" },
+      { seq: 1, environmentId: testEnvironmentId("env-a"), variableId: testVariableId("v") },
+      { seq: 3, environmentId: testEnvironmentId("env-a"), variableId: testVariableId("v") },
+      { seq: 5, environmentId: testEnvironmentId("env-a"), variableId: testVariableId("late") },
+      { seq: 12, environmentId: testEnvironmentId("env-a"), variableId: testVariableId("late") },
     ];
     const ranges: (SeqRange | undefined)[] = [];
     const run = (honourRange: boolean) =>
@@ -540,8 +617,18 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
               { seq: 10, event: "chain.member_removed", role: null, scope: null },
             ],
             lifecycles: [
-              { seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" },
-              { seq: 5, event: "var.created", environmentId: "env-a", variableId: "late" },
+              {
+                seq: 1,
+                event: "var.created",
+                environmentId: testEnvironmentId("env-a"),
+                variableId: testVariableId("v"),
+              },
+              {
+                seq: 5,
+                event: "var.created",
+                environmentId: testEnvironmentId("env-a"),
+                variableId: testVariableId("late"),
+              },
             ],
           }),
           variableReadsBy: (_actor, range) => {
@@ -577,11 +664,18 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
             seq: 3,
             event: "chain.role_changed",
             role: "member",
-            scope: { kind: "listed", environmentIds: ["env-a"] },
+            scope: { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] },
           },
           { seq: 8, event: "chain.member_removed", role: null, scope: null },
         ],
-        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+        lifecycles: [
+          {
+            seq: 1,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
+        ],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 7,
@@ -591,14 +685,21 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
   });
 
   it("a role_changed whose role cannot be read is treated as a demotion (err on the side of not missing)", () => {
-    const listedA = { kind: "listed" as const, environmentIds: ["env-a"] };
+    const listedA = { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] };
     const events = detectRoleChange({
       read: fakeRead({
         membership: [
           { seq: 2, event: "chain.member_added", role: null, scope: listedA },
           { seq: 6, event: "chain.role_changed", role: null, scope: listedA },
         ],
-        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+        lifecycles: [
+          {
+            seq: 1,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
+        ],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 5,
@@ -672,11 +773,18 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
             seq: 2,
             event: "chain.member_added",
             role: "member",
-            scope: { kind: "listed", environmentIds: ["env-a"] },
+            scope: { kind: "listed" as const, environmentIds: [testEnvironmentId("env-a")] },
           },
           { seq: 6, event: "chain.role_changed", role: "member", scope: null },
         ],
-        lifecycles: [{ seq: 1, event: "var.created", environmentId: "env-a", variableId: "v" }],
+        lifecycles: [
+          {
+            seq: 1,
+            event: "var.created",
+            environmentId: testEnvironmentId("env-a"),
+            variableId: testVariableId("v"),
+          },
+        ],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 5,
@@ -692,8 +800,8 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           seq: 1,
           serverTs: 1,
           event: "rotation.recommended",
-          environmentId: "env-a",
-          variableId: "v",
+          environmentId: testEnvironmentId("env-a"),
+          variableId: testVariableId("v"),
           version: null,
           epoch: 1,
           targetUserId: testUserId("u"),

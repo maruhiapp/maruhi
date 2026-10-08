@@ -10,7 +10,9 @@
 // order — key uniqueness means at most one device can verify), and the
 // remaining wraps are verified with that key alone.
 
+import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
+import { decodeUserId } from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -43,7 +45,7 @@ import { ensureWrapRowCapacity } from "./quotas.ts";
 export function wrapRefKey(ref: {
   readonly epoch: number;
   readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
 }): string {
   return `${ref.epoch}:${ref.recipientClass}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
@@ -64,7 +66,7 @@ export function wrapRefKey(ref: {
  */
 function wrapStorageKey(ref: {
   readonly epoch: number;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
 }): string {
   return `${ref.epoch}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
@@ -83,7 +85,7 @@ function wrapStorageKey(ref: {
 export function deviceReceivesEnvironment(
   member: ChainMember,
   device: { readonly roleCap: ChainMember["role"]; readonly scope: ChainMember["scope"] },
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): boolean {
   return scopeIncludesEnvironment(effectivePermissionOf(member, device).scope, environmentId);
 }
@@ -97,7 +99,10 @@ export function deviceReceivesEnvironment(
  * check of composite requests use this single definition (the acceptance
  * boundary does not shift).
  */
-export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
+export function expectedWrapRecipientCount(
+  state: ChainState,
+  environmentId: EnvironmentId,
+): number {
   // Because the storage key (= the registration path's duplicate-detection key
   // wrapStorageKey) carries no recipient class, if a member's user_id and a
   // valid grant's server key FP collide on the same key, those two recipients
@@ -149,7 +154,7 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
  */
 function checkWrapRecipient(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   wrap: DekWrapInput,
 ): DataRejection | null {
   if (wrap.recipientClass === "server") {
@@ -208,7 +213,7 @@ export function allRecipientsAreOwnDevices(
 /** Per-wrap check (split for cognitive complexity). Returns null when ok. */
 function checkOneWrap(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   currentEpoch: number,
   wrap: DekWrapInput,
   seen: Set<string>,
@@ -233,7 +238,7 @@ function checkOneWrap(
 
 function checkWrapRecipients(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ): DataRejection | null {
@@ -253,8 +258,8 @@ function checkWrapRecipients(
 
 /** Verify one wrap's registration signature with one key (the signed signer = the calling principal — §12-6). */
 const verifyOneWrapSignature = (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   signer: MemberWithDevice,
   signerPublicKey: CryptoKey,
   wrap: DekWrapInput,
@@ -266,7 +271,7 @@ const verifyOneWrapSignature = (
         projectId,
         environmentId,
         epoch: wrap.epoch,
-        recipientUserId: wrap.recipientUserId,
+        recipientUserId: decodeUserId(wrap.recipientUserId),
         recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
@@ -317,8 +322,8 @@ const importSignerKey = Effect.fn("dek-wraps.importSignerKey")(function* (
  * rejects with recipient-missing).
  */
 const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(function* (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   caller: ChainMember,
   wraps: readonly DekWrapInput[],
 ) {
@@ -349,7 +354,7 @@ const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(functio
  * existing (epoch, recipient, device key).
  */
 const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   state: ChainState,
   wraps: readonly DekWrapInput[],
 ) {
@@ -408,8 +413,8 @@ const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
  * audit. null when there are no wraps).
  */
 export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAcceptable")(function* (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   state: ChainState,
   caller: ChainMember,
   currentEpoch: number,
@@ -440,7 +445,7 @@ export function dekRegisteredEvent(
   actor: DataActor,
   signer: { readonly keyFingerprintHex: KeyFingerprintHex },
   nowMs: number,
-  environmentId: string,
+  environmentId: EnvironmentId,
   wrap: DekWrapInput,
 ): AuditEventInput {
   return dataEvent(actor, nowMs, {

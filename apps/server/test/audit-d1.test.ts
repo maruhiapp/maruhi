@@ -10,6 +10,7 @@
 // - Identity rule (§1-2): provider IDs, logins, and emails must not appear
 //   in any row
 
+import { decodeOrgId } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
 import { Cause, Context, Effect, Exit } from "effect";
@@ -38,6 +39,7 @@ import {
   STATE_COOKIE,
 } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 interface AuditRow {
@@ -556,7 +558,13 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
     const services = makeDbServices(env.DB);
     const projects = Context.get(services, ProjectRepo);
     await Effect.runPromise(
-      projects.insertIfAbsent(vectorProjectId, VECTOR_ORG, OWNER, Date.now(), { userId: OWNER }),
+      projects.insertIfAbsent(
+        testProjectId(vectorProjectId),
+        decodeOrgId(VECTOR_ORG),
+        OWNER,
+        Date.now(),
+        { userId: OWNER },
+      ),
     );
     const events = await auditRows("org_audit_events");
     expect(events.filter((row) => row.event === "org.project_created")).toHaveLength(1);

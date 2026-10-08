@@ -7,6 +7,7 @@
 // that "operations tripwires count these rows"). Drizzle types never
 // leave this boundary.
 
+import type { ProjectId } from "@maruhi/core";
 import { and, asc, count, eq, gt, gte, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -38,7 +39,7 @@ export type OpsStorageLevel = "admit" | "warn" | "reject";
 export type OpsBackupFailureCode = "oversize" | "rpc-failed" | "upload-failed";
 
 export interface OpsBackupRecord {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly doIdHex: string;
   readonly lastAttemptAt: number;
   readonly lastSuccessAt: number | null;
@@ -106,12 +107,12 @@ export interface OpsRepoShape {
   readonly auditEventCountSince: (event: string, sinceMs: number) => Effect.Effect<number>;
   /** Sweep enumeration (`projects` in id order, exclusive cursor). */
   readonly listProjectIdsAfter: (
-    afterProjectId: string | null,
+    afterProjectId: ProjectId | null,
     limit: number,
-  ) => Effect.Effect<readonly string[]>;
-  readonly backupRecord: (projectId: string) => Effect.Effect<OpsBackupRecord | null>;
+  ) => Effect.Effect<readonly ProjectId[]>;
+  readonly backupRecord: (projectId: ProjectId) => Effect.Effect<OpsBackupRecord | null>;
   readonly recordBackupAttempt: (
-    projectId: string,
+    projectId: ProjectId,
     doIdHex: string,
     attempt: OpsBackupAttempt,
     nowMs: number,

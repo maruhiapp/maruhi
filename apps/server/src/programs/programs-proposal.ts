@@ -17,6 +17,7 @@
 //
 // The permit-serialization premise is the same as the other programs-*.
 
+import type { EnvironmentId, UserId, VariableId } from "@maruhi/core";
 import { ROTATION_CONNECTORS } from "@maruhi/core";
 import type { ChainState } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
@@ -46,14 +47,14 @@ export type RotationConnector = (typeof ROTATION_CONNECTORS)[number];
 
 /** A proposed value sealed to one recipient device (the wire shape crossing the RPC boundary). */
 export interface ProposalWrapInput {
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
 
 export interface ProposalVariableInput {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly baseVersion: number;
   readonly wraps: readonly ProposalWrapInput[];
 }
@@ -91,7 +92,7 @@ export interface MemberProposalValue extends Omit<StoredProposal, "connector"> {
 /** A member's resolution (crosses the RPC boundary). */
 export interface ProposalResolutionInput {
   readonly outcome: "accepted" | "rejected";
-  readonly versions: readonly { readonly variableId: string; readonly version: number }[];
+  readonly versions: readonly { readonly variableId: VariableId; readonly version: number }[];
 }
 
 /**
@@ -100,7 +101,10 @@ export interface ProposalResolutionInput {
  * R(E) minus readers and server keys. Keyed like the wrap store
  * (`user_id:enc_pub_hex`).
  */
-function proposalRecipientKeys(state: ChainState, environmentId: string): ReadonlySet<string> {
+function proposalRecipientKeys(
+  state: ChainState,
+  environmentId: EnvironmentId,
+): ReadonlySet<string> {
   const keys = new Set<string>();
   for (const [userId, member] of state.members) {
     for (const device of member.devices.values()) {
@@ -144,14 +148,14 @@ function recipientsMatch(
 }
 
 /** §14-5 (3): whether a variable is named twice (judged over the whole list, before any per-variable check). */
-function namesVariableTwice(variables: readonly { readonly variableId: string }[]): boolean {
+function namesVariableTwice(variables: readonly { readonly variableId: VariableId }[]): boolean {
   return new Set(variables.map((variable) => variable.variableId)).size !== variables.length;
 }
 
 /** §14-5 (4)–(6): one variable's checks (active, base version current, recipients exact, no pending proposal). */
 const variableRefusal = Effect.fnUntraced(function* (
   store: DataStoreShape,
-  environmentId: string,
+  environmentId: EnvironmentId,
   recipients: ReadonlySet<string>,
   variable: ProposalVariableInput,
   nowMs: number,
@@ -178,7 +182,7 @@ const variableRefusal = Effect.fnUntraced(function* (
 const proposalRefusal = Effect.fn("programs-proposal.proposalRefusal")(function* (
   store: DataStoreShape,
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   proposal: RotationProposalInput,
   nowMs: number,
 ): Effect.fn.Return<RotationProposalRejectReason | null> {
@@ -218,7 +222,7 @@ function proposalCiphertextBytes(proposal: RotationProposalInput): number {
 
 export const proposeRotationProgram = Effect.fn("programs-proposal.proposeRotationProgram")(
   function* (
-    environmentId: string,
+    environmentId: EnvironmentId,
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     proposal: RotationProposalInput,
@@ -362,13 +366,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The pre-flight's variables (AUTH_SPEC §14-5 — O-4): what the job intends to propose, before the issuer is touched. */
 export interface PreflightVariableInput {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly baseVersion: number;
 }
 
 /** The recipient set the job will seal to (public chain facts — ruling O revision, round 4): checked against W(E) before the issuer is touched. */
 export interface PreflightRecipientInput {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly encPubHex: string;
 }
 
@@ -387,7 +391,7 @@ export type PreflightOutcome =
  */
 export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRotationProgram")(
   function* (
-    environmentId: string,
+    environmentId: EnvironmentId,
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     variables: readonly PreflightVariableInput[],
@@ -451,7 +455,7 @@ const preflightRefusal = (reason: RotationProposalRejectReason) =>
 /** The mint's per-variable checks that do not depend on the sealed content (the same order as the mint). */
 const preflightVariable = Effect.fnUntraced(function* (
   store: DataStore["Service"],
-  environmentId: string,
+  environmentId: EnvironmentId,
   variable: PreflightVariableInput,
   nowMs: number,
 ): Effect.fn.Return<void, ProposalRejection> {
@@ -468,7 +472,7 @@ const preflightVariable = Effect.fnUntraced(function* (
 });
 
 /** A stored proposal narrowed to one member's view: the caller's own wraps only. */
-function ownView(proposal: StoredProposal, userId: string): MemberProposalValue {
+function ownView(proposal: StoredProposal, userId: UserId): MemberProposalValue {
   return {
     ...proposal,
     connector: storedConnector(proposal.connector),
