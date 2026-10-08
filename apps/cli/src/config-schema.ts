@@ -13,7 +13,7 @@
 // is a complete reason. A reason never contains the offending value, and
 // never names an array entry's position (the wording never did).
 
-import { isEnvironmentId } from "@maruhi/core";
+import { isEnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema, SchemaIssue } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -145,7 +145,7 @@ export const closedRecord = (message: string, allowed: readonly string[], tail: 
 export function configHeader(
   record: Record<string, unknown>,
   rootKeys: readonly string[],
-): Parsed<{ readonly projectId: string | undefined }> {
+): Parsed<{ readonly projectId: ProjectId | undefined }> {
   const header = parseConfigHeader(record, rootKeys);
   return typeof header === "string" ? refuse(header) : Result.succeed(header);
 }

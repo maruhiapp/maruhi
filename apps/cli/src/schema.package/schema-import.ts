@@ -32,7 +32,7 @@
 
 import { unlink } from "node:fs/promises";
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
@@ -91,7 +91,7 @@ interface SchemaImportInput {
   readonly environmentId: EnvironmentId;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
   /** The recipient material for the activation value push (only on explicit opt-in). */
   readonly recipient: DekRecipient;

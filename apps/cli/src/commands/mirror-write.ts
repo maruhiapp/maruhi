@@ -1,6 +1,7 @@
 // `maruhi mirror mark` / `maruhi mirror promote` (discipline: see commands/index.ts).
 
 import { type MirrorStatus } from "@maruhi/api-schema";
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 import { type HttpClient } from "effect/http";
@@ -96,7 +97,7 @@ const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(f
 const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(function* (
   context: SessionContext,
   sourceOrigin: string,
-  projectId: string,
+  projectId: ProjectId,
   forced: boolean,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const here = yield* syncProject(context.client, projectId);
@@ -323,7 +324,7 @@ const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteComma
  */
 const promotionGuard = Effect.fn("commands-mirror-write.promotionGuard")(function* (
   context: SessionContext,
-  projectId: string,
+  projectId: ProjectId,
   sourceOrigin: string,
   status: {
     readonly head: SourceHead;
@@ -510,7 +511,7 @@ type SourceState =
 const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   config: MaruhiCliConfig,
   sourceOrigin: string,
-  projectId: string,
+  projectId: ProjectId,
   thisOrigin: string,
 ): Effect.fn.Return<SourceState, never, CliServices> {
   const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
@@ -560,7 +561,7 @@ const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
 const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
   client: MaruhiClient,
   origin: string,
-  projectId: string,
+  projectId: ProjectId,
   prefetched: VerifiedProject | null = null,
 ): Effect.fn.Return<readonly string[], CliError, CliServices> {
   const verified = prefetched ?? (yield* syncProject(client, projectId));

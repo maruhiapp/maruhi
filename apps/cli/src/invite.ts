@@ -24,7 +24,7 @@
 // never persisted (the issuance pin holds only the public key). The
 // server never receives the seed.
 
-import { cryptoEffect, type UserId } from "@maruhi/core";
+import { cryptoEffect, type UserId, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -46,6 +46,7 @@ import { devicesOf } from "./device-key.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 import type { InviteLinkData, InviteRole } from "./invite-link.ts";
 import { CliIo } from "./io.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
@@ -72,13 +73,13 @@ export interface InviteAcceptance {
 /** One row of the listing response (same shape as api-schema's InvitationSummary). */
 export interface InvitationRow {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: InviteRole;
   /** The scope to grant (2026-09-14 ES — part of the issuance; add_member signs this scope). */
   readonly scopeKind: ScopeKind;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   readonly status: "pending" | "accepted" | "completed" | "revoked";
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   readonly issuance: InviteIssuance;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
@@ -88,11 +89,13 @@ export interface InvitationRow {
 /** Fetching the invite list (the shared prologue of invite list / member add). */
 export function listInvitations(
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.Effect<readonly InvitationRow[], CliError> {
   return client.invites.list({ params: { projectId } }).pipe(
     Effect.mapError(toCliError),
-    Effect.map((response) => response.invitations),
+    Effect.map((response) =>
+      response.invitations.map((inv) => ({ ...inv, inviterUserId: userIdOf(inv.inviterUserId) })),
+    ),
   );
 }
 
@@ -182,7 +185,7 @@ export function issuanceFailureText(
  * trusting the server's declared verification result).
  */
 export const verifyAcceptanceBlock = Effect.fn("invite.verifyAcceptanceBlock")(function* (input: {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly issuance: InviteIssuance;
   readonly acceptance: InviteAcceptance;
 }): Effect.fn.Return<

@@ -22,6 +22,7 @@
 // K16). The only thing the chain says about a ledger key is
 // "whether it is revoked" (`ledgerKeyVerdictOf`).
 
+import { type ProjectId, type UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
 
@@ -51,7 +52,7 @@ export type ChainKeyStanding =
  */
 export function keyStandingIn(
   verified: VerifiedProject,
-  userId: string,
+  userId: UserId,
   fingerprintHex: string,
 ): ChainKeyStanding {
   const member = verified.state.members.get(userId);
@@ -80,7 +81,7 @@ export type KeyStanding =
 /** Syncs one project (the keyless front half) and derives the key's standing on it. */
 export function keyStandingOnProject(input: {
   readonly session: CliSession;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly fingerprintHex: string;
 }): Effect.Effect<KeyStanding, never, CliServices> {
   return Effect.map(
@@ -91,7 +92,7 @@ export function keyStandingOnProject(input: {
 
 /** The standing across every project of the list (`listFailure` when it cannot be fetched). */
 export interface KeyStandings {
-  readonly projects: readonly { readonly projectId: string; readonly standing: KeyStanding }[];
+  readonly projects: readonly { readonly projectId: ProjectId; readonly standing: KeyStanding }[];
   /** The failure of fetching the project list (null = fetched). On failure `projects` is empty. */
   readonly listFailure: string | null;
 }
@@ -145,13 +146,13 @@ function standingFrom(
 /** The projects by standing (the material for reporting and branching). */
 export interface StandingGroups {
   readonly active: readonly {
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly standing: Extract<KeyStanding, { readonly kind: "active" }>;
   }[];
-  readonly revoked: readonly string[];
-  readonly absent: readonly string[];
+  readonly revoked: readonly ProjectId[];
+  readonly absent: readonly ProjectId[];
   readonly unsynced: readonly {
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly message: string;
     readonly evidence: boolean;
   }[];
@@ -160,8 +161,8 @@ export interface StandingGroups {
 export function groupStandings(standings: KeyStandings): StandingGroups {
   const groups = {
     active: [] as StandingGroups["active"][number][],
-    revoked: [] as string[],
-    absent: [] as string[],
+    revoked: [] as ProjectId[],
+    absent: [] as ProjectId[],
     unsynced: [] as StandingGroups["unsynced"][number][],
   };
   for (const { projectId, standing } of standings.projects) {
@@ -188,9 +189,9 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
 export type ReserveVerdict =
   | {
       readonly kind: "revoked";
-      readonly projectIds: readonly string[];
+      readonly projectIds: readonly ProjectId[];
       /** Projects where it is not revoked (where it is still actively listed). */
-      readonly activeProjectIds: readonly string[];
+      readonly activeProjectIds: readonly ProjectId[];
     }
   | {
       readonly kind: "usable";
@@ -199,7 +200,7 @@ export type ReserveVerdict =
        * would be invisible). They do not stop the operation (DK K16-6), but the
        * reporting side names them in a Note.
        */
-      readonly uncheckedProjectIds: readonly string[];
+      readonly uncheckedProjectIds: readonly ProjectId[];
       /** Failure to fetch the project list (null = fetched). If it failed, no project was checked. */
       readonly listFailure: string | null;
     };

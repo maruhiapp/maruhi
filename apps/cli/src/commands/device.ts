@@ -18,6 +18,7 @@ import {
 } from "../device-revoke.ts";
 import { displayText } from "../display.ts";
 import { CliError } from "../errors.ts";
+import { projectIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { scopeFromFlags } from "../scope.ts";
@@ -173,7 +174,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
         client: context.client,
         ref,
         cap: { roleCap, scope },
-        project: values.project,
+        project: values.project === undefined ? undefined : projectIdOf(values.project),
       });
       onExitCode(yield* reportApproveOutcomes(outcomes));
     }),
@@ -191,7 +192,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
       yield* deviceListOp({
         session: context.session,
         client: context.client,
-        project: values.project,
+        project: values.project === undefined ? undefined : projectIdOf(values.project),
       });
     }),
   ).pipe(
@@ -210,7 +211,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
         client: context.client,
         refs: values.ref,
         user: values.user,
-        project: values.project,
+        project: values.project === undefined ? undefined : projectIdOf(values.project),
         yes: values.yes,
         revokeToken: values["revoke-token"],
       });

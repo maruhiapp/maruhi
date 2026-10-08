@@ -12,7 +12,7 @@ import {
   VariableConflictError,
   VersionConflictError,
 } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -79,7 +79,7 @@ export interface PushInput {
   /** The resync (full chain re-verification). The caller runs it through resyncExtended's extension check. */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** The writer of the value signature (my internal user_id) and the master sig key (§4.1). */
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
   /** The local floor (§6.3 — the check and commit of internal pulls, and the variable-floor advance after acceptance). */
   readonly floor: FloorHandle;
@@ -96,7 +96,7 @@ export interface PushInput {
    * rollback is refused and the user re-runs it against the new state.
    */
   readonly restore?: {
-    readonly variableId: string;
+    readonly variableId: VariableId;
     readonly sameValueAs: number;
     readonly fromVersion: number;
     readonly fromSignedBytesHashHex: string;

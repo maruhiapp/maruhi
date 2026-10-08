@@ -35,6 +35,8 @@ import {
   createEnvironmentOp,
   genesisOp,
   makeTestUser,
+  testEnvironmentId,
+  testProjectId,
   type TestUser,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
@@ -251,7 +253,7 @@ describe("maruhi invite create", () => {
       context: {
         suite: SUITE_ID,
         inviteId: body.id,
-        projectId: built.projectId,
+        projectId: testProjectId(built.projectId),
         linkPubHex: body.linkPubHex,
         headHashHex: body.headHashHex,
         headSeq: body.headSeq,
@@ -261,7 +263,7 @@ describe("maruhi invite create", () => {
         inviterSigPubHex: inviter.sigPubHex,
         // The K2 CLI issues only scope = all (carried on both the issuance body and the issuance signature)
         scopeKind: body.scopeKind,
-        scopeEnvironmentIds: body.scopeEnvironmentIds,
+        scopeEnvironmentIds: body.scopeEnvironmentIds.map(testEnvironmentId),
       },
       signatureHex: body.issueSignatureHex,
     });
@@ -423,7 +425,7 @@ describe("maruhi invite create", () => {
       context: {
         suite: SUITE_ID,
         inviteId: body.id,
-        projectId: built.projectId,
+        projectId: testProjectId(built.projectId),
         linkPubHex: body.linkPubHex,
         headHashHex: body.headHashHex,
         headSeq: body.headSeq,
@@ -432,7 +434,7 @@ describe("maruhi invite create", () => {
         inviterEncPubHex: inviter.encPubHex,
         inviterSigPubHex: inviter.sigPubHex,
         scopeKind: "listed",
-        scopeEnvironmentIds: ["env-dev", "env-staging"],
+        scopeEnvironmentIds: [testEnvironmentId("env-dev"), testEnvironmentId("env-staging")],
       },
       signatureHex: body.issueSignatureHex,
     });
@@ -683,7 +685,7 @@ describe("maruhi invite accept", () => {
   async function verifyBody(body: AcceptBody, linkPubHex: string): Promise<void> {
     const context = {
       suite: SUITE_ID,
-      projectId: PROJECT_ID,
+      projectId: testProjectId(PROJECT_ID),
       linkPubHex,
       inviteeUserId: acceptor.userId,
       inviteeEncPubHex: body.encPubHex,

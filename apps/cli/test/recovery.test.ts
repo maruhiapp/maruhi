@@ -21,7 +21,7 @@ import {
   ownDevicesPathOf,
 } from "../src/own-devices.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
-import { makeTestUser, type TestUser } from "./support/crypto.ts";
+import { makeTestUser, testUserId, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
@@ -86,7 +86,7 @@ async function recordedReservesOf(
   userId: string,
 ): Promise<readonly OwnDeviceEntry[]> {
   const loaded = await Effect.runPromise(
-    makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath)).load(origin, userId),
+    makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath)).load(origin, testUserId(userId)),
   );
   if (loaded.state !== "loaded") {
     return [];
@@ -98,7 +98,9 @@ async function recordedReservesOf(
 
 /** The device key record in the keychain (fails if absent). */
 function storedDeviceRecord(env: TestEnv, origin: string, userId: string): StoredMasterKey {
-  const record = parseStoredMasterKey(env.keychain.get(masterKeyEntryName(origin, userId)) ?? "");
+  const record = parseStoredMasterKey(
+    env.keychain.get(masterKeyEntryName(origin, testUserId(userId))) ?? "",
+  );
   if (record === null) throw new Error("expected a device-key record in the keychain");
   return record;
 }
@@ -169,7 +171,7 @@ async function unwrapWithDisplayedCode(
   if (secret === null) throw new Error("expected a parsed recovery secret");
   const unwrapped = await unwrapMasterSecret({
     recoverySecret: Redacted.value(secret),
-    userId,
+    userId: testUserId(userId),
     wrapped: {
       nonce: Uint8Array.from(Buffer.from(body?.nonceHex ?? "", "hex")),
       ciphertext: Uint8Array.from(Buffer.from(body?.ciphertextHex ?? "", "hex")),
@@ -278,13 +280,17 @@ describe("maruhi key generate recovery issuance", () => {
     expect(env.errors.join("\n")).toContain(
       "Cannot check whether your account already has a recovery ledger",
     );
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeUndefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeUndefined();
     // An explicit naming generates regardless of a ledger's presence (it does
     // not refuse even when a ledger exists; let the status read by the later sealing answer = it is issued as a replacement)
     statusAnswers = true;
     env.setPromptResponses([lastGroupOf(env)]);
     expect(await runCli(["key", "generate", "--new-identity"], env.layer)).toBe(0);
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeDefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeDefined();
     expect(env.errors.join("\n")).toContain("Replacing the existing recovery registration");
   });
 
@@ -300,7 +306,9 @@ describe("maruhi key generate recovery issuance", () => {
     expect(await runCli(["key", "generate"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("`maruhi device add`");
     expect(putSeen).toBe(false);
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeUndefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeUndefined();
   });
 
   it("fails after 3 save-verification failures but guides that the registration remains", async () => {
@@ -312,7 +320,9 @@ describe("maruhi key generate recovery issuance", () => {
     expect(errors).toContain("Save confirmation failed");
     expect(errors).toContain("`maruhi key recovery`");
     // The key generation itself succeeded
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeDefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeDefined();
   });
 
   it("skips issuance in an AI-agent environment and guides toward a human device", async () => {
@@ -330,7 +340,9 @@ describe("maruhi key generate recovery issuance", () => {
     expect(env.logs.join("\n")).toContain(
       "Skipped creating the reserve key and its recovery code because this is an AI agent environment",
     );
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeDefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeDefined();
     // No reserve key was created (and none recorded)
     expect(await recordedReservesOf(env, maruhi.origin, "user-0001")).toHaveLength(0);
   });
@@ -345,7 +357,9 @@ describe("maruhi key generate recovery issuance", () => {
     expect(env.errors.join("\n")).toContain(
       "the device key generation itself is complete; create the reserve key later with `maruhi key recovery`",
     );
-    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"))).toBeDefined();
+    expect(
+      env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
+    ).toBeDefined();
     // A reserve key that failed to seal is not recorded (seal → record ordering — K4-1)
     expect(await recordedReservesOf(env, maruhi.origin, "user-0001")).toHaveLength(0);
   });

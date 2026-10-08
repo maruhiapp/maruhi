@@ -2,6 +2,7 @@
 // the kind-5 sweep -> the local record -> registry row deletion -> the
 // token-revocation proposal (the group's overview lives in device.ts).
 
+import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -10,6 +11,7 @@ import type { MaruhiClient } from "./api.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { type CliServices, openProject, type ProjectContext } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
+import { chainEnvironmentIds } from "./deks.ts";
 import { describeCap, describeDevice, devicesOf, findOwnDevice } from "./device-key.ts";
 import {
   appendRevokeDevice,
@@ -26,6 +28,7 @@ import {
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
@@ -83,7 +86,7 @@ interface ProjectRevokePlan {
 
 /** The revocation result on one project (reported by commands/device.ts). */
 export interface ProjectRevokeOutcome {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly revoked: readonly string[];
   readonly sweep: DeviceSweepOutcome | null;
   readonly skipped: string | null;
@@ -105,7 +108,7 @@ type RevokeRef = { readonly ref: string; readonly prefix: string; readonly viaLa
 
 /** The confirmation table (K4-7): per-project revoked FPs (full) and remaining devices, and the derived warnings. */
 const printRevokePlans = Effect.fn("device-revoke.printRevokePlans")(function* (input: {
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly plans: readonly ProjectRevokePlan[];
   readonly refs: readonly RevokeRef[];
 }): Effect.fn.Return<void, never, CliIo> {
@@ -151,12 +154,12 @@ export const deviceRevokeOp = Effect.fn("device-revoke.deviceRevokeOp")(function
   readonly client: MaruhiClient;
   readonly refs: readonly string[];
   readonly user: string | undefined;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
   readonly yes: boolean;
   readonly revokeToken: boolean;
 }): Effect.fn.Return<DeviceRevokeSummary, CliError, CliServices> {
   const io = yield* CliIo;
-  const targetUserId = input.user ?? input.session.userId;
+  const targetUserId = input.user === undefined ? input.session.userId : userIdOf(input.user);
   const self = targetUserId === input.session.userId;
   const masterKeys = yield* loadMasterKeys(input.session);
   const { registry, refs, reserveFps } = yield* prepareRevokeRefs({
@@ -236,7 +239,7 @@ const prepareRevokeRefs = Effect.fn("device-revoke.prepareRevokeRefs")(function*
 const executeRevokeAll = Effect.fn("device-revoke.executeRevokeAll")(function* (input: {
   readonly session: CliSession;
   readonly plans: readonly ProjectRevokePlan[];
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly masterKeys: MasterKeys;
   readonly outcomes: ProjectRevokeOutcome[];
 }): Effect.fn.Return<readonly string[], never, CliServices> {
@@ -259,8 +262,8 @@ const executeRevokeAll = Effect.fn("device-revoke.executeRevokeAll")(function* (
 /** Each project's revocation plan (a skipped project is accumulated into the result as skipped first). */
 const planRevokeAll = Effect.fn("device-revoke.planRevokeAll")(function* (input: {
   readonly session: CliSession;
-  readonly projectIds: readonly string[];
-  readonly targetUserId: string;
+  readonly projectIds: readonly ProjectId[];
+  readonly targetUserId: UserId;
   readonly refs: readonly RevokeRef[];
   readonly reserveFps: ReadonlySet<string>;
   readonly ownFingerprintHex: string;
@@ -318,7 +321,7 @@ const recordedReserveFingerprints = Effect.fn("device-revoke.recordedReserveFing
 
 /** The current devices matching a reference (a non-unique prefix is a usage error). */
 const matchRevokeTargets = Effect.fn("device-revoke.matchRevokeTargets")(function* (input: {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly devices: readonly ChainDevice[];
   readonly refs: readonly { readonly prefix: string }[];
 }): Effect.fn.Return<readonly ChainDevice[], CliError> {
@@ -387,8 +390,8 @@ function revokeWarnings(input: {
 /** Assembles one project's worth of confirmation-table material (string = the skip reason). */
 const planRevoke = Effect.fn("device-revoke.planRevoke")(function* (input: {
   readonly session: CliSession;
-  readonly projectId: string;
-  readonly targetUserId: string;
+  readonly projectId: ProjectId;
+  readonly targetUserId: UserId;
   readonly refs: readonly { readonly prefix: string }[];
   readonly reserveFps: ReadonlySet<string>;
   readonly ownFingerprintHex: string;
@@ -436,9 +439,9 @@ function uncoveredEnvironments(
   verified: VerifiedProject,
   target: ChainMember,
   remaining: readonly ChainDevice[],
-): readonly string[] {
+): readonly EnvironmentId[] {
   const covered = remaining.map((device) => effectivePermissionOf(target, device).scope);
-  return [...verified.state.environments.keys()]
+  return chainEnvironmentIds(verified)
     .filter(
       (environmentId) =>
         scopeIncludesEnvironment(target.scope, environmentId) &&
@@ -451,7 +454,7 @@ function uncoveredEnvironments(
 function executeRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly masterKeys: MasterKeys;
 }): Effect.Effect<ProjectRevokeOutcome, never, CliServices> {
   const { context } = input.plan;
@@ -494,7 +497,7 @@ function executeRevoke(input: {
 function sweepAfterRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly masterKeys: MasterKeys;
   readonly appended: { readonly verified: VerifiedProject; readonly revoked: readonly string[] };
 }): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {

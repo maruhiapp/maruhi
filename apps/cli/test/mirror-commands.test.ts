@@ -25,6 +25,7 @@ import {
   grantServerOp,
   makeTestUser,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   built,
@@ -285,7 +286,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       // status reads again
       await Effect.runPromise(
         Effect.gen(function* () {
-          yield* (yield* FloorStore).commitHead(built.projectId, {
+          yield* (yield* FloorStore).commitHead(testProjectId(built.projectId), {
             seq: 1,
             hashHex: built.hashes[0] ?? "",
           });
@@ -322,7 +323,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       pair.state.pages.length = 0;
       await Effect.runPromise(
         Effect.gen(function* () {
-          yield* (yield* FloorStore).commitHead(built.projectId, {
+          yield* (yield* FloorStore).commitHead(testProjectId(built.projectId), {
             seq: head.chainHeadSeq + 1,
             hashHex: "cd".repeat(32),
           });

@@ -7,6 +7,8 @@ import { Argument, Command, Flag } from "effect/cli";
 import { NonBlank, projectFlags, singleFlag, singleValued } from "../commands/flags.ts";
 import { floorHandleFor, openProject } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
+import { environmentIdOf } from "../ids.ts";
+import { projectIdOf } from "../ids.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   checkConfigProject,
@@ -150,8 +152,8 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
     server: values.server,
     project: values.project ?? config.projectId,
   });
-  const sourceFloor = yield* floorHandleFor(context, target.environment);
-  const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
+  const sourceFloor = yield* floorHandleFor(context, environmentIdOf(target.environment));
+  const receiptsFloor = yield* floorHandleFor(context, environmentIdOf(config.receiptsEnvironment));
   // The http driver's integration-token environment. When it equals
   // the sync-source / receipt environment, **the same floor handle** is
   // used (holding two handles on one environment would leave the
@@ -163,7 +165,7 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
         ? sourceFloor
         : target.driver.token.environment === config.receiptsEnvironment
           ? receiptsFloor
-          : yield* floorHandleFor(context, target.driver.token.environment);
+          : yield* floorHandleFor(context, environmentIdOf(target.driver.token.environment));
   return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
 });
 
@@ -231,7 +233,7 @@ export function makeSyncCommands() {
         driver: values.driver,
         environment,
         receipts,
-        project: values.project,
+        project: values.project === undefined ? undefined : projectIdOf(values.project),
         variables: values.variables,
         exclude: values.exclude,
         production: values.production,

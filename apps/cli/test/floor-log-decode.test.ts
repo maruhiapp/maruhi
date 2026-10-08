@@ -24,7 +24,7 @@ import type {
   ProjectFloor,
   VariableFloor,
 } from "../src/floor.ts";
-
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
 const HASH_C = "33".repeat(32);
@@ -63,8 +63,8 @@ const environment: EnvironmentFloor = {
 };
 const conflict: FloorConflict = {
   kind: "value",
-  environmentId: "prod",
-  variableId: "va",
+  environmentId: testEnvironmentId("prod"),
+  variableId: testVariableId("va"),
   firstVersion: 4,
   firstHashHex: HASH_A,
   secondVersion: 4,
@@ -73,7 +73,7 @@ const conflict: FloorConflict = {
 const intent: FloorIntent = {
   id: INTENT_ID,
   op: "rotate_epoch",
-  environmentId: "prod",
+  environmentId: testEnvironmentId("prod"),
   epoch: 3,
   dekCommitmentHex: HASH_C,
   variableId: null,
@@ -186,7 +186,7 @@ describe("decodeLogRecord — one valid line per r kind", () => {
     const deletion: FloorIntent = {
       id: INTENT_ID,
       op: "delete_environment",
-      environmentId: "prod",
+      environmentId: testEnvironmentId("prod"),
       declaredHead: head,
     };
     const record = { r: "intent", intent: deletion };

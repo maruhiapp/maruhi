@@ -58,13 +58,14 @@
 // only the target name, the workflow name, counts, versions, and
 // variable names (displayText).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
 import { type CliServices, type EnvironmentContext, floorHandleFor } from "../context.ts";
 import { displayText } from "../display.ts";
 import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";
+import { environmentIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { type ExecInput, ProcessRunner } from "../run.ts";
@@ -150,8 +151,8 @@ function targetCarries(target: SyncTarget, name: string): boolean {
 export function decidePushSync(
   setup: PushSyncSetup,
   input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly name: string;
   },
 ): Effect.Effect<PushSyncDecision, CliError> {
@@ -277,7 +278,7 @@ const triggerWorkflow = Effect.fn("sync-push.triggerWorkflow")(function* (
  */
 function floorLedger(
   context: EnvironmentContext,
-): (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices> {
+): (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, never, CliServices> {
   const handles = new Map<string, FloorHandle>([[context.environmentId, context.floorHandle]]);
   return (environmentId) =>
     Effect.gen(function* () {
@@ -296,7 +297,7 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   context: EnvironmentContext,
   setup: PushSyncSetup,
   target: SyncTarget,
-  floorOf: (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices>,
+  floorOf: (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, never, CliServices>,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   yield* io.log(
@@ -306,9 +307,11 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   // push destination gets push's handle; the receipt
   // environment and the unified token's environment get the
   // same one the ledger returns)
-  const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
+  const receiptsFloor = yield* floorOf(environmentIdOf(setup.config.receiptsEnvironment));
   const tokenFloor =
-    target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
+    target.driver.kind !== "http"
+      ? null
+      : yield* floorOf(environmentIdOf(target.driver.token.environment));
   yield* syncApplyOp({
     client: context.client,
     verified: context.verified,

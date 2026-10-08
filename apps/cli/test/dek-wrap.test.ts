@@ -9,7 +9,13 @@ import { Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { wrapAndSignFor } from "../src/dek-wrap.ts";
-import { hexBytes, makeTestUser } from "./support/crypto.ts";
+import {
+  hexBytes,
+  makeTestUser,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+} from "./support/crypto.ts";
 
 function serverRecipient(serverEncPubHex: string) {
   return {
@@ -18,7 +24,7 @@ function serverRecipient(serverEncPubHex: string) {
       serverKeyFingerprintHex: testKeyFingerprintHex("ab".repeat(16)),
       serverEncPubHex,
       grantSeq: 1,
-      scopeEnvironmentIds: ["prod"],
+      scopeEnvironmentIds: [testEnvironmentId("prod")],
       leasePolicy: [],
     },
   };
@@ -28,8 +34,8 @@ describe("wrapAndSignFor", () => {
   it("fails with the hex-decode reason for a non-hex recipient enc key", async () => {
     const signer = await makeTestUser("user-signer-0001");
     const built = await wrapAndSignFor({
-      projectId: "aa".repeat(32),
-      environmentId: "prod",
+      projectId: testProjectId("aa".repeat(32)),
+      environmentId: testEnvironmentId("prod"),
       epoch: 1,
       dek: Redacted.make(new Uint8Array(32), { label: "dek" }),
       recipient: serverRecipient("not-hex"),
@@ -45,8 +51,8 @@ describe("wrapAndSignFor", () => {
   it("fails with the key-import reason for an enc key that is hex but not a public key", async () => {
     const signer = await makeTestUser("user-signer-0001");
     const built = await wrapAndSignFor({
-      projectId: "aa".repeat(32),
-      environmentId: "prod",
+      projectId: testProjectId("aa".repeat(32)),
+      environmentId: testEnvironmentId("prod"),
       epoch: 1,
       dek: Redacted.make(new Uint8Array(32), { label: "dek" }),
       recipient: serverRecipient("abcd"),
@@ -65,8 +71,8 @@ describe("wrapAndSignFor", () => {
     const projectId = "aa".repeat(32);
     const dek = new Uint8Array(32).map((_, index) => index);
     const built = await wrapAndSignFor({
-      projectId,
-      environmentId: "prod",
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId("prod"),
       epoch: 1,
       dek: Redacted.make(dek, { label: "dek" }),
       recipient: serverRecipient(server.encPubHex),
@@ -91,10 +97,10 @@ describe("wrapAndSignFor", () => {
       await verifyDekWrapSignature({
         context: {
           suite: built.wrap.suite,
-          projectId,
-          environmentId: "prod",
+          projectId: testProjectId(projectId),
+          environmentId: testEnvironmentId("prod"),
           epoch: 1,
-          recipientUserId: "ab".repeat(16),
+          recipientUserId: testUserId("ab".repeat(16)),
           recipientEncPubHex: server.encPubHex,
           encHex: built.wrap.encHex,
           ciphertextHex: built.wrap.ciphertextHex,
@@ -113,10 +119,10 @@ describe("wrapAndSignFor", () => {
           ciphertext: hexBytes(built.wrap.ciphertextHex),
         },
         context: {
-          projectId,
-          environmentId: "prod",
+          projectId: testProjectId(projectId),
+          environmentId: testEnvironmentId("prod"),
           epoch: 1,
-          recipientUserId: "ab".repeat(16),
+          recipientUserId: testUserId("ab".repeat(16)),
         },
       }),
       "unwrapDek",

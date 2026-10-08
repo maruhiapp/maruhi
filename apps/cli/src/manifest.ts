@@ -19,7 +19,12 @@
 // same verdict as a dropped environment statement.
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
-import { CryptoEnvManifestInvalidError, cryptoEffect } from "@maruhi/core";
+import {
+  CryptoEnvManifestInvalidError,
+  cryptoEffect,
+  type EnvironmentId,
+  type UserId,
+} from "@maruhi/core";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
 import {
   computeEnvManifestSignedBytesHash,
@@ -35,6 +40,7 @@ import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ManifestFloor } from "./floor.ts";
+import { userIdOf } from "./ids.ts";
 
 /**
  * The evidence material of a verified manifest (§14.2-5's
@@ -55,7 +61,7 @@ export interface VerifiedManifest {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly signatureHex: string;
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   readonly issuerKeyFingerprintHex: string;
 }
 
@@ -65,7 +71,7 @@ export type ManifestDigestEntry = VariablesDigestEntry;
 /** Issuance input: the previous manifest (none = env create's v1) and the post-issuance meta state. */
 interface SignManifestInput {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The current epoch at issuance time (rotate compound = new_epoch; otherwise = the verified view's current epoch). */
   readonly epoch: number;
   /** The verified previous manifest (null = no stored manifest → manifestVersion 1). */
@@ -77,7 +83,7 @@ interface SignManifestInput {
   readonly entries: readonly ManifestDigestEntry[];
   /** The latest form of the post-issuance environment meta statement. */
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   readonly signingKey: CryptoKey;
   /**
    * The declared head. Compound (env create / rotate) = the current
@@ -184,7 +190,7 @@ export type ManifestVerifyOutcome =
  */
 export async function verifyDistributedManifest(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
@@ -220,7 +226,7 @@ export async function verifyDistributedManifest(input: {
           envMetaVersion: manifest.envMetaVersion,
           envMetaSigHashHex: manifest.envMetaSigHashHex,
           prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-          issuerUserId: manifest.issuerUserId,
+          issuerUserId: userIdOf(manifest.issuerUserId),
           chainHeadHashHex: manifest.chainHeadHashHex,
           chainHeadSeq: manifest.chainHeadSeq,
         },
@@ -250,7 +256,7 @@ export async function verifyDistributedManifest(input: {
             chainHeadSeq: manifest.chainHeadSeq,
             chainHeadHashHex: manifest.chainHeadHashHex,
             signatureHex: manifest.signatureHex,
-            issuerUserId: manifest.issuerUserId,
+            issuerUserId: userIdOf(manifest.issuerUserId),
             issuerKeyFingerprintHex: manifest.issuerKeyFingerprintHex,
           },
         }),

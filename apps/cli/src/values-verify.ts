@@ -16,6 +16,9 @@ import {
   CryptoUnsupportedMetaLayoutError,
   CryptoValueInvalidError,
   type WrappedCryptoError,
+  type EnvironmentId,
+  type UserId,
+  type VariableId,
 } from "@maruhi/core";
 import type { MetaStatementContext, MetaVariableSchema } from "@maruhi/crypto";
 import {
@@ -35,10 +38,11 @@ import type {
   VerifiedTombstone,
   VerifiedVariableStatement,
 } from "./floor-check.ts";
+import { userIdOf } from "./ids.ts";
 
 /** One pulled variable whose write signature and statement passed §6.3. */
 export interface VerifiedPulledValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   /** The verified statement's name (no other name is trusted — §12-2). */
   readonly name: string;
   readonly version: number;
@@ -67,11 +71,11 @@ export interface VerifiedPulledValue {
   readonly metaChainHeadHashHex: string;
   /** The verified value signature and its attribution (self-contained fork evidence — §14.2-5). */
   readonly valueSignatureHex: string;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly writerKeyFingerprintHex: string;
   /** The verified statement signature and its attribution (same). */
   readonly metaSignatureHex: string;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly authorKeyFingerprintHex: string;
   /** The statement's wire layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
@@ -81,7 +85,7 @@ export interface VerifiedPulledValue {
 
 /** One pulled variable on the wire (statement + value — AUTH_SPEC §12-7 / §14-2). */
 export interface PulledWire {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly statement: DistributedVariableMetaStatement;
   readonly value: DistributedEncryptedPayload;
 }
@@ -106,7 +110,7 @@ export type VerifyOutcome<T> =
 /** Whether the claimed AAD's coordinate components match the expected coordinates (verified genesis / requested env / response's outer id) (§6.3-5). */
 function coordinatesMatch(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   variable: PulledWire,
 ): boolean {
   const aad = variable.value.aad;
@@ -190,7 +194,7 @@ function metaEvidenceFields(
     chainHeadSeq: statement.chainHeadSeq,
     chainHeadHashHex: statement.chainHeadHashHex,
     signatureHex: statement.signatureHex,
-    authorUserId: statement.authorUserId,
+    authorUserId: userIdOf(statement.authorUserId),
     authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
   };
 }
@@ -284,7 +288,7 @@ function contextLayoutFields(
  */
 async function verifyStatement(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   target: MetaStatementContext["target"],
   statement: DistributedVariableMetaStatement | DistributedEnvironmentMetaStatement,
   label: string,
@@ -304,7 +308,7 @@ async function verifyStatement(
           ...contextLayoutFields(layout ?? null),
           metaVersion: statement.metaVersion,
           prevMetaSigHashHex: statement.prevMetaSigHashHex,
-          authorUserId: statement.authorUserId,
+          authorUserId: userIdOf(statement.authorUserId),
           chainHeadHashHex: statement.chainHeadHashHex,
           chainHeadSeq: statement.chainHeadSeq,
         },
@@ -332,7 +336,7 @@ async function verifyStatement(
  */
 async function verifyVariableStatement(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   statement: DistributedVariableMetaStatement,
   label: string,
 ): Promise<
@@ -358,7 +362,7 @@ async function verifyVariableStatement(
 
 async function verifyOne(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   variable: PulledWire,
 ): Promise<VerifyOutcome<VerifiedPulledValue>> {
   const payload = variable.value;
@@ -417,7 +421,7 @@ async function verifyOne(
           nonceHex: payload.nonceHex,
           ciphertextHex: payload.ciphertextHex,
           prevValueSigHashHex: payload.prevValueSigHashHex,
-          writerUserId: payload.writerUserId,
+          writerUserId: userIdOf(payload.writerUserId),
           chainHeadHashHex: payload.chainHeadHashHex,
           chainHeadSeq: payload.chainHeadSeq,
         },
@@ -445,10 +449,10 @@ async function verifyOne(
             metaChainHeadSeq: statement.chainHeadSeq,
             metaChainHeadHashHex: statement.chainHeadHashHex,
             valueSignatureHex: payload.signatureHex,
-            writerUserId: payload.writerUserId,
+            writerUserId: userIdOf(payload.writerUserId),
             writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
             metaSignatureHex: statement.signatureHex,
-            authorUserId: statement.authorUserId,
+            authorUserId: userIdOf(statement.authorUserId),
             authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
             layoutVersion: verifiedStatement.value.layout.layoutVersion,
             schema: verifiedStatement.value.layout.schema,
@@ -492,7 +496,7 @@ export interface PullWire {
 /** Verifying the environment's own statement (including that it is active). Returns the evidence material. */
 export async function verifyEnvironmentStatement(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   statement: DistributedEnvironmentMetaStatement,
 ): Promise<VerifyOutcome<VerifiedEnvironmentStatement>> {
   // The verified chain is the authority for deletion (CRYPTO_SPEC §6.3
@@ -536,7 +540,7 @@ export async function verifyEnvironmentStatement(
 /** Verifying a deleted variable's tombstone statement (a juxtaposition with the active / declared side = the transport shape of an unauthorized undeletion, also refused). */
 export async function verifyDeletedStatements(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   deleted: readonly DistributedVariableMetaStatement[],
   liveIds: ReadonlySet<string>,
 ): Promise<VerifyOutcome<readonly VerifiedTombstone[]>> {
@@ -589,7 +593,7 @@ export async function verifyDeletedStatements(
 
 /** The name check of the verified live (active + declared) set: a duplicate same name = resolution refusal (§4.2), non-NFC = a warning (SHOULD). */
 export function checkVerifiedNames(
-  values: readonly { readonly variableId: string; readonly name: string }[],
+  values: readonly { readonly variableId: VariableId; readonly name: string }[],
   warnings: string[],
 ): string | null {
   const seenNames = new Set<string>();
@@ -618,7 +622,7 @@ export function checkVerifiedNames(
  */
 export async function verifyVariableStatements(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   statements: readonly DistributedVariableMetaStatement[],
 ): Promise<
   VerifyOutcome<{
@@ -681,7 +685,7 @@ export async function verifyVariableStatements(
  */
 export async function verifyDeclaredStatements(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   declared: readonly DistributedVariableMetaStatement[],
   activeIds: ReadonlySet<string>,
 ): Promise<
@@ -746,7 +750,7 @@ export async function verifyDeclaredStatements(
 /** Verifying the active variables (including the variableId-duplicate refusal). */
 export async function verifyActiveVariables(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   variables: readonly PulledWire[],
 ): Promise<
   VerifyOutcome<{ readonly values: readonly VerifiedPulledValue[]; readonly ids: Set<string> }>

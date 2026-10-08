@@ -13,6 +13,7 @@
 // export`); row content never reaches the output.
 
 import type { MirrorStatus, MirrorSyncRecord } from "@maruhi/api-schema";
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -38,7 +39,7 @@ interface MirrorSyncInput<R = never> {
    * path only (ruling H revision, round 5).
    */
   readonly pages?: MaruhiClient;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The server's origin: the mirror's recorded source must be it, else the sync is refused (`force` overrides — ruling H revision, round 6). */
   readonly sourceOrigin: string;
   /** The mirror's origin: a server that is itself a mirror of another origin, or a frozen former primary that already synced back, is no source for it (`force` overrides — ruling H revision, round 8). */
@@ -77,7 +78,7 @@ export type MirrorSyncResult =
 
 export function mirrorStatusOp(input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
 }): Effect.Effect<MirrorStatus, CliError> {
   return input.client.mirror
     .status({ params: { projectId: input.projectId } })
@@ -473,7 +474,7 @@ function describeLastSync(status: MirrorStatus): string {
 /** The report of a replication (heads and counts only). */
 export function describeMirrorSync(
   result: MirrorSyncResult,
-  projectId: string,
+  projectId: ProjectId,
   mirrorOrigin: string,
 ): string[] {
   if (result.kind === "current") {

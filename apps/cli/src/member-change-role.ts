@@ -2,7 +2,7 @@
 // widening backfill + demotion / narrowing sweep (§7 — the group's overview
 // lives in member.ts).
 
-import type { UserId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   ALL_SCOPE,
   type ChainEntry,
@@ -68,9 +68,9 @@ export interface MemberChangeRoleSummary {
   readonly newRole: Role;
   readonly newScope: MemberScope;
   /** Of the widened environments (new \ old — the actor's backfill duty. §12-6), those inside the actor's scope. */
-  readonly widenedEnvironmentIds: readonly string[];
+  readonly widenedEnvironmentIds: readonly EnvironmentId[];
   /** Of the historical widenings, those outside the actor's scope (not my duty — left to a member whose scope has that environment). */
-  readonly widenedOutOfScopeEnvironmentIds: readonly string[];
+  readonly widenedOutOfScopeEnvironmentIds: readonly EnvironmentId[];
   /** The narrowed environments (old \ new — the rotate duty. §7). */
   readonly narrowedEnvironmentIds: readonly string[];
   /** The widened part's backfill result (no widening = null). */
@@ -243,7 +243,7 @@ export function selfObligationReason(
 const ensureRoleChangeable = Effect.fn("member-change-role.ensureRoleChangeable")(
   function* (input: {
     readonly verified: VerifiedProject;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
     readonly targetUserId: UserId;
     readonly request: ChangeRoleRequest;
     readonly proposing: boolean;
@@ -315,7 +315,7 @@ const ensureRoleChangeable = Effect.fn("member-change-role.ensureRoleChangeable"
  */
 function signChangeRoleEntry(input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly targetUserId: UserId;
   readonly newRole: Role;
   readonly newScope: MemberScope;
@@ -349,7 +349,7 @@ function signChangeRoleEntry(input: {
 const signChangeRoleAtView = Effect.fn("member-change-role.signChangeRoleAtView")(
   function* (input: {
     readonly verified: VerifiedProject;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
     readonly targetUserId: UserId;
     readonly request: ChangeRoleRequest;
     readonly signingKeyPair: SigningKeyPair;
@@ -384,10 +384,10 @@ const signChangeRoleAtView = Effect.fn("member-change-role.signChangeRoleAtView"
 export function scopeChangesOf(
   verified: VerifiedProject,
   target: ChainMember,
-): { readonly widened: readonly string[]; readonly narrowed: readonly string[] } {
+): { readonly widened: readonly EnvironmentId[]; readonly narrowed: readonly EnvironmentId[] } {
   const current = new Set(environmentsOfScopeAt(verified, target.scope, verified.state.headSeq));
-  const widened = new Set<string>();
-  let narrowed: readonly string[] = [];
+  const widened = new Set<EnvironmentId>();
+  let narrowed: readonly EnvironmentId[] = [];
   // A change_role applied via a proposal lands on the same list (design record K6-C)
   for (const { seq, operation } of verified.applied) {
     if (operation.op !== "change_role" || operation.payload.targetUserId !== target.userId) {
@@ -417,9 +417,12 @@ export function scopeChangesOf(
  */
 function splitWidenedByActorScope(input: {
   readonly verified: VerifiedProject;
-  readonly actorUserId: string;
-  readonly widened: readonly string[];
-}): { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] } {
+  readonly actorUserId: UserId;
+  readonly widened: readonly EnvironmentId[];
+}): {
+  readonly widened: readonly EnvironmentId[];
+  readonly widenedOutOfScope: readonly EnvironmentId[];
+} {
   // A chain-deleted environment is dropped from the widened part (never
   // keep emitting an out-of-scope note for "an environment nobody can
   // fill" — pullfrog's catch. Same set as backfillAllEnvironments; a
@@ -498,7 +501,7 @@ const appendRoleChange = Effect.fn("member-change-role.appendRoleChange")(functi
   readonly verified: VerifiedProject;
   readonly targetUserId: UserId;
   readonly request: ChangeRoleRequest;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly inner: ProposableOperation;
@@ -581,7 +584,7 @@ export const fulfilRoleChange = Effect.fn("member-change-role.fulfilRoleChange")
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
@@ -647,7 +650,7 @@ export const memberChangeRoleOp = Effect.fn("member-change-role.memberChangeRole
   readonly verified: VerifiedProject;
   readonly targetUserId: UserId;
   readonly request: ChangeRoleRequest;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;

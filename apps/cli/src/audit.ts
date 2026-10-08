@@ -27,8 +27,14 @@ import {
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "@maruhi/api-schema";
-import type { AuditEventRecord, AuditReadVariable, ProposalIndex } from "@maruhi/core";
 import {
+  type AuditEventRecord,
+  type AuditReadVariable,
+  type ProposalIndex,
+  type EnvironmentId,
+  type ProjectId,
+  type UserId,
+  type VariableId,
   auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
@@ -45,6 +51,7 @@ import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { environmentIdOf, variableIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
@@ -66,10 +73,10 @@ export interface AuditPageOptions {
 /** list's filters (AUDIT_SPEC §7 vocabulary). */
 export interface AuditListFilters {
   readonly event: string | null;
-  readonly actorUserId: string | null;
-  readonly targetUserId: string | null;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly actorUserId: UserId | null;
+  readonly targetUserId: UserId | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly variableId: VariableId | null;
 }
 
 /** list's display options. */
@@ -351,7 +358,7 @@ function describeTarget(event: WireAuditEvent): string | null {
 }
 
 /** A variable's display label (`NAME (id)` when a verified name exists, the id alone otherwise). */
-function variableLabel(variableId: string, resolvedName: string | null): string {
+function variableLabel(variableId: VariableId, resolvedName: string | null): string {
   return resolvedName === null
     ? displayText(variableId)
     : `${displayText(resolvedName)} (${displayText(variableId)})`;
@@ -448,7 +455,7 @@ function expandedReadLines(
 
 /** The display form of one variable of an aggregated row (shared by the expanded lines and --var's match display). */
 function listedVariableLabel(variable: AuditReadVariable, names: NameIndex | undefined): string {
-  return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
+  return `var=${variableLabel(variableIdOf(variable.variableId), names?.get(variableIdOf(variable.variableId)) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
 }
 
 /** Rendering of one line. Display names (resolvedName) come only from verified statements. */
@@ -491,7 +498,7 @@ function continuationHint(
 
 function fetchProjectEvents(
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
   page: AuditPageOptions,
   filters: AuditListFilters,
 ): Effect.Effect<readonly WireAuditEvent[], CliError> {
@@ -528,15 +535,15 @@ function environmentIdsForNames(
   events: readonly WireAuditEvent[],
   options: AuditListOptions,
   matchVariableId: string | null,
-): readonly string[] {
-  const ids = new Set<string>();
+): readonly EnvironmentId[] {
+  const ids = new Set<EnvironmentId>();
   const resolveListed = options.expandReads || matchVariableId !== null;
   for (const event of events) {
     if (event.environmentId === undefined) {
       continue;
     }
     if (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) {
-      ids.add(event.environmentId);
+      ids.add(environmentIdOf(event.environmentId));
     }
   }
   return [...ids].toSorted();
@@ -783,7 +790,7 @@ export const paginateAuditEvents = Effect.fn("audit.paginateAuditEvents")(functi
  */
 const fetchMirrorRowsForSelector = Effect.fn("audit.fetchMirrorRowsForSelector")(function* (
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
   selector: MirrorRowSelector,
 ): Effect.fn.Return<readonly WireAuditEvent[], CliError> {
   const rows: WireAuditEvent[] = [];
@@ -841,7 +848,7 @@ const fetchMirrorRowsForSelector = Effect.fn("audit.fetchMirrorRowsForSelector")
  */
 const fetchAllMirrorRows = Effect.fn("audit.fetchAllMirrorRows")(function* (
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.fn.Return<readonly WireAuditEvent[], CliError> {
   const byId = new Map<string, WireAuditEvent>();
   for (const selector of ["chain-namespace", "chain-seq-present"] as const) {

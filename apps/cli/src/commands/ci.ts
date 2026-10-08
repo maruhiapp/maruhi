@@ -1,6 +1,6 @@
 // `maruhi ci` (discipline: see commands/index.ts).
 
-import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import { isEnvironmentId, isProjectId, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -267,7 +267,7 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
 }): Effect.fn.Return<
   {
     readonly origin: string;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly environmentId: EnvironmentId;
     readonly expiresInDays: number;
   },

@@ -53,6 +53,8 @@ import {
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockRequest, MockServer } from "./support/server.ts";
 import { makeValueEnvironmentServer, type StoredVariable } from "./support/value-env.ts";
@@ -368,7 +370,12 @@ async function decryptReceipt(fixture: Fixture, target: string): Promise<Record<
   const value = stored?.value as WireEncryptedPayload;
   const result = await decryptVariable({
     dek: deks.get(RECEIPTS_ENV) as Uint8Array,
-    context: value.aad,
+    context: {
+      ...value.aad,
+      projectId: testProjectId(value.aad.projectId),
+      environmentId: testEnvironmentId(value.aad.environmentId),
+      variableId: testVariableId(value.aad.variableId),
+    },
     nonce: hexBytes(value.nonceHex),
     ciphertext: hexBytes(value.ciphertextHex),
   });

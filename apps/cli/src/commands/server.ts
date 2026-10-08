@@ -81,7 +81,7 @@ function parseEnvironmentsFlag(
       ),
     );
   }
-  return Effect.succeed(ids as readonly EnvironmentId[]);
+  return Effect.succeed(ids.filter(isEnvironmentId));
 }
 
 /** The deployment whose server key `server grant --key-from` grants (a mirror — AUTH_SPEC §11-7 ruling F). */

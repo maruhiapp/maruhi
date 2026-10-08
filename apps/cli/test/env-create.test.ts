@@ -32,6 +32,9 @@ import {
   makeTestUser,
   removeMemberOp,
   statementHashOf,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
   type TestUser,
   variablesDigestOf,
 } from "./support/crypto.ts";
@@ -185,10 +188,10 @@ async function verifyAndUnwrapWrap(input: {
   const verified = await verifyDekWrapSignature({
     context: {
       suite: wrap.suite,
-      projectId,
-      environmentId: "staging",
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId("staging"),
       epoch: wrap.epoch,
-      recipientUserId: wrap.recipientUserId,
+      recipientUserId: testUserId(wrap.recipientUserId),
       recipientEncPubHex: wrap.recipientEncPubHex,
       encHex: wrap.encHex,
       ciphertextHex: wrap.ciphertextHex,
@@ -209,10 +212,10 @@ async function verifyAndUnwrapWrap(input: {
     recipientKeyPair: pair.value,
     wrapped: { enc: hexBytes(wrap.encHex), ciphertext: hexBytes(wrap.ciphertextHex) },
     context: {
-      projectId,
-      environmentId: "staging",
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId("staging"),
       epoch: 1,
-      recipientUserId: wrap.recipientUserId,
+      recipientUserId: testUserId(wrap.recipientUserId),
     },
   });
   if (!dek.ok) {
@@ -289,8 +292,8 @@ describe("maruhi env create", () => {
     const matched = await verifyDekCommitment({
       context: {
         suite: "maruhi/v1",
-        projectId: built.projectId,
-        environmentId: "staging",
+        projectId: testProjectId(built.projectId),
+        environmentId: testEnvironmentId("staging"),
         epoch: 1,
       },
       dek,
@@ -715,7 +718,9 @@ describe("maruhi env create", () => {
     const env = await startEnv(built.projectId, server.handlers, owner);
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
-    const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
+    );
     const record = loaded.floor?.environments["staging"];
     // The environment floor of an empty variable set: environment meta v1,
     // self-issued manifest v1 (epoch 1), and rule (c)'s baseline = 1
@@ -752,7 +757,9 @@ describe("maruhi env create", () => {
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("does not show this run's create_environment");
-    const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
+    const loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
+    );
     // The floor did not advance (don't write your own assumptions onto the
     // floor)
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
@@ -818,7 +825,9 @@ describe("maruhi env create", () => {
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("post-acceptance confirmation");
-    let loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
+    let loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
+    );
     expect(loaded.floor?.intents).toHaveLength(1);
     expect(loaded.floor?.environments["staging"]).toBeUndefined();
 
@@ -837,7 +846,9 @@ describe("maruhi env create", () => {
     env.errors.length = 0;
     expect(await runCli(["env", "create", "staging2"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("confirmed as accepted on the chain");
-    loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
+    loaded = await Effect.runPromise(
+      makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
+    );
     // The reconciliation has recovered the interrupted create's self-issued
     // manifest onto the floor
     expect(loaded.floor?.environments["staging"]?.manifest).toMatchObject({

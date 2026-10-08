@@ -26,8 +26,7 @@
 //     --force may run it
 
 import type { DistributedEncryptedPayload, VariableVersionHistoryEntry } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId, cryptoEffect } from "@maruhi/core";
 import { verifyDistributedValue } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
@@ -39,6 +38,7 @@ import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
+import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
@@ -59,7 +59,7 @@ interface VarHistoryBase {
 
 export interface VarHistoryResult {
   readonly name: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly status: "active" | "declared";
   /** Ascending by version (server-declared metadata). */
   readonly versions: readonly VariableVersionHistoryEntry[];
@@ -102,8 +102,8 @@ const resolveLiveVariable = Effect.fn("var-history.resolveLiveVariable")(functio
 const fetchHistory = Effect.fn("var-history.fetchHistory")(function* (
   client: MaruhiClient,
   verified: VerifiedProject,
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
 ): Effect.fn.Return<readonly VariableVersionHistoryEntry[], CliError> {
   const response = yield* client.variables
     .history({ params: { projectId: verified.projectId, environmentId, variableId } })
@@ -165,7 +165,7 @@ function describeEntry(entry: VariableVersionHistoryEntry, latestVersion: number
 }
 
 /** The human-readable listing (newest first). */
-export function formatVarHistory(result: VarHistoryResult, environmentId: string): string[] {
+export function formatVarHistory(result: VarHistoryResult, environmentId: EnvironmentId): string[] {
   const header = `History of ${displayText(result.name)} (${displayText(result.variableId)}) in environment ${displayText(environmentId)}`;
   if (result.versions.length === 0) {
     return [
@@ -190,7 +190,7 @@ export function formatVarHistory(result: VarHistoryResult, environmentId: string
 }
 
 /** One `--json` document (machine-readable. Zero values). */
-export function varHistoryJson(result: VarHistoryResult, environmentId: string): string {
+export function varHistoryJson(result: VarHistoryResult, environmentId: EnvironmentId): string {
   return JSON.stringify(
     {
       environmentId,
@@ -220,7 +220,7 @@ interface AncestorInput extends VarHistoryBase {
 interface VarRollbackInput extends AncestorInput {
   /** true = skip the confirmation (the only non-interactive path). */
   readonly force: boolean;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
 }
 
@@ -268,8 +268,8 @@ function appendPage(
 const fetchVersionRange = Effect.fn("var-history.fetchVersionRange")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly fromVersion: number;
   readonly latestVersion: number;
 }): Effect.fn.Return<readonly DistributedEncryptedPayload[], CliError> {
@@ -299,7 +299,7 @@ const fetchVersionRange = Effect.fn("var-history.fetchVersionRange")(function* (
 /** One version of the range through the full value verification, chained to its predecessor. */
 const verifyVersion = Effect.fnUntraced(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly latest: VerifiedPulledValue;
   readonly payload: DistributedEncryptedPayload;
   readonly predecessor: { readonly signedBytesHashHex: string; readonly epoch: number } | undefined;
@@ -330,7 +330,7 @@ const verifyVersion = Effect.fnUntraced(function* (input: {
         nonceHex: payload.nonceHex,
         ciphertextHex: payload.ciphertextHex,
         prevValueSigHashHex: payload.prevValueSigHashHex,
-        writerUserId: payload.writerUserId,
+        writerUserId: userIdOf(payload.writerUserId),
         chainHeadHashHex: payload.chainHeadHashHex,
         chainHeadSeq: payload.chainHeadSeq,
       },
@@ -360,7 +360,7 @@ const verifyVersion = Effect.fnUntraced(function* (input: {
  */
 function verifyAncestry(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly latest: VerifiedPulledValue;
   readonly range: readonly DistributedEncryptedPayload[];
 }): Effect.Effect<VerifiedPulledValue, CliError> {
@@ -383,7 +383,7 @@ function verifyAncestry(input: {
  */
 const verifiedRange = Effect.fn("var-history.verifiedRange")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly latest: VerifiedPulledValue;
   readonly range: readonly DistributedEncryptedPayload[];
 }): Effect.fn.Return<readonly VerifiedPulledValue[], CliError> {
@@ -403,7 +403,7 @@ const verifiedRange = Effect.fn("var-history.verifiedRange")(function* (input: {
       valueChainHeadSeq: payload.chainHeadSeq,
       valueChainHeadHashHex: payload.chainHeadHashHex,
       valueSignatureHex: payload.signatureHex,
-      writerUserId: payload.writerUserId,
+      writerUserId: userIdOf(payload.writerUserId),
       writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
     });
   }
@@ -481,7 +481,7 @@ function rollbackFacts(input: {
 /** The verified pieces a rollback pushes from (the latest, the verified target, the pull's view and wraps). */
 interface RollbackPlan {
   readonly name: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly latest: VerifiedPulledValue;
   readonly target: VerifiedPulledValue;
   readonly pulled: VerifiedEnvironmentPull;
@@ -619,7 +619,7 @@ const decryptPair = Effect.fn("var-history.decryptPair")(function* (
 /** A verified ancestor version and the verified latest, decrypted (`maruhi var rotate --finalize` reads the previous credential this way). */
 interface VerifiedAncestorValues {
   readonly name: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly latestVersion: number;
   readonly ancestorVersion: number;
   readonly ancestor: Redacted.Redacted<Uint8Array>;
@@ -657,7 +657,7 @@ export const verifiedAncestorValues = Effect.fn("var-history.verifiedAncestorVal
 /** Every version before the verified latest of one variable, lineage-verified and decrypted (newest first). */
 interface VerifiedAncestorRange {
   readonly name: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly latestVersion: number;
   /** Newest first (version latest−1 … 1). Empty when the variable has one version. */
   readonly ancestors: readonly {

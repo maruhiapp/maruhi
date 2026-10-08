@@ -20,7 +20,7 @@
 //   later — the same line as rotation-sweep.ts's `createdAtSeq >
 //   seq` exclusion)
 
-import { isEnvironmentId } from "@maruhi/core";
+import { isEnvironmentId, type EnvironmentId, type UserId } from "@maruhi/core";
 import type { ChainMember, DeviceCap, MemberScope, ScopePayloadFields } from "@maruhi/crypto";
 import {
   ALL_SCOPE,
@@ -33,6 +33,7 @@ import { Effect } from "effect";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
+import { environmentIdOf } from "./ids.ts";
 
 /** The user-facing scope display (`all` / `no environments` / an enumeration of environment ids. Ids are neutralized). */
 export function describeScope(scope: MemberScope | ScopePayloadFields): string {
@@ -131,7 +132,7 @@ export function scopeFromFlags(input: {
   }
   return Effect.succeed({
     kind: "listed",
-    environmentIds: [...unique].toSorted(compareCodePoints),
+    environmentIds: [...unique].map(environmentIdOf).toSorted(compareCodePoints),
   });
 }
 
@@ -175,7 +176,10 @@ export function requireScopeEnvironmentsExist(
 }
 
 /** The refusal for operating on an environment the verified chain shows as deleted (§6.3 "Chain-deleted environments"). */
-export function deletedEnvironmentMessage(environmentId: string, deletedAtSeq: number): string {
+export function deletedEnvironmentMessage(
+  environmentId: EnvironmentId,
+  deletedAtSeq: number,
+): string {
   return `Environment ${displayText(environmentId)} is deleted (delete_environment at chain seq ${deletedAtSeq}). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused`;
 }
 
@@ -186,7 +190,7 @@ export function deletedEnvironmentMessage(environmentId: string, deletedAtSeq: n
  */
 export function refuseChainDeletedEnvironment(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<void, CliError> {
   const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
   return deletedAtSeq === null
@@ -199,7 +203,7 @@ export function outOfScopeMessage(input: {
   readonly member: ChainMember;
   /** The device that signs / opens (when given, distinguishes the device's scope cap — DK K4-17). */
   readonly device?: DeviceCap | undefined;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** E.g. "pull values from" — interpolated into the form "<operation> environment X". */
   readonly operation: string;
 }): string {
@@ -228,8 +232,8 @@ export function outOfScopeMessage(input: {
  */
 export function requireEnvironmentInScope(input: {
   readonly verified: VerifiedProject;
-  readonly userId: string;
-  readonly environmentId: string;
+  readonly userId: UserId;
+  readonly environmentId: EnvironmentId;
   readonly operation: string;
   readonly device?: DeviceCap | undefined;
 }): Effect.Effect<ChainMember, CliError> {
@@ -271,10 +275,14 @@ export function environmentsOfScopeAt(
   verified: VerifiedProject,
   scope: MemberScope,
   seq: number,
-): readonly string[] {
-  const ids: string[] = [];
+): readonly EnvironmentId[] {
+  const ids: EnvironmentId[] = [];
   for (const [environmentId, environment] of verified.state.environments) {
-    if (environment.createdAtSeq <= seq && scopeIncludesEnvironment(scope, environmentId)) {
+    if (
+      environment.createdAtSeq <= seq &&
+      isEnvironmentId(environmentId) &&
+      scopeIncludesEnvironment(scope, environmentId)
+    ) {
       ids.push(environmentId);
     }
   }
@@ -292,7 +300,7 @@ export function scopeChangeAt(
   previous: MemberScope,
   next: MemberScope,
   seq: number,
-): { readonly widened: readonly string[]; readonly narrowed: readonly string[] } {
+): { readonly widened: readonly EnvironmentId[]; readonly narrowed: readonly EnvironmentId[] } {
   const before = new Set(environmentsOfScopeAt(verified, previous, seq));
   const after = new Set(environmentsOfScopeAt(verified, next, seq));
   return {

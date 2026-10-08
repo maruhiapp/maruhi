@@ -27,7 +27,7 @@
 // contract violation, but choosing what to carry is the config's
 // responsibility).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
@@ -395,7 +395,11 @@ export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
   receipt:
-    | { readonly kind: "loaded"; readonly loaded: LoadedReceipt; readonly environmentId: string }
+    | {
+        readonly kind: "loaded";
+        readonly loaded: LoadedReceipt;
+        readonly environmentId: EnvironmentId;
+      }
     | { readonly kind: "none-in-ci" },
   display: PlanDisplay = FULL_PLAN,
 ): Effect.fn.Return<void, CliError, CliIo> {
@@ -470,7 +474,7 @@ export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
 
 /** apply's input (plan's, plus the signing key and `--yes`). */
 interface SyncApplyInput extends SyncContextInput {
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
   /** The explicit consent for apply to a production target (supplement 14 M4). */
   readonly yes: boolean;

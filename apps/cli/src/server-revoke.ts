@@ -24,10 +24,10 @@
 // target and surfaces as a rotate failure).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { type EnvironmentId, type KeyFingerprintHex, type UserId } from "@maruhi/core";
 import {
   type ChainEntry,
   isApprovalTarget,
-  type KeyFingerprintHex,
   type ProposableOperation,
   type SigningKeyPair,
 } from "@maruhi/crypto";
@@ -42,7 +42,7 @@ import {
 } from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -69,12 +69,12 @@ export interface RevokeSummary extends SweepOutcome {
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
   /** Environments skipped because the verified chain shows them deleted (delete_environment). */
-  readonly skippedDeleted: readonly string[];
+  readonly skippedDeleted: readonly EnvironmentId[];
 }
 
 function requireOwner(
   verified: VerifiedProject,
-  signerUserId: string,
+  signerUserId: UserId,
 ): Effect.Effect<void, CliError> {
   const member = verified.state.members.get(signerUserId);
   if (member === undefined || member.role !== "owner") {
@@ -119,7 +119,7 @@ function selectGrant(
 /** Signs a revoke_server entry immediately after the current head (the shared core = chain-append.ts). */
 function signRevokeEntry(input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
@@ -158,14 +158,18 @@ export const sweepAfterRevoke = Effect.fn("server-revoke.sweepAfterRevoke")(func
   readonly verified: VerifiedProject;
   readonly revokeSeq: number;
   readonly rotate: SweepRotate<R>;
-}): Effect.fn.Return<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
+}): Effect.fn.Return<
+  SweepOutcome & { readonly skippedDeleted: readonly EnvironmentId[] },
+  CliError,
+  R
+> {
   // Excludes chain-deleted environments from the rotation targets
   // (a deleted environment returns 404 for both rotate and pull, and
   // no wrap remains to rotate). The only basis for exclusion is the
   // **delete_environment entry on the verified chain** — never
   // skipped silently on the server's 404 declaration alone (§7)
   const deletedVerified = chainDeletedEnvironments(input.verified);
-  const skippedDeleted = [...input.verified.state.environments.keys()]
+  const skippedDeleted = chainEnvironmentIds(input.verified)
     .filter((environmentId) => deletedVerified.has(environmentId))
     .toSorted(compareCodePoints);
 
@@ -190,7 +194,7 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly fingerprintHex: string | null;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /**

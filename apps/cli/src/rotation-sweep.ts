@@ -27,6 +27,7 @@
 // **delete_environment entry on the verified chain** (never silently
 // skipped on the server's 404 claim alone — §7; CRYPTO_SPEC §6.2).
 
+import { type EnvironmentId } from "@maruhi/core";
 import {
   ALL_SCOPE,
   type ChainMember,
@@ -54,7 +55,7 @@ export type SweepRotateMode = "force" | "verify";
 
 /** Injection of one environment's rotation (cli.ts passes envRotateOp wrapped with a floor). */
 export type SweepRotate<R> = (
-  environmentId: string,
+  environmentId: EnvironmentId,
   mode: SweepRotateMode,
 ) => Effect.Effect<RotationSummary, CliError, R>;
 
@@ -62,19 +63,19 @@ export type SweepRotate<R> = (
 export interface SweepOutcome {
   /** Environments where a rotation (forced or resumed) ran (environment ID → result). */
   readonly rotated: readonly {
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly summary: RotationSummary;
     /** Whether the run demanded a new epoch (true = forced / false = a verification-pass resumption). */
     readonly forcedNewEpoch: boolean;
   }[];
   /** Environments whose rotation failed (§7 — never silently skipped). */
-  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
+  readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
   /** Environments **confirmed** to have an epoch after the baseline and no unfinished re-encryption. */
-  readonly alreadyRotated: readonly string[];
+  readonly alreadyRotated: readonly EnvironmentId[];
 }
 
 /** Environment → the mandate's baseline seq (the maximum when several mandates apply). */
-export type EnvironmentBaselines = ReadonlyMap<string, number>;
+export type EnvironmentBaselines = ReadonlyMap<EnvironmentId, number>;
 
 /**
  * Folds a mandate list into "environment → baseline seq" (the shared
@@ -84,7 +85,7 @@ export type EnvironmentBaselines = ReadonlyMap<string, number>;
  * per-environment).
  */
 export function baselinesOf(mandates: readonly RotationMandate[]): EnvironmentBaselines {
-  const baselines = new Map<string, number>();
+  const baselines = new Map<EnvironmentId, number>();
   for (const mandate of mandates) {
     for (const environmentId of mandate.environmentIds) {
       const current = baselines.get(environmentId);
@@ -101,9 +102,9 @@ export interface SweepPartition {
   /** Mandate environments the actor can fulfill → baseline seq. */
   readonly baselines: EnvironmentBaselines;
   /** Mandate environments outside the actor's (effective) scope that are undeleted and unconverged (noted — left to other fulfillers). */
-  readonly outOfScope: readonly string[];
+  readonly outOfScope: readonly EnvironmentId[];
   /** Of the targets, environments skipped as verified-deleted. */
-  readonly skippedDeleted: readonly string[];
+  readonly skippedDeleted: readonly EnvironmentId[];
 }
 
 /**
@@ -118,9 +119,9 @@ export function partitionSweepBaselines(input: {
   readonly verified: VerifiedProject;
   readonly all: EnvironmentBaselines;
   readonly actorScope: MemberScope;
-  readonly deletedVerified: ReadonlySet<string>;
+  readonly deletedVerified: ReadonlySet<EnvironmentId>;
 }): SweepPartition {
-  const inScope = (environmentId: string) =>
+  const inScope = (environmentId: EnvironmentId) =>
     scopeIncludesEnvironment(input.actorScope, environmentId);
   const outOfScope = [...input.all]
     .filter(
@@ -148,7 +149,7 @@ export function partitionSweepBaselines(input: {
  */
 function isPendingAt(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   baselineSeq: number,
 ): boolean {
   const environment = verified.state.environments.get(environmentId);
@@ -187,7 +188,7 @@ export interface RotationMandate {
    * = old \ new, revoke = all environments, device-revoked = the union of
    * the revoked devices' effective scopes (K4-8).
    */
-  readonly environmentIds: readonly string[];
+  readonly environmentIds: readonly EnvironmentId[];
   /** `device-revoked` only: the revoked devices' FPs (ascending — for display and re-registration checks). */
   readonly deviceFingerprintsHex?: readonly string[];
 }
@@ -262,7 +263,7 @@ function revokeDeviceMandate(
   seq: number,
   payload: RevokeDevicePayload,
 ): RotationMandate {
-  const environmentIds = new Set<string>();
+  const environmentIds = new Set<EnvironmentId>();
   for (const fingerprintHex of payload.deviceFingerprintsHex) {
     const before = verified.history.deviceStateAt(payload.targetUserId, fingerprintHex, seq - 1);
     const scope: MemberScope = before?.permission.scope ?? ALL_SCOPE;
@@ -332,7 +333,7 @@ export interface UnconvergedMandate extends RotationMandate {
  */
 function unconvergedMandates(
   verified: VerifiedProject,
-  deletedVerified: ReadonlySet<string>,
+  deletedVerified: ReadonlySet<EnvironmentId>,
 ): readonly UnconvergedMandate[] {
   const results: UnconvergedMandate[] = [];
   for (const mandate of rotationMandates(verified)) {
@@ -424,7 +425,9 @@ function narrowingAdvice(
   if (member === undefined) {
     return reversedAdvice("the target has been removed");
   }
-  const current = new Set(environmentsOfScopeAt(verified, member.scope, verified.state.headSeq));
+  const current = new Set<string>(
+    environmentsOfScopeAt(verified, member.scope, verified.state.headSeq),
+  );
   if (mandate.pendingEnvironmentIds.some((environmentId) => current.has(environmentId))) {
     return reversedAdvice("the target's scope has been widened again");
   }
@@ -477,7 +480,7 @@ export const warnUnconvergedMandates = Effect.fn("rotation-sweep.warnUnconverged
 /** Turning one environment's rotation into a result (failures are collected, not thrown — for §7's all-environment sweep). */
 function rotateOutcome<R>(
   rotate: SweepRotate<R>,
-  environmentId: string,
+  environmentId: EnvironmentId,
   mode: SweepRotateMode,
 ): Effect.Effect<
   | { readonly kind: "ok"; readonly summary: RotationSummary }
@@ -506,20 +509,20 @@ export const sweepRotations = Effect.fn("rotation-sweep.sweepRotations")(functio
   readonly verified: VerifiedProject;
   /** The mandate's environment set → baseline seq (revoke / remove / demotion / narrowing). */
   readonly baselines: EnvironmentBaselines;
-  readonly deletedVerified: ReadonlySet<string>;
+  readonly deletedVerified: ReadonlySet<EnvironmentId>;
 }): Effect.fn.Return<SweepOutcome, never, R> {
   const candidates = [...input.baselines.keys()]
     .filter((environmentId) => !input.deletedVerified.has(environmentId))
     .toSorted(compareCodePoints);
-  const isPending = (environmentId: string) =>
+  const isPending = (environmentId: EnvironmentId) =>
     isPendingAt(input.verified, environmentId, input.baselines.get(environmentId) ?? 0);
   const rotated: {
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly summary: RotationSummary;
     readonly forcedNewEpoch: boolean;
   }[] = [];
-  const failed: { readonly environmentId: string; readonly message: string }[] = [];
-  const alreadyRotated: string[] = [];
+  const failed: { readonly environmentId: EnvironmentId; readonly message: string }[] = [];
+  const alreadyRotated: EnvironmentId[] = [];
   for (const environmentId of candidates.filter(isPending)) {
     const result = yield* rotateOutcome(input.rotate, environmentId, "force");
     if (result.kind === "ok") {

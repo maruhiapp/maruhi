@@ -2,6 +2,7 @@
 // check against the last successful pull's baseline, then commit the new
 // baseline and reconcile unresolved meta intents.
 
+import { type EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -91,7 +92,7 @@ export const enforceFloor = Effect.fn("values-floor.enforceFloor")(function* (in
   readonly baselineView: VerifiedProject;
   /** The view used for verification (the commit value of the floor's chain head). */
   readonly commitView: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly snapshot: VerifiedPullSnapshot;
 }): Effect.fn.Return<void, CliError> {
   const violation = checkEnvironmentPull(input.floor.current(), input.snapshot);
@@ -151,7 +152,7 @@ export const enforceMetadataFloor = Effect.fn("values-floor.enforceMetadataFloor
   function* (input: {
     readonly floor: FloorHandle;
     readonly verified: VerifiedProject;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly environment: VerifiedMetaEvidence;
     readonly variables: readonly VerifiedVariableStatement[];
     readonly tombstones: readonly VerifiedTombstone[];

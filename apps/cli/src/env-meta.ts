@@ -15,7 +15,7 @@
 // is what gives the meta statement its freshness anchor (§4.2 / §4.3).
 
 import { ManifestVersionConflictError, MetaVersionConflictError } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import type { SigningKeyPair } from "@maruhi/crypto";
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -61,7 +61,7 @@ export interface EnvironmentMetaInput {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** The local floor (§6.3 — the metadata pull's check and commit). */
   readonly floor: FloorHandle;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }
 
@@ -151,10 +151,10 @@ export const resolveEnvironmentMeta = Effect.fn("env-meta.resolveEnvironmentMeta
 export const signNextEnvironmentStatement = Effect.fn("env-meta.signNextEnvironmentStatement")(
   function* (input: {
     readonly state: EnvironmentMetaState;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     /** The NFC-normalized name. */
     readonly name: string;
-    readonly authorUserId: string;
+    readonly authorUserId: UserId;
     readonly signingKey: CryptoKey;
   }) {
     const context = {

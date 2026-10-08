@@ -21,6 +21,7 @@
 // owner to approve (K6-N).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import type { PendingProposal, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
 import { memberScopeOf } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -59,12 +60,12 @@ export type Fulfilment =
   | { readonly kind: "none" }
   | {
       readonly kind: "member-rotation";
-      readonly targetUserId: string;
+      readonly targetUserId: UserId;
       readonly sweep: MemberSweepOutcome | null;
     }
   | {
       readonly kind: "member-backfill";
-      readonly targetUserId: string;
+      readonly targetUserId: UserId;
       readonly backfill: Pick<
         MemberAddSummary,
         "registered" | "alreadyRegistered" | "repaired" | "failed"
@@ -72,13 +73,13 @@ export type Fulfilment =
     }
   | {
       readonly kind: "role-change";
-      readonly targetUserId: string;
+      readonly targetUserId: UserId;
       readonly change: RoleChangeFulfilment;
     }
   | {
       readonly kind: "server-backfill";
       readonly serverKeyFingerprintHex: string;
-      readonly scopeEnvironmentIds: readonly string[];
+      readonly scopeEnvironmentIds: readonly EnvironmentId[];
       readonly registered: number;
       readonly alreadyRegistered: number;
     }
@@ -107,7 +108,7 @@ type ApproveOutcome =
 function selfObligationRejection(
   verified: VerifiedProject,
   inner: ProposableOperation,
-  signerUserId: string,
+  signerUserId: UserId,
 ): string | null {
   if (inner.op === "remove_member" && inner.payload.targetUserId === signerUserId) {
     return "This proposal removes you. Completing it would leave the post-removal rotation (CRYPTO_SPEC §7) to a member who no longer exists — ask another owner to approve it";
@@ -140,7 +141,7 @@ function selfObligationRejection(
 function ensureApprovable(
   verified: VerifiedProject,
   proposalHashHex: string,
-  signerUserId: string,
+  signerUserId: UserId,
   signerFingerprintHex: string,
   nowMs: number,
 ): Effect.Effect<ProposalView, CliError> {
@@ -163,7 +164,7 @@ const fulfil = Effect.fn("approval-approve.fulfil")(function* <R>(input: {
   readonly verified: VerifiedProject;
   readonly seq: number;
   readonly inner: ProposableOperation;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
@@ -277,7 +278,7 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly ref: string;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   /** FP of the signing device (a vote's eligibility is the device's effective role — approval-rules.ts). */
   readonly signerFingerprintHex: string;
   readonly signingKeyPair: SigningKeyPair;

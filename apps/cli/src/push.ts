@@ -42,8 +42,7 @@
 // - The value is read from stdin and never lands on argv. The plaintext
 //   lives in memory only
 
-import type { EnvironmentId } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId, cryptoEffect } from "@maruhi/core";
 import {
   computeValueSignedBytesHash,
   encodeHex,
@@ -89,7 +88,7 @@ export function normalizeStdinValue(bytes: Uint8Array): Uint8Array {
 
 /** Result of an accepted push. */
 export interface PushedVersion {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly epoch: number;
   /** SHOULD warnings collected during verification (a non-NFC name distribution, etc. — displayed by the caller). */
@@ -108,13 +107,13 @@ export interface PushedVersion {
 export function encryptAndSignPayload(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly epoch: number;
   readonly version: number;
   readonly prevValueSigHashHex: string;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly value: Redacted.Redacted<Uint8Array>;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
 }) {
   const context = {
@@ -173,7 +172,7 @@ export function encryptAndSignPayload(input: {
 
 interface AcceptedPush {
   readonly accepted: {
-    readonly variableId: string;
+    readonly variableId: VariableId;
     readonly version: number;
     readonly epoch: number;
   };
@@ -294,7 +293,7 @@ function issueVariableManifest(
   input: PushInput,
   state: PushState,
   issueBase: ManifestIssueBase,
-  variableId: string,
+  variableId: VariableId,
   entries: readonly ManifestDigestEntry[],
 ): ReturnType<typeof issueManifestWithIntent> {
   return issueManifestWithIntent({

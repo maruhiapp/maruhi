@@ -20,15 +20,17 @@
 // through this module.
 
 import type { RotationProposal } from "@maruhi/api-schema";
+import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import {
   DAY_MS,
@@ -51,10 +53,10 @@ import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } fro
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
 interface RotationFlagView {
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly basis: "read" | "readable";
-  readonly targetUserId?: string;
+  readonly targetUserId?: UserId;
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
@@ -71,11 +73,19 @@ interface RotationFlagView {
 /** Fetches the flag view (the shared entry of display, count reporting, and dismiss-target resolution). */
 function fetchRotationFlags(
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.Effect<readonly RotationFlagView[], CliError> {
   return client.rotation.flags({ params: { projectId } }).pipe(
     Effect.mapError(toCliError),
-    Effect.map((response) => response.flags),
+    Effect.map((response) =>
+      response.flags.map((flag) => {
+        const { targetUserId, ...rest } = flag;
+        return {
+          ...rest,
+          ...(targetUserId === undefined ? {} : { targetUserId: userIdOf(targetUserId) }),
+        };
+      }),
+    ),
   );
 }
 
@@ -86,8 +96,8 @@ function fetchRotationFlags(
  */
 export function flaggedVariablesOf(
   client: MaruhiClient,
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
 ): Effect.Effect<ReadonlySet<string>, CliError> {
   return Effect.map(
     fetchRotationFlags(client, projectId),
@@ -147,12 +157,12 @@ export type StateIndex = ReadonlyMap<string, VariableState>;
 /** One environment's verified metadata, or null with a note (the display is SHOULD — a failure never stops the listing). */
 const verifiedMetadataOrNote: (
   context: ProjectContextBase,
-  environmentId: string,
+  environmentId: EnvironmentId,
   consequence: string,
 ) => Effect.Effect<VerifiedEnvironmentMetadata | null, never, CliServices> = Effect.fn(
   "rotation.verifiedMetadataOrNote",
 )(
-  function* (context: ProjectContextBase, environmentId: string, _consequence: string) {
+  function* (context: ProjectContextBase, environmentId: EnvironmentId, _consequence: string) {
     const floorHandle = yield* floorHandleFor(context, environmentId);
     return yield* pullVerifiedEnvironmentMetadata({
       client: context.client,
@@ -177,7 +187,7 @@ const verifiedMetadataOrNote: (
 
 export const resolveVariableStates = Effect.fn("rotation.resolveVariableStates")(function* (
   context: ProjectContextBase,
-  environmentIds: readonly string[],
+  environmentIds: readonly EnvironmentId[],
 ): Effect.fn.Return<ReadonlyMap<string, StateIndex>, never, CliServices> {
   const byEnvironment = new Map<string, StateIndex>();
   for (const environmentId of environmentIds) {
@@ -210,9 +220,9 @@ export const resolveVariableStates = Effect.fn("rotation.resolveVariableStates")
  * (AUTH_SPEC §12-3), so a scoped member's check is whole (A-15 — the
  * opposite was recorded in A-14 and was wrong).
  */
-function environmentsToWalk(context: ProjectContextBase): readonly string[] {
+function environmentsToWalk(context: ProjectContextBase): readonly EnvironmentId[] {
   const deleted = chainDeletedEnvironments(context.verified);
-  return [...context.verified.state.environments.keys()]
+  return chainEnvironmentIds(context.verified)
     .toSorted()
     .filter((environmentId) => !deleted.has(environmentId));
 }
@@ -312,7 +322,7 @@ const reportExpiringValues = Effect.fn("rotation.reportExpiringValues")(function
  */
 export function resolveNames(
   context: ProjectContextBase,
-  environmentIds: readonly string[],
+  environmentIds: readonly EnvironmentId[],
 ): Effect.Effect<ReadonlyMap<string, NameIndex>, never, CliServices> {
   return Effect.map(resolveVariableStates(context, environmentIds), (byEnvironment) => {
     const names = new Map<string, NameIndex>();
@@ -331,7 +341,7 @@ export function resolveNames(
  * the working directory, when it exists and names this project. A broken
  * file is a note, never a failure (the checklist is guidance).
  */
-function checklistConfig(projectId: string): Effect.Effect<RotateConfig | null, never, CliIo> {
+function checklistConfig(projectId: ProjectId): Effect.Effect<RotateConfig | null, never, CliIo> {
   return loadRotateConfigIfPresent(DEFAULT_ROTATE_CONFIG_PATH).pipe(
     Effect.flatMap((config) =>
       Effect.gen(function* () {
@@ -364,8 +374,8 @@ function checklistConfig(projectId: string): Effect.Effect<RotateConfig | null, 
  * pushed).
  */
 export function rotationAction(input: {
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly state: VariableState | undefined;
   readonly config: RotateConfig | null;
 }): string {
@@ -615,7 +625,7 @@ const concludeListing = Effect.fn("rotation.concludeListing")(function* (input: 
 /** The flag rows per environment: the name when the verified metadata gives it, the basis, the target, the trigger, and the next step. */
 const printFlagRows = Effect.fn("rotation.printFlagRows")(function* (input: {
   readonly flags: readonly RotationFlagView[];
-  readonly environmentIds: readonly string[];
+  readonly environmentIds: readonly EnvironmentId[];
   readonly states: ReadonlyMap<string, StateIndex>;
   readonly config: RotateConfig | null;
 }): Effect.fn.Return<void, never, CliIo> {
@@ -699,7 +709,10 @@ export const rotationListOp = Effect.fn("rotation.rotationListOp")(function* (
 
 /** The result of dismiss's target resolution. */
 interface DismissTargets {
-  readonly targets: readonly { readonly environmentId: string; readonly variableId: string }[];
+  readonly targets: readonly {
+    readonly environmentId: EnvironmentId;
+    readonly variableId: VariableId;
+  }[];
 }
 
 /**
@@ -710,8 +723,8 @@ interface DismissTargets {
  */
 const resolveAllTargets = Effect.fn("rotation.resolveAllTargets")(function* (input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
-  readonly environmentId: string | null;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId | null;
 }): Effect.fn.Return<DismissTargets, CliError> {
   const flags = yield* fetchRotationFlags(input.client, input.projectId);
   const scoped =
@@ -719,7 +732,7 @@ const resolveAllTargets = Effect.fn("rotation.resolveAllTargets")(function* (inp
       ? flags
       : flags.filter((flag) => flag.environmentId === input.environmentId);
   const seen = new Set<string>();
-  const targets: { environmentId: string; variableId: string }[] = [];
+  const targets: { environmentId: EnvironmentId; variableId: VariableId }[] = [];
   for (const flag of scoped) {
     const key = `${flag.environmentId} ${flag.variableId}`;
     if (seen.has(key)) {
@@ -742,8 +755,12 @@ const resolveAllTargets = Effect.fn("rotation.resolveAllTargets")(function* (inp
 
 /** The dismiss request's form (the part settled **without communication** — decided from the arguments alone). */
 export type DismissRequest =
-  | { readonly kind: "all"; readonly environmentId: string | null }
-  | { readonly kind: "single"; readonly environmentId: string; readonly variableId: string };
+  | { readonly kind: "all"; readonly environmentId: EnvironmentId | null }
+  | {
+      readonly kind: "single";
+      readonly environmentId: EnvironmentId;
+      readonly variableId: VariableId;
+    };
 
 /**
  * Interprets `maruhi rotation dismiss`'s request. Checks needing
@@ -754,8 +771,8 @@ export type DismissRequest =
  */
 export function parseDismissRequest(input: {
   readonly all: boolean;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly variableId: VariableId | null;
 }): Effect.Effect<DismissRequest, CliError> {
   if (input.all) {
     if (input.variableId !== null) {
@@ -787,7 +804,7 @@ export function parseDismissRequest(input: {
  */
 export function resolveDismissTargets(input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly request: DismissRequest;
 }): Effect.Effect<DismissTargets, CliError> {
   if (input.request.kind === "all") {
@@ -804,8 +821,11 @@ export function resolveDismissTargets(input: {
 /** `maruhi rotation dismiss`: executes the withdrawal (admin — the server checks the authority). */
 export const rotationDismissOp = Effect.fn("rotation.rotationDismissOp")(function* (input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
-  readonly targets: readonly { readonly environmentId: string; readonly variableId: string }[];
+  readonly projectId: ProjectId;
+  readonly targets: readonly {
+    readonly environmentId: EnvironmentId;
+    readonly variableId: VariableId;
+  }[];
 }): Effect.fn.Return<number, CliError, CliIo> {
   const io = yield* CliIo;
   yield* input.client.rotation
@@ -832,7 +852,7 @@ export const rotationDismissOp = Effect.fn("rotation.rotationDismissOp")(functio
 type ChecklistTarget =
   | {
       readonly kind: "member";
-      readonly userId: string;
+      readonly userId: UserId;
       /** Only flags of this trigger (a role change / device revocation leaves the member's other flags out). */
       readonly trigger?: RotationFlagView["trigger"] | undefined;
     }

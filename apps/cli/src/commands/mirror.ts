@@ -1,6 +1,7 @@
 // `maruhi mirror` (discipline: see commands/index.ts).
 
 import { type MirrorStatus } from "@maruhi/api-schema";
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
@@ -85,7 +86,7 @@ const openMirrorTarget = Effect.fn("commands-mirror.openMirrorTarget")(function*
 /** The server's verified view (the same keyless prologue as `project export`). */
 const verifiedServerView = Effect.fn("commands-mirror.verifiedServerView")(function* (
   serverFlag: string | undefined,
-  projectId: string,
+  projectId: ProjectId,
 ) {
   const source = yield* openSession(serverFlag);
   const verified = yield* verifiedViewOf(source, projectId);
@@ -101,7 +102,7 @@ const verifiedServerView = Effect.fn("commands-mirror.verifiedServerView")(funct
  */
 const verifiedViewOf = Effect.fn("commands-mirror.verifiedViewOf")(function* (
   source: SessionContext,
-  projectId: string,
+  projectId: ProjectId,
 ) {
   const synced = yield* syncProject(source.client, projectId);
   const checked = yield* loadCheckedFloor(projectId, synced, syncProject(source.client, projectId));

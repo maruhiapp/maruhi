@@ -15,7 +15,7 @@
 // no plaintext values or key material (compatible with the diskless
 // invariant — what writes it is the user's redirect, and it is non-secret).
 
-import { isEnvironmentId, ProjectIdSchema } from "@maruhi/core";
+import { isEnvironmentId, isProjectId, type ProjectId } from "@maruhi/core";
 import { Effect, Schema } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -33,7 +33,7 @@ import {
 export interface RepositoryAnchor {
   readonly version: 1;
   /** Genesis hash (= projectId — §6.4). */
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The verified chain head at generation time. */
   readonly headSeq: number;
   readonly headHashHex: string;
@@ -89,7 +89,7 @@ function parseRepositoryAnchor(content: string): RepositoryAnchor | string {
     return record;
   }
   const projectId = record["projectId"];
-  if (!Schema.is(ProjectIdSchema)(projectId)) {
+  if (!(typeof projectId === "string" && isProjectId(projectId))) {
     return "projectId must be the genesis hash (64 hex digits)";
   }
   const headSeq = record["headSeq"];

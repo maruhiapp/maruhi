@@ -21,6 +21,7 @@ import {
   reconcileGossip,
   resolveProjectId,
 } from "../context.ts";
+import { chainEnvironmentIds } from "../deks.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { type FloorHandle } from "../floor-check.ts";
@@ -491,7 +492,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
       const context = yield* openProject({ server: values.server, project: values.project });
       // The environment-floor handle is resolved ahead (keeps issueCheckpoint's R at CliIo)
       const floors = new Map<string, FloorHandle>();
-      for (const environmentId of context.verified.state.environments.keys()) {
+      for (const environmentId of chainEnvironmentIds(context.verified)) {
         floors.set(environmentId, yield* floorHandleFor(context, environmentId));
       }
       const summary = yield* issueCheckpoint({

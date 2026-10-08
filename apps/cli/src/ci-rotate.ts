@@ -21,8 +21,13 @@
 // variables, counts, dates, and the connector's non-secret facts.
 
 import { ProjectNotFoundError, RotationProposalRejectedError } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
-import type { EnvironmentId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  type EnvironmentId,
+  type ProjectId,
+  type UserId,
+  type VariableId,
+} from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -91,7 +96,7 @@ export interface CiRotateResult {
   /** Every proposed variable, in push order (companions first), with the version it replaces. */
   readonly variables: readonly {
     readonly name: string;
-    readonly variableId: string;
+    readonly variableId: VariableId;
     readonly baseVersion: number;
   }[];
   /** The devices the values were sealed to, and the members they belong to. */
@@ -125,7 +130,7 @@ interface Recipient {
  */
 function proposalRecipients(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): readonly Recipient[] {
   return memberDevicesInOrder(verified).filter(({ member, device }) => {
     const effective = effectivePermissionOf(member, device);
@@ -143,7 +148,10 @@ function byNameOf(material: VerifiedLeaseMaterial): ByName {
 }
 
 /** The environments the rule reads admin inputs from (the target's own excluded — leased together with it). */
-function inputEnvironments(rule: RotateRule, environmentId: string): readonly EnvironmentId[] {
+function inputEnvironments(
+  rule: RotateRule,
+  environmentId: EnvironmentId,
+): readonly EnvironmentId[] {
   const others = new Set<string>();
   for (const ref of Object.values(rule.inputs)) {
     if (ref.environment !== null && ref.environment !== environmentId) {
@@ -186,7 +194,7 @@ const currentCredential = Effect.fn("ci-rotate.currentCredential")(function* (
 const leasedInputs = Effect.fn("ci-rotate.leasedInputs")(function* (
   primary: string,
   rule: RotateRule,
-  environmentId: string,
+  environmentId: EnvironmentId,
   materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>,
 ): Effect.fn.Return<RotateInputs, CliError> {
   const inputs: Record<string, Uint8Array> = {};
@@ -220,7 +228,7 @@ function acceptableFacts(facts: readonly string[]): readonly string[] {
 
 interface PlannedValue {
   readonly name: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly baseVersion: number;
   readonly bytes: Uint8Array;
 }
@@ -257,7 +265,7 @@ const plannedValues = Effect.fn("ci-rotate.plannedValues")(function* (
 });
 
 interface SealedWrap {
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -265,10 +273,10 @@ interface SealedWrap {
 
 /** Seals one value to every recipient device (one HPKE Seal per device — §5.3). */
 function sealToRecipients(input: {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly proposalId: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly baseVersion: number;
   readonly bytes: Uint8Array;
   readonly recipients: readonly Recipient[];
@@ -326,8 +334,8 @@ const preflightVariables = Effect.fn("ci-rotate.preflightVariables")(function* (
   primary: string,
   rule: RotateRule,
   local: ByName,
-): Effect.fn.Return<readonly { variableId: string; baseVersion: number }[], CliError> {
-  const variables: { variableId: string; baseVersion: number }[] = [];
+): Effect.fn.Return<readonly { variableId: VariableId; baseVersion: number }[], CliError> {
+  const variables: { variableId: VariableId; baseVersion: number }[] = [];
   for (const name of [...Object.values(companionsOf(rule)), primary]) {
     const variable = local.get(name);
     if (variable === undefined) {
@@ -563,7 +571,7 @@ interface SealAndMintInput {
   readonly rule: RotateRule;
   readonly planned: readonly PlannedValue[];
   readonly outcome: RotationOutcome;
-  readonly params: { readonly projectId: string; readonly environmentId: EnvironmentId };
+  readonly params: { readonly projectId: ProjectId; readonly environmentId: EnvironmentId };
   readonly lease: LeasedEnvironments;
   readonly recipients: readonly Recipient[];
   /** The token the mint presents (minted after the connector for the lease's key — K-5; `mintTokenFor`). */
@@ -673,7 +681,7 @@ const mintTokenFor = Effect.fn("ci-rotate.mintTokenFor")(function* (
 });
 
 /** The report lines of a mint (the command prints them; values never appear). */
-export function describeProposal(result: CiRotateResult, environmentId: string): string[] {
+export function describeProposal(result: CiRotateResult, environmentId: EnvironmentId): string[] {
   const names = result.variables.map(
     (variable) => `${displayText(variable.name)} (replacing version ${variable.baseVersion})`,
   );

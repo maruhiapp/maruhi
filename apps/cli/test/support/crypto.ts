@@ -13,6 +13,7 @@ import type {
   EncryptionKeyPair,
   GrantServerPayload,
   KeyFingerprintHex,
+  MetaStatementTarget,
   ProposableOperation,
   SigningKeyPair,
   UserId,
@@ -49,14 +50,25 @@ import type {
 import {
   buildChainWith,
   hexBytes,
+  testEnvironmentId,
   testKeyFingerprintHex,
+  testProjectId,
   testUserId,
+  testVariableId,
   unwrapResult,
   valueSignedBytesHashOf,
 } from "@maruhi/crypto/test-support";
 
 export type { BuiltChain, LazyChainOperation };
-export { hexBytes, valueSignedBytesHashOf as valueHashOf } from "@maruhi/crypto/test-support";
+export {
+  hexBytes,
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
+  testUserId,
+  testVariableId,
+  valueSignedBytesHashOf as valueHashOf,
+} from "@maruhi/crypto/test-support";
 
 /** A test user with freshly generated (exportable) master keys. */
 export interface TestUser {
@@ -159,7 +171,7 @@ export function addScopedMemberOp(
       sigPubHex: target.sigPubHex,
       role,
       scopeKind: "listed",
-      scopeEnvironmentIds: [...environmentIds].toSorted(),
+      scopeEnvironmentIds: environmentIds.map(testEnvironmentId).toSorted(),
     },
   };
 }
@@ -176,7 +188,8 @@ export function changeRoleOp(
       targetUserId: target.userId,
       newRole: role,
       scopeKind: environmentIds === null ? "all" : "listed",
-      scopeEnvironmentIds: environmentIds === null ? [] : [...environmentIds].toSorted(),
+      scopeEnvironmentIds:
+        environmentIds === null ? [] : environmentIds.map(testEnvironmentId).toSorted(),
     },
   };
 }
@@ -194,7 +207,12 @@ async function dekCommitmentFor(
 ): Promise<string> {
   return unwrapResult(
     await computeDekCommitment({
-      context: { suite: SUITE_ID, projectId, environmentId, epoch },
+      context: {
+        suite: SUITE_ID,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(environmentId),
+        epoch,
+      },
       dek,
     }),
     "computeDekCommitment",
@@ -210,7 +228,7 @@ export function createEnvironmentOp(environmentId: string, dek: Uint8Array): Laz
   return async (projectId) => ({
     op: "create_environment",
     payload: {
-      environmentId,
+      environmentId: testEnvironmentId(environmentId),
       dekCommitmentHex: await dekCommitmentFor(projectId, environmentId, 1, dek),
     },
   });
@@ -218,7 +236,7 @@ export function createEnvironmentOp(environmentId: string, dek: Uint8Array): Laz
 
 /** delete_environment (CRYPTO_SPEC §6.2 — the environment's terminal lifecycle entry). */
 export function deleteEnvironmentOp(environmentId: string): ChainOperation {
-  return { op: "delete_environment", payload: { environmentId } };
+  return { op: "delete_environment", payload: { environmentId: testEnvironmentId(environmentId) } };
 }
 
 /** rotate_epoch (with the new epoch's commitment — §6.2). */
@@ -230,7 +248,7 @@ export function rotateEpochOp(
   return async (projectId) => ({
     op: "rotate_epoch",
     payload: {
-      environmentId,
+      environmentId: testEnvironmentId(environmentId),
       newEpoch,
       reason: "test",
       dekCommitmentHex: await dekCommitmentFor(projectId, environmentId, newEpoch, dek),
@@ -259,7 +277,7 @@ export async function grantServerOp(
     payload: {
       serverEncPubHex: encodeHex(serverEncPub),
       serverKeyFingerprintHex: testKeyFingerprintHex(encodeHex(digest.slice(0, 16))),
-      scopeEnvironmentIds: [...scopeEnvironmentIds],
+      scopeEnvironmentIds: scopeEnvironmentIds.map(testEnvironmentId),
       leasePolicy,
     },
   };
@@ -303,8 +321,8 @@ export async function wrapDekFor(input: {
       recipientPublicKey: publicKey,
       dek: input.dek,
       context: {
-        projectId: input.projectId,
-        environmentId: input.environmentId,
+        projectId: testProjectId(input.projectId),
+        environmentId: testEnvironmentId(input.environmentId),
         epoch: input.epoch,
         recipientUserId: input.recipient.userId,
       },
@@ -317,8 +335,8 @@ export async function wrapDekFor(input: {
     await signDekWrap({
       context: {
         suite: SUITE_ID,
-        projectId: input.projectId,
-        environmentId: input.environmentId,
+        projectId: testProjectId(input.projectId),
+        environmentId: testEnvironmentId(input.environmentId),
         epoch: input.epoch,
         recipientUserId: input.recipient.userId,
         recipientEncPubHex: input.recipient.encPubHex,
@@ -480,7 +498,7 @@ interface StatementInputBase {
 
 async function signDistributedStatement(
   input: StatementInputBase,
-  target: { kind: "variable"; variableId: string } | { kind: "environment" },
+  target: MetaStatementTarget,
 ): Promise<WireDistributedEnvironmentStatement & Partial<WireStatementSchema>> {
   const status = input.status ?? "active";
   const metaVersion = input.metaVersion ?? 1;
@@ -489,8 +507,8 @@ async function signDistributedStatement(
     await signMetaStatement({
       context: {
         suite: SUITE_ID,
-        projectId: input.projectId,
-        environmentId: input.environmentId,
+        projectId: testProjectId(input.projectId),
+        environmentId: testEnvironmentId(input.environmentId),
         target,
         name: input.name,
         status,
@@ -534,7 +552,7 @@ export async function statementFor(
 ): Promise<WireDistributedVariableStatement> {
   const statement = await signDistributedStatement(input, {
     kind: "variable",
-    variableId: input.variableId,
+    variableId: testVariableId(input.variableId),
   });
   return { ...statement, variableId: input.variableId };
 }
@@ -592,12 +610,12 @@ export async function statementHashOf(
   return unwrapResult(
     await computeMetaSignedBytesHash({
       suite: statement.suite,
-      projectId,
-      environmentId: statement.environmentId,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(statement.environmentId),
       target:
         statement.variableId === undefined
           ? { kind: "environment" }
-          : { kind: "variable", variableId: statement.variableId },
+          : { kind: "variable", variableId: testVariableId(statement.variableId) },
       name: statement.name,
       status: statement.status,
       ...(statement.layoutVersion === undefined ||
@@ -616,7 +634,7 @@ export async function statementHashOf(
           }),
       metaVersion: statement.metaVersion,
       prevMetaSigHashHex: statement.prevMetaSigHashHex,
-      authorUserId: statement.authorUserId,
+      authorUserId: testUserId(statement.authorUserId),
       chainHeadHashHex: statement.chainHeadHashHex,
       chainHeadSeq: statement.chainHeadSeq,
     }),
@@ -631,7 +649,7 @@ export async function variablesDigestOf(
 ): Promise<string> {
   const entries = await Promise.all(
     statements.map(async (statement) => ({
-      variableId: statement.variableId,
+      variableId: testVariableId(statement.variableId),
       status: statement.status,
       metaVersion: statement.metaVersion,
       metaSigHashHex: await statementHashOf(projectId, statement),
@@ -667,8 +685,8 @@ export async function manifestFor(input: {
     input.variablesDigestHex ?? (await variablesDigestOf(input.projectId, input.statements ?? []));
   const context = {
     suite: SUITE_ID,
-    projectId: input.projectId,
-    environmentId: input.environmentId,
+    projectId: testProjectId(input.projectId),
+    environmentId: testEnvironmentId(input.environmentId),
     epoch: input.epoch,
     manifestVersion: input.manifestVersion ?? 1,
     variablesDigestHex,
@@ -713,15 +731,15 @@ export async function manifestHashOf(
   return unwrapResult(
     await computeEnvManifestSignedBytesHash({
       suite: SUITE_ID,
-      projectId,
-      environmentId: manifest.environmentId,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(manifest.environmentId),
       epoch: manifest.epoch,
       manifestVersion: manifest.manifestVersion,
       variablesDigestHex: manifest.variablesDigestHex,
       envMetaVersion: manifest.envMetaVersion,
       envMetaSigHashHex: manifest.envMetaSigHashHex,
       prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-      issuerUserId: manifest.issuerUserId,
+      issuerUserId: testUserId(manifest.issuerUserId),
       chainHeadHashHex: manifest.chainHeadHashHex,
       chainHeadSeq: manifest.chainHeadSeq,
     }),
@@ -752,7 +770,7 @@ export async function checkpointSnapshotValuesOf(
 ): Promise<WireCheckpointSnapshot["values"]> {
   return Promise.all(
     values.map(async (value) => ({
-      variableId: value.aad.variableId,
+      variableId: testVariableId(value.aad.variableId),
       version: value.aad.version,
       valueSigHashHex: await valueSignedBytesHashOf(value, value.writerUserId),
     })),
@@ -789,10 +807,10 @@ export async function encryptValueFor(input: {
   readonly prevValueSigHashHex?: string;
 }): Promise<WireDistributedValue> {
   const context = {
-    projectId: input.projectId,
-    environmentId: input.environmentId,
+    projectId: testProjectId(input.projectId),
+    environmentId: testEnvironmentId(input.environmentId),
     epoch: input.epoch,
-    variableId: input.variableId,
+    variableId: testVariableId(input.variableId),
     version: input.version,
   };
   const encrypted = unwrapResult(
@@ -844,7 +862,13 @@ export async function encryptValueFor(input: {
 export async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promise<string> {
   const result = await decryptVariable({
     dek,
-    context: value.aad,
+    context: {
+      projectId: testProjectId(value.aad.projectId),
+      environmentId: testEnvironmentId(value.aad.environmentId),
+      epoch: value.aad.epoch,
+      variableId: testVariableId(value.aad.variableId),
+      version: value.aad.version,
+    },
     nonce: hexBytes(value.nonceHex),
     ciphertext: hexBytes(value.ciphertextHex),
   });

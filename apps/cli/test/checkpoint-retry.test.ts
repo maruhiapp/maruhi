@@ -12,6 +12,7 @@ import type { MaruhiClient } from "../src/api.ts";
 import { fetchAuditHead } from "../src/checkpoint.ts";
 import type { CliError } from "../src/errors.ts";
 import { CliIo } from "../src/io.ts";
+import { testProjectId } from "./support/crypto.ts";
 
 type Step = "ready" | "not-ready";
 
@@ -62,7 +63,9 @@ async function run(script: readonly Step[]): Promise<{
   });
   const exit = await Effect.runPromise(
     Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(Effect.exit(fetchAuditHead(client, "proj-1")));
+      const fiber = yield* Effect.forkChild(
+        Effect.exit(fetchAuditHead(client, testProjectId("proj-1"))),
+      );
       yield* TestClock.adjust(Duration.seconds(30));
       return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(Layer.mergeAll(TestClock.layer(), io))),

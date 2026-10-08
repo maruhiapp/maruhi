@@ -31,11 +31,13 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type { ScopeKind } from "@maruhi/crypto";
 import { Clock, Context, Effect, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
+import { userIdOf } from "./ids.ts";
 import { GITHUB_LOGIN } from "./invite-link.ts";
 import {
   Hex32,
@@ -51,7 +53,7 @@ import {
 export interface InviteAnchor {
   readonly headSeq: number;
   readonly headHashHex: string;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   /** The user key FP (16-byte hex, 32 chars — §3). */
   readonly inviterKeyFingerprintHex: string;
   /** The inviter's sig public key (the link's `is=`). Collated against the on-chain key in addition to the FP at first sync. */
@@ -67,7 +69,7 @@ export interface IssuedInvitePin {
   readonly role: "reader" | "member" | "admin";
   /** The scope to be granted (2026-09-15 ES K4 — extra collation material of the same standing as role. The source of truth is the issue signature). */
   readonly scopeKind: ScopeKind;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   readonly expiresAtMs: number;
   /**
    * The destination's GitHub login (`invite create --github` —
@@ -93,12 +95,15 @@ export interface PinsLoadResult {
 
 /** Load / merge boundary for the invite pin files. */
 export interface PinStoreShape {
-  readonly load: (projectId: string) => Effect.Effect<PinsLoadResult, CliError>;
+  readonly load: (projectId: ProjectId) => Effect.Effect<PinsLoadResult, CliError>;
   /** Saves the anchor (read-merge-write. Existing issued pins are kept). */
-  readonly saveAnchor: (projectId: string, anchor: InviteAnchor) => Effect.Effect<void, CliError>;
+  readonly saveAnchor: (
+    projectId: ProjectId,
+    anchor: InviteAnchor,
+  ) => Effect.Effect<void, CliError>;
   /** Appends an issued pin (read-merge-write + sweeping rows long past their expiry). */
   readonly saveIssuedPin: (
-    projectId: string,
+    projectId: ProjectId,
     inviteId: string,
     pin: IssuedInvitePin,
   ) => Effect.Effect<void, CliError>;
@@ -170,38 +175,24 @@ export function issuedPinOf(
   return pins === null ? undefined : floorRecordGet(pins.issued, inviteId);
 }
 
+const mintLoadedFile = (file: (typeof PinsFileSchema)["Type"]): InvitePins => ({
+  ...file,
+  anchor:
+    file.anchor === null
+      ? null
+      : { ...file.anchor, inviterUserId: userIdOf(file.anchor.inviterUserId) },
+});
+
 /** File-backed pin store at `dir` (used by both production and tests). */
 export function makeFilePinStore(dir: string): PinStoreShape {
-  const pathOf = (projectId: string) => join(dir, `${projectId}.json`);
-  const writeError = (projectId: string) =>
+  const pathOf = (projectId: ProjectId) => join(dir, `${projectId}.json`);
+  const writeError = (projectId: ProjectId) =>
     cliError(
       `Cannot write the invite-pin file (corrupt or an I/O failure): ${pathOf(projectId)} — inspect it, and if the modification was unintended, delete it and re-run`,
     );
 
-  const load = (projectId: string) =>
-    readJsonFile(pathOf(projectId), PinsFileSchema).pipe(
-      Effect.map((loaded): PinsLoadResult => {
-        switch (loaded.state) {
-          case "missing":
-            return { pins: null, state: "missing" };
-          case "corrupt":
-            return { pins: null, state: "corrupt" };
-          case "loaded":
-            return { pins: loaded.file, state: "loaded" };
-        }
-      }),
-      // Only missing (NotFound) **alone** folds into "none". EACCES
-      // / EISDIR etc. are a "could not read the existing pins"
-      // failure — folding them into "none" makes merge rebuild the
-      // existing file from empty and silently lose the verified
-      // anchor and the issued pins (same discipline as config.ts's
-      // reading)
-      Effect.mapError(() => cliError(`Cannot read the invite-pin file: ${pathOf(projectId)}`)),
-      Effect.provide(BunFileSystem.layer),
-    );
-
   const merge = (
-    projectId: string,
+    projectId: ProjectId,
     apply: (pins: InvitePins) => InvitePins,
   ): Effect.Effect<void, CliError> =>
     Effect.gen(function* () {
@@ -217,10 +208,34 @@ export function makeFilePinStore(dir: string): PinStoreShape {
         return yield* Effect.fail(writeError(projectId));
       }
       const base: InvitePins =
-        loaded.state === "missing" ? { v: 1, anchor: null, issued: {} } : loaded.file;
+        loaded.state === "missing"
+          ? { v: 1, anchor: null, issued: {} }
+          : mintLoadedFile(loaded.file);
       yield* writeJsonFileAtomic(pathOf(projectId), PinsFileSchema, apply(base));
     }).pipe(
       Effect.mapError(() => writeError(projectId)),
+      Effect.provide(BunFileSystem.layer),
+    );
+
+  const load = (projectId: ProjectId) =>
+    readJsonFile(pathOf(projectId), PinsFileSchema).pipe(
+      Effect.map((loaded): PinsLoadResult => {
+        switch (loaded.state) {
+          case "missing":
+            return { pins: null, state: "missing" };
+          case "corrupt":
+            return { pins: null, state: "corrupt" };
+          case "loaded":
+            return { pins: mintLoadedFile(loaded.file), state: "loaded" };
+        }
+      }),
+      // Only missing (NotFound) **alone** folds into "none". EACCES
+      // / EISDIR etc. are a "could not read the existing pins"
+      // failure — folding them into "none" makes merge rebuild the
+      // existing file from empty and silently lose the verified
+      // anchor and the issued pins (same discipline as config.ts's
+      // reading)
+      Effect.mapError(() => cliError(`Cannot read the invite-pin file: ${pathOf(projectId)}`)),
       Effect.provide(BunFileSystem.layer),
     );
 

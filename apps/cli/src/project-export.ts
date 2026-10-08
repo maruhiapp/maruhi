@@ -36,6 +36,7 @@ import { createGzip } from "node:zlib";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import type { ExportIdentities } from "@maruhi/api-schema";
 import { ExportChangedError } from "@maruhi/api-schema";
+import { type ProjectId } from "@maruhi/core";
 import { Effect, Exit, FileSystem, Result, Schema } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -51,7 +52,7 @@ const MAX_PAGES = 100_000;
 
 export interface ProjectExportInput {
   readonly client: MaruhiClient;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly verified: VerifiedProject;
   readonly outPath: string;
 }

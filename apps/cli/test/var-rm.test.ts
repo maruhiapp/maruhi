@@ -38,6 +38,7 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
@@ -137,7 +138,9 @@ function lastServer(): MockServer {
 
 /** Reads the floor (the fold of the observation log). */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
-  const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(built.projectId));
+  const loaded = await Effect.runPromise(
+    makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
+  );
   expect(loaded.floor).not.toBeNull();
   return loaded.floor as ProjectFloor;
 }

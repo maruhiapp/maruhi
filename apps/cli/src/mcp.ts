@@ -29,7 +29,7 @@
 // prompts and stdin reads fail, Effect's own logging is routed to stderr,
 // and stdin EOF (the host went away) is a clean exit 0.
 
-import { EnvironmentIdSchema, isEnvironmentId, isProjectId } from "@maruhi/core";
+import { isEnvironmentId, isProjectId } from "@maruhi/core";
 import {
   Cause,
   Console,
@@ -49,12 +49,17 @@ import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./c
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
+import { environmentIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
 import { logNote, NoticeLedger, NoticeObserver } from "./notice.ts";
 import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.package/index.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
+
+const EnvironmentIdParam = Schema.String.pipe(
+  Schema.refine(isEnvironmentId, { expected: "environment id" }),
+);
 
 /* -------------------------------------------------------------------------- */
 /* Wire shapes                                                                */
@@ -135,7 +140,7 @@ const GetSchema = Tool.make("get_schema", {
     MCP_UNTRUSTED_NOTICE,
   ].join(" "),
   parameters: Schema.Struct({
-    environment: Schema.optionalKey(EnvironmentIdSchema).annotate({
+    environment: Schema.optionalKey(EnvironmentIdParam).annotate({
       description: "Environment ID (default: the one maruhi mcp was configured with)",
     }),
   }),
@@ -274,7 +279,7 @@ function readSchema(
     return Effect.gen(function* () {
       const context = yield* openMetadataEnvironment({
         ...flags,
-        env: environment ?? flags.env,
+        env: environment === undefined ? flags.env : environmentIdOf(environment),
       });
       const metadata = yield* pullVerifiedEnvironmentMetadata({
         client: context.client,
@@ -346,7 +351,7 @@ function serverLayer(
     content: asJson(SCHEMA_RESOURCE_URI, undefined),
   });
   const environmentResource =
-    McpServer.resource`maruhi://schema/${McpSchema.param("environment", EnvironmentIdSchema)}`({
+    McpServer.resource`maruhi://schema/${McpSchema.param("environment", EnvironmentIdParam)}`({
       name: "schema-by-environment",
       description: `Value-free schema of one environment. ${MCP_UNTRUSTED_NOTICE}`,
       mimeType: "application/json",

@@ -37,6 +37,13 @@
 
 import { dirname, join } from "node:path";
 
+import {
+  type EnvironmentId,
+  isVariableId,
+  type ProjectId,
+  type UserId,
+  type VariableId,
+} from "@maruhi/core";
 import { Context, type Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
@@ -141,8 +148,8 @@ export interface FloorConflict {
     | "environment-meta"
     | "manifest"
     | "undeletion";
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly variableId: VariableId | null;
   /** Observation 1 (seq / version / metaVersion / manifestVersion and its signed-bytes hash). */
   readonly firstVersion: number;
   readonly firstHashHex: string;
@@ -182,13 +189,13 @@ export type FloorIntent = ManifestFloorIntent | DeletionFloorIntent;
 export interface ManifestFloorIntent {
   readonly id: string;
   readonly op: Exclude<FloorIntentOp, "delete_environment">;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The epoch the compound establishes (create = 1 / rotate = new_epoch). A meta op = the current epoch at issuance. */
   readonly epoch: number;
   /** The compound's effect-check material (the §5.2 commitment of one's own entry on the chain). A meta op = null. */
   readonly dekCommitmentHex: string | null;
   /** The matching coordinate of a meta op (variable creation). A compound, or a meta op on the environment's own statement (env rename), = null. */
-  readonly variableId: string | null;
+  readonly variableId: VariableId | null;
   readonly manifestVersion: number;
   readonly manifestSigHashHex: string;
   readonly declaredHead: ChainHeadFloor;
@@ -203,7 +210,7 @@ export interface ManifestFloorIntent {
 export interface DeletionFloorIntent {
   readonly id: string;
   readonly op: "delete_environment";
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly declaredHead: ChainHeadFloor;
 }
 
@@ -239,7 +246,7 @@ export interface AttestationEvidenceRecord {
   /** The distributed attestation itself (already passed §6.6 verification — the signature is the evidence's body). */
   readonly attestation: {
     readonly suite: string;
-    readonly attesterUserId: string;
+    readonly attesterUserId: UserId;
     readonly attesterKeyFingerprintHex: string;
     readonly chainHeadHashHex: string;
     readonly chainHeadSeq: number;
@@ -276,15 +283,15 @@ export interface FloorLoadResult {
 /** The atomic commit on pull success (rule (c) baseline + variable floor + chain head in one record). */
 export interface PullCommit {
   readonly chainHead: ChainHeadFloor;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly environment: EnvironmentFloor;
 }
 
 /** The commit on push acceptance (promotes one's own signed latest version to the floor). */
 export interface PushCommit {
   readonly chainHead: ChainHeadFloor;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly variable: VariableFloor;
 }
 
@@ -297,7 +304,7 @@ export interface PushCommit {
  */
 export interface MetadataCommit {
   readonly chainHead: ChainHeadFloor;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The chain-derived current epoch (coordinate (ii) — joined regardless of provenance). */
   readonly observedEpoch: number;
   readonly metaVersion: number;
@@ -313,7 +320,7 @@ export interface MetadataCommit {
  */
 export interface ManifestCommit {
   readonly chainHead: ChainHeadFloor;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly manifest: ManifestFloor;
 }
 
@@ -324,27 +331,30 @@ export interface ManifestCommit {
  * (the evidence remains in the log).
  */
 export interface FloorStoreShape {
-  readonly load: (projectId: string) => Effect.Effect<FloorLoadResult, CliError>;
+  readonly load: (projectId: ProjectId) => Effect.Effect<FloorLoadResult, CliError>;
   /** Head advancement on a successful chain sync (rule (c)'s baseline is not moved). */
-  readonly commitHead: (projectId: string, head: ChainHeadFloor) => Effect.Effect<void, CliError>;
+  readonly commitHead: (
+    projectId: ProjectId,
+    head: ChainHeadFloor,
+  ) => Effect.Effect<void, CliError>;
   /** The floor commit of a verified pull. Returns the folded (= persisted to the log) environment floor. */
   readonly commitPull: (
-    projectId: string,
+    projectId: ProjectId,
     commit: PullCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
   /** Variable-floor advancement of an accepted push (rule (c)'s baseline pullEpoch is not moved). */
   readonly commitPush: (
-    projectId: string,
+    projectId: ProjectId,
     commit: PushCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
   /** The environment-level commit of a metadata-only pull (no value floor is fabricated). */
   readonly commitMetadata: (
-    projectId: string,
+    projectId: ProjectId,
     commit: MetadataCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
   /** Floor promotion of an acceptance-confirmed manifest. */
   readonly commitManifest: (
-    projectId: string,
+    projectId: ProjectId,
     commit: ManifestCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
   /**
@@ -354,12 +364,12 @@ export interface FloorStoreShape {
    * intent id.
    */
   readonly appendIntent: (
-    projectId: string,
+    projectId: ProjectId,
     intent: FloorIntentInput,
   ) => Effect.Effect<string, CliError>;
   /** Appending the resolution record that closes an intent with the effect-check's result. */
   readonly resolveIntent: (
-    projectId: string,
+    projectId: ProjectId,
     intentId: string,
     outcome: FloorIntentOutcome,
   ) => Effect.Effect<void, CliError>;
@@ -372,10 +382,12 @@ export interface FloorStoreShape {
    * resubmission of the same seq (idempotent 204 on the server side)" —
    * it bears no safety. missing / corrupt = null (best-effort).
    */
-  readonly loadAttestedHead: (projectId: string) => Effect.Effect<ChainHeadFloor | null, CliError>;
+  readonly loadAttestedHead: (
+    projectId: ProjectId,
+  ) => Effect.Effect<ChainHeadFloor | null, CliError>;
   /** Updating the previous attestation after a successful submission (overwritable non-sensitive local state). */
   readonly saveAttestedHead: (
-    projectId: string,
+    projectId: ProjectId,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
@@ -385,7 +397,7 @@ export interface FloorStoreShape {
    * for the warning message).
    */
   readonly appendAttestationEvidence: (
-    projectId: string,
+    projectId: ProjectId,
     evidence: AttestationEvidenceRecord,
   ) => Effect.Effect<string, CliError>;
   /**
@@ -395,7 +407,7 @@ export interface FloorStoreShape {
    * as decision material (only information supplementing the range of
    * `device add`'s "nowhere to be found" — DK K13-7).
    */
-  readonly listProjectIds: () => Effect.Effect<readonly string[], CliError>;
+  readonly listProjectIds: () => Effect.Effect<readonly ProjectId[], CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}
@@ -426,6 +438,17 @@ export function emptyEnvironmentFloor(): EnvironmentFloor {
 
 /** The receptacle for same-coordinate conflicts detected during a join. */
 export type ConflictSink = (conflict: FloorConflict) => void;
+
+// The join's conflict paths need the record keys' brand back (a Record's
+// string index erases it); the decode side already enforced the §12-1
+// form (floor-log-decode.ts's keysAreIds), so an out-of-form key is an
+// internal inconsistency, not untrusted input to validate
+export function floorKeyAsVariableId(key: string): VariableId {
+  if (!isVariableId(key)) {
+    throw new Error(`floor record has a variable key out of the id form: ${key}`);
+  }
+  return key;
+}
 
 interface VersionedEvidence {
   readonly version: number;
@@ -484,8 +507,8 @@ export function joinChainHead(
 
 function metaConflict(
   kind: "variable-meta" | "environment-meta",
-  environmentId: string,
-  variableId: string | null,
+  environmentId: EnvironmentId,
+  variableId: VariableId | null,
 ): (first: VersionedEvidence, second: VersionedEvidence) => FloorConflict {
   return (first, second) => ({
     kind,
@@ -504,8 +527,8 @@ interface MetaSide {
 }
 
 function joinMetaSide(
-  environmentId: string,
-  variableId: string | null,
+  environmentId: EnvironmentId,
+  variableId: VariableId | null,
   a: MetaSide,
   b: MetaSide,
   sink: ConflictSink,
@@ -525,8 +548,8 @@ function joinMetaSide(
 
 /** Joining deleted (terminal) with live (active | declared): a live observation after deletion = evidence of undeletion. */
 function joinDeletedWithLive(
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   deleted: Extract<VariableFloor, { status: "deleted" }>,
   live: Extract<VariableFloor, { status: "active" | "declared" }>,
   sink: ConflictSink,
@@ -570,8 +593,8 @@ function joinDeletedWithLive(
  * representative is active (value side retained).
  */
 function joinLiveVariableFloor(
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   existing: Extract<VariableFloor, { status: "active" | "declared" }>,
   incoming: Extract<VariableFloor, { status: "active" | "declared" }>,
   sink: ConflictSink,
@@ -623,8 +646,8 @@ function joinLiveVariableFloor(
  * equivocation.
  */
 function joinVariableFloor(
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
   existing: VariableFloor | undefined,
   incoming: VariableFloor,
   sink: ConflictSink,
@@ -651,7 +674,7 @@ function joinVariableFloor(
 
 /** Joining manifest floors (manifestVersion advancement only. Same version, different hash = evidence of a fork). */
 function joinManifestFloor(
-  environmentId: string,
+  environmentId: EnvironmentId,
   existing: ManifestFloor | undefined,
   incoming: ManifestFloor | undefined,
   sink: ConflictSink,
@@ -695,7 +718,7 @@ function joinManifestFloor(
  * take a monotonic union.
  */
 export function joinEnvironmentFloor(
-  environmentId: string,
+  environmentId: EnvironmentId,
   existing: EnvironmentFloor | undefined,
   incoming: EnvironmentFloor,
   sink: ConflictSink,
@@ -714,7 +737,13 @@ export function joinEnvironmentFloor(
   // also stays as a tombstone record), so a variable present on only one
   // side is kept
   const variables: Record<string, VariableFloor> = { ...existing.variables };
-  for (const [variableId, variable] of Object.entries(incoming.variables)) {
+  for (const [key, variable] of Object.entries(incoming.variables)) {
+    // A variables map's keys satisfy §12-1's form by construction (the
+    // decode side's keysAreIds refuses an out-of-form key —
+    // floor-log-decode.ts). A Record's string index erases the brand,
+    // so the conflict paths take it back through the same guard; an
+    // out-of-form key at this point is an internal inconsistency
+    const variableId = floorKeyAsVariableId(key);
     variables[variableId] = joinVariableFloor(
       environmentId,
       variableId,

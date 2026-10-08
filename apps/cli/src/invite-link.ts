@@ -30,7 +30,13 @@
 // links and raw tokens are not accepted (the 2026-09-13 owner ruling
 // of no compatibility path).
 
-import { isEnvironmentId, isProjectId } from "@maruhi/core";
+import {
+  isEnvironmentId,
+  isProjectId,
+  type EnvironmentId,
+  type ProjectId,
+  type UserId,
+} from "@maruhi/core";
 import type { ScopeKind } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
@@ -53,16 +59,16 @@ export interface InviteLinkData {
   readonly inviteId: string;
   /** The link key's seed (32-byte hex — the invite's secret). */
   readonly linkSeedHex: Redacted.Redacted<string>;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly headHashHex: string;
   readonly headSeq: number;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   readonly inviterEncPubHex: string;
   readonly inviterSigPubHex: string;
   readonly role: InviteRole;
   /** The scope to be granted (2026-09-14 ES — covered by the issue signature. With `all`, the environment list is empty). */
   readonly scopeKind: ScopeKind;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   /** The inviter's GitHub login (self-declared, unsigned; null when omitted). */
   readonly inviterLogin: string | null;
   readonly issueSignatureHex: string;
@@ -147,6 +153,11 @@ const STRING_PARAMS = {
 
 type StringParams = Readonly<Record<keyof typeof STRING_PARAMS, string>>;
 
+/** The `iu` slot carries the inviter's internal user id — the `iu` bound (1..1024 non-blank) narrows the brand (UserId carries provenance, not a format). */
+function nonBlankUserId(value: string): value is UserId {
+  return value.trim() !== "";
+}
+
 /** Bulk-fetch of the required string parameters (null on any missing/malformed). */
 function stringParams(params: URLSearchParams): StringParams | null {
   const out: Partial<Record<keyof typeof STRING_PARAMS, string>> = {};
@@ -173,7 +184,10 @@ function stringParams(params: URLSearchParams): StringParams | null {
  */
 function parseScope(
   params: URLSearchParams,
-): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | null {
+): {
+  readonly scopeKind: ScopeKind;
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
+} | null {
   const kind = SCOPE_KINDS.find((known) => known === params.get("sk"));
   const text = params.get("se");
   if (kind === undefined || text === null) {
@@ -183,18 +197,20 @@ function parseScope(
     return text === "" ? { scopeKind: "all", scopeEnvironmentIds: [] } : null;
   }
   const ids = text === "" ? [] : text.split(",");
-  if (
-    ids.length > MAX_SCOPE_ENVIRONMENTS ||
-    !ids.every((id) => isEnvironmentId(id)) ||
-    new Set(ids).size !== ids.length
-  ) {
+  if (ids.length > MAX_SCOPE_ENVIRONMENTS || new Set(ids).size !== ids.length) {
     return null;
   }
-  return { scopeKind: "listed", scopeEnvironmentIds: ids };
+  // every() does not narrow the element brand — filter does (the length
+  // check keeps `malformed = null` identical)
+  const environmentIds = ids.filter(isEnvironmentId);
+  if (environmentIds.length !== ids.length) {
+    return null;
+  }
+  return { scopeKind: "listed", scopeEnvironmentIds: environmentIds };
 }
 
 /** Interprets `p=` (the project ID). */
-function parseProjectId(params: URLSearchParams): string | null {
+function parseProjectId(params: URLSearchParams): ProjectId | null {
   const value = params.get("p");
   return value !== null && isProjectId(value) ? value : null;
 }
@@ -213,7 +229,8 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
     headSeq === null ||
     role === null ||
     scope === null ||
-    inviterLogin === "invalid"
+    inviterLogin === "invalid" ||
+    !nonBlankUserId(strings.iu)
   ) {
     return null;
   }

@@ -27,7 +27,6 @@ import { cliError } from "../src/errors.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -38,6 +37,9 @@ import {
   makeTestUser,
   manifestFor,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
+  type BuiltChain,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
@@ -199,8 +201,8 @@ async function leaseWrapFor(
     workloadPublicKey: publicKey.value,
     dek: deks.get(environment) as Uint8Array,
     context: {
-      projectId: built.projectId,
-      environmentId: environment,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(environment),
       epoch: 1,
       claimsDigestHex: digest.value,
     },

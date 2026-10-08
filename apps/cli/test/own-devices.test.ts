@@ -21,6 +21,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeFileOwnDeviceStore, type OwnDeviceEntry } from "../src/own-devices.ts";
+import { testUserId } from "./support/crypto.ts";
 
 const ORIGIN = "https://maruhi.example";
 const USER_A = "user-alice-1111";
@@ -48,10 +49,10 @@ async function makeStore() {
 describe("own-devices record (own-devices.ts)", () => {
   it("record → load hits, a missing file reads as `missing`", async () => {
     const { store } = await makeStore();
-    expect((await Effect.runPromise(store.load(ORIGIN, USER_A))).state).toBe("missing");
+    expect((await Effect.runPromise(store.load(ORIGIN, testUserId(USER_A)))).state).toBe("missing");
 
-    await Effect.runPromise(store.record(ORIGIN, USER_A, ENTRY));
-    const hit = await Effect.runPromise(store.load(ORIGIN, USER_A));
+    await Effect.runPromise(store.record(ORIGIN, testUserId(USER_A), ENTRY));
+    const hit = await Effect.runPromise(store.load(ORIGIN, testUserId(USER_A)));
     if (hit.state !== "loaded") throw new Error(`expected loaded, got ${hit.state}`);
     expect(hit.devices).toEqual([ENTRY]);
   });
@@ -63,17 +64,17 @@ describe("own-devices record (own-devices.ts)", () => {
     // recordedReserves / staleReserveFingerprints consume `load` directly
     // and degrade on any non-`loaded` state — a merely unreadable file
     // must not fail `key show` / `key recover`
-    expect((await Effect.runPromise(store.load(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(store.load(ORIGIN, testUserId(USER_A)))).state).toBe("corrupt");
   });
 
   it("a corrupt file reads as `corrupt` and record does not overwrite corruption", async () => {
     const { path, store } = await makeStore();
     await writeFile(path, "{ not json");
 
-    expect((await Effect.runPromise(store.load(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(store.load(ORIGIN, testUserId(USER_A)))).state).toBe("corrupt");
 
     const failed = await Effect.runPromise(
-      store.record(ORIGIN, USER_A, ENTRY).pipe(
+      store.record(ORIGIN, testUserId(USER_A), ENTRY).pipe(
         Effect.map(() => null),
         Effect.catch((error) => Effect.succeed(error.message)),
       ),
@@ -85,7 +86,7 @@ describe("own-devices record (own-devices.ts)", () => {
 
   it("a stored entry keeps the wire field order (the scope pair right after roleCap)", async () => {
     const { path, store } = await makeStore();
-    await Effect.runPromise(store.record(ORIGIN, USER_A, ENTRY));
+    await Effect.runPromise(store.record(ORIGIN, testUserId(USER_A), ENTRY));
 
     const stored = JSON.parse(await readFile(path, "utf8")) as {
       known: Record<string, Record<string, Record<string, object>>>;

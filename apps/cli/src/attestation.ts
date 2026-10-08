@@ -32,7 +32,7 @@
 // ci run (the lease path) does not join gossip (§6.6 / §14-2 — the lease
 // response bundles no attestations and the workload has no signing key).
 
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type ProjectId, type UserId } from "@maruhi/core";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
@@ -162,7 +162,7 @@ function evidenceRecordOf(
 
 /** Save the evidence (append-only) + warn + stop using that sync's artifacts (fail). */
 const failWithEvidence = Effect.fn("attestation.failWithEvidence")(function* (
-  projectId: string,
+  projectId: ProjectId,
   view: VerifiedProject,
   records: readonly {
     attestation: DistributedAttestationWire;
@@ -204,7 +204,7 @@ const failWithEvidence = Effect.fn("attestation.failWithEvidence")(function* (
 export const reconcileDistributedAttestations = Effect.fn(
   "attestation.reconcileDistributedAttestations",
 )(function* (input: {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly view: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.fn.Return<VerifiedProject, CliError, CliServices> {
@@ -275,9 +275,9 @@ export const submitHeadAttestationIfAdvanced = Effect.fn(
   "attestation.submitHeadAttestationIfAdvanced",
 )(function* (input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly view: VerifiedProject;
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   readonly signingKey: CryptoKey;
 }): Effect.fn.Return<void, never, CliServices> {
   const store = yield* FloorStore;

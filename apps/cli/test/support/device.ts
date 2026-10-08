@@ -18,16 +18,17 @@ import {
 import { appendableProjectHandlers } from "./chain-handler.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
   headOf,
   hexBytes,
   makeTestUser,
+  testEnvironmentId,
+  type BuiltChain,
   type TestUser,
-  wrapDekFor,
   type WireRecipientDek,
+  wrapDekFor,
 } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./server.ts";
@@ -71,7 +72,8 @@ export function addDeviceOp(
       sigPubHex: device.sigPubHex,
       roleCap: cap.roleCap,
       scopeKind: cap.environmentIds === undefined ? "all" : "listed",
-      scopeEnvironmentIds: cap.environmentIds === undefined ? [] : [...cap.environmentIds],
+      scopeEnvironmentIds:
+        cap.environmentIds === undefined ? [] : cap.environmentIds.map(testEnvironmentId),
     },
   };
 }

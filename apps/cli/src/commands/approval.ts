@@ -1,5 +1,6 @@
 // `maruhi approval` (discipline: see commands/index.ts).
 
+import { type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -223,7 +224,7 @@ function proposalDetailLines(view: ProposalView): readonly string[] {
 /** The "can you approve" line (including K5-L's guidance). */
 function eligibilityLine(
   verified: Parameters<typeof voteEligibility>[0],
-  userId: string,
+  userId: UserId,
   deviceFingerprintHex: string | null,
   view: ProposalView,
 ): string {

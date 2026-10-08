@@ -28,6 +28,7 @@ import type { HttpClient } from "effect/http";
 import { type CiLeaseInput, leaseEnvironments } from "../ci-lease.ts";
 import { countNoun, displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
+import { environmentIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import type { VerifiedLeaseMaterial } from "../lease-client.ts";
 import type { ProcessRunner } from "../run.ts";
@@ -56,9 +57,9 @@ interface CiSyncInput extends CiLeaseInput {
 /** Pulls a leased environment's material (its absence is an implementation inconsistency). */
 function materialOf(
   materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<VerifiedLeaseMaterial, CliError> {
-  const material = materials.get(environmentId as EnvironmentId);
+  const material = materials.get(environmentIdOf(environmentId));
   return material === undefined
     ? Effect.fail(cliError("The lease returned no material (internal inconsistency)"))
     : Effect.succeed(material);
@@ -82,11 +83,11 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
   const materials = yield* leaseEnvironments({
     ...input,
     environmentIds: [
-      target.environment as EnvironmentId,
-      ...(tokenEnvironment === null ? [] : [tokenEnvironment as EnvironmentId]),
+      environmentIdOf(target.environment),
+      ...(tokenEnvironment === null ? [] : [environmentIdOf(tokenEnvironment)]),
     ],
   });
-  const source = yield* materialOf(materials, target.environment);
+  const source = yield* materialOf(materials, environmentIdOf(target.environment));
   const plan = yield* computePlan({
     target,
     source: sourceVariablesOf(source.variables),
@@ -103,7 +104,7 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
   yield* requireProductionConsent(target, input.yes, "maruhi ci sync");
   let token: IntegrationToken | null = null;
   if (target.driver.kind === "http") {
-    const holder = yield* materialOf(materials, target.driver.token.environment);
+    const holder = yield* materialOf(materials, environmentIdOf(target.driver.token.environment));
     token = yield* integrationTokenOf(target.driver.token, holder.variables);
   }
   const result = yield* runDriver({

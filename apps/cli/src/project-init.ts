@@ -11,7 +11,7 @@
 //   trusted)
 
 import type { UserOrgSchema } from "@maruhi/api-schema";
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, type ProjectId } from "@maruhi/core";
 import {
   SUITE_ID,
   type UnsignedChainEntry,
@@ -73,7 +73,7 @@ export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (
   readonly session: CliSession;
   readonly masterKeys: MasterKeys;
   readonly orgFlag?: string;
-}): Effect.fn.Return<{ readonly projectId: string }, CliError, CliIo> {
+}): Effect.fn.Return<{ readonly projectId: ProjectId }, CliError, CliIo> {
   const io = yield* CliIo;
   const me = yield* input.client.auth.me({}).pipe(Effect.mapError(toCliError));
   const picked = pickOrg(me.orgs, input.orgFlag);

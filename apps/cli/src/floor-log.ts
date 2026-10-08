@@ -30,7 +30,7 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { isProjectId } from "@maruhi/core";
+import { isProjectId, type ProjectId, type EnvironmentId } from "@maruhi/core";
 import { Data, Effect, FileSystem, type PlatformError, Predicate, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -133,7 +133,7 @@ function randomIntentId(): string {
 }
 
 /** The commit functions' return value: the environment's floor from the folded floor (bottom if unobserved). */
-function environmentOf(floor: ProjectFloor, environmentId: string): EnvironmentFloor {
+function environmentOf(floor: ProjectFloor, environmentId: EnvironmentId): EnvironmentFloor {
   return floorRecordGet(floor.environments, environmentId) ?? emptyEnvironmentFloor();
 }
 
@@ -147,8 +147,8 @@ export interface FileFloorStoreOptions {
  * project id here keeps each refusal message naming the project's file.
  */
 const mapErrorTo =
-  (message: (projectId: string) => string) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>, projectId: string): Effect.Effect<A, CliError, R> =>
+  (message: (projectId: ProjectId) => string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>, projectId: ProjectId): Effect.Effect<A, CliError, R> =>
     effect.pipe(Effect.mapError(() => cliError(message(projectId))));
 
 /**
@@ -166,7 +166,7 @@ const AttestedHeadFileSchema = Schema.Struct({
 export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions): FloorStoreShape {
   const compactionThreshold = options?.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
 
-  const pathOf = (projectId: string): string => {
+  const pathOf = (projectId: ProjectId): string => {
     // projectId is supposed to be a genesis hash (hex-64), but the form
     // is enforced before it goes into a file name (prevents untrusted
     // strings from mixing into path assembly)
@@ -196,7 +196,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
    * failure, matching the envelope a thrown Error took through
    * `tryPromise` before.
    */
-  const logPathOf = (projectId: string): Effect.Effect<string, CliError> =>
+  const logPathOf = (projectId: ProjectId): Effect.Effect<string, CliError> =>
     Effect.try({
       try: () => pathOf(projectId),
       catch: () =>
@@ -227,7 +227,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     });
 
   const appendRecords = (
-    projectId: string,
+    projectId: ProjectId,
     records: readonly FloorLogRecord[],
   ): Effect.Effect<
     void,
@@ -247,7 +247,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     });
 
   const readAndFold = (
-    projectId: string,
+    projectId: ProjectId,
   ): Effect.Effect<FoldOutcome, CliError | PlatformError.PlatformError, FileSystem.FileSystem> =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -258,7 +258,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
 
   /** Append → fold. If fold produced a conflict it is a typed error (the evidence remains in the log). */
   const mutate = (
-    projectId: string,
+    projectId: ProjectId,
     records: readonly FloorLogRecord[],
   ): Effect.Effect<ProjectFloor, CliError> =>
     Effect.gen(function* () {
@@ -298,14 +298,14 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       Effect.provide(BunFileSystem.layer),
     );
 
-  const attestedPathOf = (projectId: string): string => {
+  const attestedPathOf = (projectId: ProjectId): string => {
     if (!isProjectId(projectId)) {
       throw new Error(`invalid project id for attested-head path: ${projectId}`);
     }
     return join(dir, `${projectId}.attested.json`);
   };
 
-  const evidencePathOf = (projectId: string): string => {
+  const evidencePathOf = (projectId: ProjectId): string => {
     if (!isProjectId(projectId)) {
       throw new Error(`invalid project id for attestation-evidence path: ${projectId}`);
     }
@@ -445,7 +445,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           );
         // Only the body (`<id>.jsonl`). `<id>.attestation-evidence.jsonl`
         // etc. fall out for not matching the ID form (hex 64)
-        const ids = new Set<string>();
+        const ids = new Set<ProjectId>();
         for (const name of names) {
           const match = /^(.+)\.jsonl$/.exec(name);
           if (match?.[1] !== undefined && isProjectId(match[1])) {

@@ -14,7 +14,7 @@
 // On a CAS retry this entry is re-signed together with the entry,
 // statements, and manifest (because prev = the H+1 entry's hash changes).
 
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, type EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, EnvValuesDigestEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -37,7 +37,7 @@ export const signBoundaryCheckpoint = Effect.fn("boundary-checkpoint.signBoundar
   function* (input: {
     /** The just-signed composite entry (create / rotate — the anchor for seq / prev). */
     readonly compositeEntry: ChainEntry;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     /** The epoch the composite establishes (creation = 1, rotate = new_epoch). */
     readonly epoch: number;
     /** The embedded manifest's version and signed_bytes hash (the binding target — §4.3 (2)). */

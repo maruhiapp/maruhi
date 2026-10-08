@@ -40,7 +40,6 @@ import {
 import {
   addMemberOp,
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -51,6 +50,11 @@ import {
   makeTestUser,
   manifestFor,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+  type BuiltChain,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
@@ -275,8 +279,8 @@ async function leaseWrapFor(body: { oidcToken: string; ephemeralPubHex: string }
     workloadPublicKey: publicKey.value,
     dek,
     context: {
-      projectId: built.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       epoch: 1,
       claimsDigestHex: digest.value,
     },
@@ -569,12 +573,12 @@ async function openWith(
     recipientKeyPair: pair,
     sealed: { enc: toBytes(wrap.encHex), ciphertext: toBytes(wrap.ciphertextHex) },
     context: {
-      projectId: built.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       proposalId: body.proposal.proposalId,
-      variableId: target.variableId,
+      variableId: testVariableId(target.variableId),
       baseVersion: target.baseVersion,
-      recipientUserId: userId,
+      recipientUserId: testUserId(userId),
     },
   });
   return opened.ok ? new TextDecoder().decode(opened.value) : null;

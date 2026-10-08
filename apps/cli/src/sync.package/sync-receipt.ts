@@ -29,7 +29,7 @@
 // injected as an environment variable" (the same fail-closed, and
 // the wording states the fact).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
@@ -206,7 +206,7 @@ export const loadReceipt = Effect.fn("sync-receipt.loadReceipt")(function* (inpu
 /** The nearing-cap warning text (null when not applicable). */
 export function receiptVersionWarning(input: {
   readonly target: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly variableVersion: number;
 }): string | null {
   if (input.variableVersion < RECEIPT_VERSION_WARN_AT) {
@@ -227,7 +227,7 @@ export function storeReceipt(input: {
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
   readonly receipt: SyncReceipt;
 }): Effect.Effect<{ readonly version: number; readonly warnings: readonly string[] }, CliError> {

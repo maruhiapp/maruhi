@@ -31,6 +31,7 @@
 
 import { dirname, join } from "node:path";
 
+import { type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
 import {
@@ -144,7 +145,7 @@ export interface SyncTarget {
 export interface SyncConfig {
   readonly version: 1;
   /** The project the config belongs to (optional. When given, checked against the resolved project). */
-  readonly projectId: string | undefined;
+  readonly projectId: ProjectId | undefined;
   /** The environment ID where receipt variables live (supplement 15 X3 (a)). */
   readonly receiptsEnvironment: string;
   readonly targets: ReadonlyMap<string, SyncTarget>;
@@ -622,7 +623,7 @@ function parseTargets(
   root: {
     readonly configDir: string;
     readonly receiptsEnvironment: string;
-    readonly projectId: string | undefined;
+    readonly projectId: ProjectId | undefined;
   },
 ): Parsed<ReadonlyMap<string, SyncTarget>> {
   return Result.gen(function* () {

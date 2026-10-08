@@ -3,7 +3,7 @@
 // / ConflictedTarget / ReencryptContext), and the small helpers several
 // stages use (the stage overview lives in env-rotate.ts).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import type { ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -36,7 +36,7 @@ export interface RotateInput {
    * rotation on a departing member's removal — §7).
    */
   readonly forceNewEpoch: boolean;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   /** Resync (full chain re-verification). Used for CAS conflicts and post-acceptance confirmation. */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -58,7 +58,7 @@ export interface ReencryptTarget {
 
 /** One variable that got a 409 (keeps the known latest needed for verifying the winner and the claimed version). */
 export interface ConflictedTarget {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   /** The verified value I used as the prev's basis at the conflict. */
   readonly known: VerifiedPulledValue;
   /** The latest version the 409 claimed (the input of the winner-consistency check — never the basis of adopt/reject). */
@@ -84,8 +84,8 @@ export function dedupeWarnings(warnings: readonly string[]): readonly string[] {
  */
 export const ensureRotatable = Effect.fn("env-rotate-shared.ensureRotatable")(function* (
   verified: VerifiedProject,
-  environmentId: string,
-  signerUserId: string,
+  environmentId: EnvironmentId,
+  signerUserId: UserId,
   signingKeyPair: SigningKeyPair,
 ): Effect.fn.Return<ChainMember, CliError> {
   // Membership + the device's effective role (member or above) / scope are shared with env create
@@ -118,7 +118,7 @@ export interface ReencryptContext {
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   /** My key FP (the attribution when recording my accepted writes into the ledger). */
   readonly writerKeyFingerprintHex: string;
   readonly signingKey: CryptoKey;

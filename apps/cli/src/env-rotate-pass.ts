@@ -2,6 +2,7 @@
 // push pass -> rescan -> verdict, and the classification of an incomplete
 // run (the stage overview lives in env-rotate.ts).
 
+import { type VariableId } from "@maruhi/core";
 import type { ChainDevice } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -44,7 +45,7 @@ interface ReencryptOutcome {
 
 /** Extracts just the message from a tagged failure (null-propagating). */
 function failureMessage(
-  failure: { readonly variableId: string; readonly message: string } | null,
+  failure: { readonly variableId: VariableId; readonly message: string } | null,
 ): string | null {
   return failure === null ? null : failure.message;
 }
@@ -56,7 +57,7 @@ function failureMessage(
  * another variable that is actually still unfinished (a conflict, etc.).
  */
 function pendingFailure(
-  failure: { readonly variableId: string; readonly message: string } | null,
+  failure: { readonly variableId: VariableId; readonly message: string } | null,
   staleIds: ReadonlySet<string>,
 ): string | null {
   if (failure === null) {
@@ -160,7 +161,7 @@ interface PushPassResult {
    * cause would hide another variable's real cause, so the caller can
    * drop it by matching against reality.
    */
-  readonly firstFailure: { readonly variableId: string; readonly message: string } | null;
+  readonly firstFailure: { readonly variableId: VariableId; readonly message: string } | null;
   readonly warnings: readonly string[];
 }
 
@@ -192,7 +193,7 @@ const runPushPass = Effect.fn("env-rotate-pass.runPushPass")(function* (input: {
   const total = input.doneBefore + input.pending.length;
   let reencrypted = 0;
   const epochStaleIds = new Set<string>();
-  let firstFailure: { readonly variableId: string; readonly message: string } | null = null;
+  let firstFailure: { readonly variableId: VariableId; readonly message: string } | null = null;
   for (const target of input.pending) {
     const attempt = yield* asOutcome(
       pushReencrypted({ context: input.context, view: input.view, target }),

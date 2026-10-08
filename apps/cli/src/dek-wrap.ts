@@ -18,7 +18,7 @@
 // re-wraps are avoided).
 
 import type { WrappedDek } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainMember,
@@ -43,6 +43,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
+import { userIdOf } from "./ids.ts";
 import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
 /**
@@ -81,7 +82,7 @@ function recipientEncPubHex(recipient: WrapRecipient): string {
 export function deviceReceivesEnvironment(
   member: ChainMember,
   device: ChainDevice,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): boolean {
   return scopeIncludesEnvironment(effectivePermissionOf(member, device).scope, environmentId);
 }
@@ -117,7 +118,7 @@ export function memberDevicesInOrder(
 
 function wrapRecipientsFor(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): readonly WrapRecipient[] {
   const seen = new Set<string>();
   const recipients: WrapRecipient[] = [];
@@ -148,7 +149,7 @@ function wrapRecipientsFor(
  */
 export function expectedWrapRecipientCount(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): number {
   return wrapRecipientsFor(verified, environmentId).length;
 }
@@ -164,12 +165,12 @@ class WrapBuildFailed extends Data.TaggedError("WrapBuildFailed")<{
 }> {}
 
 function wrapAndSignForEffect(input: {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly recipient: WrapRecipient;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<WrappedDek, WrapBuildFailed> {
   const { environmentId, epoch, dek, recipient } = input;
@@ -201,7 +202,7 @@ function wrapAndSignForEffect(input: {
           projectId: input.projectId,
           environmentId,
           epoch,
-          recipientUserId: id,
+          recipientUserId: userIdOf(id),
         },
       }),
     ).pipe(Effect.mapError(() => new WrapBuildFailed({ reason: "The HPKE wrap failed" })));
@@ -214,7 +215,7 @@ function wrapAndSignForEffect(input: {
           projectId: input.projectId,
           environmentId,
           epoch,
-          recipientUserId: id,
+          recipientUserId: userIdOf(id),
           recipientEncPubHex: encPubHex,
           encHex,
           ciphertextHex,
@@ -231,7 +232,7 @@ function wrapAndSignForEffect(input: {
       suite: SUITE_ID,
       epoch,
       recipientClass: recipient.kind === "server" ? ("server" as const) : ("member" as const),
-      recipientUserId: id,
+      recipientUserId: userIdOf(id),
       recipientEncPubHex: encPubHex,
       encHex,
       ciphertextHex,
@@ -241,12 +242,12 @@ function wrapAndSignForEffect(input: {
 }
 
 export function wrapAndSignFor(input: {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly recipient: WrapRecipient;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Promise<WrapBuildResult> {
   return Effect.runPromise(
@@ -267,10 +268,10 @@ export function wrapAndSignFor(input: {
  */
 export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<readonly WrappedDek[], CliError> {
   const recipients = wrapRecipientsFor(input.verified, input.environmentId);
@@ -307,7 +308,7 @@ export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(f
 export function sameWrapRecipientSet(
   a: VerifiedProject,
   b: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): boolean {
   const left = wrapRecipientsFor(a, environmentId);
   const right = wrapRecipientsFor(b, environmentId);
@@ -364,7 +365,7 @@ interface WritingMember {
  */
 export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /**
    * Whether the operation acts on an environment the chain already holds
    * (`existing`: a chain-deleted one is refused first — §6.2 pruned it from
@@ -373,7 +374,7 @@ export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(f
    * duplicate-environment). Required, so every caller decides.
    */
   readonly target: "existing" | "new";
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   /** The signing device's key (the computation point of effective permission — the person's (role, scope) is not passed to the check directly). */
   readonly signingKeyPair: SigningKeyPair;
   /** Operation name embedded in the message (e.g. "rotation"). */

@@ -23,6 +23,7 @@ import { envRenameOp } from "../env-rename.ts";
 import { envRmOp } from "../env-rm.ts";
 import { envRotateOp } from "../env-rotate.ts";
 import { CliError, usageError } from "../errors.ts";
+import { environmentIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
@@ -112,7 +113,7 @@ export const envRmConfig = {
  */
 const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const context = yield* openProject(flags);
@@ -218,7 +219,7 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
     const receiptsFloor =
       syncConfig.receiptsEnvironment === environmentId
         ? context.floorHandle
-        : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
+        : yield* floorHandleFor(context, environmentIdOf(syncConfig.receiptsEnvironment));
     yield* advanceReceiptsAfterRotation({
       client: context.client,
       // The rotation advanced the chain: the cleanup starts from the

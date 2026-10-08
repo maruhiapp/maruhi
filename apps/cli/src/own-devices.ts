@@ -34,12 +34,14 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { type UserId } from "@maruhi/core";
 import type { DeviceCap, MemberScope, Role } from "@maruhi/crypto";
-import { memberScopeOf, scopePayloadFieldsOf } from "@maruhi/crypto";
+import { ALL_SCOPE, memberScopeOf, scopePayloadFieldsOf } from "@maruhi/crypto";
 import { Context, Effect, Result, Schema, SchemaGetter } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
+import { environmentIdOf } from "./ids.ts";
 import {
   Hex32,
   Hex64,
@@ -87,17 +89,17 @@ export type OwnDevicesLookup =
 /** Load / record boundary for the own-devices file. */
 export interface OwnDeviceStoreShape {
   readonly filePath: string;
-  readonly load: (origin: string, userId: string) => Effect.Effect<OwnDevicesLookup, CliError>;
+  readonly load: (origin: string, userId: UserId) => Effect.Effect<OwnDevicesLookup, CliError>;
   /** Upsert one record (read-merge-write). A re-approval overwrites a revoked row. */
   readonly record: (
     origin: string,
-    userId: string,
+    userId: UserId,
     entry: OwnDeviceEntry,
   ) => Effect.Effect<void, CliError>;
   /** Marks fingerprints revoked (rows that do not exist are created as revoked "observed" rows only when keys are given). */
   readonly markRevoked: (
     origin: string,
-    userId: string,
+    userId: UserId,
     fingerprintsHex: readonly string[],
     nowMs: number,
   ) => Effect.Effect<void, CliError>;
@@ -180,11 +182,27 @@ const EntrySchema = WireEntrySchema.pipe(
   Schema.decodeTo(DomainEntrySchema, {
     decode: SchemaGetter.transform((wire: typeof WireEntrySchema.Type) => {
       const { scopeKind, scopeEnvironmentIds, ...rest } = wire;
-      return { ...rest, scope: memberScopeOf({ scopeKind, scopeEnvironmentIds }) };
+      return {
+        ...rest,
+        scope: memberScopeOf({
+          scopeKind,
+          scopeEnvironmentIds: scopeEnvironmentIds.map(environmentIdOf),
+        }),
+      };
     }),
     encode: SchemaGetter.transform((domain: typeof DomainEntrySchema.Encoded) => {
       const { scope, ...rest } = domain;
-      return { ...rest, ...scopePayloadFieldsOf(scope) };
+      return {
+        ...rest,
+        ...scopePayloadFieldsOf(
+          scope.kind === "all"
+            ? ALL_SCOPE
+            : {
+                kind: "listed",
+                environmentIds: scope.environmentIds.map(environmentIdOf),
+              },
+        ),
+      };
     }),
   }),
 );
@@ -215,7 +233,7 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
 
   const merge = (
     origin: string,
-    userId: string,
+    userId: UserId,
     apply: (devices: Readonly<Record<string, OwnDeviceRecord>>) => Record<string, OwnDeviceRecord>,
   ): Effect.Effect<void, CliError> =>
     Effect.gen(function* () {

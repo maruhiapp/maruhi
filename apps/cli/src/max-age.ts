@@ -15,6 +15,7 @@
 // pays one round-trip time whatever the count (the pull wire carries no
 // push time — AUTH_SPEC §12-7; pf6-design.md ruling R9-C kept it that way).
 
+import { type EnvironmentId, type ProjectId, type VariableId } from "@maruhi/core";
 import { Clock, Duration, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -29,15 +30,15 @@ export const DUE_SOON_DAYS = 14;
 
 /** A variable whose verified statement declares a max age (the only kind this module looks at). */
 export interface MaxAgeCandidate {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly maxAgeDays: number;
 }
 
 /** One value past, or approaching, its declared max age. */
 export interface DueRow {
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly maxAgeDays: number;
   readonly pushedAtMs: number;
@@ -66,8 +67,8 @@ const HISTORY_TIMEOUT = Duration.seconds(10);
  */
 export const dueRowsFor = Effect.fnUntraced(function* (input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly candidates: readonly MaxAgeCandidate[];
   readonly nowMs: number;
   readonly windowDays: number;
@@ -211,8 +212,8 @@ function formatPastDueNote(rows: readonly DueRow[], nowMs: number): string | nul
  */
 export const notePastDueValues = Effect.fn("max-age.notePastDueValues")(function* (input: {
   readonly client: MaruhiClient;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly variables: readonly DecryptedVariable[];
 }): Effect.fn.Return<void, never, CliIo> {
   const candidates = input.variables.flatMap((variable): MaxAgeCandidate[] =>

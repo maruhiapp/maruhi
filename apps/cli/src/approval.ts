@@ -16,7 +16,7 @@
 //   is split off here to avoid circular imports)
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoPromise } from "@maruhi/core";
+import { cryptoPromise, type UserId } from "@maruhi/core";
 import type {
   ApprovalTargetOp,
   ChainEntry,
@@ -41,7 +41,6 @@ import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
-import { sameScope } from "./scope.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -62,7 +61,7 @@ export interface ProposalInput {
 export interface ProposeContext {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly proposal: ProposalInput;
@@ -214,7 +213,7 @@ export function proposeRecheck<A>(
 interface WithdrawSummary {
   readonly proposalHashHex: string;
   readonly proposalSeq: number;
-  readonly proposerUserId: string;
+  readonly proposerUserId: UserId;
   /** Closed by an owner who is not the proposer (the K6-L Note). */
   readonly closedByOtherOwner: boolean;
 }
@@ -223,7 +222,7 @@ interface WithdrawSummary {
 function ensureWithdrawable(
   verified: VerifiedProject,
   ref: string,
-  signerUserId: string,
+  signerUserId: UserId,
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ProposalView["proposal"], CliError> {
   const resolution = resolveProposalRef(verified, ref);
@@ -251,7 +250,7 @@ export const withdrawProposalOp = Effect.fn("approval.withdrawProposalOp")(funct
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly ref: string;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.fn.Return<WithdrawSummary, CliError> {
@@ -340,10 +339,14 @@ function ownersOf(verified: VerifiedProject): readonly string[] {
 }
 
 /** The pre-append check for policy (owner, reachability foretell, no-op detection). Run again after a resync. */
+function sameOps(a: readonly ApprovalTargetOp[], b: readonly ApprovalTargetOp[]): boolean {
+  return a.length === b.length && a.every((op) => b.includes(op));
+}
+
 function ensurePolicySettable(
   verified: VerifiedProject,
   request: PolicyRequest,
-  signerUserId: string,
+  signerUserId: UserId,
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<{ readonly unchanged: boolean }, CliError> {
   const actor = verified.state.members.get(signerUserId);
@@ -383,10 +386,7 @@ function ensurePolicySettableWith(
   const unchanged =
     current !== null &&
     current.requiredApprovals === request.requiredApprovals &&
-    sameScope(
-      { kind: "listed", environmentIds: [...current.ops] },
-      { kind: "listed", environmentIds: [...request.ops] },
-    );
+    sameOps(current.ops, request.ops);
   return Effect.succeed({ unchanged });
 }
 
@@ -394,7 +394,7 @@ export const setApprovalPolicyOp = Effect.fn("approval.setApprovalPolicyOp")(fun
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly request: PolicyRequest;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly proposal: ProposalInput;

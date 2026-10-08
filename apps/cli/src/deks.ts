@@ -17,7 +17,7 @@
 // a colluding server injecting a false DEK — §14.2-1).
 
 import type { RecipientDek } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, isEnvironmentId, type UserId } from "@maruhi/core";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -37,11 +37,12 @@ import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 import { deletedEnvironmentMessage, describeScope, outOfScopeMessage } from "./scope.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
 export interface DekRecipient {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly encPubHex: string;
   readonly encKeyPair: EncryptionKeyPair;
 }
@@ -57,7 +58,7 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
 /** Verifies one wrap's registration signature and unwraps it (§5.1), with the §5.2 commitment check before the DEK leaves. */
 function verifyAndUnwrapOne(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly wrap: RecipientDek;
   /** The chain-derived commitment for that (environment, epoch) (§5.2). */
@@ -87,7 +88,7 @@ function verifyAndUnwrapOne(input: {
           recipientEncPubHex: recipient.encPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
-          signerUserId: wrap.signerUserId,
+          signerUserId: userIdOf(wrap.signerUserId),
         },
         signatureHex: wrap.signatureHex,
         signerPublicKey: signerKey,
@@ -153,14 +154,24 @@ function verifyAndUnwrapOne(input: {
  * server listing or statement is consulted, so this needs no request and
  * cannot be withheld.
  */
-export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<string> {
-  const deleted = new Set<string>();
-  for (const [environmentId, environment] of verified.state.environments) {
-    if (environment.deletedAtSeq !== null) {
-      deleted.add(environmentId);
+export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<EnvironmentId> {
+  const deleted = new Set<EnvironmentId>();
+  for (const [key, environment] of verified.state.environments) {
+    if (environment.deletedAtSeq !== null && isEnvironmentId(key)) {
+      deleted.add(key);
     }
   }
   return deleted;
+}
+
+/**
+ * The chain-verified environment ids in `createdAtSeq` insertion order's
+ * map-key view (the chain keys are the ids by construction; the
+ * ReadonlyMap's string index erases the brand — the §12-1 guard takes it
+ * back, an out-of-form key is unreachable on a verified chain).
+ */
+export function chainEnvironmentIds(verified: VerifiedProject): readonly EnvironmentId[] {
+  return [...verified.state.environments.keys()].filter(isEnvironmentId);
 }
 
 /**
@@ -170,7 +181,7 @@ export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet
  */
 export function requireChainEnvironment(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<EnvironmentChainState, CliError> {
   const environment = verified.state.environments.get(environmentId);
   if (environment === undefined) {
@@ -202,7 +213,7 @@ export function requireChainEnvironment(
  */
 const verifyAndUnwrapDeks = Effect.fn("deks.verifyAndUnwrapDeks")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly deks: readonly RecipientDek[];
 }): Effect.fn.Return<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
@@ -313,7 +324,7 @@ export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
 export const environmentKeysFor = Effect.fn("deks.environmentKeysFor")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   /** Wraps bundled with a pull of values (raw wire shape, assumed verified under the same view as verified). */
   readonly prefetched?: readonly RecipientDek[] | null | undefined;

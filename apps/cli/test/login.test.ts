@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
+import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import {
   type MockHandler,
@@ -719,7 +720,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     // Pre-place a device key record for this (origin, user)
     env.keychain.set(
-      masterKeyEntryName(maruhi.origin, "user-0001"),
+      masterKeyEntryName(maruhi.origin, testUserId("user-0001")),
       JSON.stringify({
         suite: "maruhi/v1",
         encPubHex: "00".repeat(32),

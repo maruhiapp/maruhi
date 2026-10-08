@@ -468,7 +468,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    const entryName = masterKeyEntryName(maruhi.origin, testUserId("u1"));
     // Unreadable despite the current-format fields all **present** = inner
     // corruption (an incomplete shape may be a future format, so it never falls on the advise-deletion side)
     env.keychain.set(
@@ -505,7 +505,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    const entryName = masterKeyEntryName(maruhi.origin, testUserId("u1"));
     env.keychain.set(entryName, masterRecordJson({ encSkHex: "zzzz" }));
     const session = {
       origin: maruhi.origin,
@@ -530,7 +530,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     const maruhi = await start([]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    const entryName = masterKeyEntryName(maruhi.origin, "u1");
+    const entryName = masterKeyEntryName(maruhi.origin, testUserId("u1"));
     env.keychain.set(entryName, masterRecordJson({ encSkHex: "<redacted:master-enc-sk>" }));
     const session = {
       origin: maruhi.origin,
@@ -582,7 +582,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
 
     // (a) Save
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
-    const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"));
+    const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001")));
     expect(stored).toBeDefined();
     expect(stored).not.toContain("<redacted");
 

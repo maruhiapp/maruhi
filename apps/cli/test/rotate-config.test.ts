@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseRotateConfig, ruleFor } from "../src/rotate-config.ts";
 import { rotationAction } from "../src/rotation.ts";
-
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 const PROJECT = "a".repeat(64);
 
 function parse(config: unknown, configDir?: string) {
@@ -406,8 +406,8 @@ describe("rotationAction (the checklist's next step — PF6 R3)", () => {
   it("names the rotate command for a covered variable (the companion included), the by-hand route otherwise", () => {
     expect(
       rotationAction({
-        environmentId: "prod",
-        variableId: "v1",
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("v1"),
         state: { name: "AWS_ACCESS_KEY_ID", deleted: false },
         config,
       }),
@@ -416,8 +416,8 @@ describe("rotationAction (the checklist's next step — PF6 R3)", () => {
     );
     expect(
       rotationAction({
-        environmentId: "prod",
-        variableId: "v2",
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("v2"),
         state: { name: "OTHER", deleted: false },
         config,
       }),
@@ -426,14 +426,19 @@ describe("rotationAction (the checklist's next step — PF6 R3)", () => {
     );
     expect(
       rotationAction({
-        environmentId: "prod",
-        variableId: "v3",
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("v3"),
         state: { name: "GONE", deleted: true },
         config,
       }),
     ).toContain("`maruhi rotation dismiss v3 --env prod`");
     expect(
-      rotationAction({ environmentId: "prod", variableId: "v4", state: undefined, config: null }),
+      rotationAction({
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("v4"),
+        state: undefined,
+        config: null,
+      }),
     ).toContain("could not be resolved here");
   });
 });

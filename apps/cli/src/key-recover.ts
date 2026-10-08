@@ -26,6 +26,7 @@
 // `revoke_device(old)` + sweep → delete old B's passkey / guardian rows
 // (rows that can only restore a revoked key — leave no false trust).
 
+import { type ProjectId } from "@maruhi/core";
 import { ALL_SCOPE, type ChainDevice } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import type { HttpClient } from "effect/http";
@@ -143,7 +144,7 @@ const newOrExistingDeviceKeys = Effect.fn("key-recover.newOrExistingDeviceKeys")
 
 /** The result of the post-recovery registration on one project. */
 interface ProjectRecoveryOutcome {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly state: "registered" | "already" | "reserve-missing" | "reserve-revoked" | "failed";
   readonly backfill: DeviceBackfillOutcome | null;
   readonly message: string | null;
@@ -155,7 +156,7 @@ interface ProjectRecoveryOutcome {
 const registerDeviceWithReserve = Effect.fn("key-recover.registerDeviceWithReserve")(
   function* (input: {
     readonly session: CliSession;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly reserve: ReserveKeys;
     readonly device: MasterKeys;
   }): Effect.fn.Return<ProjectRecoveryOutcome, never, CliServices> {
@@ -649,7 +650,7 @@ type LedgerRows = {
 
 /** The result of the reserve-key rotate on one project. */
 interface ReserveRotateOutcome {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly added: boolean;
   readonly backfill: DeviceBackfillOutcome | null;
   readonly revoked: readonly string[];
@@ -660,7 +661,7 @@ interface ReserveRotateOutcome {
 /** On one project, add the new reserve key, revoke the old ones, and sweep (K4-11's order). */
 const rotateReserveOnProject: (input: {
   readonly session: CliSession;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly newReserve: ReserveKeys;
   /** The FPs of the old reserve keys to revoke (the opened B + the recorded old reserve keys — left behind by nothing on a re-run after interruption). */
   readonly oldFingerprintsHex: readonly string[];
@@ -669,7 +670,7 @@ const rotateReserveOnProject: (input: {
 )(
   function* (input: {
     readonly session: CliSession;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly newReserve: ReserveKeys;
     readonly oldFingerprintsHex: readonly string[];
   }) {

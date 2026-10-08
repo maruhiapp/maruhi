@@ -34,7 +34,6 @@ import {
   addMemberOp,
   addScopedMemberOp,
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -44,13 +43,16 @@ import {
   manifestFor,
   manifestHashOf,
   statementFor,
+  testUserId,
+  type BuiltChain,
   type TestUser,
-  valueHashOf,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
+  valueHashOf,
 } from "./support/crypto.ts";
+import { testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
 
@@ -274,7 +276,7 @@ async function seededEnv(server: MockServer, projectId: string, user: TestUser):
 async function expectedValuesDigest(environment: MockEnvironment): Promise<string> {
   const entries = await Promise.all(
     environment.variables.map(async (variable) => ({
-      variableId: variable.variableId,
+      variableId: testVariableId(variable.variableId),
       version: variable.value.aad.version,
       valueSigHashHex: await valueHashOf(variable.value, variable.value.writerUserId),
     })),
@@ -305,7 +307,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         dek: dekB,
         headSeq: 3,
         issuer: owner,
-        variableId: "var-b",
+        variableId: testVariableId("var-b"),
       }),
       await makeEnvironment({
         built,
@@ -745,7 +747,12 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     const propose = (built: BuiltChain, signerUserId: string) =>
       verifiedOf(built).then((verified) =>
         Effect.runPromise(
-          checkpointProposal({ client, verified, signerUserId, nowMs: Date.now() }),
+          checkpointProposal({
+            client,
+            verified,
+            signerUserId: testUserId(signerUserId),
+            nowMs: Date.now(),
+          }),
         ),
       );
 
@@ -759,7 +766,9 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     const genesisMs = base.entries[0]?.timestampMs ?? 0;
     const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
       verifiedOf(built).then((verified) =>
-        Effect.runPromise(checkpointProposal({ client, verified, signerUserId, nowMs })),
+        Effect.runPromise(
+          checkpointProposal({ client, verified, signerUserId: testUserId(signerUserId), nowMs }),
+        ),
       );
     const day = 24 * 60 * 60 * 1000;
     expect(await proposeAt(base, member.userId, genesisMs + 6 * day)).toBeNull();

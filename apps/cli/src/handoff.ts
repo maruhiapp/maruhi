@@ -21,7 +21,7 @@
 // decision 7's existing gate). Plaintext segments, KEK, and B exist
 // only in local variables.
 
-import { cryptoEffect, cryptoPromise, fromCryptoResult } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, fromCryptoResult, type UserId } from "@maruhi/core";
 import {
   computeHandoffRequestId,
   decodeHex,
@@ -42,6 +42,7 @@ import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { decodeWrapped } from "./master-ops.ts";
@@ -65,7 +66,7 @@ function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliErr
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
-  readonly approverUserId: string;
+  readonly approverUserId: UserId;
   readonly approverKeyFingerprintHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -120,7 +121,7 @@ function decodeBlobWrap(blob: {
 /** Opens an approval's value (segment) with the ephemeral key. A context mismatch = decryption failure = abort. */
 const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
   readonly ephemeral: EncryptionKeyPair;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly requestId: string;
   readonly approval: ApprovalWire;
 }): Effect.fn.Return<Uint8Array, CliError> {
@@ -150,7 +151,7 @@ const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
 const recoverBlob = Effect.fn("handoff.recoverBlob")(function* (input: {
   readonly client: MaruhiClient;
   readonly ephemeral: EncryptionKeyPair;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly requestId: string;
   readonly assembled: Assembled;
 }): Effect.fn.Return<Uint8Array, CliError, HttpClient.HttpClient> {
@@ -256,7 +257,10 @@ const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
         .handoffApprovals({ params: { requestId: input.requestId } })
         .pipe(Effect.mapError(toCliError));
       received = page.approvals.length;
-      const assembled = assemble(page.approvals, input.groups);
+      const assembled = assemble(
+        page.approvals.map((a) => ({ ...a, approverUserId: userIdOf(a.approverUserId) })),
+        input.groups,
+      );
       return assembled === null
         ? { kind: "waiting" as const }
         : { kind: "assembled" as const, assembled };

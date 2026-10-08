@@ -48,7 +48,7 @@
 // caller types it as evidence — errors.ts).
 
 import type { CheckpointValueSnapshot } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type VariableId } from "@maruhi/core";
 import type { ChainHistoryIndex, EnvironmentCheckpointState } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -57,7 +57,7 @@ import { displayText } from "./display.ts";
 
 /** The coordinates of a served value that rule 2 looks at (satisfied by values-verify.ts's VerifiedPulledValue). */
 export interface CheckpointCheckedValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly epoch: number;
   /** The self-computed value_signed_bytes hash (§4.1 — not a claimed value). */
@@ -95,7 +95,7 @@ function retriable(message: string): CheckpointIntegrityOutcome {
  */
 function noBaselineOutcome(
   history: ChainHistoryIndex,
-  environmentId: string,
+  environmentId: EnvironmentId,
   snapshot: CheckpointValueSnapshot,
 ): CheckpointIntegrityOutcome {
   if (snapshot.chainSeq > history.headSeq) {
@@ -130,7 +130,7 @@ function noBaselineOutcome(
  */
 function locatorOutcome(
   history: ChainHistoryIndex,
-  environmentId: string,
+  environmentId: EnvironmentId,
   snapshot: CheckpointValueSnapshot,
   baseline: EnvironmentCheckpointState,
   fetchedAtHeadSeq: number,
@@ -209,7 +209,7 @@ function omissionReason(
 export async function checkCheckpointIntegrity(input: {
   /** Index over the verifier's own fully verified chain snapshot. */
   readonly history: ChainHistoryIndex;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The wire's bundled enumeration (§12-7 / §14-2). undefined = absent from the response. */
   readonly snapshot: CheckpointValueSnapshot | undefined;
   /** The served values that passed all §6.3 verification (the value-bearing response's active set). */

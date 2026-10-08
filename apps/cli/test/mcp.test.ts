@@ -30,6 +30,7 @@ import {
   type TestUser,
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
+import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -488,7 +489,7 @@ describe("maruhi mcp — the read path runs narrowed (rulings M7 / M8 — indepe
     const errors: string[] = [];
     const store = new Map<string, string>([
       [tokenEntryName("https://example.test"), "token-record"],
-      [masterKeyEntryName("https://example.test", "user-1"), "key-record"],
+      [masterKeyEntryName("https://example.test", testUserId("user-1")), "key-record"],
     ]);
     const env = await makeTestEnv();
     const base = await Effect.runPromise(Effect.context<never>().pipe(Effect.provide(env.layer)));
@@ -509,7 +510,7 @@ describe("maruhi mcp — the read path runs narrowed (rulings M7 / M8 — indepe
     const narrowed = narrowedContext(real as never) as Context.Context<CliIo | Keychain>;
     const keychain = Context.get(narrowed, Keychain);
     const master = await Effect.runPromiseExit(
-      keychain.get(masterKeyEntryName("https://example.test", "user-1")),
+      keychain.get(masterKeyEntryName("https://example.test", testUserId("user-1"))),
     );
     expect(Exit.isFailure(master)).toBe(true);
     await expect(
@@ -525,7 +526,7 @@ describe("maruhi mcp — capability narrowing (ruling M7)", () => {
   it("the narrowed Keychain answers token entries only and never writes", async () => {
     const store = new Map<string, string>([
       [tokenEntryName("https://example.test"), "token-record"],
-      [masterKeyEntryName("https://example.test", "user-1"), "key-record"],
+      [masterKeyEntryName("https://example.test", testUserId("user-1")), "key-record"],
     ]);
     const narrowed = narrowKeychain({
       kind: "os-keychain",
@@ -537,7 +538,7 @@ describe("maruhi mcp — capability narrowing (ruling M7)", () => {
       Effect.runPromise(narrowed.get(tokenEntryName("https://example.test"))),
     ).resolves.toBe("token-record");
     for (const attempt of [
-      narrowed.get(masterKeyEntryName("https://example.test", "user-1")),
+      narrowed.get(masterKeyEntryName("https://example.test", testUserId("user-1"))),
       narrowed.set(tokenEntryName("https://example.test"), "x"),
       narrowed.remove(tokenEntryName("https://example.test")),
     ]) {

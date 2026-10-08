@@ -44,8 +44,7 @@ import type {
   DistributedVariableMetaStatement,
   LeasedDek,
 } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
-import type { EnvironmentId, ProjectId } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { ChainEntry, EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import {
   computeLeaseClaimsDigest,
@@ -70,8 +69,8 @@ import { verifyLeaseDistribution } from "./values.ts";
 
 /** The wire shape of a lease response (the structural type of api-schema's LeaseResponseSchema). */
 export interface LeaseResponseWire {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly currentEpoch: number;
   readonly chain: readonly ChainEntry[];
   readonly headSeq: number;
@@ -120,7 +119,7 @@ export interface VerifiedLeaseMaterial {
  */
 function unwrapOneLease(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly workloadKeyPair: EncryptionKeyPair;
   readonly claimsDigestHex: string;
   readonly lease: LeasedDek;
@@ -208,7 +207,7 @@ declare const leaseGrantCheckBrand: unique symbol;
  */
 interface LeaseGrantCheck {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly [leaseGrantCheckBrand]: "LeaseGrantCheck";
 }
 
@@ -229,7 +228,7 @@ interface LeaseGrantCheck {
  */
 function requireLeaseGrant(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<LeaseGrantCheck, CliError> {
   if (serverKeysDisclosing(serverDisclosures(verified), environmentId).length > 0) {
     // The single mint site of the brand
@@ -254,7 +253,7 @@ function requireLeaseGrant(
  */
 const unwrapLeases = Effect.fn("lease-client.unwrapLeases")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly grantCheck: LeaseGrantCheck;
   readonly workloadKeyPair: EncryptionKeyPair;
   readonly claims: LeaseClaims;

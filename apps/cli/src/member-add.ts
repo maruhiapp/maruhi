@@ -3,6 +3,7 @@
 // (member-add-ceremony.ts) -> add_member append (CAS retry) -> backfill of
 // every environment × every epoch (the group's overview lives in member.ts).
 
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainEntry,
@@ -32,7 +33,7 @@ import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { IdentityBacking } from "./config.ts";
 import { deviceReceivesEnvironment, ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { devicesOf, memberHasKeys } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -71,7 +72,7 @@ import { compareCodePoints, describeScope, scopeContains } from "./scope.ts";
 export interface MemberAddSummary {
   /** Whether it was appended to the chain (false = already a member under the same key — a backfill-only resume). */
   readonly appended: boolean;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly role: Role;
   /** The number of wraps newly registered by the backfill. */
   readonly registered: number;
@@ -80,7 +81,7 @@ export interface MemberAddSummary {
   /** The number deleted → re-registered on stale-key-wrap suspicion (the re-addition auto-repair — §12-6). */
   readonly repaired: number;
   /** The environments whose backfill failed (§7 — never skipped silently). */
-  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
+  readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
 /**
@@ -140,7 +141,7 @@ function duplicateMemberKeyRejection(
 /** The pre-append check of add_member (re-run after a CAS retry's resync as well). */
 const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
   readonly scope: ScopePayloadFields;
@@ -203,7 +204,7 @@ const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
  */
 function signAddMemberEntry(input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
   readonly scope: ScopePayloadFields;
@@ -254,10 +255,10 @@ const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironmen
   function* (input: {
     readonly client: MaruhiClient;
     readonly verified: VerifiedProject;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly recipient: DekRecipient;
     readonly target: ChainMember;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
   }): Effect.fn.Return<MemberBackfillResult, CliError> {
     // Of the target's **all devices**, those whose effective scope
@@ -283,11 +284,11 @@ const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironmen
 function backfillMemberDevice(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
   readonly targetDevice: ChainDevice;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
   const register = registerWraps(input.client, input.verified.projectId, input.environmentId);
@@ -372,7 +373,7 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
   readonly githubLogin: string | null;
   readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly origin: string;
 }): Effect.fn.Return<
@@ -472,8 +473,8 @@ export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironm
     readonly recipient: DekRecipient;
     readonly target: ChainMember;
     /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
-    readonly environments?: readonly string[];
-    readonly signerUserId: string;
+    readonly environments?: readonly EnvironmentId[];
+    readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
   }): Effect.fn.Return<
     Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
@@ -485,7 +486,7 @@ export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironm
     // `environments` explicit list is used for change-role's widening
     // backfill)
     const deletedVerified = chainDeletedEnvironments(input.verified);
-    const environments = (input.environments ?? [...input.verified.state.environments.keys()])
+    const environments = (input.environments ?? chainEnvironmentIds(input.verified))
       .filter(
         (environmentId) =>
           !deletedVerified.has(environmentId) &&
@@ -527,7 +528,7 @@ export const backfillNewMember = Effect.fn("member-add.backfillNewMember")(funct
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
   readonly recipient: DekRecipient;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<
   Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
@@ -570,7 +571,7 @@ export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input:
   readonly githubLogin: string | null;
   readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly origin: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;

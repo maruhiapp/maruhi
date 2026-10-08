@@ -11,7 +11,7 @@
 // pre-checks and CAS-conflict recovery belong to each op).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type UserId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, SigningKeyPair } from "@maruhi/crypto";
 import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -31,7 +31,7 @@ import { toCliError } from "./failure.ts";
  */
 export const signEntryAtHead = Effect.fn("chain-append.signEntryAtHead")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly operation: ChainOperation;
   readonly signingKeyPair: SigningKeyPair;
   readonly failureText: string;

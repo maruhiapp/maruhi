@@ -43,6 +43,7 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -711,8 +712,8 @@ describe("maruhi rotation list", () => {
     const day = 24 * 60 * 60 * 1000;
     const nowMs = 1_800_000_000_000;
     const row = (dueAtMs: number) => ({
-      environmentId: "env-app-1",
-      variableId: "vexp",
+      environmentId: testEnvironmentId("env-app-1"),
+      variableId: testVariableId("vexp"),
       name: "STRIPE_SECRET_KEY",
       maxAgeDays: 30,
       pushedAtMs: 0,

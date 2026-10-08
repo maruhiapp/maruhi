@@ -27,7 +27,12 @@
 // (AUTH_SPEC §14-3).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { type EnvironmentId, type KeyFingerprintHex, serverKeyFingerprintHex } from "@maruhi/core";
+import {
+  type EnvironmentId,
+  type KeyFingerprintHex,
+  serverKeyFingerprintHex,
+  type UserId,
+} from "@maruhi/core";
 import type {
   ChainEntry,
   LeasePolicyIssuer,
@@ -69,7 +74,7 @@ interface GrantSummary {
   /** Whether it appended to the chain (false = detected a valid grant of identical content and skipped). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   readonly leasePolicyCount: number;
   /** The count of wraps newly registered by the backfill. */
   readonly registered: number;
@@ -78,7 +83,10 @@ interface GrantSummary {
 }
 
 /** Whether every environment in the scope exists on the chain (the reason's string when not). */
-function scopeExistsRejection(verified: VerifiedProject, scope: readonly string[]): string | null {
+function scopeExistsRejection(
+  verified: VerifiedProject,
+  scope: readonly EnvironmentId[],
+): string | null {
   for (const environmentId of scope) {
     if (!verified.state.environments.has(environmentId)) {
       return `Environment ${environmentId} does not exist on the chain (no create_environment observed). Pass existing environment IDs to --environments`;
@@ -114,7 +122,7 @@ function duplicateServerKeyRejection(
  */
 function scopeNarrowedRejection(
   existing: ServerGrant | null,
-  scope: readonly string[],
+  scope: readonly EnvironmentId[],
 ): string | null {
   if (existing === null) {
     return null;
@@ -129,8 +137,8 @@ function scopeNarrowedRejection(
 /** The check set before running grant_server (a retry after resync goes through the same checks). */
 function ensureGrantable(input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
-  readonly scope: readonly string[];
+  readonly signerUserId: UserId;
+  readonly scope: readonly EnvironmentId[];
   readonly serverConfig: ServerKeyConfig;
 }): Effect.Effect<{ readonly existing: ServerGrant | null }, CliError> {
   const member = input.verified.state.members.get(input.signerUserId);
@@ -161,7 +169,7 @@ function samePolicy(a: readonly LeasePolicyIssuer[], b: readonly LeasePolicyIssu
   return canonicalPolicyKey(a) === canonicalPolicyKey(b);
 }
 
-function sameScope(a: readonly string[], b: readonly string[]): boolean {
+function sameScope(a: readonly EnvironmentId[], b: readonly EnvironmentId[]): boolean {
   return a.length === b.length && a.every((id, index) => b[index] === id);
 }
 
@@ -268,10 +276,10 @@ const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (i
 /** Signs the grant_server entry right after the current head (the shared core = chain-append.ts). */
 const signGrantEntry = Effect.fn("server-grant.signGrantEntry")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly serverConfig: ServerKeyConfig;
-  readonly scope: readonly string[];
+  readonly scope: readonly EnvironmentId[];
   readonly leasePolicy: readonly LeasePolicyIssuer[];
 }): Effect.fn.Return<ChainEntry, CliError> {
   return yield* signEntryAtHead({
@@ -302,10 +310,10 @@ const signGrantEntry = Effect.fn("server-grant.signGrantEntry")(function* (input
 function backfillEnvironment(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly grant: ServerGrant;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
   return backfillEnvironmentFor({
@@ -323,7 +331,7 @@ function backfillEnvironment(input: {
 /** Whether a valid grant of identical content (scope and lease_policy) already exists (the skip-append / skip-proposal judgment). */
 function grantUnchanged(
   existing: ServerGrant | null,
-  scope: readonly string[],
+  scope: readonly EnvironmentId[],
   leasePolicy: readonly LeasePolicyIssuer[],
 ): boolean {
   return (
@@ -350,7 +358,7 @@ export const backfillServerGrant = Effect.fn("server-grant.backfillServerGrant")
   readonly verified: VerifiedProject;
   readonly grant: ServerGrant;
   readonly recipient: DekRecipient;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<
   { readonly registered: number; readonly alreadyRegistered: number },
@@ -387,7 +395,7 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
   readonly environmentIds: readonly EnvironmentId[];
   readonly leasePolicy: readonly LeasePolicyIssuer[];
   readonly expectFingerprintHex: string | null;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -395,7 +403,7 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
 }): Effect.fn.Return<ServerGrantOutcome, CliError, CliIo> {
   const io = yield* CliIo;
   // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
-  const scope = [...new Set<string>(input.environmentIds)].toSorted();
+  const scope = [...new Set(input.environmentIds)].toSorted();
   const serverConfig = yield* fetchServerKeyConfig(input.keySource ?? input.client);
   const { existing } = yield* ensureGrantable({
     verified: input.verified,

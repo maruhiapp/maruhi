@@ -16,7 +16,13 @@
 // drift from the production implementation, so it is not unified
 // into here.
 
-import { cryptoEffect } from "@maruhi/core";
+import {
+  cryptoEffect,
+  type EnvironmentId,
+  type UserId,
+  type VariableId,
+  isVariableId,
+} from "@maruhi/core";
 import type { MetaStatementContext } from "@maruhi/crypto";
 import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -31,8 +37,10 @@ import { cliError, type CliError } from "./errors.ts";
  * Every creation path shares this one implementation (push's create
  * — push-resolve.ts; declaration creation — schema.ts).
  */
-export function generateVariableId(): string {
-  return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
+export function generateVariableId(): VariableId {
+  const id = `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
+  if (!isVariableId(id)) throw new Error("generated variable id is malformed");
+  return id;
 }
 
 /**
@@ -57,16 +65,16 @@ export const signStatementAndHash = Effect.fn("meta-statement.signStatementAndHa
 
 /** The create statement's target (§4.2's target — a variable or the environment itself). */
 export type CreateStatementTarget =
-  | { readonly kind: "variable"; readonly variableId: string }
+  | { readonly kind: "variable"; readonly variableId: VariableId }
   | { readonly kind: "environment" };
 
 export interface CreateStatementInput {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly target: CreateStatementTarget;
   /** The display name (NFC-normalized by the caller — §4.2 / §12-1). */
   readonly name: string;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
 }
 
@@ -96,7 +104,7 @@ type CreateStatementContext = ReturnType<typeof createStatementContext>;
 
 interface WireCreateStatementBase {
   readonly suite: typeof SUITE_ID;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly status: "active";
   readonly metaVersion: 1;
@@ -108,7 +116,7 @@ interface WireCreateStatementBase {
 
 /** The wire shape of the bundled statement for variable creation (with variableId). */
 export type WireVariableCreateStatement = WireCreateStatementBase & {
-  readonly variableId: string;
+  readonly variableId: VariableId;
 };
 
 /** The wire shape of the bundled statement for environment creation. */
@@ -122,7 +130,7 @@ export type WireEnvironmentCreateStatement = WireCreateStatementBase;
 function toWireStatement(
   context: CreateStatementContext,
   signatureHex: string,
-): WireCreateStatementBase & { readonly variableId?: string } {
+): WireCreateStatementBase & { readonly variableId?: VariableId } {
   const base = {
     suite: context.suite,
     environmentId: context.environmentId,
@@ -152,7 +160,7 @@ export interface SignedCreateStatement<Wire> {
  */
 export function signCreateStatement(
   input: CreateStatementInput & {
-    readonly target: { readonly kind: "variable"; readonly variableId: string };
+    readonly target: { readonly kind: "variable"; readonly variableId: VariableId };
   },
 ): Effect.Effect<SignedCreateStatement<WireVariableCreateStatement>, CliError>;
 export function signCreateStatement(

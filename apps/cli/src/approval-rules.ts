@@ -15,6 +15,7 @@
 //   64); the CLI invents no alias. It accepts a unique prefix of at least
 //   the first 8 characters (approval item 23)
 
+import { type UserId } from "@maruhi/core";
 import {
   type ApprovalPolicy,
   approvalSignersOf,
@@ -32,6 +33,7 @@ import {
 import { proposalIndexOf } from "./chain-applied.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
+import { userIdOf } from "./ids.ts";
 import { describeScope } from "./scope.ts";
 
 const MS_PER_MINUTE = 60_000;
@@ -185,7 +187,7 @@ export type VoteEligibility =
  */
 export function voteEligibility(
   verified: VerifiedProject,
-  userId: string,
+  userId: UserId,
   signingDeviceFingerprintHex: string,
   view: ProposalView,
 ): VoteEligibility {
@@ -332,15 +334,16 @@ function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRef
  */
 export function keyReuseOf(
   verified: VerifiedProject,
-  key: { readonly targetUserId: string; readonly encPubHex: string; readonly sigPubHex: string },
-): readonly { readonly userId: string; readonly sameUser: boolean }[] {
-  const reuse: { readonly userId: string; readonly sameUser: boolean }[] = [];
+  key: { readonly targetUserId: UserId; readonly encPubHex: string; readonly sigPubHex: string },
+): readonly { readonly userId: UserId; readonly sameUser: boolean }[] {
+  const reuse: { readonly userId: UserId; readonly sameUser: boolean }[] = [];
   for (const [userId, bindings] of verified.keyHistory) {
     const reused = bindings.some(
       (binding) => binding.encPubHex === key.encPubHex || binding.sigPubHex === key.sigPubHex,
     );
     if (reused) {
-      reuse.push({ userId, sameUser: userId === key.targetUserId });
+      const uid = userIdOf(userId);
+      reuse.push({ userId: uid, sameUser: userId === key.targetUserId });
     }
   }
   return reuse;
@@ -349,7 +352,7 @@ export function keyReuseOf(
 /** Warning text for key-FP re-registration (same wording on the proposer and approver sides. `subject` = "the acceptance key" etc.). */
 export function describeKeyReuse(
   subject: string,
-  reuse: { readonly userId: string; readonly sameUser: boolean },
+  reuse: { readonly userId: UserId; readonly sameUser: boolean },
 ): string {
   return reuse.sameUser
     ? `${subject} was registered before for this same user (a previous membership that has since ended). If that key was removed because it was compromised, do not re-register it: a re-registered key revives the four-eyes approval votes it cast (CRYPTO_SPEC §6.2) — issue a fresh invite for a new key instead`

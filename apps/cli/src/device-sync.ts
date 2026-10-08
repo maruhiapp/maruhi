@@ -27,6 +27,7 @@
 // The device registry (`GET /auth/devices`) is neither read nor
 // written here (K4-3 counterexample 2 — pinned by a test).
 
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Effect, type Stdio } from "effect";
 
@@ -116,7 +117,7 @@ export const syncOwnDevices = Effect.fn("device-sync.syncOwnDevices")(function* 
  * `ensureDeviceApproveAllowed`.
  */
 function registrationAllowed(
-  projectId: string,
+  projectId: ProjectId,
   candidates: readonly OwnDeviceEntry[],
 ): Effect.Effect<boolean, never, CliIo | Stdio.Stdio> {
   return ensureHumanCeremonyAllowed({
@@ -244,7 +245,7 @@ function describeAdder(provenance: {
 }
 
 function describeObservation(
-  projectId: string,
+  projectId: ProjectId,
   device: ChainDevice,
   provenance: {
     readonly addedByFingerprintHex: string | null;
@@ -327,8 +328,8 @@ function registerRecorded(input: {
  * cap covers it (`device-gaps.ts`).
  */
 function describeFailedBackfill(
-  projectId: string,
-  failed: readonly { readonly environmentId: string }[],
+  projectId: ProjectId,
+  failed: readonly { readonly environmentId: EnvironmentId }[],
 ): string {
   if (failed.length === 0) {
     return "";
@@ -344,7 +345,7 @@ function describeFailedBackfill(
   return `; the backfill failed for ${countNoun(failed.length, "environment")} (${environments}) — a registered device of yours whose cap covers ${failed.length === 1 ? "it" : "them"} fills the missing epochs when it runs ${commands}`;
 }
 
-function describeRegistrationFailure(projectId: string, label: string, error: CliError): string {
+function describeRegistrationFailure(projectId: ProjectId, label: string, error: CliError): string {
   // The append path already mapped the typed error onto failure.ts's
   // wording (one place), so here we only append K4-14's carry-over
   // (the local record is kept) to that wording

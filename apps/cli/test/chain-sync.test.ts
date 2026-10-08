@@ -19,6 +19,7 @@ import {
   rotateEpochOp,
   type TestUser,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 import { type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 let owner: TestUser;
@@ -61,7 +62,7 @@ function runSync(origin: string, projectId: string) {
         baseUrl: origin,
         token: Redacted.make("maruhi_pat_test"),
       });
-      return yield* syncProject(client, projectId);
+      return yield* syncProject(client, testProjectId(projectId));
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 }

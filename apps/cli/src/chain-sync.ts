@@ -20,8 +20,7 @@
 // (reconcileDistributedAttestations). A lease response bundles no
 // declarations (§14-2), so it is always empty there.
 
-import type { ProjectId } from "@maruhi/core";
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { type ProjectId, type UserId, cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -36,6 +35,7 @@ import type { MaruhiClient } from "./api.ts";
 import { type AppliedOperation, appliedOperations } from "./chain-applied.ts";
 import { type CliError, cliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { userIdOf } from "./ids.ts";
 
 /** One key set the chain history binds to a user id (genesis / add_member payload). */
 export interface KeyBinding {
@@ -52,7 +52,7 @@ export interface KeyBinding {
  */
 export interface DistributedAttestationWire {
   readonly suite: "maruhi/v1";
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   readonly attesterKeyFingerprintHex: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
@@ -126,7 +126,7 @@ const buildKeyHistory = Effect.fn("chain-sync.buildKeyHistory")(function* (
 ): Effect.fn.Return<ReadonlyMap<string, readonly KeyBinding[]>, ChainDerivationError> {
   const history = new Map<string, KeyBinding[]>();
   const seen = new Set<string>();
-  const add = (userId: string, binding: KeyBinding) => {
+  const add = (userId: UserId, binding: KeyBinding) => {
     const dedupe = `${userId}#${bindingKey(binding)}`;
     if (seen.has(dedupe)) {
       return;
@@ -296,7 +296,10 @@ export const syncProject = Effect.fn("chain-sync.syncProject")(function* (
     entries: snapshot.entries,
     claimedHeadSeq: snapshot.headSeq,
     claimedHeadHashHex: snapshot.headHashHex,
-    attestations: snapshot.attestations,
+    attestations: snapshot.attestations.map((a) => ({
+      ...a,
+      attesterUserId: userIdOf(a.attesterUserId),
+    })),
   });
 });
 

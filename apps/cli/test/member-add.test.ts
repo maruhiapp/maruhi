@@ -23,7 +23,6 @@ import {
   addMemberOp,
   addScopedMemberOp,
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
@@ -31,6 +30,8 @@ import {
   makeTestUser,
   removeMemberOp,
   rotateEpochOp,
+  testEnvironmentId,
+  type BuiltChain,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
@@ -431,7 +432,7 @@ describe("maruhi member add", () => {
         projectId: built.projectId,
         headHashHex: "cd".repeat(32),
         headSeq: 1,
-        scope: { scopeKind: "listed", scopeEnvironmentIds: [ENV_ID] },
+        scope: { scopeKind: "listed", scopeEnvironmentIds: [testEnvironmentId(ENV_ID)] },
       }),
     );
     const state = await makeAddServer({

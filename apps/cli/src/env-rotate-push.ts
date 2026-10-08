@@ -17,6 +17,7 @@ import {
 } from "./env-rotate-shared.ts";
 import { CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
+import { variableIdOf } from "./ids.ts";
 import { missingWrapReason } from "./pull.ts";
 import { winnerInconsistency } from "./push-winner.ts";
 import { encryptAndSignPayload } from "./push.ts";
@@ -196,7 +197,7 @@ function reconcileKnown(input: {
   const latestById = new Map(input.latest.map((value) => [value.variableId, value]));
   let alreadyCurrent = 0;
   for (const [variableId, previous] of input.known) {
-    const latest = latestById.get(variableId);
+    const latest = latestById.get(variableIdOf(variableId));
     if (latest === undefined) {
       if (input.unfinishedIds.has(variableId)) {
         // Vanished while unfinished = a concurrent deletion. Never silently dropped from the targets
@@ -207,7 +208,7 @@ function reconcileKnown(input: {
       continue;
     }
     const inconsistency = winnerInconsistency(
-      variableId,
+      variableIdOf(variableId),
       previous.known,
       latest,
       previous.currentVersion,

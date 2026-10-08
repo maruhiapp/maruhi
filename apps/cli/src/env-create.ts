@@ -24,8 +24,7 @@
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import { AuditHeadNotReadyError, ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
-import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type UserId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -47,8 +46,8 @@ const MAX_ATTEMPTS = 5;
 
 const ensureCreatable = Effect.fn("env-create.ensureCreatable")(function* (
   verified: VerifiedProject,
-  environmentId: string,
-  signerUserId: string,
+  environmentId: EnvironmentId,
+  signerUserId: UserId,
   signingKeyPair: SigningKeyPair,
 ): Effect.fn.Return<ChainMember, CliError> {
   // Membership + the device's effective role / scope are shared with env
@@ -87,7 +86,7 @@ const ensureCreatable = Effect.fn("env-create.ensureCreatable")(function* (
 /** Signs a create_environment entry right after the current head (seq = head + 1). */
 const signCreateEntry = Effect.fn("env-create.signCreateEntry")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly dekCommitmentHex: string;
   readonly member: ChainMember;
   readonly signingKeyPair: SigningKeyPair;
@@ -147,7 +146,7 @@ export const envCreateOp = Effect.fn("env-create.envCreateOp")(function* (input:
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly name: string;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   /** The resync on ChainHeadConflict (a full chain re-verification). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -263,7 +262,7 @@ const attemptCreate = Effect.fn("env-create.attemptCreate")(function* (
   input: {
     readonly client: MaruhiClient;
     readonly environmentId: EnvironmentId;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
     readonly floor: FloorHandle;
   },

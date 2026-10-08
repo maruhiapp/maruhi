@@ -30,7 +30,13 @@
 //
 // Plaintext KEK, segments, and B exist only in local variables.
 
-import { cryptoEffect, fromCryptoResult, type KeyFingerprintHex, type UserId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  fromCryptoResult,
+  type KeyFingerprintHex,
+  type UserId,
+  type ProjectId,
+} from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainMember,
@@ -57,6 +63,7 @@ import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
+import { userIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import { serializeStoredMasterKey } from "./keychain.ts";
@@ -108,7 +115,7 @@ function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliE
 const confirmGuardianFingerprint = Effect.fn("guardian.confirmGuardianFingerprint")(
   function* (input: {
     readonly origin: string;
-    readonly userId: string;
+    readonly userId: UserId;
     readonly fingerprintHex: string;
   }): Effect.fn.Return<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
     const io = yield* CliIo;
@@ -154,7 +161,7 @@ const confirmGuardianFingerprint = Effect.fn("guardian.confirmGuardianFingerprin
 
 /** Preconditions of naming (the same rules as the server's 422, stated here first). */
 function guardianInputRejection(input: {
-  readonly selfUserId: string;
+  readonly selfUserId: UserId;
   readonly mode: GuardianMode;
   readonly userIds: readonly string[];
 }): string | null {
@@ -191,7 +198,7 @@ interface SealedShare {
 
 /** Resolves guardian candidates from the chain's current members (§8.3 — no public-key directory is built). */
 function resolveGuardians(input: {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly members: ReadonlyMap<string, ChainMember>;
   readonly userIds: readonly string[];
 }): Effect.Effect<readonly GuardianMember[], CliError> {
@@ -211,7 +218,7 @@ function resolveGuardians(input: {
 
 /** Seals one device's worth of a segment to the guardian's chain key. */
 const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
-  readonly wardUserId: string;
+  readonly wardUserId: UserId;
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
@@ -258,7 +265,7 @@ const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
 
 /** Wraps B (the reserve key) with a random KEK and splits the KEK into segments sealed to each guardian's each device (§8.3). */
 const prepareGroup = Effect.fn("guardian.prepareGroup")(function* (input: {
-  readonly wardUserId: string;
+  readonly wardUserId: UserId;
   readonly reserve: ReserveKeys;
   readonly groupId: string;
   readonly mode: GuardianMode;
@@ -397,7 +404,7 @@ export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (inpu
 /** One guardian row of the ledger (the distribution form of a status — per device). */
 interface GuardianRow {
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
   readonly guardianKeyFingerprintHex: string;
 }
 
@@ -450,19 +457,23 @@ const reportShare = Effect.fn("guardian.reportShare")(function* (
   chainMembers: ReadonlyMap<string, ChainMember> | null,
 ): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
-  const userId = rows[0]?.guardianUserId ?? "";
+  const userId = rows[0]?.guardianUserId ?? null;
   const live = rows.filter((row) => stalenessOf(row, chainMembers) === null);
   const gone = rows.filter((row) => stalenessOf(row, chainMembers) !== null);
   const stale = chainMembers !== null && live.length === 0;
   yield* io.log(
-    `  ${shareIndex}. ${displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
+    `  ${shareIndex}. ${userId === null ? "unknown" : displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
   );
   if (stale) {
     const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
-    yield* logWarning(staleShareWarning(userId, left, mode));
+    if (userId !== null) {
+      yield* logWarning(staleShareWarning(userId, left, mode));
+    }
   } else if (chainMembers !== null && gone.length > 0) {
     // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
-    yield* logNote(partiallyRevokedNote(userId, gone, live.length));
+    if (userId !== null) {
+      yield* logNote(partiallyRevokedNote(userId, gone, live.length));
+    }
   }
 });
 
@@ -470,7 +481,7 @@ function fingerprintsOf(rows: readonly GuardianRow[]): string {
   return rows.map((row) => row.guardianKeyFingerprintHex).join(", ");
 }
 
-function staleShareWarning(userId: string, left: boolean, mode: GuardianMode): string {
+function staleShareWarning(userId: UserId, left: boolean, mode: GuardianMode): string {
   const why = left
     ? "is no longer a member of that project"
     : "has none of these devices on the chain any more";
@@ -480,7 +491,7 @@ function staleShareWarning(userId: string, left: boolean, mode: GuardianMode): s
 }
 
 function partiallyRevokedNote(
-  userId: string,
+  userId: UserId,
   gone: readonly GuardianRow[],
   liveCount: number,
 ): string {
@@ -504,7 +515,16 @@ export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (in
       ? null
       : (yield* openMetadataProject(input.flags)).verified.state.members;
   for (const group of status.guardianGroups) {
-    yield* reportGroup(group, chainMembers);
+    yield* reportGroup(
+      {
+        ...group,
+        guardians: group.guardians.map((g) => ({
+          ...g,
+          guardianUserId: userIdOf(g.guardianUserId),
+        })),
+      },
+      chainMembers,
+    );
   }
 });
 
@@ -570,7 +590,7 @@ function ensureApproveCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliEr
 interface ApprovalTarget {
   readonly requestId: string;
   readonly ephemeralPublicKey: EncryptionKey;
-  readonly wardUserId: string;
+  readonly wardUserId: UserId;
   readonly wardLabel: string;
   readonly roles: readonly {
     readonly groupId: string;
@@ -610,7 +630,7 @@ const resolveApprovalTarget = Effect.fn("guardian.resolveApprovalTarget")(functi
   return {
     requestId,
     ephemeralPublicKey,
-    wardUserId: lookup.wardUserId,
+    wardUserId: userIdOf(lookup.wardUserId),
     wardLabel:
       lookup.wardLogin === null
         ? displayText(lookup.wardUserId)
@@ -697,7 +717,7 @@ const approveAsGuardian = Effect.fn("guardian.approveAsGuardian")(function* (inp
   readonly client: MaruhiClient;
   readonly target: ApprovalTarget;
   readonly masterKeys: MasterKeys;
-  readonly selfUserId: string;
+  readonly selfUserId: UserId;
 }): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
   const io = yield* CliIo;
   for (const role of input.target.roles) {

@@ -10,6 +10,7 @@
 // (which project IDs I hold). Projects outside the token's scope do
 // not appear in the response (§11-5's scope intersection).
 
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -28,7 +29,7 @@ const MAX_LIST_PAGES = 100;
 
 /** One row of the list (the received shape of api-schema's ProjectMembershipSchema). */
 interface MembershipRow {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: "owner" | "admin" | "member" | "reader";
 }
 
@@ -42,7 +43,7 @@ export const fetchProjectMemberships = Effect.fn("project-list.fetchProjectMembe
   client: MaruhiClient,
 ): Effect.fn.Return<readonly MembershipRow[], CliError> {
   const rows: MembershipRow[] = [];
-  let after: string | undefined;
+  let after: ProjectId | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
     const response = yield* client.membership
       .list({ query: after === undefined ? {} : { after } })

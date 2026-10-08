@@ -3,6 +3,8 @@
 // floor-log.ts; the record format and strict decoding live in
 // floor-log-decode.ts.
 
+import type { EnvironmentId } from "@maruhi/core";
+
 import { decodeLogRecord, type FloorLogRecord, type SnapshotState } from "./floor-log-decode.ts";
 import {
   type ChainHeadFloor,
@@ -45,7 +47,7 @@ function addConflict(state: FoldState, conflict: FloorConflict): void {
 
 function joinEnvironmentInto(
   state: FoldState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   incoming: EnvironmentFloor,
 ): void {
   const sink = (conflict: FloorConflict) => addConflict(state, conflict);

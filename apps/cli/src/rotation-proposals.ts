@@ -14,8 +14,7 @@
 // the facts).
 
 import type { RotationProposal } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
+import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core";
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -52,7 +51,7 @@ function describeVariables(proposal: RotationProposal, states: StateIndex | unde
 /** `maruhi rotation proposals [--env]`: the pending proposals with their next step (no value is opened). */
 export const rotationProposalsOp = Effect.fn("rotation-proposals.rotationProposalsOp")(function* (
   context: ProjectContextBase,
-  options: { readonly environmentId?: string | undefined } = {},
+  options: { readonly environmentId?: EnvironmentId | undefined } = {},
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const all = yield* fetchRotationProposals(context);
@@ -136,7 +135,7 @@ export interface AcceptResult {
 }
 
 interface OpenedValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly value: Redacted.Redacted<Uint8Array>;
   /**
@@ -371,7 +370,7 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
 /** The confirmation's lines: what is pushed, what is already stored, who minted it, and the connector's facts. */
 function acceptanceFacts(
   proposal: RotationProposal,
-  environmentId: string,
+  environmentId: EnvironmentId,
   opened: readonly OpenedValue[],
 ): string[] {
   const toPush = opened.filter((entry) => entry.storedAs === null);
@@ -434,7 +433,7 @@ function resolveAccepted(
   context: EnvironmentContext,
   proposal: RotationProposal,
   opened: readonly OpenedValue[],
-  versions: readonly { readonly variableId: string; readonly version: number }[],
+  versions: readonly { readonly variableId: VariableId; readonly version: number }[],
 ): Effect.Effect<void, CliError> {
   const named = versions
     .map(
@@ -457,7 +456,7 @@ function resolveAccepted(
 }
 
 /** The report lines of an acceptance (values never appear). */
-export function describeAcceptance(result: AcceptResult, environmentId: string): string[] {
+export function describeAcceptance(result: AcceptResult, environmentId: EnvironmentId): string[] {
   const versions = [
     ...result.pushed.map(
       (entry) =>

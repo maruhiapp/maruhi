@@ -9,6 +9,8 @@
 // values or key material is included** (everything is identified by
 // ID and hash — the diskless invariant).
 
+import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from "@maruhi/core";
+
 import { displayText } from "./display.ts";
 import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
@@ -16,15 +18,18 @@ import type { AttestationEvidenceRecord, FloorConflict } from "./floor.ts";
 
 /** Coordinates included in the evidence (all IDs — no names: a name itself can be the disputed object). */
 export interface FloorEvidenceCoordinates {
-  readonly projectId: string;
-  readonly environmentId?: string;
+  readonly projectId: ProjectId;
+  readonly environmentId?: EnvironmentId;
 }
 
 function headText(seq: number, hashHex: string): string {
   return `seq=${seq} hash=${hashHex}`;
 }
 
-function coordinateLine(coordinates: FloorEvidenceCoordinates, variableId?: string | null): string {
+function coordinateLine(
+  coordinates: FloorEvidenceCoordinates,
+  variableId?: VariableId | null,
+): string {
   const parts = [`project=${coordinates.projectId}`];
   if (coordinates.environmentId !== undefined) {
     parts.push(`environment=${coordinates.environmentId}`);
@@ -62,7 +67,7 @@ function pulledValueLines(pulled: {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly signatureHex: string;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly writerKeyFingerprintHex: string;
 }): readonly string[] {
   return [
@@ -115,7 +120,7 @@ function pulledManifestLines(pulled: {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly signatureHex: string;
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   readonly issuerKeyFingerprintHex: string;
 }): readonly string[] {
   return [
@@ -284,7 +289,7 @@ function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly s
  * append-only evidence file (the path is shown as the route).
  */
 export function formatAttestationEvidence(
-  projectId: string,
+  projectId: ProjectId,
   records: readonly AttestationEvidenceRecord[],
   evidencePath: string,
 ): string {
@@ -304,7 +309,7 @@ export function formatAttestationEvidence(
  * evidence itself does not disappear (only preservation is guided).
  */
 export function formatFloorConflicts(
-  projectId: string,
+  projectId: ProjectId,
   conflicts: readonly FloorConflict[],
 ): string {
   return [

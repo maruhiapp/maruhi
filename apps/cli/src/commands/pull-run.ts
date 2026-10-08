@@ -1,5 +1,6 @@
 // `maruhi pull` / `maruhi run` (discipline: see commands/index.ts).
 
+import { type ProjectId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
@@ -102,14 +103,14 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   // cannot accept its own rules, nor point another project's accepted
   // rules at this one). Checked before any network when the project is
   // known without it, and again against the project the prologue resolved
-  const accepted = (projectId: string) =>
+  const accepted = (projectId: ProjectId) =>
     ensureProxyConfigAccepted({
       path: input.configPath,
       content: input.loaded.content,
       projectId,
     });
   const early = input.flags.project ?? config.projectId ?? (yield* loadCliConfig).defaultProject;
-  if (early !== undefined) {
+  if (early !== undefined && isProjectId(early)) {
     yield* accepted(early);
   }
   // The read may be retried against the configured mirror (PF2); the proxy then starts once

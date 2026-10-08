@@ -21,6 +21,8 @@ import { Redacted } from "effect";
 
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "../../src/invite-link.ts";
 import type { TestUser } from "./crypto.ts";
+import { testProjectId } from "./crypto.ts";
+import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
 /** A fixed invite id (ULID format — satisfies api-schema's InviteIdSchema). */
@@ -68,7 +70,7 @@ export async function issueInviteFixture(input: {
     context: {
       suite: SUITE_ID,
       inviteId,
-      projectId: input.projectId,
+      projectId: testProjectId(input.projectId),
       linkPubHex,
       headHashHex: input.headHashHex,
       headSeq: input.headSeq,
@@ -85,7 +87,7 @@ export async function issueInviteFixture(input: {
     link: {
       inviteId,
       linkSeedHex: Redacted.make(seedHex, { label: "invite-link-seed" }),
-      projectId: input.projectId,
+      projectId: testProjectId(input.projectId),
       headHashHex: input.headHashHex,
       headSeq: input.headSeq,
       inviterUserId: input.inviter.userId,
@@ -142,9 +144,9 @@ export async function acceptanceFixture(input: {
   if (!derived.ok) throw new Error("link key derivation failed");
   const context = {
     suite: SUITE_ID,
-    projectId: input.projectId,
+    projectId: testProjectId(input.projectId),
     linkPubHex: input.issued.linkPubHex,
-    inviteeUserId: input.inviteeUserId ?? input.invitee.userId,
+    inviteeUserId: testUserId(input.inviteeUserId ?? input.invitee.userId),
     inviteeEncPubHex: input.declared?.encPubHex ?? input.invitee.encPubHex,
     inviteeSigPubHex: input.declared?.sigPubHex ?? input.invitee.sigPubHex,
   };

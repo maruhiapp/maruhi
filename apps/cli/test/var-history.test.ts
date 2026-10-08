@@ -44,6 +44,8 @@ import {
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { MockServer } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
@@ -178,7 +180,12 @@ async function startEnv(
 async function decryptWire(value: WireDistributedValue): Promise<string> {
   const result = await decryptVariable({
     dek,
-    context: value.aad,
+    context: {
+      ...value.aad,
+      projectId: testProjectId(value.aad.projectId),
+      environmentId: testEnvironmentId(value.aad.environmentId),
+      variableId: testVariableId(value.aad.variableId),
+    },
     nonce: hexBytes(value.nonceHex),
     ciphertext: hexBytes(value.ciphertextHex),
   });

@@ -48,6 +48,7 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -62,7 +63,9 @@ let servers: MockServer[] = [];
 
 /** Reads the floor (the fold of the observation log) — floor-log.ts's append-only JSONL. */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
-  const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(chain.projectId));
+  const loaded = await Effect.runPromise(
+    makeFileFloorStore(env.floorDir).load(testProjectId(chain.projectId)),
+  );
   expect(loaded.floor).not.toBeNull();
   return loaded.floor as ProjectFloor;
 }

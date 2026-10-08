@@ -1,6 +1,6 @@
 // `maruhi member` (discipline: see commands/index.ts).
 
-import type { UserId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -14,6 +14,7 @@ import {
 import { countNoun, displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
+import { environmentIdOf } from "../ids.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { type MemberAddSummary, memberAddOp } from "../member-add.ts";
 import {
@@ -163,7 +164,7 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
 export const reportMemberAdd = Effect.fn("commands-member.reportMemberAdd")(function* (
   io: CliIoShape,
   summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
-    readonly targetUserId: string;
+    readonly targetUserId: UserId;
     readonly role: Role | null;
   },
 ): Effect.fn.Return<number, CliError, CliIo> {
@@ -263,7 +264,7 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   flags: Omit<CommonFlags, "env"> & {
     readonly target: UserId;
     readonly role?: string | undefined;
-    readonly env: readonly string[];
+    readonly env: readonly EnvironmentId[];
     readonly allEnvs: boolean;
     readonly noEnvs: boolean;
     readonly expires?: string | undefined;
@@ -351,7 +352,7 @@ export const reportRoleChangeFulfilment = Effect.fn("commands-member.reportRoleC
 const parseChangeRoleRequest = Effect.fn("commands-member.parseChangeRoleRequest")(
   function* (flags: {
     readonly role?: string | undefined;
-    readonly env: readonly string[];
+    readonly env: readonly EnvironmentId[];
     readonly allEnvs: boolean;
     readonly noEnvs: boolean;
   }): Effect.fn.Return<ChangeRoleRequest, CliError> {
@@ -496,7 +497,7 @@ export function makeMemberCommands(onExitCode: (code: number) => void) {
           project: values.project,
           target: values["user-id"],
           role: values.role,
-          env: values.env,
+          env: values.env.map(environmentIdOf),
           allEnvs: values["all-envs"],
           noEnvs: values["no-envs"],
           expires: values.expires,

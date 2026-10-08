@@ -3,6 +3,7 @@
 // standing report (the group's overview lives in device.ts).
 
 import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
+import { type EnvironmentId, type ProjectId, isProjectId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
@@ -204,7 +205,7 @@ function describeUnchecked(groups: StandingGroups): string {
 }
 
 /** The listing of project ids (for wording). */
-function projectList(projectIds: readonly string[]): string {
+function projectList(projectIds: readonly ProjectId[]): string {
   return projectIds.map(displayText).join(", ");
 }
 
@@ -293,9 +294,12 @@ const unlistedFloorProjects = Effect.fn("device-add.unlistedFloorProjects")(func
   standings: KeyStandings,
 ): Effect.fn.Return<string, never, CliServices> {
   const floor = yield* FloorStore;
-  const ids = yield* floor.listProjectIds().pipe(Effect.orElseSucceed((): readonly string[] => []));
+  const ids = yield* floor
+    .listProjectIds()
+    .pipe(Effect.orElseSucceed((): readonly ProjectId[] => []));
+  const brandedIds = ids.filter(isProjectId);
   const listed = new Set(standings.projects.map((project) => project.projectId));
-  const unlisted = ids.filter((id) => !listed.has(id));
+  const unlisted = brandedIds.filter((id) => !listed.has(id));
   if (unlisted.length === 0) {
     return "";
   }
@@ -462,12 +466,12 @@ const describeReplacedKey = Effect.fn("device-add.describeReplacedKey")(function
 type KeyReachIssue =
   | {
       readonly kind: "missing";
-      readonly environmentId: string;
+      readonly environmentId: EnvironmentId;
       readonly epochs: readonly number[];
     }
   | {
       readonly kind: "unchecked";
-      readonly environmentId: string;
+      readonly environmentId: EnvironmentId;
       readonly message: string;
     };
 
@@ -517,7 +521,7 @@ const checkKeyReach = Effect.fn("device-add.checkKeyReach")(function* (input: {
 
 /** One entry of the key-arrival check (an absence uses the pull's warning wording — K12-3. A check failure is a Note). */
 function reportKeyReachIssue(
-  projectId: string,
+  projectId: ProjectId,
   issue: KeyReachIssue,
 ): Effect.Effect<void, never, CliIo> {
   const project = displayText(projectId);
