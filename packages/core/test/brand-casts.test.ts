@@ -25,8 +25,8 @@ const BRAND_ASSERTION =
 /**
  * A hand-written type predicate returning a brand (`x is Brand`) is a mint
  * with no boundary: any caller's string becomes branded by `if` alone. Such
- * predicates live only in packages/core/src — the one narrowing guard
- * (isUserId) and the private narrows* that feed the Schema.refine mints.
+ * predicates live only in packages/core/src, as module-private functions
+ * that feed the Schema.refine mints (identity.ts's isUserId and the narrows*).
  */
 const BRAND_PREDICATE =
   /\w+\s+is\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;

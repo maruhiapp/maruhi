@@ -14,7 +14,13 @@
 //   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
 //   mirror verification — `maruhi audit verify` — uses)
 
-import type { AuditEventRecord, KeyFingerprintHex, UserId } from "@maruhi/core";
+import type {
+  AuditEventRecord,
+  EnvironmentId,
+  KeyFingerprintHex,
+  UserId,
+  VariableId,
+} from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import {
   assertProjectAuditPayload,
@@ -177,10 +183,15 @@ export interface AuditRotationRead {
    */
   readonly environmentEpochEvents: () => readonly EnvironmentEpochRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
-  /** The same rows narrowed to one (variable × environment) pair (the history's flagsIfCurrent — ae_var). */
+  /**
+   * The same rows narrowed to one (variable × environment) pair (the
+   * history's flagsIfCurrent — ae_var). The pair is typed with the id
+   * brands so a caller cannot swap the two same-shaped ids; it only binds
+   * them as query parameters, so nothing is minted here.
+   */
   readonly rotationFlagEventsFor: (
-    environmentId: string,
-    variableId: string,
+    environmentId: EnvironmentId,
+    variableId: VariableId,
   ) => readonly RotationFlagSourceRow[];
 }
 
@@ -1398,7 +1409,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(rotationFlagSourceRow),
-  rotationFlagEventsFor: (environmentId: string, variableId: string) =>
+  rotationFlagEventsFor: (environmentId: EnvironmentId, variableId: VariableId) =>
     sql
       .exec(
         `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
