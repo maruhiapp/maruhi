@@ -66,10 +66,11 @@ passed to `cf d1 migrations apply` via its `--dir` / `--pattern` flags.
 
 Deploys run with `--no-provision`: `cf` never creates missing resources itself.
 Every binding this project declares is provisioned deliberately (the D1 you
-created in step 2, the ops bucket an operator creates by hand — creating it on
-deploy would also skip its lifecycle rules), so a deploy against a resource
-that does not exist fails closed instead of pointing the app at a surprise
-database or bucket.
+created in step 2 and, for the hosted / restore modes only, the ops bucket an
+operator creates by hand — creating it on deploy would also skip its lifecycle
+rules; the default self-host mode binds no bucket), so a deploy against a
+resource that does not exist fails closed instead of pointing the app at a
+surprise database or bucket.
 
 Note the printed `https://maruhi-server.<your-subdomain>.workers.dev`
 (below, `<deploy-url>` means this entire URL, including `https://`).
