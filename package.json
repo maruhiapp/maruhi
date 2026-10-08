@@ -20,17 +20,17 @@
     "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
-    "@import-lint/cli": "0.1.9",
-    "fallow": "3.27.0",
-    "oxfmt": "0.70.0",
-    "oxlint": "1.85.0",
-    "oxlint-plugin-eslint": "1.85.0",
+    "@import-lint/cli": "0.1.10",
+    "fallow": "3.32.0",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "oxlint-plugin-eslint": "1.87.0",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },
   "overrides": {
     "@scalar/json-magic>undici": "7.29.1",
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.4",
     "lodash-es": "4.18.1",
     "miniflare>undici": "7.29.1",
     "sharp": "0.35.5"

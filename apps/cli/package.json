@@ -22,7 +22,7 @@
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
     "effect": "4.0.2",
-    "std-env": "4.2.0"
+    "std-env": "4.3.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.2"
