@@ -81,9 +81,9 @@ export const maruhiTheme = {
     "--duration-slow": "700ms",
     "--duration-slow-max": "935ms",
     "--font-family-body":
-      'Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     "--font-family-heading":
-      'Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     "--font-family-code":
       'ui-monospace, "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
     "--color-syntax-keyword": "light-dark(#6b187c, #efa8ff)",
@@ -537,14 +537,10 @@ export const maruhiTheme = {
         ratio: 1.2,
       },
       body: {
-        family: "Figtree",
-        fallbacks:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        family: "-apple-system",
+        fallbacks: 'BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
       },
       heading: {
-        family: "Figtree",
-        fallbacks:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
         weights: {
           3: "bold",
           4: "bold",

@@ -7,6 +7,9 @@
 // §3 "rulings recorded while implementing DP1" (A / B).
 // The only raw hex values here are the two "vermilion" values plus the
 // two on-accent values; everything else is left to HCT derivation.
+//
+// Fonts are docs/notes/web-design-pass.md §1-3: the dashboard (the TCB)
+// loads no web fonts and uses the system stack.
 import { defineTheme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral";
 
@@ -30,9 +33,21 @@ const VERMILION_DARK = "#FF693C";
 const ON_VERMILION_LIGHT = "#FFFFFF";
 const ON_VERMILION_DARK = "#241915";
 
+// The system UI stack (the Astryx default). theme-neutral puts "Figtree"
+// in front of it, but nothing loads Figtree on this origin, so every
+// browser fell back to this stack anyway; naming it first keeps the
+// token honest.
+const SYSTEM_SANS = {
+  family: "-apple-system",
+  fallbacks: 'BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+};
+
 export const maruhiTheme = defineTheme({
   name: "maruhi",
   extends: neutralTheme,
+  // heading inherits the family from body (and keeps theme-neutral's
+  // h3/h4 weights)
+  typography: { body: SYSTEM_SANS },
   color: {
     // seed tuple: align the derived palettes — neutral (warm) hue and
     // everything but --color-on-accent — on the vermilion hue
