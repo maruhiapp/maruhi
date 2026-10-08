@@ -228,7 +228,10 @@ export interface DataWriteOps {
    * environment's sealed value proposals (2026-10-08). Returns the removed
    * proposals so the caller can close each one's history with an audit row.
    */
-  readonly retireEnvironment: (environmentId: EnvironmentId, nowMs: number) => readonly RemovedProposal[];
+  readonly retireEnvironment: (
+    environmentId: EnvironmentId,
+    nowMs: number,
+  ) => readonly RemovedProposal[];
   readonly insertVariable: (
     environmentId: EnvironmentId,
     variableId: VariableId,
