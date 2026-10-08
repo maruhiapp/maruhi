@@ -20,7 +20,12 @@
 //   401 / CSRF 403. The list GET writes no audit = holds no state, so it
 //   is outside §11-4's added-CSRF scope)
 
-import { type EnvironmentId, EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
+import {
+  type EnvironmentId,
+  EnvironmentIdSchema,
+  ProjectIdSchema,
+  UserIdSchema,
+} from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 

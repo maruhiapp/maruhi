@@ -16,9 +16,8 @@ import {
   wrapDek,
 } from "../../src/index.ts";
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 /** Required fixture string (verifying read of a field made optional by the JSON union type). */
 function fixtureString(value: string | undefined, name: string): string {
@@ -165,13 +164,13 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   };
   await infoNegativeCheck(c, {
     name: "server-info-member-user-id",
-    context: { ...serverContext(), recipientUserId: testUserId(baseRecipientUserId)},
+    context: { ...serverContext(), recipientUserId: testUserId(baseRecipientUserId) },
     keyPair: pair.value,
     ...serverWrapped,
   });
   await infoNegativeCheck(c, {
     name: "server-info-fp-mismatch",
-    context: { ...serverContext(), recipientUserId: testUserId(wrongServerFingerprintHex())},
+    context: { ...serverContext(), recipientUserId: testUserId(wrongServerFingerprintHex()) },
     keyPair: pair.value,
     ...serverWrapped,
   });
@@ -184,7 +183,7 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   }
   await infoNegativeCheck(c, {
     name: "member-info-server-fp",
-    context: { ...baseContext(), recipientUserId: testUserId(serverFingerprintHex)},
+    context: { ...baseContext(), recipientUserId: testUserId(serverFingerprintHex) },
     keyPair: memberPair.value,
     encHex: base.enc_hex,
     ciphertextHex: base.ciphertext_hex,

@@ -21,9 +21,8 @@ import {
   verifyInviteLinkSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/invite-accept-signature.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testProjectId, testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.vectors[0];
 if (baseVector === undefined) {
@@ -164,7 +163,7 @@ function badAcceptContexts(): readonly { name: string; context: InviteAcceptSign
     { name: "short enc pub", context: { ...contextOf(base), inviteeEncPubHex: "ab" } },
     { name: "short sig pub", context: { ...contextOf(base), inviteeSigPubHex: "ab" } },
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
-    { name: "empty invitee", context: { ...contextOf(base), inviteeUserId: testUserId("")} },
+    { name: "empty invitee", context: { ...contextOf(base), inviteeUserId: testUserId("") } },
   ];
 }
 

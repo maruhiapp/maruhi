@@ -27,9 +27,9 @@
 // verification — vector removed-attester-in-tenure); the caller selects
 // first with history.memberStateAt(userId, history.headSeq).
 
-import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
+import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { AttestationInvalidReason, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

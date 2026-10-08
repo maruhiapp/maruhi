@@ -93,5 +93,4 @@ export const VariableIdSchema = Schema.String.pipe(
  * at a trust boundary: a validated command argument or a branded column
  * read. Throws on a malformed value.
  */
-export const decodeVariableId: (value: string) => VariableId =
-  Schema.decodeSync(VariableIdSchema);
+export const decodeVariableId: (value: string) => VariableId = Schema.decodeSync(VariableIdSchema);

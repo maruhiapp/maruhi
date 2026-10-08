@@ -10,9 +10,9 @@
 // injected by the caller via parameters; this module holds only the shared
 // check logic.
 
-import type { EnvironmentId } from "./chain-types.ts";
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { ROLE_RANK } from "./chain-device.ts";
+import type { EnvironmentId } from "./chain-types.ts";
 
 // The role order is defined only in chain-device.ts (re-exported here for the
 // signature modules)

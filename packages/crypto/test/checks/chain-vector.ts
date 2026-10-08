@@ -429,7 +429,9 @@ function scopeFields(payload: Readonly<Record<string, unknown>>): {
 } {
   return {
     scopeKind: str(payload, "scope_kind") as ScopeKind,
-    scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) => testEnvironmentId(id)),
+    scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) =>
+      testEnvironmentId(id),
+    ),
   };
 }
 
@@ -474,7 +476,7 @@ const OPERATION_DECODERS: Readonly<
   }),
   delete_environment: (payload) => ({
     op: "delete_environment",
-    payload: { environmentId: testEnvironmentId(str(payload, "environment_id"))},
+    payload: { environmentId: testEnvironmentId(str(payload, "environment_id")) },
   }),
   rotate_epoch: (payload) => ({
     op: "rotate_epoch",
@@ -492,7 +494,9 @@ const OPERATION_DECODERS: Readonly<
       payload: {
         serverEncPubHex: str(payload, "server_enc_pub_hex"),
         serverKeyFingerprintHex: testKeyFingerprintHex(str(payload, "server_key_fingerprint_hex")),
-        scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) => testEnvironmentId(id)),
+        scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) =>
+          testEnvironmentId(id),
+        ),
         leasePolicy: leasePolicy.map((element) => ({
           issuerUrl: element.issuer_url,
           audience: element.audience,

@@ -25,9 +25,8 @@ import {
 } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
 import vectors from "../../test-vectors/invite-link.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.issue.vectors[0];
 if (baseVector === undefined) {
@@ -208,7 +207,7 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
     { name: "empty invite id", context: { ...contextOf(base), inviteId: "" } },
     { name: "empty role", context: { ...contextOf(base), role: "" } },
-    { name: "empty inviter", context: { ...contextOf(base), inviterUserId: testUserId("")} },
+    { name: "empty inviter", context: { ...contextOf(base), inviterUserId: testUserId("") } },
     {
       name: "uppercase link pub",
       context: { ...contextOf(base), linkPubHex: base.link_pub_hex.toUpperCase() },
@@ -225,7 +224,11 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     // The structural rules of scope (same as §6.2 — all ⇒ empty list, no duplicates, closed-set kind, non-empty id)
     {
       name: "all scope with environments",
-      context: { ...contextOf(base), scopeKind: "all", scopeEnvironmentIds: ["env-dev-0002"].map((id) => testEnvironmentId(id))},
+      context: {
+        ...contextOf(base),
+        scopeKind: "all",
+        scopeEnvironmentIds: ["env-dev-0002"].map((id) => testEnvironmentId(id)),
+      },
     },
     {
       name: "duplicate scope environment",
@@ -237,11 +240,15 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     },
     {
       name: "empty scope environment id",
-      context: { ...contextOf(base), scopeKind: "listed", scopeEnvironmentIds: [testEnvironmentId("")]},
+      context: {
+        ...contextOf(base),
+        scopeKind: "listed",
+        scopeEnvironmentIds: [testEnvironmentId("")],
+      },
     },
     {
       name: "unknown scope kind",
-      context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: []},
+      context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: [] },
     },
     // The id bound (1024 bytes in §6.1 — symmetric to add_member on the chain side)
     {

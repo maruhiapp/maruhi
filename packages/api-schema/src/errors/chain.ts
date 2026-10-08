@@ -3,9 +3,9 @@
 // Errors carry only identifiers and counters (no fragments of plaintext
 // values or key material).
 
+import { ProjectIdSchema } from "@maruhi/core";
 import type { ChainInvalidReason } from "@maruhi/crypto";
 import { Schema } from "effect";
-import { ProjectIdSchema } from "@maruhi/core";
 
 // Reason-code list kept in sync with crypto's ChainInvalidReason
 // (statically checked via satisfies). The values' substance lives here

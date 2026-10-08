@@ -45,8 +45,8 @@
 // meta-verify.ts (history queries by chain-history.ts); this module holds
 // only the low-level normalization, signing, and hashing.
 
-import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

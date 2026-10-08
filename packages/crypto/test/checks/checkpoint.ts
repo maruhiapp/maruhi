@@ -23,7 +23,7 @@ import {
   signChainEntry,
   verifyChainWithHistory,
 } from "../../src/index.ts";
-import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";;;
+import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";
 import {
   toTypedEntry,
   typedEntries,
@@ -101,7 +101,7 @@ async function valuesDigestInvalidInputChecks(c: Checks): Promise<void> {
       name: "uppercase value sig hash",
       entry: { ...validEntry, valueSigHashHex: "AB".repeat(32) },
     },
-    { name: "empty variable id", entry: { ...validEntry, variableId: testVariableId("")} },
+    { name: "empty variable id", entry: { ...validEntry, variableId: testVariableId("") } },
   ];
   for (const bad of badEntries) {
     const result = await computeEnvValuesDigest("maruhi/v1", [bad.entry]);

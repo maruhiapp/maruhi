@@ -5,8 +5,8 @@
 // VariableNotFound are returned only to chain-derived members (the
 // project's own existence concealment §11-2 takes precedence — §12-3).
 
-import { Schema } from "effect";
 import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
+import { Schema } from "effect";
 
 /** 404: no active environment under this id (returned to chain members only). */
 export class EnvironmentNotFoundError extends Schema.TaggedError<EnvironmentNotFoundError>()(

@@ -51,7 +51,12 @@ import {
   verifyEnvManifestSignature,
 } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
-import { testEnvironmentId, testProjectId, testUserId, testVariableId } from "../support/fixture.ts";;
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import {
   importVectorSigner,
@@ -562,9 +567,12 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevManifestSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("")} },
-    { name: "empty environment id", context: { ...baseContext, environmentId: testEnvironmentId("")} },
-    { name: "empty issuer", context: { ...baseContext, issuerUserId: testUserId("")} },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
+    { name: "empty issuer", context: { ...baseContext, issuerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signEnvManifest({ context: bad.context, signingKey: pair.privateKey });

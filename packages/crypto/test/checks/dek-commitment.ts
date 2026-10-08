@@ -17,10 +17,9 @@ import {
 } from "../../src/index.ts";
 import dekCommitmentVectors from "../../test-vectors/dek-commitment.json" with { type: "json" };
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
 import { vectorEntries, vectorEnvironmentDeks } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
-import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";;
 
 const baseVector = dekCommitmentVectors.vectors[0];
 if (baseVector === undefined) {

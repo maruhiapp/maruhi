@@ -20,9 +20,8 @@ import {
 } from "../../src/index.ts";
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
 import leaseWrapVectors from "../../test-vectors/lease-wrap.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 function vectorNamed(name: string) {
   const vector = leaseWrapVectors.vectors.find((v) => v.name === name);
@@ -170,7 +169,10 @@ async function infoNegativeCheck(
 
 async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
   const contexts: readonly { readonly name: string; readonly context: LeaseWrapContext }[] = [
-    { name: "info-project-mismatch", context: { ...baseContext(), projectId: testProjectId("proj-0002") } },
+    {
+      name: "info-project-mismatch",
+      context: { ...baseContext(), projectId: testProjectId("proj-0002") },
+    },
     {
       name: "info-environment-mismatch",
       context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },

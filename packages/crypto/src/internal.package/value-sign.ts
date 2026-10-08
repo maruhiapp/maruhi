@@ -19,8 +19,8 @@
 // carried by value-verify.ts (history queries by chain-history.ts); this
 // module holds only the low-level normalization, signing, and hashing.
 
-import type { EnvironmentId, ProjectId, VariableId } from "./chain-types.ts";
 import { decodeHex, encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

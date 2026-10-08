@@ -21,8 +21,8 @@
 //   cross-check (AUDIT_SPEC §6 — the follow-up CLI tool). Both share this
 //   single implementation. Test vectors: test-vectors/audit-head.json
 
-import type { EnvironmentId, VariableId } from "./chain-types.ts";
 import { concatBytes, encodeHex, utf8Encode } from "./bytes.ts";
+import type { EnvironmentId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

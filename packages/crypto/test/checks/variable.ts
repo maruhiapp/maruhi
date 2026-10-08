@@ -12,9 +12,8 @@ import {
   type VariableContext,
 } from "../../src/index.ts";
 import variableVectors from "../../test-vectors/variable-encryption.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testEnvironmentId, testProjectId, testVariableId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = variableVectors.vectors[0];
 if (baseVector === undefined) {

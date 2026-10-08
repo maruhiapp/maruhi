@@ -31,8 +31,8 @@
 // aad is empty like §5 (the info carries the context binding).
 // Test vectors: test-vectors/lease-wrap.json
 
-import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";

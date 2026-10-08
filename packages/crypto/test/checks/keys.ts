@@ -21,9 +21,8 @@ import {
 } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
-import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";;
 
 interface VectorUserKeys {
   readonly enc_sk_seed_hex: string;

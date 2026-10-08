@@ -9,9 +9,8 @@
 import type { AuditHeadRow } from "../../src/index.ts";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "../../src/index.ts";
 import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
-import { type CheckResult, Checks } from "./support.ts";
-
 import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";
+import { type CheckResult, Checks } from "./support.ts";
 
 /** A row of the vector JSON (taken as a structural type, not an inferred literal type — passed from both chain and null_vs_empty). */
 interface VectorRow {

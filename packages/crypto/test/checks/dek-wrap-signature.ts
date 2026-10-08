@@ -16,9 +16,8 @@ import {
   verifyDekWrapSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/dek-wrap-signature.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.vectors[0];
 if (baseVector === undefined) {
@@ -122,7 +121,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     },
     { name: "short enc hex", context: { ...contextOf(base), encHex: "ab" } },
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
-    { name: "empty signer", context: { ...contextOf(base), signerUserId: testUserId("")} },
+    { name: "empty signer", context: { ...contextOf(base), signerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signDekWrap({ context: bad.context, signingKey: pair.privateKey });

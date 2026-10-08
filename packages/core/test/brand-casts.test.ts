@@ -19,7 +19,8 @@ const SOURCE_ROOTS = ["apps", "packages"];
  * in this codebase's TypeScript; `$type<UserId>()` on a Drizzle column is a
  * branded column, the sanctioned DB mint).
  */
-const BRAND_ASSERTION = /\bas\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
+const BRAND_ASSERTION =
+  /\bas\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
 
 /**
  * The one sanctioned assertion: the chain verifier's fingerprint computation,

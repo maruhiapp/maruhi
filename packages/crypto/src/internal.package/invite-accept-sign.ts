@@ -30,8 +30,8 @@
 // outside the chain — §6.5).
 // Test vectors: test-vectors/invite-accept-signature.json
 
-import type { ProjectId } from "./chain-types.ts";
 import { decodeHex } from "./bytes.ts";
+import type { ProjectId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";

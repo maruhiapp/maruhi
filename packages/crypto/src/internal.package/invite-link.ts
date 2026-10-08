@@ -33,8 +33,8 @@
 //   boundary is pinned by test vectors
 // Test vectors: test-vectors/invite-link.json
 
-import type { ProjectId, UserId } from "./chain-types.ts";
 import { decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
+import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";

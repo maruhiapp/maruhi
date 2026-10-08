@@ -36,11 +36,15 @@ import {
   verifyMetaStatementSignature,
 } from "../../src/index.ts";
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { importVectorSigner, vectorKeys } from "./chain-vector.ts";
 import { metaExtendedHistory } from "./meta-history.ts";
-import { testEnvironmentId, testProjectId, testUserId, testVariableId } from "../support/fixture.ts";
-
 import {
   type CheckResult,
   Checks,
@@ -579,12 +583,15 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevMetaSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("")} },
-    { name: "empty environment id", context: { ...baseContext, environmentId: testEnvironmentId("")} },
-    { name: "empty author", context: { ...baseContext, authorUserId: testUserId("")} },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
+    { name: "empty author", context: { ...baseContext, authorUserId: testUserId("") } },
     {
       name: "empty variable id",
-      context: { ...baseContext, target: { kind: "variable", variableId: testVariableId("")} },
+      context: { ...baseContext, target: { kind: "variable", variableId: testVariableId("") } },
     },
   ];
   for (const bad of badContexts) {

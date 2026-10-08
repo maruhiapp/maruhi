@@ -20,7 +20,13 @@
 //   derive from signed entries, so they are verifiable)
 // - No append API is exposed (the §7 principle — only server-side processing generates events)
 
-import { EnvironmentIdSchema, OrgIdSchema, ProjectIdSchema, UserIdSchema, VariableIdSchema } from "@maruhi/core";
+import {
+  EnvironmentIdSchema,
+  OrgIdSchema,
+  ProjectIdSchema,
+  UserIdSchema,
+  VariableIdSchema,
+} from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 

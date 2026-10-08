@@ -17,8 +17,8 @@
 //   EnvironmentSet's `all` side (= U or a cofinite subset of U — not
 //   containable by any listed)
 
-import type { EnvironmentId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 
 /** Scope kind on the wire (CRYPTO_SPEC §6.2). */

@@ -1,8 +1,8 @@
 // Typed errors of the rotation-required-flag API (AUDIT_SPEC §4.1 / §7)
 // and of sealed value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5).
 
-import { Schema } from "effect";
 import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
+import { Schema } from "effect";
 
 /**
  * 404: no currently-effective rotation flag exists for this

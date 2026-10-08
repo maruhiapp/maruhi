@@ -59,7 +59,6 @@ export function testKeyFingerprintHex(value: string): KeyFingerprintHex {
   return value as KeyFingerprintHex;
 }
 
-
 /**
  * Test-only mints of {@link ProjectId}, {@link EnvironmentId} and
  * {@link VariableId} from fixture literals and test-vector ids. The package

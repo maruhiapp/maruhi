@@ -8,9 +8,8 @@
 import type { EnvValuesDigestEntry, EnvValuesDigestSource } from "../../src/index.ts";
 import { computeEnvValuesDigest, selectEnvValuesDigestEntries } from "../../src/index.ts";
 import digestVectors from "../../test-vectors/checkpoint-digest.json" with { type: "json" };
-import { type CheckResult, Checks } from "./support.ts";
-
 import { testVariableId } from "../support/fixture.ts";
+import { type CheckResult, Checks } from "./support.ts";
 
 interface VectorVariable {
   readonly variable_id: string;

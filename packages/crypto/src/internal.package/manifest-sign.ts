@@ -30,8 +30,8 @@
 // (history queries by chain-history.ts); this module holds only the
 // low-level normalization, signing, digest, and hashing.
 
-import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

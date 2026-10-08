@@ -182,9 +182,7 @@ function stringParams(params: URLSearchParams): StringParams | null {
  * structural rules are the same as CRYPTO_SPEC §6.2's scope
  * (malformed = null)
  */
-function parseScope(
-  params: URLSearchParams,
-): {
+function parseScope(params: URLSearchParams): {
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
 } | null {

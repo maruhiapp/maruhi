@@ -18,8 +18,8 @@
 // (decryption or encryption) until it has been reconciled against this
 // commitment (§5.2 / §6.3).
 
-import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";

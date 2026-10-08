@@ -21,10 +21,14 @@ import {
   verifyValueSignature,
 } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { importVectorSigner } from "./chain-vector.ts";
-import { testEnvironmentId, testProjectId, testUserId, testVariableId } from "../support/fixture.ts";
-
 import {
   type CheckResult,
   Checks,
@@ -336,12 +340,15 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevValueSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("")} },
-    { name: "empty environment id", context: { ...baseContext, environmentId: testEnvironmentId("")} },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
     // An empty variable id is rejected on par with the other coordinates
     // (same expectation as meta-sig's "empty variable id")
-    { name: "empty variable id", context: { ...baseContext, variableId: testVariableId("")} },
-    { name: "empty writer", context: { ...baseContext, writerUserId: testUserId("")} },
+    { name: "empty variable id", context: { ...baseContext, variableId: testVariableId("") } },
+    { name: "empty writer", context: { ...baseContext, writerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signValue({ context: bad.context, signingKey: pair.privateKey });

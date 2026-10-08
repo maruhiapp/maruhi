@@ -352,7 +352,9 @@ export const guardianShares = sqliteTable(
     /** The seal target (a key the ward client has confirmed) */
     guardianEncPubHex: text("guardian_enc_pub_hex").notNull(),
     /** The seal target's device key FP (one row per guardian device — DK) */
-    guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex").$type<KeyFingerprintHex>().notNull(),
+    guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex")
+      .$type<KeyFingerprintHex>()
+      .notNull(),
     encHex: text("enc_hex").notNull(),
     /** A 32-byte segment + a 16-byte tag = 48 bytes */
     ciphertextHex: text("ciphertext_hex").notNull(),
@@ -455,7 +457,9 @@ export const keyHandoffApprovals = sqliteTable(
     source: text("source").notNull(),
     shareIndex: integer("share_index").notNull(),
     approverUserId: text("approver_user_id").$type<UserId>().notNull(),
-    approverKeyFingerprintHex: text("approver_key_fingerprint_hex").$type<KeyFingerprintHex>().notNull(),
+    approverKeyFingerprintHex: text("approver_key_fingerprint_hex")
+      .$type<KeyFingerprintHex>()
+      .notNull(),
     encHex: text("enc_hex").notNull(),
     ciphertextHex: text("ciphertext_hex").notNull(),
     createdAt: integer("created_at").notNull(),

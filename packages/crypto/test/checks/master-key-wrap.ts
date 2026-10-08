@@ -35,9 +35,8 @@ import {
 } from "../../src/index.ts";
 import masterWrapVectors from "../../test-vectors/master-key-wrap.json" with { type: "json" };
 import recoveryVectors from "../../test-vectors/recovery-wrap.json" with { type: "json" };
-import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
 import { testUserId } from "../support/fixture.ts";
+import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const doc = masterWrapVectors;
 const userId = testUserId(doc.user_id);
@@ -525,17 +524,35 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     sealGuardianShare({
       guardianPublicKey: pair.publicKey,
       share: kek,
-      context: { userId, groupId: "g", mode: "any", shareIndex: 0, guardianUserId: testUserId("u")},
+      context: {
+        userId,
+        groupId: "g",
+        mode: "any",
+        shareIndex: 0,
+        guardianUserId: testUserId("u"),
+      },
     }),
     sealHandoffValue({
       ephemeralPublicKey: pair.publicKey,
       value: kek,
-      context: { userId, requestId: "r", source: "", shareIndex: 0, approverUserId: testUserId("u")},
+      context: {
+        userId,
+        requestId: "r",
+        source: "",
+        shareIndex: 0,
+        approverUserId: testUserId("u"),
+      },
     }),
     sealHandoffValue({
       ephemeralPublicKey: pair.publicKey,
       value: kek,
-      context: { userId, requestId: "r", source: "g", shareIndex: -1, approverUserId: testUserId("u")},
+      context: {
+        userId,
+        requestId: "r",
+        source: "g",
+        shareIndex: -1,
+        approverUserId: testUserId("u"),
+      },
     }),
   ]);
   c.push(

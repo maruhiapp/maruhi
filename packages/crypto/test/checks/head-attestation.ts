@@ -28,11 +28,10 @@ import {
   verifyHeadAttestationSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/head-attestation.json" with { type: "json" };
+import { testProjectId, testUserId } from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { importVectorSigner } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
-
-import { testProjectId, testUserId } from "../support/fixture.ts";
 
 interface VectorContext {
   readonly suite: string;
@@ -268,8 +267,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
       context: { ...baseContext, chainHeadSeq: Number.MAX_SAFE_INTEGER + 2 },
     },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("")} },
-    { name: "empty attester", context: { ...baseContext, attesterUserId: testUserId("")} },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    { name: "empty attester", context: { ...baseContext, attesterUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signHeadAttestation({ context: bad.context, signingKey: pair.privateKey });
