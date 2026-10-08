@@ -56,13 +56,20 @@ binding's `id` (placeholder `00000000-0000-4000-8000-…`).
 ### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
-bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy
+bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy --no-provision
 ```
 
 The deploy script always applies D1 migrations first (it resolves the database
 ID from `cloudflare.config.ts`, so it still works if you rename the database)
 and then deploys. drizzle's folder layout (`drizzle/<name>/migration.sql`) is
 passed to `cf d1 migrations apply` via its `--dir` / `--pattern` flags.
+
+Deploys run with `--no-provision`: `cf` never creates missing resources itself.
+Every binding this project declares is provisioned deliberately (the D1 you
+created in step 2, the ops bucket an operator creates by hand — creating it on
+deploy would also skip its lifecycle rules), so a deploy against a resource
+that does not exist fails closed instead of pointing the app at a surprise
+database or bucket.
 
 Note the printed `https://maruhi-server.<your-subdomain>.workers.dev`
 (below, `<deploy-url>` means this entire URL, including `https://`).
@@ -464,7 +471,7 @@ bunx wrangler secret put GITHUB_CLIENT_ID --env hosted
 bunx wrangler secret put GITHUB_CLIENT_SECRET --env hosted
 bunx wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
 bun run db:migrate:hosted
-bunx cf deploy --mode hosted
+bunx cf deploy --mode hosted --no-provision
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,
@@ -481,7 +488,7 @@ live project.
 
 ```sh
 # Deploy the restore worker only for the duration of the operation
-bunx cf deploy --mode restore
+bunx cf deploy --mode restore --no-provision
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
 bunx cf r2 objects put restore/jobs/job-1.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
@@ -549,7 +556,7 @@ chain id is really that person.
 ```sh
 bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
 bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
-bunx cf deploy --mode restore
+bunx cf deploy --mode restore --no-provision
 echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
 bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
 bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
