@@ -9,10 +9,12 @@
 // Tailwind / StyleX / Astryx React parts.
 //
 // "Say nothing": no analytics are declared (Blume injects nothing when
-// undeclared). The assistant / MCP are off. Fonts are local woff2
-// (self-hosted via the Astro Fonts API — replacing the default Google Fonts
-// build-time fetch). Open in chat (links to third-party AI) is off.
+// undeclared), and the "Was this page helpful?" widget, whose only channel
+// is analytics events, is off. The assistant / MCP are off. Fonts are local
+// woff2 (self-hosted via the Astro Fonts API — replacing the default Google
+// Fonts build-time fetch). Open in chat (links to third-party AI) is off.
 import { defineConfig } from "blume";
+import { cloudflare } from "blume/deploy";
 import { orama } from "blume/search";
 
 import { accent, background, border, foreground, mutedForeground } from "./theme/tokens.ts";
@@ -129,10 +131,17 @@ export default defineConfig({
     },
     rss: { enabled: false },
   },
-  // Static build on any host (Blume 2: the `{ site, base }` form IS the
-  // static deployment — host adapters like `cloudflare()` switch to server
-  // output). Served via the cf Workers Static Assets deploy.
-  deployment: {
-    site: "https://maruhi.app",
-  },
+  // The page feedback widget sends its rating only as an analytics event.
+  // With no analytics it would thank the reader for feedback that goes
+  // nowhere, so it is off.
+  feedback: false,
+  // Served via the cf Workers Static Assets deploy. `cloudflare()` with
+  // `output: "static"` keeps the build static (the adapter package is never
+  // loaded) and writes only the host files Cloudflare reads (`_headers`,
+  // `_redirects` when there are redirects) — not the `vercel.json` an unnamed
+  // static host gets.
+  deployment: cloudflare({ site: "https://maruhi.app", output: "static" }),
+  // No `X-Powered-By: Blume` response header (Blume 2.1.2 default-on): the
+  // site does not advertise its build stack.
+  poweredBy: false,
 });
