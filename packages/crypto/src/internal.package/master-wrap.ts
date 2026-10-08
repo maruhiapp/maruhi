@@ -92,7 +92,7 @@ export interface GuardianWrapContext {
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
-  readonly guardianUserId: string;
+  readonly guardianUserId: UserId;
 }
 
 /**
@@ -105,7 +105,7 @@ export interface HandoffWrapContext {
   readonly requestId: string;
   readonly source: string;
   readonly shareIndex: number;
-  readonly approverUserId: string;
+  readonly approverUserId: UserId;
 }
 
 function invalidInput(field: string): { readonly ok: false; readonly error: CryptoError } {
