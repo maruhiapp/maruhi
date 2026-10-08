@@ -37,6 +37,7 @@ export {
   decodeKeyFingerprintHex,
   decodeProviderUserId,
   decodeUserId,
+  isKeyFingerprintHex,
   type KeyFingerprintHex,
   KeyFingerprintHexSchema,
   type ProviderUserId,

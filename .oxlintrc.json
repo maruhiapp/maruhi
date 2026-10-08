@@ -70,34 +70,50 @@
       "rules": { "no-restricted-imports": "off" }
     },
     {
-      // The identity mint sites (packages/core/src/identity.ts): the wire
-      // schemas, the CLI's user-id argument, generation, the provider API's
-      // subject, the restore worker's and the keychain's parsers, and the
-      // DEK recipient class (a member's user id or a server key's
-      // fingerprint). The egress and test-support bans above are restated
-      // because an override replaces the rule's options
+      // The identity mint sites (packages/core/src/identity.ts, project.ts,
+      // auth.ts): the wire schemas and decode* mints may be imported only at
+      // trust boundaries — api-schema's wire definitions, the CLI's flag /
+      // config / record parsers, the server's row mapping (Drizzle columns
+      // and the data store's branded reads), handler decoding, generation,
+      // and the provider API's subject. The `is*` narrowing guards are NOT
+      // restricted on purpose: they check the format themselves, so a
+      // narrowing `if (isEnvironmentId(v))` is a verified mint wherever it
+      // legitimately happens — unlike the unchecked `as` casts the
+      // brand-casts tripwire forbids. The egress and test-support bans
+      // above are restated because an override replaces the rule's options
       "files": [
         "packages/api-schema/src/**",
         "apps/cli/src/commands/flags.ts",
         "apps/cli/src/keychain.ts",
-        "apps/server/src/ids.ts",
-        "apps/server/src/auth.package/github.ts",
-        "apps/server/src/restore-worker.ts",
-        "apps/server/src/data/data-plane.ts",
-        "apps/server/src/db.package/identities.ts",
-        "apps/server/src/data/data-store-*.ts",
-        "apps/server/src/audit-store.ts",
-        "apps/server/src/data/data-plane.ts",
-        "apps/server/src/dek-wraps.ts",
-        "apps/server/src/handlers/handlers-*.ts",
-        "apps/server/src/import-check.ts",
-        "apps/server/src/ops/ops-backup.ts",
-        "apps/server/src/server-key.ts",
         "apps/cli/src/context.ts",
         "apps/cli/src/anchor.ts",
         "apps/cli/src/floor-log-decode.ts",
         "apps/cli/src/json-record.ts",
-        "apps/cli/src/mcp.ts"
+        "apps/cli/src/mcp.ts",
+        "apps/server/src/ids.ts",
+        "apps/server/src/auth.package/github.ts",
+        "apps/server/src/restore-worker.ts",
+        "apps/server/src/data/data-plane.ts",
+        "apps/server/src/data/data-store-attestation-queries.ts",
+        "apps/server/src/data/data-store-environment-queries.ts",
+        "apps/server/src/data/data-store-proposal-queries.ts",
+        "apps/server/src/data/data-store-rows.ts",
+        "apps/server/src/data/data-store-variable-queries.ts",
+        "apps/server/src/data/data-store-version-queries.ts",
+        "apps/server/src/data/data-store-wrap-queries.ts",
+        "apps/server/src/data/data-store-write-ops.ts",
+        "apps/server/src/db.package/identities.ts",
+        "apps/server/src/audit-store.ts",
+        "apps/server/src/dek-wraps.ts",
+        "apps/server/src/handlers/handlers-audit.ts",
+        "apps/server/src/handlers/handlers-devices.ts",
+        "apps/server/src/handlers/handlers-key-wraps.ts",
+        "apps/server/src/handlers/handlers-lease.ts",
+        "apps/server/src/handlers/handlers-membership.ts",
+        "apps/server/src/handlers/handlers-recipient.ts",
+        "apps/server/src/import-check.ts",
+        "apps/server/src/ops/ops-backup.ts",
+        "apps/server/src/server-key.ts"
       ],
       "rules": {
         "no-restricted-imports": [

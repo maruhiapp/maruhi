@@ -88,7 +88,7 @@ const KEY_FINGERPRINT_HEX = /^[0-9a-f]{32}$/;
  * format — 32 lowercase hex characters, so string equality is fingerprint
  * equality — and every string mint checks it.
  */
-function isKeyFingerprintHex(value: string): value is KeyFingerprintHex {
+export function isKeyFingerprintHex(value: string): value is KeyFingerprintHex {
   return KEY_FINGERPRINT_HEX.test(value);
 }
 

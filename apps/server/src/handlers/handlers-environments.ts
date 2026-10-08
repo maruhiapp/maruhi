@@ -32,7 +32,6 @@ import { recipientOf } from "./handlers-recipient.ts";
  * (same acceptance policy as §11-1's generic append; the signer match
  * is carried by the DO's signature verification — §12-6).
  */
-
 const ensureCompositeActor = Effect.fn("handlers-environments.ensureCompositeActor")(function* (
   entry: ChainEntry,
 ) {

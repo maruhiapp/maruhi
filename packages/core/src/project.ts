@@ -17,6 +17,12 @@
 // service (the Drizzle column types) and the data store's branded column
 // reads. `.oxlintrc.json` enforces this: the schemas and `decode*` mints
 // below may be imported only by the listed mint sites.
+//
+// The `is*` narrowing guards are deliberately unrestricted: each guard
+// performs the format check itself, so narrowing through
+// `if (isEnvironmentId(v))` is a verified mint wherever a boundary
+// legitimately sits — unlike the unchecked `as` casts the
+// brand-casts.test.ts tripwire forbids.
 
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
 import { Schema } from "effect";
