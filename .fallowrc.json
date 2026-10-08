@@ -1,5 +1,11 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
+  // failOnParseError needs fallow 3.29 or later; an older binary names the
+  // upgrade instead of failing on an unknown key
+  "minimumVersion": "3.29.0",
+  // A file fallow cannot parse drops out of every detector, the boundaries
+  // below included, so a parse failure fails the run instead of only warning
+  "failOnParseError": true,
   // Tools referenced only from CLI / lint config are never imported, so they
   // are excluded from unused-dependency checks
   // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
