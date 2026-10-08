@@ -112,7 +112,7 @@ export const EnvironmentIdSchema = Schema.String.pipe(
  * The same mint as {@link EnvironmentIdSchema} with a caller-supplied
  * failure message (config leaves that must not echo the typed value).
  */
-export const environmentIdSchema = (message: string) =>
+export const environmentIdSchemaWithMessage = (message: string) =>
   Schema.String.annotate({ message }).pipe(Schema.refine(narrowsEnvironmentId, { message }));
 
 /**

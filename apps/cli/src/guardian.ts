@@ -190,7 +190,7 @@ interface SealedShare {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
   readonly guardianEncPubHex: string;
-  readonly guardianKeyFingerprintHex: string;
+  readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }

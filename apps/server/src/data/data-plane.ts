@@ -17,7 +17,7 @@ import type {
   UserId,
   VariableId,
 } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeProjectId, decodeUserId } from "@maruhi/core";
+import { decodeProjectId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -70,11 +70,19 @@ export type WireSuite = "maruhi/v1";
 /**
  * The recipient class of a DEK wrap (AUTH_SPEC §12-6): member = a current
  * member on the chain; server = the server key of a valid grant_server.
- * Omitted means member. For the server class, the recipientUserId position
- * carries the server key FP (lowercase hex) — the same substitution as the
- * HPKE info / §5.1 signed target (CRYPTO_SPEC §9).
  */
 export type DekRecipientClass = "member" | "server";
+
+/**
+ * A wrap's recipient, typed by its class (the api-schema wire union): the
+ * recipientUserId position holds a member's user id for class member, and
+ * the server key FP for class server — the same substitution as the HPKE
+ * info / §5.1 signed target (CRYPTO_SPEC §9). Narrowing on recipientClass
+ * narrows the id's brand with it.
+ */
+export type DekRecipient =
+  | { readonly recipientClass: "member"; readonly recipientUserId: UserId }
+  | { readonly recipientClass: "server"; readonly recipientUserId: KeyFingerprintHex };
 
 /**
  * A DEK wrapped to one recipient (AUTH_SPEC §12-6; structurally identical
@@ -82,28 +90,24 @@ export type DekRecipientClass = "member" | "server";
  * (CRYPTO_SPEC §5.1) — the signer matches the API calling principal
  * exactly (§12-6), so no signer ID rides the wire or the RPC boundary.
  */
-export interface DekWrapInput {
+export type DekWrapInput = DekRecipient & {
   readonly suite: WireSuite;
   readonly epoch: number;
-  readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly signatureHex: string;
-}
+};
 
 /**
  * A reference to a stored wrap (the deletion unit of the §12-6 repair
  * path). `recipientEncPubHex` is on the device axis (2026-09-19 DK —
  * slots are per device).
  */
-export interface DekWrapRefInput {
+export type DekWrapRefInput = DekRecipient & {
   readonly epoch: number;
-  readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
-}
+};
 
 /**
  * A statement's lifecycle state (CRYPTO_SPEC §4.2). declared is limited
@@ -1174,17 +1178,13 @@ export function dataEvent(
  * position holds a member's user id, or the server key FP for recipient
  * class server (CRYPTO_SPEC §9). A server recipient has no user_id (the
  * §2 actor model), so its FP goes on target_key_fingerprint, never into
- * the user-id column. The class is what makes the position a user id (or
- * a server key fingerprint), so reading it by class is where the member's id
- * — or the server key's fingerprint — is minted. A server recipient passed
- * acceptance only as a valid grant's fingerprint (dek-wraps.ts), so the
- * format check cannot fail on an accepted wrap.
+ * the user-id column. The class already decided the id's brand at the
+ * wire (DekRecipient), so this only routes it to its column.
  */
 export function dekRecipientTarget(
-  recipientClass: DekRecipientClass,
-  recipientUserId: UserId | KeyFingerprintHex,
+  recipient: DekRecipient,
 ): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
-  return recipientClass === "server"
-    ? { targetKeyFingerprintHex: decodeKeyFingerprintHex(recipientUserId) }
-    : { targetUserId: decodeUserId(recipientUserId) };
+  return recipient.recipientClass === "server"
+    ? { targetKeyFingerprintHex: recipient.recipientUserId }
+    : { targetUserId: recipient.recipientUserId };
 }

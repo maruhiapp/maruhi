@@ -248,6 +248,18 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
     expect(response.status).toBe(400);
   });
 
+  it("an environmentId / variableId filter outside the §12-1 form matches verbatim (an empty page, not a 500)", async () => {
+    await seedProjectActivity();
+    // Audit rows replay stored text, so the id filters are plain strings:
+    // an out-of-form value is a filter that matches nothing, never a
+    // decode defect
+    for (const filter of [{ environmentId: "not.an.id" }, { variableId: "-leading-dash" }]) {
+      const { status, events } = await fetchEvents(token(OWNER), { ...filter, limit: "200" });
+      expect(status).toBe(200);
+      expect(events).toHaveLength(0);
+    }
+  });
+
   it("eventPrefix has no wildcard semantics (a prefix comparison, not LIKE)", async () => {
     await seedProjectActivity();
     // If it were a LIKE implementation, "%" would match everything and "_" would act as a one-char wildcard

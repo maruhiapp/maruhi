@@ -72,6 +72,17 @@ function recipientId(recipient: WrapRecipient): UserId | KeyFingerprintHex {
     : recipient.grant.serverKeyFingerprintHex;
 }
 
+/** The wire recipient position: the class decides the id's brand (api-schema's WrappedDek union). */
+function recipientPositionOf(
+  recipient: WrapRecipient,
+):
+  | { readonly recipientClass: "member"; readonly recipientUserId: UserId }
+  | { readonly recipientClass: "server"; readonly recipientUserId: KeyFingerprintHex } {
+  return recipient.kind === "member"
+    ? { recipientClass: "member", recipientUserId: recipient.member.userId }
+    : { recipientClass: "server", recipientUserId: recipient.grant.serverKeyFingerprintHex };
+}
+
 function recipientEncPubHex(recipient: WrapRecipient): string {
   return recipient.kind === "member" ? recipient.device.encPubHex : recipient.grant.serverEncPubHex;
 }
@@ -236,8 +247,7 @@ function wrapAndSignForEffect(input: {
     return {
       suite: SUITE_ID,
       epoch,
-      recipientClass: recipient.kind === "server" ? ("server" as const) : ("member" as const),
-      recipientUserId: id,
+      ...recipientPositionOf(recipient),
       recipientEncPubHex: encPubHex,
       encHex,
       ciphertextHex,

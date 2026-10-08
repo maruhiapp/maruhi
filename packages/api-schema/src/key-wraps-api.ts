@@ -139,7 +139,7 @@ export const GuardianShareSchema = Schema.Struct({
   ),
   guardianUserId: UserIdSchema,
   guardianEncPubHex: EncPubHex,
-  guardianKeyFingerprintHex: KeyFingerprintHex,
+  guardianKeyFingerprintHex: KeyFingerprintHexSchema,
   encHex: HpkeEncHex,
   ciphertextHex: ShareCiphertextHex,
 });

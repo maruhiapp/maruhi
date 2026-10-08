@@ -138,7 +138,7 @@ const PageLimitFromString = Schema.NumberFromString.check(
 // names and variable/environment IDs are comfortably short under the
 // §12-1 / §3 vocabulary
 const EventNameFilter = Schema.String.check(Schema.isMaxLength(64));
-const UserIdFilter = Schema.String.check(Schema.isMaxLength(1024));
+const UserIdFilter = UserIdSchema.check(Schema.isMaxLength(1024));
 const IdFilter = Schema.String.check(Schema.isMaxLength(64));
 
 /**

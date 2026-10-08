@@ -52,7 +52,7 @@
                   "decodeProjectId",
                   "decodeEnvironmentId",
                   "decodeVariableId",
-                  "environmentIdSchema"
+                  "environmentIdSchemaWithMessage"
                 ],
                 "message": "UserId / ProviderUserId / KeyFingerprintHex / OrgId / ProjectId / EnvironmentId / VariableId are minted only at a trust boundary (packages/core/src/identity.ts and packages/core/src/project.ts / auth.ts): a wire schema in packages/api-schema, a branded Drizzle column, a fingerprint computed from keys (userKeyFingerprintHex / serverKeyFingerprintHex), a generated id, or one of the hand-written mint sites listed in .oxlintrc.json. Read the value from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
               },
@@ -92,16 +92,13 @@
         "apps/cli/src/commands/env.ts",
         "apps/cli/src/commands/rotation.ts",
         "apps/cli/src/commands/server.ts",
-        "apps/cli/src/commands/mirror-write.ts",
         "apps/cli/src/commands/pull-run.ts",
         "apps/cli/src/keychain.ts",
         "apps/cli/src/context.ts",
         "apps/cli/src/anchor.ts",
         "apps/cli/src/audit.ts",
-        "apps/cli/src/audit-reconcile.ts",
         "apps/cli/src/config-schema.ts",
         "apps/cli/src/device-revoke.ts",
-        "apps/cli/src/env-list.ts",
         "apps/cli/src/floor-log.ts",
         "apps/cli/src/floor-log-decode.ts",
         "apps/cli/src/floor.ts",
@@ -113,7 +110,6 @@
         "apps/cli/src/pins.ts",
         "apps/cli/src/proxy.package/command.ts",
         "apps/cli/src/proxy.package/proxy-accept.ts",
-        "apps/cli/src/rotation-sweep.ts",
         "apps/cli/src/scope.ts",
         "apps/cli/src/sync.package/command.ts",
         "apps/server/src/ids.ts",
@@ -128,20 +124,13 @@
         "apps/server/src/data/data-store-version-queries.ts",
         "apps/server/src/data/data-store-wrap-queries.ts",
         "apps/server/src/data/data-store-write-ops.ts",
-        "apps/server/src/db.package/identities.ts",
         "apps/server/src/db.package/invites.ts",
         "apps/server/src/audit-store.ts",
-        "apps/server/src/dek-wraps.ts",
-        "apps/server/src/handlers/handlers-audit.ts",
         "apps/server/src/handlers/handlers-devices.ts",
-        "apps/server/src/handlers/handlers-key-wraps.ts",
-        "apps/server/src/handlers/handlers-lease.ts",
         "apps/server/src/handlers/handlers-membership.ts",
-        "apps/server/src/handlers/handlers-recipient.ts",
         "apps/server/src/handlers/handlers-rotation.ts",
         "apps/server/src/import-check.ts",
-        "apps/server/src/ops/ops-backup.ts",
-        "apps/server/src/server-key.ts"
+        "apps/server/src/ops/ops-backup.ts"
       ],
       "rules": {
         "no-restricted-imports": [

@@ -587,20 +587,25 @@ export type SchemaPolicy = typeof SchemaPolicySchema.Type;
  * = the server key of a valid grant_server (identified by FP + enc
  * public key — it has no user_id). Required on every wrap and wrap
  * reference.
+ *
+ * The recipient is typed by its class (CRYPTO_SPEC §9). Class member
+ * carries a member's user_id in the recipientUserId position
+ * (BoundedUserId's §6.1 wire bound); class server carries the server key
+ * fingerprint there (32 lowercase hex — CRYPTO_SPEC §9's "HPKE info for
+ * server-destined wraps"). Each wrap and wrap reference is a union of the
+ * two arms, so the class decides the brand at decode: a server-class entry
+ * whose recipient is not fingerprint-shaped is refused as malformed, and a
+ * member whose id happens to be 32-hex stays a `UserId`.
  */
-const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
+const MemberRecipientFields = {
+  recipientClass: Schema.Literal("member"),
+  recipientUserId: BoundedUserId,
+};
 
-/**
- * A wrap's recipient position carries either a member's user_id or — for
- * recipient class `server` — the server key fingerprint (32 lowercase hex
- * chars, CRYPTO_SPEC §9's "HPKE info for server-destined wraps"). The user
- * side keeps BoundedUserId's §6.1 wire bound; the fingerprint side asserts
- * the 32-hex form (a class-member row could never hold a non-FP there).
- */
-const BoundedRecipientId = Schema.Union([KeyFingerprintHexSchema, BoundedUserId]);
-
-/** The recipient identity position on wrap rows: a user_id or a server key fingerprint. */
-type BoundedRecipientId = typeof BoundedRecipientId.Type;
+const ServerRecipientFields = {
+  recipientClass: Schema.Literal("server"),
+  recipientUserId: KeyFingerprintHexSchema,
+};
 
 /**
  * One HPKE-wrapped epoch DEK for one recipient (AUTH_SPEC §12-6). The
@@ -622,16 +627,19 @@ type BoundedRecipientId = typeof BoundedRecipientId.Type;
  * could make a wrap for a legitimate member on the chain
  * unregistrable.
  */
-export const WrappedDekSchema = Schema.Struct({
+const WrappedDekFields = {
   suite: SuiteSchema,
   epoch: PositiveInt,
-  recipientClass: DekRecipientClassSchema,
-  recipientUserId: BoundedRecipientId,
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
   signatureHex: WrapSignatureHex,
-});
+};
+
+export const WrappedDekSchema = Schema.Union([
+  Schema.Struct({ ...WrappedDekFields, ...MemberRecipientFields }),
+  Schema.Struct({ ...WrappedDekFields, ...ServerRecipientFields }),
+]);
 
 /** One HPKE-wrapped epoch DEK for one recipient. */
 export type WrappedDek = typeof WrappedDekSchema.Type;
@@ -669,16 +677,19 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
  * the server key FP in the recipientUserId position (same convention as
  * WrappedDekSchema).
  */
-export const DekWrapRefSchema = Schema.Struct({
+const DekWrapRefFields = {
   epoch: PositiveInt,
-  recipientClass: DekRecipientClassSchema,
-  recipientUserId: BoundedRecipientId,
   /**
    * The recipient device key of the slot (the AUTH_SPEC §12-6 device
    * axis — 2026-09-19 DK K3: slots are per device).
    */
   recipientEncPubHex: EncPubHex,
-});
+};
+
+export const DekWrapRefSchema = Schema.Union([
+  Schema.Struct({ ...DekWrapRefFields, ...MemberRecipientFields }),
+  Schema.Struct({ ...DekWrapRefFields, ...ServerRecipientFields }),
+]);
 
 /** Reference naming one stored wrap (§12-6 repair path). */
 export type DekWrapRef = typeof DekWrapRefSchema.Type;

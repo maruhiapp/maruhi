@@ -6,11 +6,11 @@
 // The permit-serialization premise is the same as the former
 // data-programs.ts.
 
-import type { KeyFingerprintHex, EnvironmentId, UserId } from "@maruhi/core";
+import type { EnvironmentId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import type { DataActor, DekWrapInput, DekWrapRefInput } from "../data/data-plane.ts";
+import type { DataActor, DekRecipient, DekWrapInput, DekWrapRefInput } from "../data/data-plane.ts";
 import {
   currentEpochOf,
   dataEvent,
@@ -95,12 +95,10 @@ export const registerDekWrapsProgram = Effect.fn("programs-dek.registerDekWrapsP
 });
 
 /** The stored slot a deletion reference points at (device key may be omitted — design record §8 K3-3). */
-interface ResolvedWrapRef {
+type ResolvedWrapRef = DekRecipient & {
   readonly epoch: number;
-  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
-  readonly recipientClass: "member" | "server";
-}
+};
 
 /**
  * §12-6's repair path: an admin deletes wraps per (environment,
@@ -150,12 +148,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
         recipientUserId: ref.recipientUserId,
       });
     }
-    resolved.push({
-      epoch: ref.epoch,
-      recipientUserId: ref.recipientUserId,
-      recipientEncPubHex: slot.recipientEncPubHex,
-      recipientClass: ref.recipientClass,
-    });
+    resolved.push({ ...ref, recipientEncPubHex: slot.recipientEncPubHex });
   }
   const audit = yield* AuditStore;
   const now = yield* Clock.currentTimeMillis;
@@ -178,7 +171,7 @@ export const deleteDekWrapsProgram = Effect.fn("programs-dek.deleteDekWrapsProgr
           event: "dek.deleted",
           environmentId,
           epoch: ref.epoch,
-          ...dekRecipientTarget(ref.recipientClass, ref.recipientUserId),
+          ...dekRecipientTarget(ref),
         }),
       ),
     );

@@ -13,7 +13,13 @@
 // Session / token raw values appear in a response only once, at issuance
 // (the cliPoll approved response in auth-cli-api.ts).
 
-import { OrgIdSchema, OrgRoleSchema, TokenScopeSchema, UserIdSchema } from "@maruhi/core";
+import {
+  KeyFingerprintHexSchema,
+  OrgIdSchema,
+  OrgRoleSchema,
+  TokenScopeSchema,
+  UserIdSchema,
+} from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -27,7 +33,7 @@ import {
   SetupIncompleteError,
   TokenNotFoundError,
 } from "./errors/index.ts";
-import { EncPubHex, hexString, KeyFingerprintHex } from "./hex.ts";
+import { EncPubHex, hexString } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /**
@@ -144,7 +150,7 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
-  serverKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
+  serverKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHexSchema),
   serverEncPubHex: Schema.optionalKey(EncPubHex),
   signupPolicy: SignupPolicySchema,
 });
