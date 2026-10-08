@@ -2,6 +2,7 @@
 // and of sealed value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5).
 
 import { Schema } from "effect";
+import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 
 /**
  * 404: no currently-effective rotation flag exists for this
@@ -11,7 +12,7 @@ import { Schema } from "effect";
  */
 export class RotationFlagNotFoundError extends Schema.TaggedError<RotationFlagNotFoundError>()(
   "RotationFlagNotFound",
-  { environmentId: Schema.String, variableId: Schema.String },
+  { environmentId: EnvironmentIdSchema, variableId: VariableIdSchema },
   { httpApiStatus: 404 },
 ) {}
 

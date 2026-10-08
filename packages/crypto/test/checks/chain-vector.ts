@@ -16,12 +16,13 @@ import {
   type ProposableOperation,
   type Role,
   type ScopeKind,
+  type EnvironmentId,
   type ServerGrant,
   soleDeviceOf,
 } from "../../src/index.ts";
 import { importSigningKeyPair, importSigningPublicKey } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
-import { testKeyFingerprintHex, testUserId } from "../support/fixture.ts";
+import { testEnvironmentId, testKeyFingerprintHex, testUserId } from "../support/fixture.ts";
 import { fromHex, toHex } from "./support.ts";
 
 export interface VectorEntry {
@@ -294,7 +295,7 @@ export function pendingMatchesVector(
     pendingProposalKey({
       hash,
       proposalSeq: proposal.proposal_seq,
-      proposerUserId: proposal.proposer_user_id,
+      proposerUserId: testUserId(proposal.proposer_user_id),
       proposerKeyFingerprintHex: proposal.proposer_key_fingerprint_hex,
       proposerRoleAtProposal: proposal.proposer_role_at_proposal,
       inner: decodeInner(proposal.inner_op, proposal.inner_payload),
@@ -424,11 +425,11 @@ function str(payload: Readonly<Record<string, unknown>>, key: string): string {
 /** The two scope fields (§6.2 — the last two fields of add_member / change_role). */
 function scopeFields(payload: Readonly<Record<string, unknown>>): {
   readonly scopeKind: ScopeKind;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
 } {
   return {
     scopeKind: str(payload, "scope_kind") as ScopeKind,
-    scopeEnvironmentIds: payload["scope_environments"] as readonly string[],
+    scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) => testEnvironmentId(id)),
   };
 }
 
@@ -467,18 +468,18 @@ const OPERATION_DECODERS: Readonly<
   create_environment: (payload) => ({
     op: "create_environment",
     payload: {
-      environmentId: str(payload, "environment_id"),
+      environmentId: testEnvironmentId(str(payload, "environment_id")),
       dekCommitmentHex: str(payload, "dek_commitment_hex"),
     },
   }),
   delete_environment: (payload) => ({
     op: "delete_environment",
-    payload: { environmentId: str(payload, "environment_id") },
+    payload: { environmentId: testEnvironmentId(str(payload, "environment_id"))},
   }),
   rotate_epoch: (payload) => ({
     op: "rotate_epoch",
     payload: {
-      environmentId: str(payload, "environment_id"),
+      environmentId: testEnvironmentId(str(payload, "environment_id")),
       newEpoch: Number(str(payload, "new_epoch")),
       reason: str(payload, "reason"),
       dekCommitmentHex: str(payload, "dek_commitment_hex"),
@@ -491,7 +492,7 @@ const OPERATION_DECODERS: Readonly<
       payload: {
         serverEncPubHex: str(payload, "server_enc_pub_hex"),
         serverKeyFingerprintHex: testKeyFingerprintHex(str(payload, "server_key_fingerprint_hex")),
-        scopeEnvironmentIds: payload["scope_environments"] as readonly string[],
+        scopeEnvironmentIds: (payload["scope_environments"] as readonly string[]).map((id) => testEnvironmentId(id)),
         leasePolicy: leasePolicy.map((element) => ({
           issuerUrl: element.issuer_url,
           audience: element.audience,
@@ -515,7 +516,7 @@ const OPERATION_DECODERS: Readonly<
       op: "checkpoint",
       payload: {
         environments: environments.map((entry) => ({
-          environmentId: str(entry, "environment_id"),
+          environmentId: testEnvironmentId(str(entry, "environment_id")),
           epoch: Number(str(entry, "epoch")),
           manifestVersion: Number(str(entry, "manifest_version")),
           manifestSigHashHex: str(entry, "manifest_sig_hash_hex"),

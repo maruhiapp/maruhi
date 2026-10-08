@@ -18,6 +18,8 @@ import {
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+
 /** Required fixture string (verifying read of a field made optional by the JSON union type). */
 function fixtureString(value: string | undefined, name: string): string {
   if (value === undefined) {
@@ -46,20 +48,20 @@ const serverFingerprintHex = fixtureString(
 
 function baseContext(): DekWrapContext {
   return {
-    projectId: base.project_id,
-    environmentId: base.environment_id,
+    projectId: testProjectId(base.project_id),
+    environmentId: testEnvironmentId(base.environment_id),
     epoch: base.epoch,
-    recipientUserId: baseRecipientUserId,
+    recipientUserId: testUserId(baseRecipientUserId),
   };
 }
 
 function serverContext(): DekWrapContext {
   return {
-    projectId: serverVector.project_id,
-    environmentId: serverVector.environment_id,
+    projectId: testProjectId(serverVector.project_id),
+    environmentId: testEnvironmentId(serverVector.environment_id),
     epoch: serverVector.epoch,
     // §9: the recipient_user_id position uses the server key FP (lowercase hex)
-    recipientUserId: serverFingerprintHex,
+    recipientUserId: testUserId(serverFingerprintHex),
   };
 }
 
@@ -163,13 +165,13 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   };
   await infoNegativeCheck(c, {
     name: "server-info-member-user-id",
-    context: { ...serverContext(), recipientUserId: baseRecipientUserId },
+    context: { ...serverContext(), recipientUserId: testUserId(baseRecipientUserId)},
     keyPair: pair.value,
     ...serverWrapped,
   });
   await infoNegativeCheck(c, {
     name: "server-info-fp-mismatch",
-    context: { ...serverContext(), recipientUserId: wrongServerFingerprintHex() },
+    context: { ...serverContext(), recipientUserId: testUserId(wrongServerFingerprintHex())},
     keyPair: pair.value,
     ...serverWrapped,
   });
@@ -182,7 +184,7 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   }
   await infoNegativeCheck(c, {
     name: "member-info-server-fp",
-    context: { ...baseContext(), recipientUserId: serverFingerprintHex },
+    context: { ...baseContext(), recipientUserId: testUserId(serverFingerprintHex)},
     keyPair: memberPair.value,
     encHex: base.enc_hex,
     ciphertextHex: base.ciphertext_hex,
@@ -210,11 +212,11 @@ async function negativeChecks(c: Checks): Promise<void> {
     { name: "info-epoch-mismatch", context: { ...baseContext(), epoch: 4 } },
     {
       name: "info-recipient-mismatch",
-      context: { ...baseContext(), recipientUserId: "user-owner-0001" },
+      context: { ...baseContext(), recipientUserId: testUserId("user-owner-0001") },
     },
     {
       name: "info-environment-mismatch",
-      context: { ...baseContext(), environmentId: "env-dev-0002" },
+      context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },
     },
   ];
   for (const m of contexts) {
@@ -294,7 +296,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   const wrongContext = await unwrapDek({
     recipientKeyPair: recipient,
     wrapped: wrapped.value,
-    context: { ...baseContext(), projectId: "proj-other" },
+    context: { ...baseContext(), projectId: testProjectId("proj-other") },
   });
   c.push("dek-wrap: roundtrip wrong context rejected", !wrongContext.ok);
 

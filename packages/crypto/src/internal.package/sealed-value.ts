@@ -28,6 +28,7 @@
 // the server). aad is empty like §5 (the info carries the context binding).
 // Test vectors: test-vectors/sealed-value.json
 
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { hpkeSuite } from "./hpke.ts";
@@ -45,13 +46,13 @@ export const MAX_SEALED_VALUE_BYTES = 64 * 1024 - 16;
 
 /** Context a sealed value is cryptographically bound to (CRYPTO_SPEC §5.3). */
 export interface SealedValueContext {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly proposalId: string;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   /** The version the proposed value replaces (the accepting client pushes base_version + 1 on top of exactly this version). */
   readonly baseVersion: number;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId;
 }
 
 /** A proposed value sealed to one recipient device: HPKE encapsulated key + ciphertext. */

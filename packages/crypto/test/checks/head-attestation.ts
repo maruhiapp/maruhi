@@ -32,6 +32,8 @@ import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts
 import { importVectorSigner } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testProjectId, testUserId } from "../support/fixture.ts";
+
 interface VectorContext {
   readonly suite: string;
   readonly project_id: string;
@@ -67,8 +69,8 @@ interface AttestationNegative {
 function contextOf(v: VectorContext): HeadAttestationContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
-    attesterUserId: v.attester_user_id,
+    projectId: testProjectId(v.project_id),
+    attesterUserId: testUserId(v.attester_user_id),
     chainHeadHashHex: v.chain_head_hash_hex,
     chainHeadSeq: v.chain_head_seq,
   };
@@ -266,8 +268,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
       context: { ...baseContext, chainHeadSeq: Number.MAX_SAFE_INTEGER + 2 },
     },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: "" } },
-    { name: "empty attester", context: { ...baseContext, attesterUserId: "" } },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("")} },
+    { name: "empty attester", context: { ...baseContext, attesterUserId: testUserId("")} },
   ];
   for (const bad of badContexts) {
     const signed = await signHeadAttestation({ context: bad.context, signingKey: pair.privateKey });
@@ -323,7 +325,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   c.push("head-attestation: roundtrip wrong key rejected", !wrongKey.ok);
 
   const wrongContext = await verifyHeadAttestationSignature({
-    context: { ...context, projectId: `${context.projectId.slice(0, -1)}0` },
+    context: { ...context, projectId: testProjectId(`${context.projectId.slice(0, -1)}0`) },
     signatureHex: signed.value,
     attesterPublicKey: signer.publicKey,
   });

@@ -14,6 +14,8 @@ import {
 import variableVectors from "../../test-vectors/variable-encryption.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testVariableId } from "../support/fixture.ts";
+
 const baseVector = variableVectors.vectors[0];
 if (baseVector === undefined) {
   throw new Error("variable-encryption.json: basic vector missing");
@@ -22,10 +24,10 @@ const base = baseVector;
 
 function baseContext(): VariableContext {
   return {
-    projectId: base.project_id,
-    environmentId: base.environment_id,
+    projectId: testProjectId(base.project_id),
+    environmentId: testEnvironmentId(base.environment_id),
     epoch: base.epoch,
-    variableId: base.variable_id,
+    variableId: testVariableId(base.variable_id),
     version: base.version,
   };
 }
@@ -52,7 +54,7 @@ async function aadMismatchChecks(c: Checks): Promise<void> {
   const mismatches: readonly { name: string; context: VariableContext }[] = [
     {
       name: "aad-environment-mismatch",
-      context: { ...baseContext(), environmentId: "env-dev-0002" },
+      context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },
     },
     { name: "aad-epoch-mismatch", context: { ...baseContext(), epoch: 4 } },
   ];

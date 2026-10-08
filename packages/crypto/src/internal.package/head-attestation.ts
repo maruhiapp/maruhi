@@ -27,6 +27,7 @@
 // verification — vector removed-attester-in-tenure); the caller selects
 // first with history.memberStateAt(userId, history.headSeq).
 
+import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -54,9 +55,9 @@ const SHA256_HEX_LENGTH = 32 * 2;
  */
 export interface HeadAttestationContext {
   readonly suite: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The attester's own internal user id (binds attribution — same shape as §5.1). */
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   /** Entry hash of the chain head the attester verified (§6.1). */
   readonly chainHeadHashHex: string;
   /** Seq of that head. */

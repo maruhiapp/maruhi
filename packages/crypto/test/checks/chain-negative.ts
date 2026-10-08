@@ -16,7 +16,8 @@ import {
   type UnsignedChainEntry,
   verifyChain,
 } from "../../src/index.ts";
-import { testKeyFingerprintHex, testUserId } from "../support/fixture.ts";
+import type { EnvironmentId, UserId } from "../../src/index.ts";
+import { testEnvironmentId, testKeyFingerprintHex, testUserId } from "../support/fixture.ts";;
 import {
   membersMatchVector,
   pendingMatchesVector,
@@ -158,7 +159,7 @@ function deletionTamperVariants(): readonly TamperVariant[] {
     // The deleted environment is signed (a server cannot redirect a deletion)
     {
       name: "delete-env-tampered-environment-id",
-      entry: { ...eDelete, payload: { environmentId: "env-dev-0002" } },
+      entry: { ...eDelete, payload: { environmentId: testEnvironmentId("env-dev-0002") } },
       expect: "bad-signature",
       chain,
     },
@@ -187,7 +188,7 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       name: "add-device-scope-relabel-all",
       entry: {
         ...eCiBox,
-        payload: { ...eCiBox.payload, scopeKind: "all", scopeEnvironmentIds: [] },
+        payload: { ...eCiBox.payload, scopeKind: "all", scopeEnvironmentIds: []},
       },
       expect: "bad-signature",
       chain,
@@ -274,13 +275,13 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       name: "add-member-scope-relabel-all",
       entry: {
         ...eDevMember,
-        payload: { ...eDevMember.payload, scopeKind: "all", scopeEnvironmentIds: [] },
+        payload: { ...eDevMember.payload, scopeKind: "all", scopeEnvironmentIds: []},
       },
       expect: "bad-signature",
     },
     {
       name: "change-role-tampered-scope",
-      entry: { ...eWiden, payload: { ...eWiden.payload, scopeEnvironmentIds: ["env-dev-0002"] } },
+      entry: { ...eWiden, payload: { ...eWiden.payload, scopeEnvironmentIds: ["env-dev-0002"].map((id) => testEnvironmentId(id))} },
       expect: "bad-signature",
     },
     // The order of ops is also signed (generators SHOULD emit ascending;
@@ -754,7 +755,7 @@ function semanticCases(
         payload: {
           serverEncPubHex: memberKeys.enc_pub_hex,
           serverKeyFingerprintHex: memberKeys.key_fingerprint_hex,
-          scopeEnvironmentIds: ["env-prod-0001"],
+          scopeEnvironmentIds: ["env-prod-0001"].map((id) => testEnvironmentId(id)),
           leasePolicy: [],
         },
       },
@@ -833,7 +834,7 @@ async function appendRotation(
     },
     op: "rotate_epoch",
     payload: {
-      environmentId,
+      environmentId: testEnvironmentId(environmentId),
       newEpoch,
       reason: "scheduled",
       dekCommitmentHex: DUMMY_COMMITMENT_HEX,
@@ -1045,7 +1046,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   const create = await signAs("user-owner-0001", {
     ...base,
     op: "create_environment",
-    payload: { environmentId: "env-chained-0006", dekCommitmentHex: DUMMY_COMMITMENT_HEX },
+    payload: { environmentId: testEnvironmentId("env-chained-0006"), dekCommitmentHex: DUMMY_COMMITMENT_HEX },
   });
   if (create === undefined) {
     c.push("chain semantic: create then rotate chain", false, "signing failed");
@@ -1061,7 +1062,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
     },
     op: "rotate_epoch",
     payload: {
-      environmentId: "env-chained-0006",
+      environmentId: testEnvironmentId("env-chained-0006"),
       newEpoch: 2,
       reason: "scheduled",
       dekCommitmentHex: DUMMY_COMMITMENT_HEX,
@@ -1118,7 +1119,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "grant_server",
-        payload: { ...eGrant.payload, scopeEnvironmentIds: [42] },
+        payload: { ...eGrant.payload, scopeEnvironmentIds: [42 as unknown as EnvironmentId]},
       },
     },
     {
@@ -1127,7 +1128,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         op: "rotate_epoch",
         payload: {
-          environmentId: "env-prod-0001",
+          environmentId: testEnvironmentId("env-prod-0001"),
           newEpoch: 3,
           reason: {},
           dekCommitmentHex: DUMMY_COMMITMENT_HEX,
@@ -1140,7 +1141,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         op: "rotate_epoch",
         payload: {
-          environmentId: "env-prod-0001",
+          environmentId: testEnvironmentId("env-prod-0001"),
           newEpoch: 3,
           reason: "scheduled",
           dekCommitmentHex: 42,
@@ -1157,7 +1158,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     },
     {
       name: "actor missing",
-      entry: { ...base, actor: undefined, op: "remove_member", payload: { targetUserId: "x" } },
+      entry: { ...base, actor: undefined, op: "remove_member", payload: { targetUserId: testUserId("x")} },
     },
     {
       name: "payload missing",
@@ -1168,7 +1169,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       entry: {
         ...base,
         op: "add_member",
-        payload: { ...entryAt(2).payload, targetUserId: 123 },
+        payload: { ...entryAt(2).payload, targetUserId: 123 as unknown as UserId},
       },
     },
     {
@@ -1177,7 +1178,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         signatureHex: undefined,
         op: "remove_member",
-        payload: { targetUserId: "x" },
+        payload: { targetUserId: testUserId("x")},
       },
     },
     {
@@ -1186,7 +1187,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         signatureHex: null,
         op: "remove_member",
-        payload: { targetUserId: "x" },
+        payload: { targetUserId: testUserId("x")},
       },
     },
     {
@@ -1195,7 +1196,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         signatureHex: "ab".repeat(500_000),
         op: "remove_member",
-        payload: { targetUserId: "x" },
+        payload: { targetUserId: testUserId("x")},
       },
     },
     {
@@ -1204,7 +1205,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         ...base,
         actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: "ab".repeat(500_000) },
         op: "remove_member",
-        payload: { targetUserId: "x" },
+        payload: { targetUserId: testUserId("x")},
       },
     },
     // checkpoint payload (§6.2): runtime-type divergence also lands on
@@ -1233,7 +1234,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: {
           environments: [
             {
-              environmentId: "env-prod-0001",
+              environmentId: testEnvironmentId("env-prod-0001"),
               epoch: "2",
               manifestVersion: 2,
               manifestSigHashHex: "ab".repeat(32),
@@ -1260,7 +1261,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: {
           environments: [
             {
-              environmentId: "env-prod-0001",
+              environmentId: testEnvironmentId("env-prod-0001"),
               epoch: 2,
               manifestVersion: 2,
               manifestSigHashHex: "ab".repeat(32),
@@ -1456,7 +1457,7 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
     op: "grant_server",
     payload: {
       ...eGrant.payload,
-      scopeEnvironmentIds: [...eGrant.payload.scopeEnvironmentIds, "env-stage-0003"],
+      scopeEnvironmentIds: [...eGrant.payload.scopeEnvironmentIds, "env-stage-0003"].map((id) => testEnvironmentId(id)),
     },
   });
   if (widened === undefined) {
@@ -1500,7 +1501,7 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     actor: adminActor,
     op: "rotate_epoch",
     payload: {
-      environmentId: "env-prod-0001",
+      environmentId: testEnvironmentId("env-prod-0001"),
       newEpoch: 3,
       reason: "y".repeat(1024),
       dekCommitmentHex: DUMMY_COMMITMENT_HEX,
@@ -1517,7 +1518,7 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     actor: adminActor,
     op: "rotate_epoch",
     payload: {
-      environmentId: "env-prod-0001",
+      environmentId: testEnvironmentId("env-prod-0001"),
       newEpoch: 3,
       reason: "㊙".repeat(342),
       dekCommitmentHex: DUMMY_COMMITMENT_HEX,

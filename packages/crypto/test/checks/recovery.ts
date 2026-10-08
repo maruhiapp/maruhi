@@ -11,6 +11,7 @@ import {
   wrapMasterSecret,
 } from "../../src/index.ts";
 import recoveryVectors from "../../test-vectors/recovery-wrap.json" with { type: "json" };
+import { testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = recoveryVectors.vectors[0];
@@ -29,7 +30,7 @@ async function vectorChecks(c: Checks): Promise<void> {
   // unwrap of the fixed vector (implicitly pins KEK derivation with salt=empty)
   const blob = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
-    userId: base.user_id,
+    userId: testUserId(base.user_id),
     wrapped: { nonce: fromHex(base.nonce_hex), ciphertext: fromHex(base.ciphertext_hex) },
   });
   c.push(
@@ -42,7 +43,7 @@ async function negativeChecks(c: Checks): Promise<void> {
   // aad-user-mismatch: transplant to another user's key blob
   const otherUser = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
-    userId: "user-member-0002",
+    userId: testUserId("user-member-0002"),
     wrapped: { nonce: fromHex(base.nonce_hex), ciphertext: fromHex(base.ciphertext_hex) },
   });
   c.push(
@@ -53,7 +54,7 @@ async function negativeChecks(c: Checks): Promise<void> {
   const flip = recoveryVectors.negative.find((n) => n.name === "ciphertext-bit-flip");
   const tampered = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
-    userId: base.user_id,
+    userId: testUserId(base.user_id),
     wrapped: {
       nonce: fromHex(base.nonce_hex),
       ciphertext: fromHex(flip?.ciphertext_hex ?? base.ciphertext_hex),
@@ -98,7 +99,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   const blob = fromHex(base.master_secret_blob_hex);
   const wrapped = await wrapMasterSecret({
     recoverySecret,
-    userId: "user-roundtrip-0001",
+    userId: testUserId("user-roundtrip-0001"),
     masterSecretBlob: blob,
   });
   if (!wrapped.ok) {
@@ -107,7 +108,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   }
   const unwrapped = await unwrapMasterSecret({
     recoverySecret,
-    userId: "user-roundtrip-0001",
+    userId: testUserId("user-roundtrip-0001"),
     wrapped: wrapped.value,
   });
   c.push(
@@ -117,7 +118,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
 
   const wrongSecret = await unwrapMasterSecret({
     recoverySecret: generateRecoverySecret(),
-    userId: "user-roundtrip-0001",
+    userId: testUserId("user-roundtrip-0001"),
     wrapped: wrapped.value,
   });
   c.push("recovery: wrong secret rejected", !wrongSecret.ok);

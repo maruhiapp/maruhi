@@ -3,16 +3,17 @@
 // The nonce is a 96-bit random value co-located with the ciphertext; reuse is never
 // allowed (test vectors: test-vectors/variable-encryption.json).
 
+import type { EnvironmentId, ProjectId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { SUITE_ID } from "./suite.ts";
 
 /** Context that cryptographically binds a variable ciphertext (CRYPTO_SPEC §4). */
 export interface VariableContext {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
 }
 

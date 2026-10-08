@@ -98,6 +98,58 @@ declare const keyFingerprintBrand: unique symbol;
  */
 export type KeyFingerprintHex = string & { readonly [keyFingerprintBrand]: "KeyFingerprintHex" };
 
+declare const projectIdBrand: unique symbol;
+
+/**
+ * A project id: the lowercase-hex SHA-256 of the project's genesis entry
+ * (CRYPTO_SPEC §6.4 — the id is bound to the chain cryptographically). A plain
+ * TypeScript nominal brand, like {@link UserId}: it has no runtime form and
+ * adds no check beyond the field's own (the wire schemas bound the hex
+ * shape). What it records is provenance: the string came out of a
+ * project-id slot, so a chain head hash, an org id, a user id or any other
+ * string is a compile error wherever a `ProjectId` is required — including
+ * every signing context that AAD-binds it (value / meta / manifest /
+ * DEK-wrap / lease / attestation / invite contexts).
+ *
+ * Nothing in this package's source mints one. A `ProjectId` is minted only at
+ * a trust boundary of an upper layer — Schema decoding at the wire
+ * (`ProjectIdSchema` in `@maruhi/core`), a branded DB column, and the genesis
+ * hash at project creation.
+ */
+export type ProjectId = string & { readonly [projectIdBrand]: "ProjectId" };
+
+declare const environmentIdBrand: unique symbol;
+
+/**
+ * An environment id (AUTH_SPEC §12-1): a stable client-issued identifier of
+ * one environment inside a project, bound into AADs / HPKE info and the
+ * chain's scope lists. A plain TypeScript nominal brand (this package is
+ * Effect-free): it has no runtime form and adds no check beyond the field's
+ * own (the form is an API acceptance policy, not a chain-validity rule —
+ * CRYPTO_SPEC §6.1). What it records is provenance: the string came out of an
+ * environment-id slot, so a variable id, a project id or any other same-shape
+ * string is a compile error wherever an `EnvironmentId` is required.
+ *
+ * Nothing in this package's source mints one. An `EnvironmentId` is minted
+ * only at a trust boundary of an upper layer — Schema decoding at the wire
+ * (`EnvironmentIdSchema` in `@maruhi/core`), a branded DB column, or an
+ * environment-id argument validated at a command boundary.
+ */
+export type EnvironmentId = string & { readonly [environmentIdBrand]: "EnvironmentId" };
+
+declare const variableIdBrand: unique symbol;
+
+/**
+ * A variable id (AUTH_SPEC §12-1): a stable client-issued identifier of one
+ * variable inside an environment, bound into AADs and every signature over a
+ * value. A plain TypeScript nominal brand — same provenance rule as
+ * {@link EnvironmentId}: a string is a compile error wherever a `VariableId`
+ * is required unless it was minted at a trust boundary (wire decode, a
+ * branded column, or a validated argument), which keeps an environment id or
+ * any other same-shape string out of variable-id positions.
+ */
+export type VariableId = string & { readonly [variableIdBrand]: "VariableId" };
+
 /** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
   readonly userId: UserId;
@@ -137,7 +189,7 @@ export interface ChangeRolePayload extends ScopePayloadFields {
 }
 
 export interface CreateEnvironmentPayload {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /**
    * Epoch-1 DEK commitment (CRYPTO_SPEC §5.2): lowercase hex, 64 chars.
    * Chain verification checks the format only — matching the commitment
@@ -154,11 +206,11 @@ export interface CreateEnvironmentPayload {
  * for whether an environment is deleted — no off-chain statement records it.
  */
 export interface DeleteEnvironmentPayload {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
 }
 
 export interface RotateEpochPayload {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /**
    * Strictly a number in this typed API. Wire formats (chain JSON, test
    * vectors) may carry the epoch as a decimal string — the §2.1 encoding
@@ -205,7 +257,7 @@ export interface GrantServerPayload {
    * narrowing must go through revoke_server, which carries the §7 rotation
    * obligation.
    */
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   /**
    * Workload lease policy (CRYPTO_SPEC §6.2): the on-chain
    * authorization source for the §9.1 lease path. Canonicalized as a
@@ -233,7 +285,7 @@ export interface RevokeServerPayload {
  * server's §6.4 duty and distribution-time matching the client's §6.3 duty.
  */
 export interface CheckpointEnvironmentEntry {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly manifestVersion: number;
   /** SHA-256 (lowercase hex) of the manifest's signed bytes (§4.3). */
@@ -449,7 +501,7 @@ export interface ServerGrant {
    * rather than duplicating them in the server.
    */
   readonly grantSeq: number;
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
   /** Lease policy of the latest accepted grant for this key (CRYPTO_SPEC §6.2). */
   readonly leasePolicy: readonly LeasePolicyIssuer[];
 }

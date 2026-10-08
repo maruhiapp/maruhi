@@ -41,11 +41,19 @@
                   "UserIdSchema",
                   "ProviderUserIdSchema",
                   "KeyFingerprintHexSchema",
+                  "OrgIdSchema",
+                  "ProjectIdSchema",
+                  "EnvironmentIdSchema",
+                  "VariableIdSchema",
                   "decodeUserId",
                   "decodeProviderUserId",
-                  "decodeKeyFingerprintHex"
+                  "decodeKeyFingerprintHex",
+                  "decodeOrgId",
+                  "decodeProjectId",
+                  "decodeEnvironmentId",
+                  "decodeVariableId"
                 ],
-                "message": "UserId / ProviderUserId / KeyFingerprintHex are minted only at a trust boundary (packages/core/src/identity.ts): a wire schema in packages/api-schema, a branded Drizzle column, a fingerprint computed from keys (userKeyFingerprintHex / serverKeyFingerprintHex), or one of the hand-written mint sites listed in .oxlintrc.json. Read the value from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
+                "message": "UserId / ProviderUserId / KeyFingerprintHex / OrgId / ProjectId / EnvironmentId / VariableId are minted only at a trust boundary (packages/core/src/identity.ts and packages/core/src/project.ts / auth.ts): a wire schema in packages/api-schema, a branded Drizzle column, a fingerprint computed from keys (userKeyFingerprintHex / serverKeyFingerprintHex), a generated id, or one of the hand-written mint sites listed in .oxlintrc.json. Read the value from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
               },
               {
                 "name": "@maruhi/crypto/test-support",
@@ -75,7 +83,10 @@
         "apps/server/src/ids.ts",
         "apps/server/src/auth.package/github.ts",
         "apps/server/src/restore-worker.ts",
-        "apps/server/src/data/data-plane.ts"
+        "apps/server/src/data/data-plane.ts",
+        "apps/server/src/db.package/identities.ts",
+        "apps/server/src/data/data-store-*.ts",
+        "apps/cli/src/context.ts"
       ],
       "rules": {
         "no-restricted-imports": [

@@ -97,6 +97,9 @@ export {
   type Principal,
   RequestAuth,
   type RequestAuthShape,
+  decodeOrgId,
+  type OrgId,
+  OrgIdSchema,
   scopePermissionFor,
   SessionService,
   type SessionServiceShape,
@@ -109,6 +112,9 @@ export {
   type TokenServiceShape,
 } from "./auth.ts";
 export {
+  decodeEnvironmentId,
+  decodeProjectId,
+  decodeVariableId,
   type EnvironmentId,
   EnvironmentIdSchema,
   isEnvironmentId,

@@ -37,8 +37,10 @@ import masterWrapVectors from "../../test-vectors/master-key-wrap.json" with { t
 import recoveryVectors from "../../test-vectors/recovery-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testUserId } from "../support/fixture.ts";
+
 const doc = masterWrapVectors;
-const userId = doc.user_id;
+const userId = testUserId(doc.user_id);
 const blobHex = doc.master_secret_blob_hex;
 
 interface AeadVector {
@@ -120,14 +122,14 @@ const shareContext = (g: GuardianGroupVector, s: GuardianShareVector): GuardianW
   groupId: g.group_id,
   mode: g.mode,
   shareIndex: s.share_index,
-  guardianUserId: s.guardian_user_id,
+  guardianUserId: testUserId(s.guardian_user_id),
 });
 const handoffContext = (h: HandoffVector): HandoffWrapContext => ({
   userId,
   requestId: h.request_id_hex,
   source: h.source,
   shareIndex: h.share_index,
-  approverUserId: h.approver_user_id,
+  approverUserId: testUserId(h.approver_user_id),
 });
 
 async function importPair(pk: string, sk: string): Promise<EncryptionKeyPair> {
@@ -328,7 +330,7 @@ async function aadNegativeChecks(c: Checks): Promise<void> {
   });
   await aadNegativeCheck(c, "aad-user-mismatch", passkey, {
     ...passkeyContext,
-    userId: "user-member-0002",
+    userId: testUserId("user-member-0002"),
   });
   await aadNegativeCheck(c, "aad-mode-all-as-any", all3, { ...groupContext(all3), mode: "any" });
   await aadNegativeCheck(c, "aad-mode-any-as-all", any2, { ...groupContext(any2), mode: "all" });
@@ -523,17 +525,17 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     sealGuardianShare({
       guardianPublicKey: pair.publicKey,
       share: kek,
-      context: { userId, groupId: "g", mode: "any", shareIndex: 0, guardianUserId: "u" },
+      context: { userId, groupId: "g", mode: "any", shareIndex: 0, guardianUserId: testUserId("u")},
     }),
     sealHandoffValue({
       ephemeralPublicKey: pair.publicKey,
       value: kek,
-      context: { userId, requestId: "r", source: "", shareIndex: 0, approverUserId: "u" },
+      context: { userId, requestId: "r", source: "", shareIndex: 0, approverUserId: testUserId("u")},
     }),
     sealHandoffValue({
       ephemeralPublicKey: pair.publicKey,
       value: kek,
-      context: { userId, requestId: "r", source: "g", shareIndex: -1, approverUserId: "u" },
+      context: { userId, requestId: "r", source: "g", shareIndex: -1, approverUserId: testUserId("u")},
     }),
   ]);
   c.push(
@@ -549,7 +551,7 @@ async function passkeyRoundtrip(c: Checks): Promise<void> {
   const blob = fromHex(blobHex);
   const kek = await derivePasskeyKek(crypto.getRandomValues(new Uint8Array(32)));
   const context: MasterWrapContext = {
-    userId: "user-roundtrip",
+    userId: testUserId("user-roundtrip"),
     kind: "passkey-prf",
     wrapRef: "w1",
   };
@@ -602,11 +604,11 @@ async function recoverShares(
   const recovered: Uint8Array[] = [];
   for (const [i, share] of shares.entries()) {
     const opened = await sealAndOpenShare(share, {
-      userId: "user-roundtrip",
+      userId: testUserId("user-roundtrip"),
       groupId: `g-${mode}`,
       mode,
       shareIndex: i + 1,
-      guardianUserId: `guardian-${i + 1}`,
+      guardianUserId: testUserId(`guardian-${i + 1}`),
     });
     if (opened !== null) {
       recovered.push(opened);
@@ -619,7 +621,7 @@ async function guardianRoundtrip(c: Checks, mode: GuardianMode): Promise<void> {
   const blob = fromHex(blobHex);
   const groupKek = generateMasterWrapKek();
   const context: MasterWrapContext = {
-    userId: "user-roundtrip",
+    userId: testUserId("user-roundtrip"),
     kind: "guardian",
     wrapRef: `g-${mode}`,
     mode,
@@ -671,7 +673,7 @@ async function handoffRoundtrip(c: Checks): Promise<void> {
   const pub = await exportEncryptionPublicKey(ephemeral.publicKey);
   const requestId = await codeRoundtrip(pub);
   const context: HandoffWrapContext = {
-    userId: "user-roundtrip",
+    userId: testUserId("user-roundtrip"),
     requestId: requestId ?? "",
     source: "01JMKGRP0000000000ROUNDTRIP",
     shareIndex: 0,

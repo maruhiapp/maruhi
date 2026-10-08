@@ -20,7 +20,7 @@
 //   401 / CSRF 403. The list GET writes no audit = holds no state, so it
 //   is outside §11-4's added-CSRF scope)
 
-import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
+import { type EnvironmentId, EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -71,7 +71,7 @@ function withInviteScopeShape<
   S extends Schema.Struct<typeof inviteScopeFields & Schema.Struct.Fields>,
 >(schema: S): S {
   return schema.check(
-    Schema.makeFilter((o: { scopeKind: string; scopeEnvironmentIds: readonly string[] }) => {
+    Schema.makeFilter((o: { scopeKind: string; scopeEnvironmentIds: readonly EnvironmentId[] }) => {
       if (o.scopeKind === "all" && o.scopeEnvironmentIds.length > 0) {
         return { path: ["scopeEnvironmentIds"], issue: "must be empty when scopeKind is all" };
       }

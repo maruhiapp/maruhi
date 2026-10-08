@@ -10,6 +10,7 @@
 // injected by the caller via parameters; this module holds only the shared
 // check logic.
 
+import type { EnvironmentId } from "./chain-types.ts";
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { ROLE_RANK } from "./chain-device.ts";
 
@@ -171,7 +172,7 @@ export interface HeadAuthorizationReasons<R> {
  * that carry no environment (head attestations).
  */
 export interface HeadScopeCheck<R> {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly outOfScopeAtHead: R;
 }
 

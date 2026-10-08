@@ -31,6 +31,7 @@
 // aad is empty like §5 (the info carries the context binding).
 // Test vectors: test-vectors/lease-wrap.json
 
+import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -63,8 +64,8 @@ export interface LeaseClaims {
  * `claimsDigestHex` is the lowercase-hex digest from `computeLeaseClaimsDigest`.
  */
 export interface LeaseWrapContext {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly claimsDigestHex: string;
 }

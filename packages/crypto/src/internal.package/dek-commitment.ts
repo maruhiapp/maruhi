@@ -18,6 +18,7 @@
 // (decryption or encryption) until it has been reconciled against this
 // commitment (§5.2 / §6.3).
 
+import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -33,8 +34,8 @@ const COMMITMENT_HEX_LENGTH = 32 * 2;
  */
 export interface DekCommitmentContext {
   readonly suite: string;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
 }
 

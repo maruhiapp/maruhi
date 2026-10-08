@@ -6,6 +6,7 @@
 // Purpose separation is carried by info. Introducing a passphrase-derived key requires a spec revision (§8).
 // The wrapped master-key blob is treated as an opaque byte string (the serialization format is decided at CLI implementation time).
 
+import type { UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { SUITE_ID } from "./suite.ts";
@@ -59,7 +60,7 @@ function wrapAad(userId: string): Uint8Array {
  */
 export async function wrapMasterSecret(input: {
   readonly recoverySecret: Uint8Array;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly masterSecretBlob: Uint8Array;
 }): Promise<CryptoResult<WrappedMasterSecret>> {
   if (input.recoverySecret.length !== RECOVERY_SECRET_BYTES) {
@@ -92,7 +93,7 @@ export async function wrapMasterSecret(input: {
  */
 export async function unwrapMasterSecret(input: {
   readonly recoverySecret: Uint8Array;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly wrapped: WrappedMasterSecret;
 }): Promise<CryptoResult<Uint8Array>> {
   if (input.recoverySecret.length !== RECOVERY_SECRET_BYTES) {

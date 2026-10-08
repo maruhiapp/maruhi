@@ -20,7 +20,7 @@
 //   derive from signed entries, so they are verifiable)
 // - No append API is exposed (the §7 principle — only server-side processing generates events)
 
-import { ProjectIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, OrgIdSchema, ProjectIdSchema, UserIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -54,7 +54,7 @@ const RowIdHex = hexString(ROW_ID_BYTES);
 /** The recorded actor of an audit event (AUDIT_SPEC §2). */
 export const AuditActorSchema = Schema.Struct({
   type: Schema.Literals(["user", "server", "system"]),
-  userId: Schema.optionalKey(Schema.String),
+  userId: Schema.optionalKey(UserIdSchema),
   keyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   apiTokenId: Schema.optionalKey(Schema.String),
 });
@@ -90,15 +90,15 @@ export const AuditEventSchema = Schema.Struct({
   clientTs: Schema.optionalKey(Schema.Number),
   event: Schema.String,
   actor: AuditActorSchema,
-  targetUserId: Schema.optionalKey(Schema.String),
+  targetUserId: Schema.optionalKey(UserIdSchema),
   targetKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
-  environmentId: Schema.optionalKey(Schema.String),
-  variableId: Schema.optionalKey(Schema.String),
+  environmentId: Schema.optionalKey(EnvironmentIdSchema),
+  variableId: Schema.optionalKey(VariableIdSchema),
   epoch: Schema.optionalKey(PositiveInt),
   version: Schema.optionalKey(PositiveInt),
   chainSeq: Schema.optionalKey(PositiveInt),
-  orgId: Schema.optionalKey(Schema.String),
-  projectId: Schema.optionalKey(Schema.String),
+  orgId: Schema.optionalKey(OrgIdSchema),
+  projectId: Schema.optionalKey(ProjectIdSchema),
   /** Supplementary JSON as recorded (a server assertion — see the verification discipline in the header comment). */
   payload: Schema.optionalKey(Schema.JsonObject),
 });

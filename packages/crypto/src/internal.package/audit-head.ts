@@ -21,6 +21,7 @@
 //   cross-check (AUDIT_SPEC §6 — the follow-up CLI tool). Both share this
 //   single implementation. Test vectors: test-vectors/audit-head.json
 
+import type { EnvironmentId, VariableId } from "./chain-types.ts";
 import { concatBytes, encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
@@ -48,8 +49,8 @@ export interface AuditHeadRow {
   readonly actorApiTokenId: string | null;
   readonly targetUserId: string | null;
   readonly targetKeyFingerprintHex: string | null;
-  readonly environmentId: string | null;
-  readonly variableId: string | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly variableId: VariableId | null;
   readonly epoch: number | null;
   readonly version: number | null;
   readonly chainSeq: number | null;

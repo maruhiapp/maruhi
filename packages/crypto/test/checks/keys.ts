@@ -23,6 +23,8 @@ import chainVectors from "../../test-vectors/chain-entries.json" with { type: "j
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";;
+
 interface VectorUserKeys {
   readonly enc_sk_seed_hex: string;
   readonly sig_sk_seed_hex: string;
@@ -160,10 +162,10 @@ async function encExportChecks(c: Checks): Promise<void> {
     if (reimported.ok) {
       const dek = generateDek();
       const context = {
-        projectId: "p".repeat(64),
-        environmentId: "env-export-check",
+        projectId: testProjectId("p".repeat(64)),
+        environmentId: testEnvironmentId("env-export-check"),
         epoch: 1,
-        recipientUserId: "user-export-check",
+        recipientUserId: testUserId("user-export-check"),
       };
       const wrapped = await wrapDek({ recipientPublicKey: enc.publicKey, dek, context });
       if (wrapped.ok) {

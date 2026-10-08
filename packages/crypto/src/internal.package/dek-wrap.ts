@@ -4,6 +4,7 @@
 // Open is KeyPair-only (public key included): passing a bare private key would force
 // extractable=true, so that path does not exist (CRYPTO_SPEC §2, the spike-c findings).
 
+import type { EnvironmentId, ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { hpkeSuite } from "./hpke.ts";
@@ -12,10 +13,10 @@ import { SUITE_ID } from "./suite.ts";
 
 /** Context that cryptographically binds a wrapped DEK to its recipient (CRYPTO_SPEC §5). */
 export interface DekWrapContext {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId;
 }
 
 /** A DEK wrapped for one recipient: HPKE encapsulated key + ciphertext. */

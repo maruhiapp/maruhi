@@ -6,18 +6,19 @@
 // project's own existence concealment §11-2 takes precedence — §12-3).
 
 import { Schema } from "effect";
+import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 
 /** 404: no active environment under this id (returned to chain members only). */
 export class EnvironmentNotFoundError extends Schema.TaggedError<EnvironmentNotFoundError>()(
   "EnvironmentNotFound",
-  { environmentId: Schema.String },
+  { environmentId: EnvironmentIdSchema },
   { httpApiStatus: 404 },
 ) {}
 
 /** 404: no active variable under this id (returned to chain members only). */
 export class VariableNotFoundError extends Schema.TaggedError<VariableNotFoundError>()(
   "VariableNotFound",
-  { variableId: Schema.String },
+  { variableId: VariableIdSchema },
   { httpApiStatus: 404 },
 ) {}
 
@@ -44,14 +45,14 @@ export const EnvironmentConflictReasonSchema = Schema.Literals(["duplicate-name"
 /** 409: the environment display name conflicts (AUTH_SPEC §12-1 / §12-4). */
 export class EnvironmentConflictError extends Schema.TaggedError<EnvironmentConflictError>()(
   "EnvironmentConflict",
-  { environmentId: Schema.String, reason: EnvironmentConflictReasonSchema },
+  { environmentId: EnvironmentIdSchema, reason: EnvironmentConflictReasonSchema },
   { httpApiStatus: 409 },
 ) {}
 
 /** 409: the variable id or display name conflicts (AUTH_SPEC §12-1 / §12-5). */
 export class VariableConflictError extends Schema.TaggedError<VariableConflictError>()(
   "VariableConflict",
-  { variableId: Schema.String, reason: ResourceConflictReasonSchema },
+  { variableId: VariableIdSchema, reason: ResourceConflictReasonSchema },
   { httpApiStatus: 409 },
 ) {}
 
@@ -182,7 +183,7 @@ export class SchemaPolicyRejectedError extends Schema.TaggedError<SchemaPolicyRe
  */
 export class ActivationRequiredError extends Schema.TaggedError<ActivationRequiredError>()(
   "ActivationRequired",
-  { variableId: Schema.String },
+  { variableId: VariableIdSchema },
   { httpApiStatus: 422 },
 ) {}
 

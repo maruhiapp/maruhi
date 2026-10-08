@@ -20,6 +20,8 @@ import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json
 import { vectorEntries, vectorEnvironmentDeks } from "./chain-vector.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";;
+
 const baseVector = dekCommitmentVectors.vectors[0];
 if (baseVector === undefined) {
   throw new Error("dek-commitment.json: basic vector missing");
@@ -34,8 +36,8 @@ function contextOf(vector: {
 }): DekCommitmentContext {
   return {
     suite: vector.suite,
-    projectId: vector.project_id,
-    environmentId: vector.environment_id,
+    projectId: testProjectId(vector.project_id),
+    environmentId: testEnvironmentId(vector.environment_id),
     epoch: vector.epoch,
   };
 }
@@ -105,12 +107,12 @@ async function chainCrossChecks(c: Checks): Promise<void> {
     c.push("dek-commitment: chain cross-check setup", false, "genesis missing");
     return;
   }
-  const projectId = genesis.entry_hash_hex; // project ID = genesis hash (§6.4)
+  const projectId = testProjectId(genesis.entry_hash_hex); // project ID = genesis hash (§6.4)
   for (const entry of vectorEntries) {
     if (entry.op !== "create_environment" && entry.op !== "rotate_epoch") {
       continue;
     }
-    const environmentId = String(entry.payload["environment_id"]);
+    const environmentId = testEnvironmentId(String(entry.payload["environment_id"]));
     const epoch = entry.op === "create_environment" ? 1 : Number(entry.payload["new_epoch"]);
     const info = vectorEnvironmentDeks[environmentId]?.[String(epoch)];
     if (info === undefined) {
@@ -138,10 +140,10 @@ async function rewrapInvarianceChecks(c: Checks): Promise<void> {
   const context = contextOf(base);
   const recipient = await generateEncryptionKeyPair();
   const wrapContext = {
-    projectId: base.project_id,
-    environmentId: base.environment_id,
+    projectId: testProjectId(base.project_id),
+    environmentId: testEnvironmentId(base.environment_id),
     epoch: base.epoch,
-    recipientUserId: "user-backfilled-0006",
+    recipientUserId: testUserId("user-backfilled-0006"),
   };
   const wrapped = await wrapDek({
     recipientPublicKey: recipient.publicKey,

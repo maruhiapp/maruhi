@@ -31,6 +31,7 @@
 // introduced (§8.5).
 // Test vectors: test-vectors/master-key-wrap.json (recovery-wrap.json is unchanged).
 
+import type { UserId } from "./chain-types.ts";
 import { encodeHex } from "./bytes.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -79,7 +80,7 @@ export type GuardianMode = "any" | "all";
  * empty string).
  */
 export interface MasterWrapContext {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly kind: MasterWrapKind;
   readonly wrapRef: string;
   readonly mode?: GuardianMode | undefined;
@@ -87,7 +88,7 @@ export interface MasterWrapContext {
 
 /** Context a guardian share is bound to (CRYPTO_SPEC §8.3). */
 export interface GuardianWrapContext {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
@@ -100,7 +101,7 @@ export interface GuardianWrapContext {
  * `"device"` was removed by DK — approvers are guardians only).
  */
 export interface HandoffWrapContext {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly requestId: string;
   readonly source: string;
   readonly shareIndex: number;

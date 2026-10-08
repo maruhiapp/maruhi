@@ -22,6 +22,8 @@ import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json
 import leaseWrapVectors from "../../test-vectors/lease-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
+
 function vectorNamed(name: string) {
   const vector = leaseWrapVectors.vectors.find((v) => v.name === name);
   if (vector === undefined) {
@@ -47,8 +49,8 @@ function contextOf(vector: {
   readonly epoch: number;
 }): LeaseWrapContext {
   return {
-    projectId: vector.project_id,
-    environmentId: vector.environment_id,
+    projectId: testProjectId(vector.project_id),
+    environmentId: testEnvironmentId(vector.environment_id),
     epoch: vector.epoch,
     claimsDigestHex: leaseWrapVectors.claims.claims_digest_hex,
   };
@@ -168,10 +170,10 @@ async function infoNegativeCheck(
 
 async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
   const contexts: readonly { readonly name: string; readonly context: LeaseWrapContext }[] = [
-    { name: "info-project-mismatch", context: { ...baseContext(), projectId: "proj-0002" } },
+    { name: "info-project-mismatch", context: { ...baseContext(), projectId: testProjectId("proj-0002") } },
     {
       name: "info-environment-mismatch",
-      context: { ...baseContext(), environmentId: "env-dev-0002" },
+      context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },
     },
     { name: "info-epoch-mismatch", context: { ...baseContext(), epoch: base.epoch + 1 } },
     {
@@ -199,12 +201,12 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
     name: "info-dek-wrap-domain",
     infoHex: toHex(
       buildDekWrapInfo({
-        projectId: base.project_id,
-        environmentId: base.environment_id,
+        projectId: testProjectId(base.project_id),
+        environmentId: testEnvironmentId(base.environment_id),
         epoch: base.epoch,
         // The "only the domain differs" shape with claims_digest placed in
         // dek-wrap's recipient slot
-        recipientUserId: leaseWrapVectors.claims.claims_digest_hex,
+        recipientUserId: testUserId(leaseWrapVectors.claims.claims_digest_hex),
       }),
     ),
     pair,

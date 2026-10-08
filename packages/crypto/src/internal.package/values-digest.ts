@@ -19,6 +19,7 @@
 // Test vectors: the values_digests section of test-vectors/chain-entries.json
 // (the LP normalized form) + test-vectors/checkpoint-digest.json (target selection)
 
+import type { VariableId } from "./chain-types.ts";
 import type { CryptoResult } from "./errors.ts";
 import type { MetaStatementStatus } from "./meta-sign.ts";
 import { computeVariableKeyedDigest } from "./sorted-digest.ts";
@@ -32,7 +33,7 @@ const SHA256_HEX_LENGTH = 32 * 2;
  * version's `value_signed_bytes` (§4.1).
  */
 export interface EnvValuesDigestEntry {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly valueSigHashHex: string;
 }
@@ -60,7 +61,7 @@ function valuesDigestEntryInvalidField(entry: EnvValuesDigestEntry): string | nu
 export type EnvValuesDigestSource =
   | (EnvValuesDigestEntry & { readonly status: "active" })
   | {
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly status: Exclude<MetaStatementStatus, "active">;
     };
 

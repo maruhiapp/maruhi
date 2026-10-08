@@ -58,9 +58,12 @@ export {
   type RotateEpochPayload,
   type ServerGrant,
   type SetApprovalPolicyPayload,
+  type EnvironmentId,
   type KeyFingerprintHex,
+  type ProjectId,
   type UnsignedChainEntry,
   type UserId,
+  type VariableId,
   type WithdrawPayload,
 } from "./chain-types.ts";
 export {

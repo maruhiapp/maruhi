@@ -20,6 +20,8 @@ import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json
 import sealedValueVectors from "../../test-vectors/sealed-value.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
+import { testEnvironmentId, testProjectId, testUserId, testVariableId } from "../support/fixture.ts";
+
 function vectorNamed(name: string) {
   const vector = sealedValueVectors.vectors.find((v) => v.name === name);
   if (vector === undefined) {
@@ -33,12 +35,12 @@ const companion = vectorNamed("companion");
 
 function contextOf(vector: typeof base): SealedValueContext {
   return {
-    projectId: vector.project_id,
-    environmentId: vector.environment_id,
+    projectId: testProjectId(vector.project_id),
+    environmentId: testEnvironmentId(vector.environment_id),
     proposalId: vector.proposal_id,
-    variableId: vector.variable_id,
+    variableId: testVariableId(vector.variable_id),
     baseVersion: vector.base_version,
-    recipientUserId: vector.recipient_user_id,
+    recipientUserId: testUserId(vector.recipient_user_id),
   };
 }
 
@@ -122,10 +124,10 @@ async function negativeCheck(
 
 async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
   const contexts: readonly { readonly name: string; readonly context: SealedValueContext }[] = [
-    { name: "info-project-mismatch", context: { ...baseContext(), projectId: "proj-0002" } },
+    { name: "info-project-mismatch", context: { ...baseContext(), projectId: testProjectId("proj-0002") } },
     {
       name: "info-environment-mismatch",
-      context: { ...baseContext(), environmentId: "env-dev-0002" },
+      context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },
     },
     {
       name: "info-proposal-mismatch",
@@ -133,7 +135,7 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
     },
     {
       name: "info-variable-mismatch",
-      context: { ...baseContext(), variableId: companion.variable_id },
+      context: { ...baseContext(), variableId: testVariableId(companion.variable_id)},
     },
     {
       name: "info-base-version-mismatch",
@@ -141,7 +143,7 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
     },
     {
       name: "info-recipient-mismatch",
-      context: { ...baseContext(), recipientUserId: "user-recipient-0003" },
+      context: { ...baseContext(), recipientUserId: testUserId("user-recipient-0003") },
     },
   ];
   for (const m of contexts) {
@@ -209,7 +211,7 @@ async function invalidContextChecks(c: Checks): Promise<void> {
   const emptyVariable = await sealProposedValue({
     recipientPublicKey: recipient.publicKey,
     value,
-    context: { ...baseContext(), variableId: "" },
+    context: { ...baseContext(), variableId: testVariableId("")},
   });
   const zeroVersion = await sealProposedValue({
     recipientPublicKey: recipient.publicKey,
