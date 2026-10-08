@@ -27,22 +27,22 @@
   "devDependencies": {
     "@astryxdesign/build": "0.6.2",
     "@astryxdesign/cli": "0.6.2",
-    "@babel/core": "8.0.6",
+    "@babel/core": "8.0.7",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/crypto": "workspace:*",
     "@stylexjs/babel-plugin": "0.19.1",
     "@stylexjs/eslint-plugin": "0.19.1",
     "@stylexjs/unplugin": "0.19.1",
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.1",
-    "effect": "4.0.0",
-    "playwright": "1.63.0",
-    "react-doctor": "0.9.14",
-    "vite": "8.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "effect": "4.0.2",
+    "playwright": "1.64.0",
+    "react-doctor": "0.9.17",
+    "vite": "8.3.3",
     "vitest": "4.1.11",
-    "wrangler": "4.144.0"
+    "wrangler": "4.148.0"
   },
   "astryx": {
     "theme": "./theme/maruhi.ts"

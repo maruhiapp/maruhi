@@ -16,6 +16,10 @@
 // as well as for new projects: adopt boundaries one directory rename at a
 // time.
 {
+  // Editor completion and validation (shipped since ImportLint 0.1.10);
+  // ImportLint itself ignores this key.
+  "$schema": "./node_modules/@import-lint/cli/config.schema.json",
+
   // Roots to walk for lint targets, relative to the project root.
   "include": ["."],
 

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "bunx --bun blume build && bun run scripts/postbuild.ts",
-    "deploy": "bun run build && cf deploy",
+    "deploy": "bun run build && cf deploy --no-provision",
     "dev": "bunx --bun blume dev",
     "e2e": "vitest run",
     "preview": "cf dev --port 8789",
@@ -18,10 +18,10 @@
     "blume": "2.2.1"
   },
   "devDependencies": {
-    "@types/node": "26.6.2",
-    "cf": "1.0.0-beta.5",
-    "playwright": "1.63.0",
+    "@types/node": "26.6.4",
+    "cf": "1.0.0-beta.13",
+    "playwright": "1.64.0",
     "vitest": "4.1.11",
-    "wrangler": "4.144.0"
+    "wrangler": "4.148.0"
   }
 }
