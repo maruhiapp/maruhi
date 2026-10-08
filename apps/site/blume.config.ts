@@ -9,10 +9,11 @@
 // Tailwind / StyleX / Astryx React parts.
 //
 // "Say nothing": no analytics are declared (Blume injects nothing when
-// undeclared). Ask AI / MCP are off (the default). Fonts are local woff2
+// undeclared). The assistant / MCP are off. Fonts are local woff2
 // (self-hosted via the Astro Fonts API — replacing the default Google Fonts
 // build-time fetch). Open in chat (links to third-party AI) is off.
 import { defineConfig } from "blume";
+import { orama } from "blume/search";
 
 import { accent, background, border, foreground, mutedForeground } from "./theme/tokens.ts";
 
@@ -87,19 +88,24 @@ export default defineConfig({
       },
     },
   },
-  search: { provider: "orama" },
+  // Local Orama search (self-hosted index, no hosted service). Pinned
+  // explicitly so a future default change cannot silently switch providers.
+  search: orama(),
   ai: {
-    // llms.txt / raw Markdown / Copy as Markdown are self-hosted static
-    // files, so they stay at the default. Open in chat (links to ChatGPT /
-    // Claude etc.) is not offered — it is a channel to third parties. Ask AI
-    // and MCP would become live external calls / resident endpoints, so they
-    // are explicitly off (Blume 1.7's default is also off; do not let a
-    // future default change silently enable them). The JSON docs API and AI
-    // catalog are static indexes of the public docs (same kind as llms.txt)
-    // and are not sent anywhere beyond the build output; they are kept
-    // intentionally — they became default-on in Blume 1.7.
+    // Open in chat (links to ChatGPT / Claude etc.) is not offered — it is a
+    // channel to third parties. The assistant (Ask AI in Blume 1) would
+    // become a live external call, so it is explicitly off (do not let a
+    // future default change silently enable it).
     openInChat: false,
-    ask: { enabled: false },
+    assistant: { enabled: false },
+  },
+  agents: {
+    // llms.txt / raw Markdown / Copy as Markdown are self-hosted static
+    // files, so they stay at the default. MCP would become a resident
+    // endpoint, so it is explicitly off. The JSON docs API and AI catalog
+    // are static indexes of the public docs (same kind as llms.txt) and are
+    // not sent anywhere beyond the build output; they are kept
+    // intentionally — they became default-on in Blume 1.7.
     mcp: { enabled: false },
     api: true,
     catalog: true,
@@ -119,8 +125,10 @@ export default defineConfig({
     },
     rss: { enabled: false },
   },
+  // Static build on any host (Blume 2: the `{ site, base }` form IS the
+  // static deployment — host adapters like `cloudflare()` switch to server
+  // output). Served via the cf Workers Static Assets deploy.
   deployment: {
-    output: "static",
     site: "https://maruhi.app",
   },
 });

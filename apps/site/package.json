@@ -15,7 +15,7 @@
     "validate": "bunx --bun blume validate --strict"
   },
   "dependencies": {
-    "blume": "1.7.3"
+    "blume": "2.2.1"
   },
   "devDependencies": {
     "@types/node": "26.6.2",
