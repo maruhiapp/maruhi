@@ -17,11 +17,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0",
+    "@effect/platform-bun": "4.0.2",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "effect": "4.0.0",
+    "effect": "4.0.2",
     "std-env": "4.3.0"
   },
   "devDependencies": {

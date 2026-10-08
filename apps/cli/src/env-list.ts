@@ -30,6 +30,7 @@
 // statement declaring a chain head beyond this run's view (or a listed ID
 // the view has not seen created yet) re-syncs once.
 
+import type { EnvironmentListSchema } from "@maruhi/api-schema";
 import type { EnvironmentId, UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
@@ -84,7 +85,9 @@ export interface EnvironmentList {
   readonly headSeq: number;
 }
 
-type ListWire = Effect.Success<ReturnType<MaruhiClient["environments"]["list"]>>;
+// The decoded success body (the client method's Success also carries the
+// response-mode results)
+type ListWire = typeof EnvironmentListSchema.Type;
 type ListedStatement = ListWire["environments"][number]["statement"];
 
 /** One chain environment joined with its verified listed statement (null = deleted on the chain). */
