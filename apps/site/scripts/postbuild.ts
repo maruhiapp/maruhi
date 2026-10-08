@@ -303,15 +303,19 @@ if (cspLine.length > HEADERS_LINE_LIMIT) {
 }
 
 // The _headers Blume emitted (charset for /docs/*.md etc., the top Link
-// header) is kept and the `/*` security headers are appended (when multiple
-// blocks match the same path, headers with different names coexist). HSTS is
+// header) is kept and the `/*` security headers are appended (a request that
+// matches several blocks inherits the headers of all of them). Blume 2 also
+// ships a scoped `Content-Security-Policy: sandbox` for `/blume-assets/*.svg`.
+// `/*` matches those paths too, so Cloudflare comma-joins the two CSPs there
+// and the browser enforces both policies (stricter, intended). The
+// double-run tripwire therefore checks only for our own `/*` block. HSTS is
 // apex-only (includeSubDomains / preload are a zone-operations decision = a
 // human task)
 const headersPath = join(distDir, "_headers");
 const existing = existsSync(headersPath) ? readFileSync(headersPath, "utf8").trimEnd() : "";
-if (existing.includes("Content-Security-Policy")) {
+if (/^\/\*\n {2}Content-Security-Policy:/m.test(existing)) {
   throw new Error(
-    "_headers already has a CSP (double run?). Delete dist and redo from blume build",
+    "_headers already has a /* CSP (double run?). Delete dist and redo from blume build",
   );
 }
 const securityBlock = `/*
