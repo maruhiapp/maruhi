@@ -207,6 +207,7 @@ const PROJECT_AUDIT_PAYLOADS = {
   }),
   "rotation.proposal_rejected": Schema.Struct({ proposalId: Text }),
   "rotation.proposal_expired": Schema.Struct({ proposalId: Text, expiresAtMs: Schema.Number }),
+  "rotation.proposal_cancelled": Schema.Struct({ proposalId: Text }),
   "project.schema_policy_changed": Schema.Struct({
     previous: Schema.Literals(["enabled", "locked"]),
     next: Schema.Literals(["enabled", "locked"]),

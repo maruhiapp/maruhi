@@ -223,9 +223,11 @@ export interface DataWriteOps {
    * the delete_environment entry) + immediately delete everything else of
    * the environment: variables, variable and environment statements,
    * versions, wraps, the manifest and the checkpoint snapshot (§12-4 —
-   * 2026-10-07; the chain entry is the deletion's record).
+   * 2026-10-07; the chain entry is the deletion's record), and the
+   * environment's sealed value proposals (2026-10-08). Returns the removed
+   * proposals so the caller can close each one's history with an audit row.
    */
-  readonly retireEnvironment: (environmentId: string, nowMs: number) => void;
+  readonly retireEnvironment: (environmentId: string, nowMs: number) => readonly RemovedProposal[];
   readonly insertVariable: (
     environmentId: string,
     variableId: string,
@@ -352,11 +354,15 @@ export interface DataWriteOps {
   readonly deleteExpiredProposals: (
     nowMs: number,
     except?: string | undefined,
-  ) => readonly ExpiredProposal[];
+  ) => readonly RemovedProposal[];
 }
 
-/** A proposal the expiry sweep removed (the input of a rotation.proposal_expired audit row). */
-export interface ExpiredProposal {
+/**
+ * A proposal removed by the expiry sweep or by its environment's deletion —
+ * the input of the audit row closing its history (rotation.proposal_expired /
+ * rotation.proposal_cancelled).
+ */
+export interface RemovedProposal {
   readonly proposalId: string;
   readonly environmentId: string;
   /** When it expired (the row's history is exact whatever the sweep's time). */

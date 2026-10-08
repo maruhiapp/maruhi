@@ -4,8 +4,8 @@
 // dataStoreLayer in data-store.ts.
 
 import type { MetaStatementInput } from "./data-plane.ts";
-import { numberColumn, stringColumn } from "./data-store-rows.ts";
-import type { DataWriteOps, ExpiredProposal, MetaAuthorInfo } from "./data-store.ts";
+import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
+import type { DataWriteOps, MetaAuthorInfo, RemovedProposal } from "./data-store.ts";
 
 /**
  * The layout-v3 column values (layout_version + the schema fields —
@@ -141,6 +141,23 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
 
     sql.exec("DELETE FROM environment_checkpoints WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
+    // The sealed value proposals too (§12-4 — 2026-10-08: a client refuses
+    // a deleted environment's proposal as a resurrection, and left to expire
+    // they would hold the §12-8 meter and the pending limit). Expired rows
+    // the sweep has not dropped yet are removed with the rest; the caller
+    // tells them apart by their expiry
+    const removed = removedProposalsOf(
+      sql
+        .exec(
+          "SELECT proposal_id, environment_id, expires_at FROM rotation_proposals WHERE environment_id = ? ORDER BY expires_at, proposal_id",
+          environmentId,
+        )
+        .toArray(),
+    );
+    for (const { proposalId } of removed) {
+      deleteProposalRows(sql, proposalId);
+    }
+    return removed;
   },
   insertVariable: (environmentId, variableId, name, nowMs) => {
     sql.exec(
@@ -478,24 +495,30 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     deleteProposalRows(sql, proposalId);
   },
   deleteExpiredProposals: (nowMs, except) => {
-    const expired = sql
-      .exec(
-        "SELECT proposal_id, environment_id, expires_at FROM rotation_proposals WHERE expires_at <= ? AND proposal_id != ? ORDER BY expires_at, proposal_id",
-        nowMs,
-        except ?? "",
-      )
-      .toArray()
-      .map((row): ExpiredProposal => ({
-        proposalId: stringColumn(row, "proposal_id"),
-        environmentId: stringColumn(row, "environment_id"),
-        expiresAtMs: Number(row["expires_at"]),
-      }));
+    const expired = removedProposalsOf(
+      sql
+        .exec(
+          "SELECT proposal_id, environment_id, expires_at FROM rotation_proposals WHERE expires_at <= ? AND proposal_id != ? ORDER BY expires_at, proposal_id",
+          nowMs,
+          except ?? "",
+        )
+        .toArray(),
+    );
     for (const { proposalId } of expired) {
       deleteProposalRows(sql, proposalId);
     }
     return expired;
   },
 });
+
+/** The closing material of the proposal rows a removal selected (id, environment, expiry). */
+function removedProposalsOf(rows: readonly StoredRow[]): RemovedProposal[] {
+  return rows.map((row): RemovedProposal => ({
+    proposalId: stringColumn(row, "proposal_id"),
+    environmentId: stringColumn(row, "environment_id"),
+    expiresAtMs: Number(row["expires_at"]),
+  }));
+}
 
 function deleteProposalRows(sql: SqlStorage, proposalId: string): void {
   sql.exec("DELETE FROM rotation_proposal_wraps WHERE proposal_id = ?", proposalId);

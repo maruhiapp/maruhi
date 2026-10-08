@@ -731,8 +731,9 @@ export const rotateEpochCompositeProgram = Effect.fn(
  * synchronous block. The judgment order puts everything that depends on the
  * chain the entry appends onto after the CAS (§12-5's check-order rule):
  * membership (404) → role admin (403, the person then the signing device)
- * → the URL / entry environment match (422) → **CAS (409 — stale: e.g. a
- * concurrent deletion of the same environment moved the head)** → scope at
+ * → the URL / entry environment match and the parent / entry prev match
+ * (422) → **CAS (409 — stale: e.g. a concurrent deletion of the same
+ * environment moved the head)** → scope at
  * the head (403 — a deletion prunes the id from listed scopes, so a stale
  * view must reach the CAS first) → verifyChain (422 — unknown-environment /
  * environment-deleted / environment-out-of-scope …). The environment's
@@ -754,9 +755,14 @@ export const deleteEnvironmentCompositeProgram = Effect.fn(
   const { state } = yield* deriveStoredState(chain, cache);
   const person = yield* requireRole(state, actor.userId, "admin");
   // The composite-internal consistency check (§12-4): the URL coordinate
-  // must name the entry's environment
+  // must name the entry's environment, and the declared parent must be the
+  // head the entry itself chains onto (two different heads in one request
+  // are malformed whichever one is current — 2026-10-08)
   if (input.entry.payload.environmentId !== environmentId) {
     return yield* rejectData({ kind: "payload-mismatch", field: "environmentId" });
+  }
+  if (input.entry.prevHashHex !== input.parentHeadHashHex) {
+    return yield* rejectData({ kind: "payload-mismatch", field: "parentHeadHashHex" });
   }
   // The device the entry's actor FP names (an FP that is not a valid device
   // of the caller is verifyChain's actor-key-mismatch, answered early)
@@ -789,12 +795,14 @@ export const deleteEnvironmentCompositeProgram = Effect.fn(
   const variables = yield* store.listActiveVariables(environmentId);
   // Write phase (one synchronous block — commitAcceptedEntry's extraSync):
   // the chain entry + its mirror (chain.environment_deleted) + the
-  // tombstone + the data deletion + per-variable var.deleted and
-  // env.deleted. Every audit row copies the entry's actor FP (AUDIT_SPEC
-  // §3.3 — the signature that authorized the deletion is the chain entry's)
+  // tombstone + the data deletion (the sealed proposals included) +
+  // per-variable var.deleted, one closing row per removed proposal, and
+  // env.deleted. Every member-actor row copies the entry's actor FP
+  // (AUDIT_SPEC §3.3 — the signature that authorized the deletion is the
+  // chain entry's)
   const audit = yield* AuditStore;
   yield* commitAcceptedEntry(chain, input.entry, applied, canonicalBytes, (nowMs) => {
-    store.write.retireEnvironment(environmentId, nowMs);
+    const proposals = store.write.retireEnvironment(environmentId, nowMs);
     audit.appendManySync([
       ...variables.map((variable) =>
         dataEvent(actor, nowMs, {
@@ -803,6 +811,25 @@ export const deleteEnvironmentCompositeProgram = Effect.fn(
           variableId: variable.variableId,
           actorKeyFingerprintHex: member.keyFingerprintHex,
         }),
+      ),
+      // A proposal already past its expiry closes as the sweep would have
+      // closed it (actor system — the history is exact whatever the sweep's
+      // time); a pending one is cancelled by this deletion (§12-4)
+      ...proposals.map((proposal) =>
+        proposal.expiresAtMs <= nowMs
+          ? {
+              event: "rotation.proposal_expired" as const,
+              serverTs: nowMs,
+              actorType: "system" as const,
+              environmentId,
+              payload: { proposalId: proposal.proposalId, expiresAtMs: proposal.expiresAtMs },
+            }
+          : dataEvent(actor, nowMs, {
+              event: "rotation.proposal_cancelled",
+              environmentId,
+              payload: { proposalId: proposal.proposalId },
+              actorKeyFingerprintHex: member.keyFingerprintHex,
+            }),
       ),
       dataEvent(actor, nowMs, {
         event: "env.deleted",

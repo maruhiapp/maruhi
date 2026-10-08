@@ -1,6 +1,6 @@
 # maruhi Audit Log Specification (AUDIT_SPEC)
 
-Version: 1.12-draft
+Version: 1.13-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of
 the PR containing a revision constitutes that approval. History: `git log`.
 
@@ -249,7 +249,8 @@ CRYPTO_SPEC §4 identifiers.
 | `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). One row per (variable × environment) |
 | `rotation.proposed` | environment_id, payload = { proposalId, variableIds, claimsDigest, grantChainSeq, connector } | A sealed value proposal stored under a workload lease (AUTH_SPEC §14-5. 2026-10-02 PF7b). actor_type = system (the minter is a workload with no maruhi identity — attributed by the claims digest and the grant's chain seq, the same cross-check as `server.lease_issued`; no external identifier, no fact text, no ciphertext). Class 1 |
 | `rotation.proposal_accepted` / `rotation.proposal_rejected` | environment_id, payload = { proposalId, versions: [{ variableId, version }] } (accepted) / { proposalId } (rejected) | A member's resolution of a proposal (AUTH_SPEC §14-5): accepted = the member's own signed pushes (recorded as `var.version_pushed` as always) named by version; rejected = nothing was pushed. The actor is the resolving member (type=user — a resolution carries no signature, so no FP). The proposal's rows are deleted on resolution; these rows are its history. Class 1 |
-| `rotation.proposal_expired` | environment_id, payload = { proposalId, expiresAtMs } | A proposal nobody resolved before its expiry, appended when the server sweeps the row (on the next mint, pre-flight, resolution or member list — AUTH_SPEC §14-5; the payload carries the expiry instant, so the history is exact whatever the sweep's time). actor_type = system (no member acted). Together with `rotation.proposed` it closes the history of every proposal. Class 1 |
+| `rotation.proposal_expired` | environment_id, payload = { proposalId, expiresAtMs } | A proposal nobody resolved before its expiry, appended when the server sweeps the row (on the next mint, pre-flight, resolution or member list — AUTH_SPEC §14-5; the payload carries the expiry instant, so the history is exact whatever the sweep's time). actor_type = system (no member acted). Every `rotation.proposed` row gets exactly one closing row — `rotation.proposal_accepted` / `_rejected` / `_expired` / `_cancelled` — so the history of every proposal closes. Class 1 |
+| `rotation.proposal_cancelled` | environment_id, **actor_key_fingerprint**, payload = { proposalId } | A pending proposal removed by its environment's deletion (AUTH_SPEC §12-4's deletion composite — 2026-10-08), written in the same transaction as `env.deleted`. The actor is the deleting member (type=user), and actor_key_fingerprint copies the `delete_environment` entry's actor FP, as the cascaded `var.deleted` does. A row already past its expiry that no sweep had dropped is closed with `rotation.proposal_expired` instead (actor system — the history stays exact). The environment's deletion is the only cancellation. Class 1 |
 | `project.schema_policy_changed` | payload = { previous, next } (the old value, the new value) | Change of the project setting `schemaPolicy` (AUTH_SPEC §12-11. 2026-08-30). The actor is the changer themself (type=user — a setting operation with no signature, so no FP). The setting value itself is distributed to all members advisory-ly in pull responses, so class 1 |
 | `project.exported` | payload = { chainHeadSeq, chainHeadHashHex } | The first page of a project export (AUTH_SPEC §11-6. 2026-10-02 PF3). The actor is the exporting owner (type=user). Appended before the export's watermarks are taken, so the exported audit log carries this row. An access record of the largest read a project has, so class 2 (like `var.read`) |
 
@@ -326,8 +327,9 @@ CRYPTO_SPEC §4 identifiers.
   `var.created` (value-write signature = same §4.1) and `var.renamed` /
   `var.schema_reissued` / `var.deleted` / `env.created` / `env.renamed`
   (meta-statement signature = same §4.2) and `env.deleted` plus a cascaded
-  `var.deleted` (the `delete_environment` entry's signature = CRYPTO_SPEC
-  §6.2 — 2026-10-07) copy the signer key FP into the actor_key_fingerprint
+  `var.deleted` and `rotation.proposal_cancelled` (the `delete_environment`
+  entry's signature = CRYPTO_SPEC §6.2 — 2026-10-07; the proposal row
+  2026-10-08) copy the signer key FP into the actor_key_fingerprint
   column. It records for cross-checking the
   audit row (server-managed data) against the off-chain signature (client
   signature = unforgeable by the server), within §2's actor model (type=user's
@@ -474,7 +476,12 @@ On acceptance of `remove_member(M)`, inside the same project DO:
    interval during which E was in M's scope" (restored from the scope in
    `chain.member_added` / `chain.role_changed` payloads — `all` means the
    whole membership interval, `listed` means while included. The window opens
-   and closes at scope change points). Candidates = "all (variable ×
+   and closes at scope change points. A `delete_environment` prunes E from
+   listed scopes without a `chain.role_changed` row; the derivation need not
+   close the window there, because the cascade's `var.deleted` rows end every
+   existence interval in E at that point and E's epoch never advances after
+   it, so neither the candidates nor the exposure bound change — 2026-10-08).
+   Candidates = "all (variable ×
    environment) whose existence interval overlaps an access window". Judged by
    overlap with the existence interval `var.created` to `var.deleted` (to now
    if not deleted). **Deleted variables are included too** (deleting a
@@ -860,7 +867,7 @@ The read API is not built per §6–§7 (Phase 2).
     disclosure mechanism — all of `chain.*`, **any row carrying `chain_seq`**,
     `env.*`, `var.created` / `var.renamed` / `var.schema_reissued` /
     `var.deleted` / `var.version_pushed`, `server.*`, `rotation.recommended` /
-    `rotation.dismissed`. Narrowing the chain mirror to admin would be only
+    `rotation.dismissed`, `rotation.proposed` / `rotation.proposal_*`. Narrowing the chain mirror to admin would be only
     security theater since all members already verify and fetch the same facts
     via chain sync. The additional `chain_seq` condition (2026-08-25 deepsec
     S1) exists so the visibility predicate does not hide tamper evidence: the
@@ -964,7 +971,16 @@ The read API is not built per §6–§7 (Phase 2).
   and dismissal — implemented early in Wave 2 B2. Raw events stay with
   `maruhi audit` in C1). Display-name resolution is done by the client on
   verified meta statements (including tombstone statements of deleted
-  variables — AUTH_SPEC §12-7); the view response carries only identifiers
+  variables — AUTH_SPEC §12-7); the view response carries only identifiers.
+  **A deleted environment's variables (2026-10-08)**: their statements are
+  deleted with the environment (AUTH_SPEC §12-4), so no verified name
+  remains and their flags are shown by identifier only. The flags stay
+  effective — the upstream credential still needs rotating (§4.1's "deleted
+  variables are included too") — and close only by dismissal. Before it
+  signs a deletion, `maruhi env rm` lists the environment's verified variable
+  names and its effective flags, so the names are recorded while they can
+  still be verified (unverified name snapshots in audit rows are never used
+  for display — a server could relabel which credential a flag points at)
 - **event-namespace prefix filter (2026-08-24 deepsec R1 response)**: in
   addition to the exact-match `event` filter, the vocabulary includes
   `event_prefix` (prefix match). This exists so `maruhi audit verify`'s mirror

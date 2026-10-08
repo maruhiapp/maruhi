@@ -596,18 +596,24 @@ export function unsignedDeleteEnvironmentBody(
  * chain entry appended onto the fixture head, 2026-10-07). On 204, advances
  * the head. `parentHeadHashHex` overrides the CAS parent (stale-view tests);
  * `entryEnvironmentId` signs an entry for another environment (the URL /
- * entry consistency negative).
+ * entry consistency negative); `entryPrevHashHex` signs the entry over
+ * another prev than the declared parent (the parent / prev consistency
+ * negative).
  */
 export async function deleteEnvironmentRequest(
   fixture: DataFixture,
   environmentId: string,
   actorUserId: string,
-  options: { readonly parentHeadHashHex?: string; readonly entryEnvironmentId?: string } = {},
+  options: {
+    readonly parentHeadHashHex?: string;
+    readonly entryEnvironmentId?: string;
+    readonly entryPrevHashHex?: string;
+  } = {},
 ): Promise<Response> {
   const parentHeadHashHex = options.parentHeadHashHex ?? fixture.head.hashHex;
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
-    prevHashHex: parentHeadHashHex,
+    prevHashHex: options.entryPrevHashHex ?? parentHeadHashHex,
     actorUserId,
     operation: {
       op: "delete_environment",

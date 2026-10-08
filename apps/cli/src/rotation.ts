@@ -27,7 +27,7 @@ import type { CliServices, ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
 import { chainDeletedEnvironments } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
@@ -79,16 +79,52 @@ function fetchRotationFlags(
   );
 }
 
-/** Fetches the pending sealed proposals addressed to the caller (member or above — the server filters by scope; PF7b). */
-export function fetchRotationProposals(
+/**
+ * The variables of one environment that carry an effective flag — what
+ * `env rm` names before the deletion takes their verified names (AUDIT_SPEC
+ * §7: afterwards such a flag shows its variable ID only).
+ */
+export function flaggedVariablesOf(
   client: MaruhiClient,
   projectId: string,
-): Effect.Effect<readonly RotationProposal[], CliError> {
-  return client.rotation.proposals({ params: { projectId } }).pipe(
-    Effect.mapError(toCliError),
-    Effect.map((response) => response.proposals),
+  environmentId: string,
+): Effect.Effect<ReadonlySet<string>, CliError> {
+  return Effect.map(
+    fetchRotationFlags(client, projectId),
+    (flags) =>
+      new Set(
+        flags.filter((flag) => flag.environmentId === environmentId).map((flag) => flag.variableId),
+      ),
   );
 }
+
+/**
+ * Fetches the pending sealed proposals addressed to the caller (member or
+ * above — the server filters by scope; PF7b). A proposal of an environment
+ * the verified chain shows as deleted refuses the whole list (CRYPTO_SPEC
+ * §6.3 "Chain-deleted environments": a conforming server deletes an
+ * environment's proposals with it — AUTH_SPEC §12-4 — so serving one is an
+ * unauthorized resurrection, and nothing of it is opened or resolved).
+ */
+export const fetchRotationProposals = Effect.fn("rotation.fetchRotationProposals")(function* (
+  context: ProjectContextBase,
+): Effect.fn.Return<readonly RotationProposal[], CliError> {
+  const { proposals } = yield* context.client.rotation
+    .proposals({ params: { projectId: context.projectId } })
+    .pipe(Effect.mapError(toCliError));
+  for (const proposal of proposals) {
+    const deletedAtSeq =
+      context.verified.state.environments.get(proposal.environmentId)?.deletedAtSeq ?? null;
+    if (deletedAtSeq !== null) {
+      return yield* Effect.fail(
+        evidenceError(
+          `The server listed sealed proposal ${proposal.proposalId} for environment ${displayText(proposal.environmentId)}, which is deleted on the verified chain (delete_environment at seq ${deletedAtSeq}) — an unauthorized resurrection (a deleted environment's proposals are deleted with it). No proposal was opened or resolved`,
+        ),
+      );
+    }
+  }
+  return proposals;
+});
 
 /** The variable-name resolution result (only verified-statement-derived — unresolvable = null). */
 export type NameIndex = ReadonlyMap<string, string>;
@@ -476,7 +512,7 @@ const reportPendingProposals = Effect.fn("rotation.reportPendingProposals")(func
     self.scope.kind === "all"
       ? null
       : `only the environments in your scope are listed (${self.scope.environmentIds.map(displayText).join(", ")}); run it with a member whose scope covers every environment`;
-  const proposals = yield* fetchRotationProposals(context.client, context.projectId).pipe(
+  const proposals = yield* fetchRotationProposals(context).pipe(
     Effect.catch((error) =>
       Effect.map(
         logNote(

@@ -461,7 +461,8 @@ export const environmentsGroup = HttpApiGroup.make("environments")
       ),
       success: HttpApiSchema.NoContent,
       // Judgment order (§12-4): role (403) → the URL / entry environment
-      // match (422 PayloadMismatch) → the parent-head CAS (409 — stale) →
+      // match and the parent / entry prev match (422 PayloadMismatch) →
+      // the parent-head CAS (409 — stale) →
       // scope (403) → verifyChain (422 ChainEntryInvalid — unknown /
       // already deleted / out of scope). No 404 for the environment: its
       // existence and deleted state depend on the head the entry appends
