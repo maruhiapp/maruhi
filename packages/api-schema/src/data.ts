@@ -11,7 +11,13 @@
 // acceptance check, and enforcing context binding is carried by
 // decryption failure (pinned by the crypto test vectors).
 
-import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
+import {
+  EnvironmentIdSchema,
+  KeyFingerprintHexSchema,
+  ProjectIdSchema,
+  UserIdSchema,
+  VariableIdSchema,
+} from "@maruhi/core";
 import { Schema } from "effect";
 
 import {
@@ -60,7 +66,7 @@ const ValueCiphertextHex = Schema.String.check(
  * The chain.ts side is deliberately unbounded (§6.1 — verifyChain
  * checks the limit).
  */
-export const BoundedUserId = Schema.String.check(
+export const BoundedUserId = UserIdSchema.check(
   Schema.isMinLength(1),
   // The limit counts UTF-8 bytes (isMaxLength counts UTF-16 code units).
   Schema.makeFilter((s: string) =>
@@ -604,11 +610,23 @@ const DekRecipientClassSchema = Schema.Literals(["member", "server"]);
  * could make a wrap for a legitimate member on the chain
  * unregistrable.
  */
+/**
+ * A wrap's recipient position carries either a member's user_id or — for
+ * recipient class `server` — the server key fingerprint (32 lowercase hex
+ * chars, CRYPTO_SPEC §9's "HPKE info for server-destined wraps"). The user
+ * side keeps BoundedUserId's §6.1 wire bound; the fingerprint side asserts
+ * the 32-hex form (a class-member row could never hold a non-FP there).
+ */
+const BoundedRecipientId = Schema.Union([KeyFingerprintHexSchema, BoundedUserId]);
+
+/** The recipient identity position on wrap rows: a user_id or a server key fingerprint. */
+type BoundedRecipientId = typeof BoundedRecipientId.Type;
+
 export const WrappedDekSchema = Schema.Struct({
   suite: SuiteSchema,
   epoch: PositiveInt,
   recipientClass: DekRecipientClassSchema,
-  recipientUserId: BoundedUserId,
+  recipientUserId: BoundedRecipientId,
   recipientEncPubHex: EncPubHex,
   encHex: HpkeEncHex,
   ciphertextHex: WrappedDekCiphertextHex,
@@ -654,7 +672,7 @@ export type RecipientDek = typeof RecipientDekSchema.Type;
 export const DekWrapRefSchema = Schema.Struct({
   epoch: PositiveInt,
   recipientClass: DekRecipientClassSchema,
-  recipientUserId: BoundedUserId,
+  recipientUserId: BoundedRecipientId,
   /**
    * The recipient device key of the slot (the AUTH_SPEC §12-6 device
    * axis — 2026-09-19 DK K3: slots are per device).

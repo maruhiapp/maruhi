@@ -9,7 +9,7 @@
 // hand-written decoders' tolerance; required fields and field forms are
 // all strict.
 
-import { isEnvironmentId, isVariableId } from "@maruhi/core";
+import { isEnvironmentId, isVariableId, EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Result, Schema } from "effect";
 
 import type { ChainHeadFloor } from "./floor.ts";
@@ -22,12 +22,8 @@ const HashHex = Schema.String.check(Schema.isPattern(HEX_64));
 
 /** A safe integer >= 1 (the positive form the wire carries for versions / epochs). */
 const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
-const EnvironmentIdField = Schema.String.pipe(
-  Schema.refine(isEnvironmentId, { expected: "environment id" }),
-);
-const VariableIdField = Schema.String.pipe(
-  Schema.refine(isVariableId, { expected: "variable id" }),
-);
+const EnvironmentIdField = EnvironmentIdSchema;
+const VariableIdField = VariableIdSchema;
 
 /** An intent / resolution id (16 lowercase hex — randomIntentId's output form). */
 const IntentId = Schema.String.check(Schema.isPattern(INTENT_ID));

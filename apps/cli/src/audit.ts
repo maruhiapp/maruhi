@@ -31,6 +31,7 @@ import {
   type AuditEventRecord,
   type AuditReadVariable,
   type ProposalIndex,
+  decodeEnvironmentId,
   type EnvironmentId,
   type ProjectId,
   type UserId,
@@ -51,7 +52,6 @@ import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { environmentIdOf, variableIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
@@ -358,7 +358,7 @@ function describeTarget(event: WireAuditEvent): string | null {
 }
 
 /** A variable's display label (`NAME (id)` when a verified name exists, the id alone otherwise). */
-function variableLabel(variableId: VariableId, resolvedName: string | null): string {
+function variableLabel(variableId: string, resolvedName: string | null): string {
   return resolvedName === null
     ? displayText(variableId)
     : `${displayText(resolvedName)} (${displayText(variableId)})`;
@@ -455,7 +455,7 @@ function expandedReadLines(
 
 /** The display form of one variable of an aggregated row (shared by the expanded lines and --var's match display). */
 function listedVariableLabel(variable: AuditReadVariable, names: NameIndex | undefined): string {
-  return `var=${variableLabel(variableIdOf(variable.variableId), names?.get(variableIdOf(variable.variableId)) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
+  return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
 }
 
 /** Rendering of one line. Display names (resolvedName) come only from verified statements. */
@@ -543,7 +543,7 @@ function environmentIdsForNames(
       continue;
     }
     if (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) {
-      ids.add(environmentIdOf(event.environmentId));
+      ids.add(decodeEnvironmentId(event.environmentId));
     }
   }
   return [...ids].toSorted();

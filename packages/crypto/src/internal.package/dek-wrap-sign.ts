@@ -15,7 +15,7 @@
 // timestamp or nonce — §5.1). Built from existing parts only (Ed25519 + the
 // §2.1 LP encoder).
 
-import type { EnvironmentId, ProjectId, UserId } from "./chain-types.ts";
+import type { EnvironmentId, KeyFingerprintHex, ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import {
@@ -39,7 +39,12 @@ export interface DekWrapSignatureContext {
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
   readonly epoch: number;
-  readonly recipientUserId: UserId;
+  /**
+   * The member's user id, or — for server-destined wraps — the server-key
+   * fingerprint (CRYPTO_SPEC §9's "HPKE info for server-destined wraps": the
+   * fingerprint stands in the recipient_user_id position).
+   */
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;

@@ -199,7 +199,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
     c.push("checkpoint history: setup", false, "fixture missing");
     return;
   }
-  const baseTuple = view.state.checkpoints.get("env-prod-0001");
+  const baseTuple = view.state.checkpoints.get(testEnvironmentId("env-prod-0001"));
   if (baseTuple === undefined) {
     c.push("checkpoint history: setup", false, "baseline tuple missing");
     return;
@@ -248,7 +248,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
 /** Consistency between derived state and the history index: latestCheckpointFor = ChainState.checkpoints. */
 async function derivedStateChecks(c: Checks): Promise<void> {
   const view = await baselineView();
-  const fromState = view.state.checkpoints.get("env-prod-0001");
+  const fromState = view.state.checkpoints.get(testEnvironmentId("env-prod-0001"));
   const fromHistory = view.history.latestCheckpointFor("env-prod-0001");
   c.push(
     "checkpoint history: latest checkpoint mirrors chain state",
@@ -261,7 +261,7 @@ async function derivedStateChecks(c: Checks): Promise<void> {
   c.push(
     "checkpoint history: latest checkpoint absent for uncovered environment",
     view.history.latestCheckpointFor("env-stage-0003") === undefined &&
-      view.state.checkpoints.get("env-stage-0003") === undefined,
+      view.state.checkpoints.get(testEnvironmentId("env-stage-0003")) === undefined,
   );
   // On the canonical 12-entry chain (no checkpoints) every lookup is
   // undefined

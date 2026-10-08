@@ -38,7 +38,6 @@ import type {
   VerifiedTombstone,
   VerifiedVariableStatement,
 } from "./floor-check.ts";
-import { userIdOf } from "./ids.ts";
 
 /** One pulled variable whose write signature and statement passed §6.3. */
 export interface VerifiedPulledValue {
@@ -194,7 +193,7 @@ function metaEvidenceFields(
     chainHeadSeq: statement.chainHeadSeq,
     chainHeadHashHex: statement.chainHeadHashHex,
     signatureHex: statement.signatureHex,
-    authorUserId: userIdOf(statement.authorUserId),
+    authorUserId: statement.authorUserId,
     authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
   };
 }
@@ -308,7 +307,7 @@ async function verifyStatement(
           ...contextLayoutFields(layout ?? null),
           metaVersion: statement.metaVersion,
           prevMetaSigHashHex: statement.prevMetaSigHashHex,
-          authorUserId: userIdOf(statement.authorUserId),
+          authorUserId: statement.authorUserId,
           chainHeadHashHex: statement.chainHeadHashHex,
           chainHeadSeq: statement.chainHeadSeq,
         },
@@ -421,7 +420,7 @@ async function verifyOne(
           nonceHex: payload.nonceHex,
           ciphertextHex: payload.ciphertextHex,
           prevValueSigHashHex: payload.prevValueSigHashHex,
-          writerUserId: userIdOf(payload.writerUserId),
+          writerUserId: payload.writerUserId,
           chainHeadHashHex: payload.chainHeadHashHex,
           chainHeadSeq: payload.chainHeadSeq,
         },
@@ -449,10 +448,10 @@ async function verifyOne(
             metaChainHeadSeq: statement.chainHeadSeq,
             metaChainHeadHashHex: statement.chainHeadHashHex,
             valueSignatureHex: payload.signatureHex,
-            writerUserId: userIdOf(payload.writerUserId),
+            writerUserId: payload.writerUserId,
             writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
             metaSignatureHex: statement.signatureHex,
-            authorUserId: userIdOf(statement.authorUserId),
+            authorUserId: statement.authorUserId,
             authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
             layoutVersion: verifiedStatement.value.layout.layoutVersion,
             schema: verifiedStatement.value.layout.schema,

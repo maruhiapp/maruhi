@@ -63,7 +63,6 @@ import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { userIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import type { Keychain } from "./keychain.ts";
 import { serializeStoredMasterKey } from "./keychain.ts";
@@ -521,7 +520,7 @@ export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (in
         ...group,
         guardians: group.guardians.map((g) => ({
           ...g,
-          guardianUserId: userIdOf(g.guardianUserId),
+          guardianUserId: g.guardianUserId,
         })),
       },
       chainMembers,
@@ -631,7 +630,7 @@ const resolveApprovalTarget = Effect.fn("guardian.resolveApprovalTarget")(functi
   return {
     requestId,
     ephemeralPublicKey,
-    wardUserId: userIdOf(lookup.wardUserId),
+    wardUserId: lookup.wardUserId,
     wardLabel:
       lookup.wardLogin === null
         ? displayText(lookup.wardUserId)

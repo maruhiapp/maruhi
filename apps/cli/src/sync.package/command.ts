@@ -1,13 +1,18 @@
 // `maruhi sync` (discipline: see commands/index.ts).
 
+import { type ProjectId, ProjectIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
-import { NonBlank, projectFlags, singleFlag, singleValued } from "../commands/flags.ts";
+import {
+  NonBlank,
+  projectFlags,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "../commands/flags.ts";
 import { floorHandleFor, openProject } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
-import { environmentIdOf } from "../ids.ts";
-import { projectIdOf } from "../ids.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   checkConfigProject,
@@ -73,7 +78,7 @@ export const syncInitConfig = {
     "receipts",
     "maruhi environment ID that stores the receipts (required; create it with `maruhi env create`)",
   ),
-  project: singleValued("project", "Project ID to pin the config to (optional)"),
+  project: singleValuedAs("project", "Project ID to pin the config to (optional)", ProjectIdSchema),
   variables: singleValued("variables", 'Comma-separated variable names to copy (default: "all")'),
   exclude: singleValued(
     "exclude",
@@ -139,7 +144,7 @@ function requireInitFlag(value: string | undefined, flag: string): Effect.Effect
  */
 const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (values: {
   readonly server: string | undefined;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
   readonly config: string | undefined;
   readonly target: string;
 }) {
@@ -151,8 +156,8 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
     server: values.server,
     project: values.project ?? config.projectId,
   });
-  const sourceFloor = yield* floorHandleFor(context, environmentIdOf(target.environment));
-  const receiptsFloor = yield* floorHandleFor(context, environmentIdOf(config.receiptsEnvironment));
+  const sourceFloor = yield* floorHandleFor(context, target.environment);
+  const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
   // The http driver's integration-token environment. When it equals
   // the sync-source / receipt environment, **the same floor handle** is
   // used (holding two handles on one environment would leave the
@@ -164,7 +169,7 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
         ? sourceFloor
         : target.driver.token.environment === config.receiptsEnvironment
           ? receiptsFloor
-          : yield* floorHandleFor(context, environmentIdOf(target.driver.token.environment));
+          : yield* floorHandleFor(context, target.driver.token.environment);
   return { config, target, context, sourceFloor, receiptsFloor, tokenFloor };
 });
 
@@ -232,7 +237,7 @@ export function makeSyncCommands() {
         driver: values.driver,
         environment,
         receipts,
-        project: values.project === undefined ? undefined : projectIdOf(values.project),
+        project: values.project,
         variables: values.variables,
         exclude: values.exclude,
         production: values.production,

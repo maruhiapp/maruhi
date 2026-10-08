@@ -1029,7 +1029,7 @@ describe("input validation and defect handling", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // A usage mistake is a usage error (2). The supplied value itself is not echoed
     expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Invalid project ID");
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --project");
     expect(env.errors.join("\n")).not.toContain("not-hex");
     const env2 = await makeTestEnv();
     await seedConfig(env2, {
@@ -1039,7 +1039,7 @@ describe("input validation and defect handling", () => {
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // The environment ID format check runs before any network access (session resolution)
     expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
-    expect(env2.errors.join("\n")).toContain("Invalid environment ID");
+    expect(env2.errors.join("\n")).toContain("Unacceptable value for flag --env");
     expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 

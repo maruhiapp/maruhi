@@ -20,13 +20,7 @@
 //   derive from signed entries, so they are verifiable)
 // - No append API is exposed (the §7 principle — only server-side processing generates events)
 
-import {
-  EnvironmentIdSchema,
-  OrgIdSchema,
-  ProjectIdSchema,
-  UserIdSchema,
-  VariableIdSchema,
-} from "@maruhi/core";
+import { OrgIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -71,11 +65,13 @@ export const AuditActorSchema = Schema.Struct({
  * consumers — `maruhi audit` and the Phase 2 web audit UI — handle a single
  * wire shape; fields a given store never records are simply absent.
  *
- * Identifier fields (environmentId etc.) are plain strings: the write-time
- * Schema already enforced the format, and re-asserting the format on the
- * read side would 500 on encode failure when serving historical rows
- * (rows accepted before an acceptance-policy revision) — breaking faithful
- * audit replay.
+ * Identifier fields (environmentId etc.) stay plain strings whenever the
+ * brand's schema asserts a format: the write-time Schema already enforced
+ * it, and re-asserting the format on the read side would 500 on encode
+ * failure when serving historical rows (rows accepted before an
+ * acceptance-policy revision) — breaking faithful audit replay. Brands
+ * that carry no format (UserId, OrgId) encode any string, so those fields
+ * are branded directly.
  */
 export const AuditEventSchema = Schema.Struct({
   /**
@@ -98,13 +94,13 @@ export const AuditEventSchema = Schema.Struct({
   actor: AuditActorSchema,
   targetUserId: Schema.optionalKey(UserIdSchema),
   targetKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
-  environmentId: Schema.optionalKey(EnvironmentIdSchema),
-  variableId: Schema.optionalKey(VariableIdSchema),
+  environmentId: Schema.optionalKey(Schema.String),
+  variableId: Schema.optionalKey(Schema.String),
   epoch: Schema.optionalKey(PositiveInt),
   version: Schema.optionalKey(PositiveInt),
   chainSeq: Schema.optionalKey(PositiveInt),
   orgId: Schema.optionalKey(OrgIdSchema),
-  projectId: Schema.optionalKey(ProjectIdSchema),
+  projectId: Schema.optionalKey(Schema.String),
   /** Supplementary JSON as recorded (a server assertion — see the verification discipline in the header comment). */
   payload: Schema.optionalKey(Schema.JsonObject),
 });

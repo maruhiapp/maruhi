@@ -553,15 +553,15 @@ export interface EnvironmentCheckpointState {
  * matching, and head gossip (implemented with the sync logic later).
  */
 export interface ChainState {
-  readonly members: ReadonlyMap<string, ChainMember>;
-  readonly serverGrants: ReadonlyMap<string, ServerGrant>;
-  readonly environments: ReadonlyMap<string, EnvironmentChainState>;
+  readonly members: ReadonlyMap<UserId, ChainMember>;
+  readonly serverGrants: ReadonlyMap<KeyFingerprintHex, ServerGrant>;
+  readonly environments: ReadonlyMap<EnvironmentId, EnvironmentChainState>;
   /**
    * Per environment, the latest `checkpoint` tuple covering it (§6.2 —
    * the `checkpoint-regression` baseline and the §6.3 checkpoint-integrity
    * baseline). Environments never covered by a checkpoint are absent.
    */
-  readonly checkpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
+  readonly checkpoints: ReadonlyMap<EnvironmentId, EnvironmentCheckpointState>;
   /** Active four-eyes policy (CRYPTO_SPEC §6.2), or `null` when off. */
   readonly approvalPolicy: ApprovalPolicy | null;
   /** Pending proposals keyed by the `propose` entry hash (the §6.2 verification state). */

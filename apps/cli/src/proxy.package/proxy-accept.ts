@@ -51,12 +51,11 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { type ProjectId } from "@maruhi/core";
+import { type ProjectId, ProjectIdSchema } from "@maruhi/core";
 import { Clock, Context, Effect, FileSystem, Schema, Stdio } from "effect";
 
 import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "../agent-gate.ts";
 import { cliError, type CliError } from "../errors.ts";
-import { projectIdOf } from "../ids.ts";
 import type { CliIo } from "../io.ts";
 import { type LedgerRead, readJsonFile, writeJsonFileAtomic } from "../json-record.ts";
 import { logNote } from "../notice.ts";
@@ -133,7 +132,7 @@ const LEDGER = Schema.Struct({
     Schema.Struct({
       content: Schema.String,
       acceptedAtMs: Schema.Int,
-      projectIds: Schema.Array(Schema.String),
+      projectIds: Schema.Array(ProjectIdSchema),
     }),
   ),
   projects: Schema.Record(
@@ -194,7 +193,7 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
         ? { state: "missing" }
         : {
             state: "found",
-            accepted: { ...accepted, projectIds: accepted.projectIds.map(projectIdOf) },
+            accepted,
           };
     }),
     accept: (configPath, accepted) =>

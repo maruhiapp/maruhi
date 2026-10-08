@@ -34,14 +34,13 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { type UserId } from "@maruhi/core";
+import { decodeEnvironmentId, type UserId } from "@maruhi/core";
 import type { DeviceCap, MemberScope, Role } from "@maruhi/crypto";
-import { ALL_SCOPE, memberScopeOf, scopePayloadFieldsOf } from "@maruhi/crypto";
+import { memberScopeOf } from "@maruhi/crypto";
 import { Context, Effect, Result, Schema, SchemaGetter } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
-import { environmentIdOf } from "./ids.ts";
 import {
   Hex32,
   Hex64,
@@ -186,7 +185,7 @@ const EntrySchema = WireEntrySchema.pipe(
         ...rest,
         scope: memberScopeOf({
           scopeKind,
-          scopeEnvironmentIds: scopeEnvironmentIds.map(environmentIdOf),
+          scopeEnvironmentIds: scopeEnvironmentIds.map(decodeEnvironmentId),
         }),
       };
     }),
@@ -194,14 +193,9 @@ const EntrySchema = WireEntrySchema.pipe(
       const { scope, ...rest } = domain;
       return {
         ...rest,
-        ...scopePayloadFieldsOf(
-          scope.kind === "all"
-            ? ALL_SCOPE
-            : {
-                kind: "listed",
-                environmentIds: scope.environmentIds.map(environmentIdOf),
-              },
-        ),
+        ...(scope.kind === "all"
+          ? { scopeKind: "all" as const, scopeEnvironmentIds: [] as readonly string[] }
+          : { scopeKind: "listed" as const, scopeEnvironmentIds: [...scope.environmentIds] }),
       };
     }),
   }),

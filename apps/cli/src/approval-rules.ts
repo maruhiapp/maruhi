@@ -33,7 +33,6 @@ import {
 import { proposalIndexOf } from "./chain-applied.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
-import { userIdOf } from "./ids.ts";
 import { describeScope } from "./scope.ts";
 
 const MS_PER_MINUTE = 60_000;
@@ -342,8 +341,7 @@ export function keyReuseOf(
       (binding) => binding.encPubHex === key.encPubHex || binding.sigPubHex === key.sigPubHex,
     );
     if (reused) {
-      const uid = userIdOf(userId);
-      reuse.push({ userId: uid, sameUser: userId === key.targetUserId });
+      reuse.push({ userId, sameUser: userId === key.targetUserId });
     }
   }
   return reuse;

@@ -8,6 +8,8 @@
 //   openMetadataProjectWith = without key (commands that read only plaintext metadata — env diff)
 
 import {
+  decodeEnvironmentId,
+  decodeProjectId,
   type EnvironmentId,
   isEnvironmentId,
   isProjectId,
@@ -223,7 +225,7 @@ export function resolveProjectId(
         : usageError(shape),
     );
   }
-  return Effect.succeed(value);
+  return Effect.succeed(decodeProjectId(value));
 }
 
 function resolveEnvironmentId(
@@ -247,7 +249,7 @@ function resolveEnvironmentId(
         : usageError(shape),
     );
   }
-  return Effect.succeed(value);
+  return Effect.succeed(decodeEnvironmentId(value));
 }
 
 export interface SessionContext {

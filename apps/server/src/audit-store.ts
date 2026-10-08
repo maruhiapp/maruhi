@@ -1200,9 +1200,8 @@ function scopeOf(
   payload: Readonly<Record<string, unknown>> | null,
 ): readonly EnvironmentId[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
-  return Array.isArray(scope) &&
-    scope.every((id): id is EnvironmentId => typeof id === "string" && isEnvironmentId(id))
-    ? scope
+  return Array.isArray(scope) && scope.every((id) => typeof id === "string" && isEnvironmentId(id))
+    ? scope.map((id) => decodeEnvironmentId(String(id)))
     : null;
 }
 

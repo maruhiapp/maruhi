@@ -46,7 +46,6 @@ import { devicesOf } from "./device-key.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 import type { InviteLinkData, InviteRole } from "./invite-link.ts";
 import { CliIo } from "./io.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
@@ -93,9 +92,7 @@ export function listInvitations(
 ): Effect.Effect<readonly InvitationRow[], CliError> {
   return client.invites.list({ params: { projectId } }).pipe(
     Effect.mapError(toCliError),
-    Effect.map((response) =>
-      response.invitations.map((inv) => ({ ...inv, inviterUserId: userIdOf(inv.inviterUserId) })),
-    ),
+    Effect.map((response) => response.invitations),
   );
 }
 

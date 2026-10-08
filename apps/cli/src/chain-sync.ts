@@ -35,7 +35,6 @@ import type { MaruhiClient } from "./api.ts";
 import { type AppliedOperation, appliedOperations } from "./chain-applied.ts";
 import { type CliError, cliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 
 /** One key set the chain history binds to a user id (genesis / add_member payload). */
 export interface KeyBinding {
@@ -78,7 +77,7 @@ export interface VerifiedProject {
    * lookups use the history side instead (dedupe must not erase
    * tenure — session-14 ruling A).
    */
-  readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
+  readonly keyHistory: ReadonlyMap<UserId, readonly KeyBinding[]>;
   /**
    * The verified chain's entry list (in seq order). A read-only
    * view for consulting historical facts that do not appear in
@@ -123,8 +122,8 @@ class ChainDerivationError extends Data.TaggedError("ChainDerivationError")<{
 
 const buildKeyHistory = Effect.fn("chain-sync.buildKeyHistory")(function* (
   applied: readonly AppliedOperation[],
-): Effect.fn.Return<ReadonlyMap<string, readonly KeyBinding[]>, ChainDerivationError> {
-  const history = new Map<string, KeyBinding[]>();
+): Effect.fn.Return<ReadonlyMap<UserId, readonly KeyBinding[]>, ChainDerivationError> {
+  const history = new Map<UserId, KeyBinding[]>();
   const seen = new Set<string>();
   const add = (userId: UserId, binding: KeyBinding) => {
     const dedupe = `${userId}#${bindingKey(binding)}`;
@@ -298,7 +297,7 @@ export const syncProject = Effect.fn("chain-sync.syncProject")(function* (
     claimedHeadHashHex: snapshot.headHashHex,
     attestations: snapshot.attestations.map((a) => ({
       ...a,
-      attesterUserId: userIdOf(a.attesterUserId),
+      attesterUserId: a.attesterUserId,
     })),
   });
 });

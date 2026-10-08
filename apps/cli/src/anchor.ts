@@ -15,7 +15,7 @@
 // no plaintext values or key material (compatible with the diskless
 // invariant — what writes it is the user's redirect, and it is non-secret).
 
-import { isEnvironmentId, isProjectId, type ProjectId } from "@maruhi/core";
+import { decodeEnvironmentId, isEnvironmentId, isProjectId, type ProjectId } from "@maruhi/core";
 import { Effect, Schema } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -46,7 +46,9 @@ export function buildRepositoryAnchor(verified: VerifiedProject): RepositoryAnch
   const environments: Record<string, number> = {};
   // Sort by environment ID ascending for deterministic output (keeps committed diffs stable)
   for (const environmentId of [...verified.state.environments.keys()].toSorted()) {
-    const environment = verified.state.environments.get(environmentId);
+    const environment = isEnvironmentId(environmentId)
+      ? verified.state.environments.get(decodeEnvironmentId(environmentId))
+      : undefined;
     if (environment !== undefined) {
       environments[environmentId] = environment.currentEpoch;
     }
@@ -165,7 +167,9 @@ export const checkRepositoryAnchor = Effect.fn("anchor.checkRepositoryAnchor")(f
     // create_environment was rolled back, so it is the same evidence
     // (the wording differs — a regression and an absence are different
     // observed facts)
-    const environment = verified.state.environments.get(environmentId);
+    const environment = isEnvironmentId(environmentId)
+      ? verified.state.environments.get(decodeEnvironmentId(environmentId))
+      : undefined;
     if (environment === undefined) {
       return yield* Effect.fail(
         cliError(

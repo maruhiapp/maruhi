@@ -1,6 +1,6 @@
 // Shared flag/argument building blocks for the command declarations (discipline: see commands/index.ts).
 
-import { UserIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { Argument, Flag, Param } from "effect/cli";
 
@@ -34,6 +34,24 @@ export const NonBlankUserId = UserIdSchema.check(nonBlank);
  * true` the result is `string | undefined` = meshes directly with
  * context.ts's {@link CommonFlags} (no Option conversion).
  */
+/**
+ * One value-taking option decoding through a branded-id schema — the flag
+ * is where the id enters the CLI, so decoding mints the brand at the
+ * declaration boundary.
+ */
+export function singleValuedAs<A>(
+  name: string,
+  description: string,
+  schema: Schema.ConstraintCodec<A, string>,
+) {
+  return Flag.String(name).pipe(
+    Flag.withDescription(description),
+    Flag.withSchema(schema),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  );
+}
+
 export function singleValued(name: string, description: string) {
   return Flag.String(name).pipe(
     Flag.withDescription(description),
@@ -83,13 +101,21 @@ export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec
 /** The common flags an environment command takes (same names as context.ts's CommonFlags). */
 export const commonFlags = () => ({
   ...projectFlags(),
-  env: singleValued("env", "Environment ID (default: the `defaultEnvironment` setting)"),
+  env: singleValuedAs(
+    "env",
+    "Environment ID (default: the `defaultEnvironment` setting)",
+    EnvironmentIdSchema,
+  ),
 });
 
 /** The common flags a project-level command takes (no env). */
 export const projectFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
-  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
+  project: singleValuedAs(
+    "project",
+    "Project ID (default: the `defaultProject` setting)",
+    ProjectIdSchema,
+  ),
 });
 
 /** The common flags a session-level command takes (neither project nor env). */
@@ -139,8 +165,8 @@ export const proposalFlags = () => ({
 export function scopeEnvFlag(description: string) {
   return Flag.String("env").pipe(
     Flag.withDescription(description),
-    Flag.withSchema(NonBlank),
-    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly string[])
+    Flag.withSchema(EnvironmentIdSchema),
+    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly EnvironmentId[])
     Flag.atLeast(0),
   );
 }

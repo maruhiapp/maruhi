@@ -2,7 +2,7 @@
 // the kind-5 sweep -> the local record -> registry row deletion -> the
 // token-revocation proposal (the group's overview lives in device.ts).
 
-import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
+import { decodeUserId, type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -28,7 +28,6 @@ import {
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
@@ -159,7 +158,7 @@ export const deviceRevokeOp = Effect.fn("device-revoke.deviceRevokeOp")(function
   readonly revokeToken: boolean;
 }): Effect.fn.Return<DeviceRevokeSummary, CliError, CliServices> {
   const io = yield* CliIo;
-  const targetUserId = input.user === undefined ? input.session.userId : userIdOf(input.user);
+  const targetUserId = input.user === undefined ? input.session.userId : decodeUserId(input.user);
   const self = targetUserId === input.session.userId;
   const masterKeys = yield* loadMasterKeys(input.session);
   const { registry, refs, reserveFps } = yield* prepareRevokeRefs({

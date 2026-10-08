@@ -20,7 +20,12 @@
 //   later — the same line as rotation-sweep.ts's `createdAtSeq >
 //   seq` exclusion)
 
-import { isEnvironmentId, type EnvironmentId, type UserId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  isEnvironmentId,
+  type EnvironmentId,
+  type UserId,
+} from "@maruhi/core";
 import type { ChainMember, DeviceCap, MemberScope, ScopePayloadFields } from "@maruhi/crypto";
 import {
   ALL_SCOPE,
@@ -33,7 +38,6 @@ import { Effect } from "effect";
 import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
-import { environmentIdOf } from "./ids.ts";
 
 /** The user-facing scope display (`all` / `no environments` / an enumeration of environment ids. Ids are neutralized). */
 export function describeScope(scope: MemberScope | ScopePayloadFields): string {
@@ -132,7 +136,7 @@ export function scopeFromFlags(input: {
   }
   return Effect.succeed({
     kind: "listed",
-    environmentIds: [...unique].map(environmentIdOf).toSorted(compareCodePoints),
+    environmentIds: [...unique].map(decodeEnvironmentId).toSorted(compareCodePoints),
   });
 }
 

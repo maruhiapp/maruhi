@@ -17,7 +17,7 @@
 // a colluding server injecting a false DEK — §14.2-1).
 
 import type { RecipientDek } from "@maruhi/api-schema";
-import { cryptoEffect, type EnvironmentId, isEnvironmentId, type UserId } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type UserId } from "@maruhi/core";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -37,7 +37,6 @@ import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 import { deletedEnvironmentMessage, describeScope, outOfScopeMessage } from "./scope.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
@@ -88,7 +87,7 @@ function verifyAndUnwrapOne(input: {
           recipientEncPubHex: recipient.encPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
-          signerUserId: userIdOf(wrap.signerUserId),
+          signerUserId: wrap.signerUserId,
         },
         signatureHex: wrap.signatureHex,
         signerPublicKey: signerKey,
@@ -157,7 +156,7 @@ function verifyAndUnwrapOne(input: {
 export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<EnvironmentId> {
   const deleted = new Set<EnvironmentId>();
   for (const [key, environment] of verified.state.environments) {
-    if (environment.deletedAtSeq !== null && isEnvironmentId(key)) {
+    if (environment.deletedAtSeq !== null) {
       deleted.add(key);
     }
   }
@@ -166,12 +165,11 @@ export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet
 
 /**
  * The chain-verified environment ids in `createdAtSeq` insertion order's
- * map-key view (the chain keys are the ids by construction; the
- * ReadonlyMap's string index erases the brand — the §12-1 guard takes it
- * back, an out-of-form key is unreachable on a verified chain).
+ * map-key view (the keys are minted EnvironmentId at the verified
+ * state's seal — chain-verify.ts's sealChainState).
  */
 export function chainEnvironmentIds(verified: VerifiedProject): readonly EnvironmentId[] {
-  return [...verified.state.environments.keys()].filter(isEnvironmentId);
+  return [...verified.state.environments.keys()];
 }
 
 /**

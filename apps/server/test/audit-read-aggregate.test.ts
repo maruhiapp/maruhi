@@ -142,7 +142,11 @@ function aggregatedRead(
     actorUserId: testUserId(actorUserId),
     environmentId,
     payload: auditReadPayload(
-      variableIds.map((variableId) => ({ variableId, epoch: 1, version: 1 })),
+      variableIds.map((variableId) => ({
+        variableId: testVariableId(variableId),
+        epoch: 1,
+        version: 1,
+      })),
     ),
   };
 }

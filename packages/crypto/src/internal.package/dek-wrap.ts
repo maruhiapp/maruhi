@@ -4,7 +4,7 @@
 // Open is KeyPair-only (public key included): passing a bare private key would force
 // extractable=true, so that path does not exist (CRYPTO_SPEC §2, the spike-c findings).
 
-import type { EnvironmentId, ProjectId, UserId } from "./chain-types.ts";
+import type { EnvironmentId, KeyFingerprintHex, ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { hpkeSuite } from "./hpke.ts";
@@ -16,7 +16,13 @@ export interface DekWrapContext {
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
   readonly epoch: number;
-  readonly recipientUserId: UserId;
+  /**
+   * The member's user id, or — for server-destined wraps — the server-key
+   * fingerprint, which per CRYPTO_SPEC §9 ("the HPKE info for server-destined
+   * wraps") stands in the recipient_user_id position (the server has no
+   * user_id).
+   */
+  readonly recipientUserId: UserId | KeyFingerprintHex;
 }
 
 /** A DEK wrapped for one recipient: HPKE encapsulated key + ciphertext. */

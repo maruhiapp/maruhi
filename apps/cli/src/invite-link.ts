@@ -31,6 +31,8 @@
 // of no compatibility path).
 
 import {
+  decodeEnvironmentId,
+  decodeUserId,
   isEnvironmentId,
   isProjectId,
   type EnvironmentId,
@@ -153,11 +155,6 @@ const STRING_PARAMS = {
 
 type StringParams = Readonly<Record<keyof typeof STRING_PARAMS, string>>;
 
-/** The `iu` slot carries the inviter's internal user id — the `iu` bound (1..1024 non-blank) narrows the brand (UserId carries provenance, not a format). */
-function nonBlankUserId(value: string): value is UserId {
-  return value.trim() !== "";
-}
-
 /** Bulk-fetch of the required string parameters (null on any missing/malformed). */
 function stringParams(params: URLSearchParams): StringParams | null {
   const out: Partial<Record<keyof typeof STRING_PARAMS, string>> = {};
@@ -200,11 +197,10 @@ function parseScope(params: URLSearchParams): {
   }
   // every() does not narrow the element brand — filter does (the length
   // check keeps `malformed = null` identical)
-  const environmentIds = ids.filter(isEnvironmentId);
-  if (environmentIds.length !== ids.length) {
+  if (!ids.every(isEnvironmentId)) {
     return null;
   }
-  return { scopeKind: "listed", scopeEnvironmentIds: environmentIds };
+  return { scopeKind: "listed", scopeEnvironmentIds: ids.map(decodeEnvironmentId) };
 }
 
 /** Interprets `p=` (the project ID). */
@@ -228,7 +224,7 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
     role === null ||
     scope === null ||
     inviterLogin === "invalid" ||
-    !nonBlankUserId(strings.iu)
+    strings.iu.trim() === ""
   ) {
     return null;
   }
@@ -238,7 +234,7 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
     projectId,
     headHashHex: strings.h,
     headSeq,
-    inviterUserId: strings.iu,
+    inviterUserId: decodeUserId(strings.iu),
     inviterEncPubHex: strings.ie,
     inviterSigPubHex: strings.is,
     role,

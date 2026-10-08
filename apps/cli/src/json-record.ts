@@ -12,7 +12,7 @@
 import { dirname } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { isEnvironmentId, isProjectId, type ProjectId } from "@maruhi/core";
+import { isProjectId, type ProjectId, EnvironmentIdSchema } from "@maruhi/core";
 import { MAX_SCOPE_ENVIRONMENTS } from "@maruhi/crypto";
 import { Effect, FileSystem, type PlatformError, Result, Schema } from "effect";
 
@@ -114,9 +114,7 @@ export const Hex64 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
  * A scope's environment-id list (CRYPTO_SPEC §6.2 — AUTH_SPEC §12-1 id
  * format, at most 256, no duplicates).
  */
-export const ScopeEnvironmentIds = Schema.Array(
-  Schema.String.pipe(Schema.refine(isEnvironmentId, { expected: "environment id" })),
-).check(
+export const ScopeEnvironmentIds = Schema.Array(EnvironmentIdSchema).check(
   Schema.makeFilter(
     (ids) =>
       (ids.length <= MAX_SCOPE_ENVIRONMENTS && new Set(ids).size === ids.length) ||

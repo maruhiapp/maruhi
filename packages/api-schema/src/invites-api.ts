@@ -137,7 +137,7 @@ export const InvitationSummarySchema = Schema.Struct({
   role: InviteRoleSchema,
   ...inviteScopeFields,
   status: InviteStatusSchema,
-  inviterUserId: Schema.String,
+  inviterUserId: UserIdSchema,
   issuance: InviteIssuanceSchema,
   createdAtMs: Schema.Number,
   expiresAtMs: Schema.Number,

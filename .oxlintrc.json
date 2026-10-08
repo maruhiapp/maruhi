@@ -51,7 +51,8 @@
                   "decodeOrgId",
                   "decodeProjectId",
                   "decodeEnvironmentId",
-                  "decodeVariableId"
+                  "decodeVariableId",
+                  "environmentIdSchema"
                 ],
                 "message": "UserId / ProviderUserId / KeyFingerprintHex / OrgId / ProjectId / EnvironmentId / VariableId are minted only at a trust boundary (packages/core/src/identity.ts and packages/core/src/project.ts / auth.ts): a wire schema in packages/api-schema, a branded Drizzle column, a fingerprint computed from keys (userKeyFingerprintHex / serverKeyFingerprintHex), a generated id, or one of the hand-written mint sites listed in .oxlintrc.json. Read the value from where it was already minted (the verified chain state, a decoded field, a branded column) instead"
               },
@@ -75,21 +76,43 @@
       // trust boundaries — api-schema's wire definitions, the CLI's flag /
       // config / record parsers, the server's row mapping (Drizzle columns
       // and the data store's branded reads), handler decoding, generation,
-      // and the provider API's subject. The `is*` narrowing guards are NOT
-      // restricted on purpose: they check the format themselves, so a
-      // narrowing `if (isEnvironmentId(v))` is a verified mint wherever it
-      // legitimately happens — unlike the unchecked `as` casts the
-      // brand-casts tripwire forbids. The egress and test-support bans
-      // above are restated because an override replaces the rule's options
+      // and the provider API's subject. The `is*` guards are NOT restricted:
+      // isProjectId / isUserId / isKeyFingerprintHex narrow, which is itself
+      // a format-verified mint wherever it legitimately happens (unique
+      // formats), while isEnvironmentId / isVariableId are non-narrowing
+      // format checks — a guard that cannot mint needs no boundary, and the
+      // actual mint next to them (decode* / a schema) is what this list
+      // pins. The egress and test-support bans above are restated because
+      // an override replaces the rule's options
       "files": [
         "packages/api-schema/src/**",
         "apps/cli/src/commands/flags.ts",
+        "apps/cli/src/commands/audit.ts",
+        "apps/cli/src/commands/ci.ts",
+        "apps/cli/src/commands/device.ts",
+        "apps/cli/src/commands/env.ts",
+        "apps/cli/src/commands/rotation.ts",
+        "apps/cli/src/commands/server.ts",
         "apps/cli/src/keychain.ts",
         "apps/cli/src/context.ts",
         "apps/cli/src/anchor.ts",
+        "apps/cli/src/audit.ts",
+        "apps/cli/src/audit-reconcile.ts",
+        "apps/cli/src/config-schema.ts",
+        "apps/cli/src/device-revoke.ts",
+        "apps/cli/src/env-list.ts",
         "apps/cli/src/floor-log-decode.ts",
+        "apps/cli/src/floor.ts",
+        "apps/cli/src/invite-link.ts",
         "apps/cli/src/json-record.ts",
         "apps/cli/src/mcp.ts",
+        "apps/cli/src/meta-statement.ts",
+        "apps/cli/src/own-devices.ts",
+        "apps/cli/src/pins.ts",
+        "apps/cli/src/proxy.package/proxy-accept.ts",
+        "apps/cli/src/rotation-sweep.ts",
+        "apps/cli/src/scope.ts",
+        "apps/cli/src/sync.package/command.ts",
         "apps/server/src/ids.ts",
         "apps/server/src/auth.package/github.ts",
         "apps/server/src/restore-worker.ts",
@@ -103,6 +126,7 @@
         "apps/server/src/data/data-store-wrap-queries.ts",
         "apps/server/src/data/data-store-write-ops.ts",
         "apps/server/src/db.package/identities.ts",
+        "apps/server/src/db.package/invites.ts",
         "apps/server/src/audit-store.ts",
         "apps/server/src/dek-wraps.ts",
         "apps/server/src/handlers/handlers-audit.ts",

@@ -27,7 +27,6 @@ import { floorHandleFor } from "./context.ts";
 import { environmentKeysFor } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { environmentIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
 import { decryptVerifiedValue } from "./pull.ts";
@@ -151,7 +150,7 @@ const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(functi
   const pulled = yield* pullVerifiedEnvironment({
     client: context.client,
     verified: context.verified,
-    environmentId: environmentIdOf(environmentId),
+    environmentId,
     resync: context.resync,
     floor,
   });
@@ -174,10 +173,10 @@ const resolveInputs = Effect.fn("var-rotate.resolveInputs")(function* (
   for (const [inputName, ref] of Object.entries(refs)) {
     let source = local;
     if (ref.environment !== null && ref.environment !== context.environmentId) {
-      const cached = others.get(environmentIdOf(ref.environment));
+      const cached = others.get(ref.environment);
       if (cached === undefined) {
-        const pulled = yield* pullOtherEnvironment(context, environmentIdOf(ref.environment));
-        others.set(environmentIdOf(ref.environment), pulled);
+        const pulled = yield* pullOtherEnvironment(context, ref.environment);
+        others.set(ref.environment, pulled);
         source = pulled;
       } else {
         source = cached;

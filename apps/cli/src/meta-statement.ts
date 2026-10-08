@@ -22,6 +22,7 @@ import {
   type UserId,
   type VariableId,
   isVariableId,
+  decodeVariableId,
 } from "@maruhi/core";
 import type { MetaStatementContext } from "@maruhi/crypto";
 import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
@@ -40,7 +41,7 @@ import { cliError, type CliError } from "./errors.ts";
 export function generateVariableId(): VariableId {
   const id = `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
   if (!isVariableId(id)) throw new Error("generated variable id is malformed");
-  return id;
+  return decodeVariableId(id);
 }
 
 /**

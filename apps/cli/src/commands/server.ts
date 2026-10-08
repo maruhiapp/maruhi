@@ -1,6 +1,6 @@
 // `maruhi server` (discipline: see commands/index.ts).
 
-import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
@@ -81,7 +81,7 @@ function parseEnvironmentsFlag(
       ),
     );
   }
-  return Effect.succeed(ids.filter(isEnvironmentId));
+  return Effect.succeed(ids.map(decodeEnvironmentId));
 }
 
 /** The deployment whose server key `server grant --key-from` grants (a mirror — AUTH_SPEC §11-7 ruling F). */

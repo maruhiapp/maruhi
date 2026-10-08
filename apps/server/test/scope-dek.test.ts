@@ -245,7 +245,7 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
 
 const memberOf = (userId: string, scope: MemberScope) =>
   [
-    userId,
+    testUserId(userId),
     {
       userId: testUserId(userId),
       role: "member" as const,

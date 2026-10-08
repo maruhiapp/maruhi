@@ -2,7 +2,7 @@
 // and invite.* audit appended in the same batch).
 
 import type { EnvironmentId, ProjectId, UserId, UserOrgAuditEventPayload } from "@maruhi/core";
-import { isEnvironmentId } from "@maruhi/core";
+import { decodeEnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { and, count, eq, gt, gte, inArray, min, or, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -197,9 +197,9 @@ function scopeOf(row: InvitationRow): InviteScope {
     const parsed: unknown = JSON.parse(row.scopeEnvironments);
     if (
       Array.isArray(parsed) &&
-      parsed.every((id): id is EnvironmentId => typeof id === "string" && isEnvironmentId(id))
+      parsed.every((id) => typeof id === "string" && isEnvironmentId(id))
     ) {
-      ids = parsed;
+      ids = parsed.map((id) => decodeEnvironmentId(String(id)));
     }
   } catch {
     ids = [];

@@ -14,7 +14,6 @@ import {
 import { countNoun, displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
-import { environmentIdOf } from "../ids.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { type MemberAddSummary, memberAddOp } from "../member-add.ts";
 import {
@@ -497,7 +496,7 @@ export function makeMemberCommands(onExitCode: (code: number) => void) {
           project: values.project,
           target: values["user-id"],
           role: values.role,
-          env: values.env.map(environmentIdOf),
+          env: values.env,
           allEnvs: values["all-envs"],
           noEnvs: values["no-envs"],
           expires: values.expires,

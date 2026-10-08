@@ -30,7 +30,6 @@ import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import {
   DAY_MS,
@@ -82,7 +81,7 @@ function fetchRotationFlags(
         const { targetUserId, ...rest } = flag;
         return {
           ...rest,
-          ...(targetUserId === undefined ? {} : { targetUserId: userIdOf(targetUserId) }),
+          ...(targetUserId === undefined ? {} : { targetUserId }),
         };
       }),
     ),

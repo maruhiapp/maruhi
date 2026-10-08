@@ -1,6 +1,6 @@
 // `maruhi rotation` (discipline: see commands/index.ts).
 
-import { isEnvironmentId, isVariableId } from "@maruhi/core";
+import { decodeEnvironmentId, decodeVariableId, isEnvironmentId, isVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -145,8 +145,8 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       // The request's shape (an --all / variable-id contradiction, a missing target) is settled before communication too
       const request = yield* parseDismissRequest({
         all: values.all,
-        environmentId: environmentId ?? null,
-        variableId: variableId ?? null,
+        environmentId: environmentId === undefined ? null : decodeEnvironmentId(environmentId),
+        variableId: variableId === undefined ? null : decodeVariableId(variableId),
       });
       const context = yield* openMetadataProject({
         server: values.server,
@@ -188,7 +188,9 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
         return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
       }
       const context = yield* openMetadataProject(values);
-      yield* rotationProposalsOp(context, { environmentId });
+      yield* rotationProposalsOp(context, {
+        environmentId: environmentId === undefined ? undefined : decodeEnvironmentId(environmentId),
+      });
     }),
   ).pipe(
     Command.withDescription(

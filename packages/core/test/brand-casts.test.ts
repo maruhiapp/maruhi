@@ -15,12 +15,24 @@ const REPO_ROOT = join(import.meta.dirname, "../../..");
 const SOURCE_ROOTS = ["apps", "packages"];
 
 /**
- * `as Brand` for each of the three brands (the angle-bracket form is not used
+ * `as Brand` for each of the seven brands (the angle-bracket form is not used
  * in this codebase's TypeScript; `$type<UserId>()` on a Drizzle column is a
  * branded column, the sanctioned DB mint).
  */
 const BRAND_ASSERTION =
   /\bas\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
+
+/**
+ * A hand-written type predicate returning a brand (`x is Brand`) is a mint
+ * with no boundary: any caller's string becomes branded by `if` alone. Such
+ * predicates live only in packages/core/src — the guard declarations
+ * themselves (isProjectId / isUserId / isKeyFingerprintHex, and the private
+ * narrows* that feed the Schema.refine mints in project.ts).
+ */
+const BRAND_PREDICATE =
+  /\w+\s+is\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
+
+const PREDICATE_ROOT = "packages/core/src/";
 
 /**
  * The one sanctioned assertion: the chain verifier's fingerprint computation,
@@ -59,6 +71,21 @@ describe("identity brands are never asserted in shipped source", () => {
         .split("\n")
         .flatMap((line, index) =>
           BRAND_ASSERTION.test(line) ? [`${path}:${index + 1}: ${line.trim()}`] : [],
+        );
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it("has no brand-returning type predicate outside the core guard declarations", () => {
+    const offenders = shippedSources().flatMap((path) => {
+      if (path.startsWith(PREDICATE_ROOT)) {
+        return [];
+      }
+      const text = readFileSync(join(REPO_ROOT, path), "utf8");
+      return text
+        .split("\n")
+        .flatMap((line, index) =>
+          BRAND_PREDICATE.test(line) ? [`${path}:${index + 1}: ${line.trim()}`] : [],
         );
     });
     expect(offenders).toEqual([]);

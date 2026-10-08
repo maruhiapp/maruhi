@@ -31,13 +31,12 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId, type UserId, UserIdSchema } from "@maruhi/core";
 import type { ScopeKind } from "@maruhi/crypto";
 import { Clock, Context, Effect, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
-import { userIdOf } from "./ids.ts";
 import { GITHUB_LOGIN } from "./invite-link.ts";
 import {
   Hex32,
@@ -136,7 +135,7 @@ const INVITE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const InviteAnchorSchema = Schema.Struct({
   headSeq: PositiveInt,
   headHashHex: Hex64,
-  inviterUserId: Schema.String.check(Schema.isPattern(/^.{1,1024}$/s)),
+  inviterUserId: UserIdSchema.check(Schema.isPattern(/^.{1,1024}$/s)),
   inviterKeyFingerprintHex: Hex32,
   inviterSigPubHex: Hex64,
   verifiedAtSeq: Schema.NullOr(PositiveInt),
@@ -177,10 +176,7 @@ export function issuedPinOf(
 
 const mintLoadedFile = (file: (typeof PinsFileSchema)["Type"]): InvitePins => ({
   ...file,
-  anchor:
-    file.anchor === null
-      ? null
-      : { ...file.anchor, inviterUserId: userIdOf(file.anchor.inviterUserId) },
+  anchor: file.anchor === null ? null : file.anchor,
 });
 
 /** File-backed pin store at `dir` (used by both production and tests). */

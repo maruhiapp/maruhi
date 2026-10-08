@@ -18,7 +18,13 @@
 // re-wraps are avoided).
 
 import type { WrappedDek } from "@maruhi/api-schema";
-import { cryptoEffect, type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  type EnvironmentId,
+  type KeyFingerprintHex,
+  type ProjectId,
+  type UserId,
+} from "@maruhi/core";
 import type {
   ChainDevice,
   ChainMember,
@@ -43,7 +49,6 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { userIdOf } from "./ids.ts";
 import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
 /**
@@ -61,7 +66,7 @@ export type WrapRecipient =
     }
   | { readonly kind: "server"; readonly grant: ServerGrant };
 
-function recipientId(recipient: WrapRecipient): string {
+function recipientId(recipient: WrapRecipient): UserId | KeyFingerprintHex {
   return recipient.kind === "member"
     ? recipient.member.userId
     : recipient.grant.serverKeyFingerprintHex;
@@ -202,7 +207,7 @@ function wrapAndSignForEffect(input: {
           projectId: input.projectId,
           environmentId,
           epoch,
-          recipientUserId: userIdOf(id),
+          recipientUserId: id,
         },
       }),
     ).pipe(Effect.mapError(() => new WrapBuildFailed({ reason: "The HPKE wrap failed" })));
@@ -215,7 +220,7 @@ function wrapAndSignForEffect(input: {
           projectId: input.projectId,
           environmentId,
           epoch,
-          recipientUserId: userIdOf(id),
+          recipientUserId: id,
           recipientEncPubHex: encPubHex,
           encHex,
           ciphertextHex,
@@ -232,7 +237,7 @@ function wrapAndSignForEffect(input: {
       suite: SUITE_ID,
       epoch,
       recipientClass: recipient.kind === "server" ? ("server" as const) : ("member" as const),
-      recipientUserId: userIdOf(id),
+      recipientUserId: id,
       recipientEncPubHex: encPubHex,
       encHex,
       ciphertextHex,

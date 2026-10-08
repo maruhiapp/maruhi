@@ -18,6 +18,7 @@ import {
   EnvironmentIdSchema,
   ProjectIdSchema,
   ROTATION_CONNECTORS,
+  UserIdSchema,
   VariableIdSchema,
 } from "@maruhi/core";
 import { Schema } from "effect";
@@ -82,7 +83,7 @@ export const RotationFlagSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
   variableId: VariableIdSchema,
   basis: RotationFlagBasisSchema,
-  targetUserId: Schema.optionalKey(Schema.String),
+  targetUserId: Schema.optionalKey(UserIdSchema),
   targetServerKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   recommendedAtMs: Schema.Number,
   triggerChainSeq: PositiveInt,

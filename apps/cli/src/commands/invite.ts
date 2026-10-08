@@ -15,7 +15,6 @@ import {
 } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
-import { environmentIdOf } from "../ids.ts";
 import { inviteAcceptOp } from "../invite-accept.ts";
 import { inviteCreateOp } from "../invite-create.ts";
 import {
@@ -214,7 +213,7 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
       server: values.server,
       project: values.project,
       role: values.role,
-      env: values.env.map(environmentIdOf),
+      env: values.env,
       noEnvs: values["no-envs"],
       github: values.github,
     }),

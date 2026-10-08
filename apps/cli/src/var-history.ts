@@ -38,7 +38,6 @@ import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
-import { userIdOf } from "./ids.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
@@ -330,7 +329,7 @@ const verifyVersion = Effect.fnUntraced(function* (input: {
         nonceHex: payload.nonceHex,
         ciphertextHex: payload.ciphertextHex,
         prevValueSigHashHex: payload.prevValueSigHashHex,
-        writerUserId: userIdOf(payload.writerUserId),
+        writerUserId: payload.writerUserId,
         chainHeadHashHex: payload.chainHeadHashHex,
         chainHeadSeq: payload.chainHeadSeq,
       },
@@ -403,7 +402,7 @@ const verifiedRange = Effect.fn("var-history.verifiedRange")(function* (input: {
       valueChainHeadSeq: payload.chainHeadSeq,
       valueChainHeadHashHex: payload.chainHeadHashHex,
       valueSignatureHex: payload.signatureHex,
-      writerUserId: userIdOf(payload.writerUserId),
+      writerUserId: payload.writerUserId,
       writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
     });
   }

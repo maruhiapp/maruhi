@@ -195,7 +195,7 @@ export const KeyWrapStatusSchema = Schema.Struct({
       guardians: Schema.Array(
         Schema.Struct({
           shareIndex: Schema.Int,
-          guardianUserId: Schema.String,
+          guardianUserId: UserIdSchema,
           guardianKeyFingerprintHex: KeyFingerprintHex,
         }),
       ),
@@ -205,7 +205,7 @@ export const KeyWrapStatusSchema = Schema.Struct({
 
 /** One row of the wards-I-guard list (§13-7 `GET /auth/guardian/wards`). */
 export const WardSummarySchema = Schema.Struct({
-  wardUserId: Schema.String,
+  wardUserId: UserIdSchema,
   /** Display snapshot of linked_identities.provider_login (not an identifier — §2) */
   wardLogin: Schema.NullOr(Schema.String),
   groupId: LedgerIdSchema,
@@ -230,7 +230,7 @@ export const GuardianDeviceShareSchema = Schema.Struct({
  */
 export const GuardianShareResultSchema = Schema.Struct({
   groupId: LedgerIdSchema,
-  wardUserId: Schema.String,
+  wardUserId: UserIdSchema,
   mode: GuardianModeSchema,
   shareIndex: Schema.Int,
   deviceShares: Schema.Array(GuardianDeviceShareSchema),
@@ -248,7 +248,7 @@ export const HandoffSourceSchema = LedgerIdSchema;
 
 /** Lookup of a request (for approvers — §13-7). `roles` lists the approval shapes the calling principal can take. */
 export const HandoffLookupSchema = Schema.Struct({
-  wardUserId: Schema.String,
+  wardUserId: UserIdSchema,
   wardLogin: Schema.NullOr(Schema.String),
   expiresAtMs: Schema.Number,
   roles: Schema.Array(
@@ -274,7 +274,7 @@ export const HandoffApprovalSchema = Schema.Struct({
 export const HandoffApprovalResultSchema = Schema.Struct({
   source: HandoffSourceSchema,
   shareIndex: ShareIndexSchema,
-  approverUserId: Schema.String,
+  approverUserId: UserIdSchema,
   approverKeyFingerprintHex: KeyFingerprintHex,
   encHex: HpkeEncHex,
   ciphertextHex: ShareCiphertextHex,

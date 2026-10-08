@@ -27,7 +27,13 @@
 // **delete_environment entry on the verified chain** (never silently
 // skipped on the server's 404 claim alone — §7; CRYPTO_SPEC §6.2).
 
-import { type EnvironmentId } from "@maruhi/core";
+import {
+  decodeUserId,
+  type EnvironmentId,
+  isKeyFingerprintHex,
+  type KeyFingerprintHex,
+  type UserId,
+} from "@maruhi/core";
 import {
   ALL_SCOPE,
   type ChainMember,
@@ -179,7 +185,7 @@ export type RotationMandateKind =
 export interface RotationMandate {
   readonly kind: RotationMandateKind;
   /** The member family / device-revoked = the target user_id / server-revoked = the server key FP. */
-  readonly target: string;
+  readonly target: UserId | KeyFingerprintHex;
   readonly seq: number;
   /**
    * The mandate's environment set (CRYPTO_SPEC §7 — concretized to the
@@ -371,19 +377,26 @@ function reversedAdvice(state: string): string {
 function mandateAdvice(verified: VerifiedProject, mandate: UnconvergedMandate): string {
   switch (mandate.kind) {
     case "member-removed":
-      return verified.state.members.has(mandate.target)
+      return verified.state.members.has(decodeUserId(mandate.target))
         ? reversedAdvice("the target has been re-added")
         : `re-running \`maruhi member remove ${displayText(mandate.target)}\` converges the mandate`;
     case "role-demoted":
-      return demotionAdvice(verified.state.members.get(mandate.target), mandate);
+      return demotionAdvice(verified.state.members.get(decodeUserId(mandate.target)), mandate);
     case "scope-narrowed":
-      return narrowingAdvice(verified, verified.state.members.get(mandate.target), mandate);
+      return narrowingAdvice(
+        verified,
+        verified.state.members.get(decodeUserId(mandate.target)),
+        mandate,
+      );
     case "server-revoked":
-      return verified.state.serverGrants.has(mandate.target)
+      return isKeyFingerprintHex(mandate.target) && verified.state.serverGrants.has(mandate.target)
         ? reversedAdvice("the target server key has been re-granted")
         : "re-running `maruhi server revoke` converges the mandate";
     case "device-revoked":
-      return deviceRevocationAdvice(verified.state.members.get(mandate.target), mandate);
+      return deviceRevocationAdvice(
+        verified.state.members.get(decodeUserId(mandate.target)),
+        mandate,
+      );
   }
 }
 

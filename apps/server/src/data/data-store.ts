@@ -710,7 +710,7 @@ interface LeaseWindowDecision {
 
 /** A proposed value sealed to one recipient device (a stored row — AUTH_SPEC §14-5). */
 export interface StoredProposalWrap {
-  readonly recipientUserId: UserId | KeyFingerprintHex;
+  readonly recipientUserId: UserId;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;

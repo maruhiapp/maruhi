@@ -38,6 +38,7 @@
 import { dirname, join } from "node:path";
 
 import {
+  decodeVariableId,
   type EnvironmentId,
   isVariableId,
   type ProjectId,
@@ -447,7 +448,7 @@ export function floorKeyAsVariableId(key: string): VariableId {
   if (!isVariableId(key)) {
     throw new Error(`floor record has a variable key out of the id form: ${key}`);
   }
-  return key;
+  return decodeVariableId(key);
 }
 
 interface VersionedEvidence {

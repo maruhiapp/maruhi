@@ -46,7 +46,6 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliError } from "./errors.ts";
-import { projectIdOf } from "./ids.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 
@@ -97,13 +96,11 @@ export function fetchRegistry(
 /** Resolves the project set: `--project` only when given, otherwise the membership list (claimed = for discovery). */
 export function resolveProjectIds(
   client: MaruhiClient,
-  project: string | undefined,
+  project: ProjectId | undefined,
 ): Effect.Effect<readonly ProjectId[], CliError> {
   return project === undefined
     ? fetchProjectMemberships(client).pipe(
-        Effect.map((rows) =>
-          rows.map((row) => projectIdOf(row.projectId)).toSorted(compareCodePoints),
-        ),
+        Effect.map((rows) => rows.map((row) => row.projectId).toSorted(compareCodePoints)),
       )
-    : Effect.succeed([projectIdOf(project)]);
+    : Effect.succeed([project]);
 }

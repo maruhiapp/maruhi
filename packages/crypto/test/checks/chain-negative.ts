@@ -876,7 +876,7 @@ function checkpointsMatch(
   return (
     state.checkpoints.size === Object.keys(expected).length &&
     Object.entries(expected).every(([environmentId, checkpoint]) => {
-      const actual = state.checkpoints.get(environmentId);
+      const actual = state.checkpoints.get(testEnvironmentId(environmentId));
       return (
         actual !== undefined &&
         actual.seq === checkpoint.seq &&
@@ -895,7 +895,7 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
     state.environments.size === Object.keys(expected).length &&
     Object.entries(expected).every(
       ([environmentId, epoch]) =>
-        state.environments.get(environmentId)?.currentEpoch === Number(epoch),
+        state.environments.get(testEnvironmentId(environmentId))?.currentEpoch === Number(epoch),
     )
   );
 }
@@ -916,7 +916,8 @@ function deletedEnvironmentsMatch(
   return (
     deleted.length === wanted.length &&
     wanted.every(
-      ([environmentId, seq]) => state.environments.get(environmentId)?.deletedAtSeq === seq,
+      ([environmentId, seq]) =>
+        state.environments.get(testEnvironmentId(environmentId))?.deletedAtSeq === seq,
     )
   );
 }
@@ -1038,7 +1039,7 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   // A correct append (rotate_epoch by admin; current epoch 2 → 3) verifies
   // and the state (current epoch, epoch-start seq, commitment) updates
   const extended = await appendRotation(base, "env-prod-0001", 3);
-  const prod = extended?.environments.get("env-prod-0001");
+  const prod = extended?.environments.get(testEnvironmentId("env-prod-0001"));
   c.push(
     "chain semantic: valid append by admin verifies",
     extended?.headSeq === NEXT_SEQ &&
@@ -1080,7 +1081,9 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   const result =
     rotate === undefined ? undefined : await verifyChain([...typedEntries, create, rotate]);
   const chained =
-    result?.ok === true ? result.value.environments.get("env-chained-0006") : undefined;
+    result?.ok === true
+      ? result.value.environments.get(testEnvironmentId("env-chained-0006"))
+      : undefined;
   c.push(
     "chain semantic: create then rotate chain",
     environmentStateIs(chained, {

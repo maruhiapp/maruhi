@@ -18,11 +18,17 @@
 // reads. `.oxlintrc.json` enforces this: the schemas and `decode*` mints
 // below may be imported only by the listed mint sites.
 //
-// The `is*` narrowing guards are deliberately unrestricted: each guard
-// performs the format check itself, so narrowing through
-// `if (isEnvironmentId(v))` is a verified mint wherever a boundary
-// legitimately sits — unlike the unchecked `as` casts the
-// brand-casts.test.ts tripwire forbids.
+// The `is*` guards have two policies:
+//
+// - `isProjectId` narrows. Its format is unique to the brand (64-hex), so a
+//   narrowing check is a verified mint — deliberate, like the `UserId` /
+//   `KeyFingerprintHex` guards in identity.ts.
+// - `isEnvironmentId` / `isVariableId` are non-narrowing predicates. The two
+//   brands share one wire format, so a `value is` guard on either would let
+//   any file mint `VariableId` from an environment id string — the very
+//   confusion the brands exist to prevent. Minting is consolidated in the
+//   schemas and `decode*` below (`.oxlintrc.json`-restricted); a boolean
+//   check mints nothing, so it needs no restriction.
 
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
 import { Schema } from "effect";
@@ -62,17 +68,31 @@ export const decodeProjectId: (value: string) => ProjectId = Schema.decodeSync(P
 
 const RESOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-/** Runtime guard matching {@link EnvironmentIdSchema}; narrowing mints the brand. */
-export function isEnvironmentId(value: string): value is EnvironmentId {
+/**
+ * Format check matching {@link EnvironmentIdSchema}. Non-narrowing on
+ * purpose (see the header): minting is the schema's and `decodeEnvironmentId`'s
+ * job.
+ */
+export function isEnvironmentId(value: string): boolean {
   return RESOURCE_ID_PATTERN.test(value);
 }
 
+const narrowsEnvironmentId = (value: string): value is EnvironmentId =>
+  RESOURCE_ID_PATTERN.test(value);
+
 /** Schema for a client-issued environment id (AUTH_SPEC §12-1). Decoding mints an {@link EnvironmentId}. */
 export const EnvironmentIdSchema = Schema.String.pipe(
-  Schema.refine(isEnvironmentId, {
+  Schema.refine(narrowsEnvironmentId, {
     expected: "environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
   }),
 );
+
+/**
+ * The same mint as {@link EnvironmentIdSchema} with a caller-supplied
+ * failure message (config leaves that must not echo the typed value).
+ */
+export const environmentIdSchema = (message: string) =>
+  Schema.String.annotate({ message }).pipe(Schema.refine(narrowsEnvironmentId, { message }));
 
 /**
  * Mints an {@link EnvironmentId} where no Schema field does the decoding —
@@ -82,14 +102,19 @@ export const EnvironmentIdSchema = Schema.String.pipe(
 export const decodeEnvironmentId: (value: string) => EnvironmentId =
   Schema.decodeSync(EnvironmentIdSchema);
 
-/** Runtime guard matching {@link VariableIdSchema}; narrowing mints the brand. */
-export function isVariableId(value: string): value is VariableId {
+/**
+ * Format check matching {@link VariableIdSchema}. Non-narrowing on purpose
+ * (see the header): minting is the schema's and `decodeVariableId`'s job.
+ */
+export function isVariableId(value: string): boolean {
   return RESOURCE_ID_PATTERN.test(value);
 }
 
+const narrowsVariableId = (value: string): value is VariableId => RESOURCE_ID_PATTERN.test(value);
+
 /** Schema for a client-issued variable id (AUTH_SPEC §12-1). Decoding mints a {@link VariableId}. */
 export const VariableIdSchema = Schema.String.pipe(
-  Schema.refine(isVariableId, {
+  Schema.refine(narrowsVariableId, {
     expected: "variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric)",
   }),
 );

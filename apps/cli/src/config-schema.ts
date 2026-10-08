@@ -13,7 +13,7 @@
 // is a complete reason. A reason never contains the offending value, and
 // never names an array entry's position (the wording never did).
 
-import { isEnvironmentId, type ProjectId } from "@maruhi/core";
+import { environmentIdSchema, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema, SchemaIssue } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -93,8 +93,7 @@ export const stringLeaf = (message: string, test: (value: string) => boolean) =>
   );
 
 /** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). Decoding mints an EnvironmentId. */
-export const environmentId = (message: string) =>
-  Schema.String.annotate({ message }).pipe(Schema.refine(isEnvironmentId, { message }));
+export const environmentId = environmentIdSchema;
 
 /** An environment variable name leaf (run.ts's SAFE_ENV_NAME — a POSIX identifier). */
 export const envNameLeaf = (message: string) =>

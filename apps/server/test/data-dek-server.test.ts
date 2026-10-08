@@ -525,7 +525,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
 const memberOf = (userId: string) =>
   [
-    userId,
+    testUserId(userId),
     {
       userId: testUserId(userId),
       role: "member",
@@ -552,7 +552,7 @@ const grantOf = (
   serverEncPubHex: string = "44".repeat(32),
 ) =>
   [
-    fingerprintHex,
+    testKeyFingerprintHex(fingerprintHex),
     {
       serverKeyFingerprintHex: testKeyFingerprintHex(fingerprintHex),
       serverEncPubHex,

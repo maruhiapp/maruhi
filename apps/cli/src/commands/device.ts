@@ -2,6 +2,7 @@
 
 import { hostname } from "node:os";
 
+import { ProjectIdSchema } from "@maruhi/core";
 import { ALL_SCOPE } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -18,11 +19,17 @@ import {
 } from "../device-revoke.ts";
 import { displayText } from "../display.ts";
 import { CliError } from "../errors.ts";
-import { projectIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { scopeFromFlags } from "../scope.ts";
-import { NonBlank, scopeEnvFlag, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  scopeEnvFlag,
+  serverOnlyFlags,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "./flags.ts";
 import { reportSweepOutcome } from "./shared.ts";
 
 export const deviceAddConfig = {
@@ -38,9 +45,10 @@ export const deviceAddConfig = {
 };
 export const deviceApproveConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Register the device on this project only (default: every project you belong to)",
+    ProjectIdSchema,
   ),
   cap: singleValued(
     "cap",
@@ -60,16 +68,18 @@ export const deviceApproveConfig = {
 };
 export const deviceListConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Show only this project's chain (default: every project you belong to)",
+    ProjectIdSchema,
   ),
 };
 export const deviceRevokeConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Revoke on this project only (default: every project you belong to)",
+    ProjectIdSchema,
   ),
   user: singleValued(
     "user",
@@ -174,7 +184,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
         client: context.client,
         ref,
         cap: { roleCap, scope },
-        project: values.project === undefined ? undefined : projectIdOf(values.project),
+        project: values.project,
       });
       onExitCode(yield* reportApproveOutcomes(outcomes));
     }),
@@ -192,7 +202,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
       yield* deviceListOp({
         session: context.session,
         client: context.client,
-        project: values.project === undefined ? undefined : projectIdOf(values.project),
+        project: values.project,
       });
     }),
   ).pipe(
@@ -211,7 +221,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
         client: context.client,
         refs: values.ref,
         user: values.user,
-        project: values.project === undefined ? undefined : projectIdOf(values.project),
+        project: values.project,
         yes: values.yes,
         revokeToken: values["revoke-token"],
       });

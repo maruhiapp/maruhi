@@ -118,6 +118,7 @@ export {
   decodeVariableId,
   type EnvironmentId,
   EnvironmentIdSchema,
+  environmentIdSchema,
   isEnvironmentId,
   isProjectId,
   isVariableId,

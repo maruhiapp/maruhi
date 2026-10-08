@@ -29,7 +29,7 @@
 // prompts and stdin reads fail, Effect's own logging is routed to stderr,
 // and stdin EOF (the host went away) is a clean exit 0.
 
-import { isEnvironmentId, isProjectId } from "@maruhi/core";
+import { isEnvironmentId, isProjectId, EnvironmentIdSchema } from "@maruhi/core";
 import {
   Cause,
   Console,
@@ -49,7 +49,6 @@ import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./c
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
-import { environmentIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
 import { logNote, NoticeLedger, NoticeObserver } from "./notice.ts";
@@ -57,9 +56,7 @@ import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.package/index.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
 
-const EnvironmentIdParam = Schema.String.pipe(
-  Schema.refine(isEnvironmentId, { expected: "environment id" }),
-);
+const EnvironmentIdParam = EnvironmentIdSchema;
 
 /* -------------------------------------------------------------------------- */
 /* Wire shapes                                                                */
@@ -279,7 +276,7 @@ function readSchema(
     return Effect.gen(function* () {
       const context = yield* openMetadataEnvironment({
         ...flags,
-        env: environment === undefined ? flags.env : environmentIdOf(environment),
+        env: environment === undefined ? flags.env : environment,
       });
       const metadata = yield* pullVerifiedEnvironmentMetadata({
         client: context.client,

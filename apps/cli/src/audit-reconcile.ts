@@ -37,7 +37,13 @@
 // so it may be treated as evidence of tampering or corruption.
 
 import { MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
-import { cryptoEffect, scopePermissionFor, type WrappedCryptoError } from "@maruhi/core";
+import {
+  cryptoEffect,
+  decodeEnvironmentId,
+  decodeVariableId,
+  scopePermissionFor,
+  type WrappedCryptoError,
+} from "@maruhi/core";
 import type { AuditHeadRow, ChainEntry } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
@@ -194,8 +200,9 @@ function toHeadRow(event: WireAuditEvent, seq: number): AuditHeadRow {
     actorApiTokenId: orNull(event.actor.apiTokenId),
     targetUserId: orNull(event.targetUserId),
     targetKeyFingerprintHex: orNull(event.targetKeyFingerprintHex),
-    environmentId: orNull(event.environmentId),
-    variableId: orNull(event.variableId),
+    environmentId:
+      event.environmentId === undefined ? null : decodeEnvironmentId(event.environmentId),
+    variableId: event.variableId === undefined ? null : decodeVariableId(event.variableId),
     epoch: orNull(event.epoch),
     version: orNull(event.version),
     chainSeq: orNull(event.chainSeq),

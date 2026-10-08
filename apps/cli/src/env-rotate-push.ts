@@ -3,6 +3,7 @@
 // §4.1) and the verified rescan that drives the completion judgment and
 // the §12-5 409 re-planning (the stage overview lives in env-rotate.ts).
 
+import type { VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
@@ -17,7 +18,6 @@ import {
 } from "./env-rotate-shared.ts";
 import { CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { variableIdOf } from "./ids.ts";
 import { missingWrapReason } from "./pull.ts";
 import { winnerInconsistency } from "./push-winner.ts";
 import { encryptAndSignPayload } from "./push.ts";
@@ -180,7 +180,7 @@ export const pushReencrypted = Effect.fn("env-rotate-push.pushReencrypted")(func
  * hide behind the "no re-encryption needed" shortcut.
  */
 function reconcileKnown(input: {
-  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  readonly known: ReadonlyMap<VariableId, ConflictedTarget>;
   /**
    * The variables that could not finish re-encrypting this pass (409,
    * transient failure, 404, epoch conflict). The vanishing warning and the
@@ -189,7 +189,7 @@ function reconcileKnown(input: {
    * 502 would be counted in none of re-encrypted / already-current /
    * unfinished, and the totals would not add up.
    */
-  readonly unfinishedIds: ReadonlySet<string>;
+  readonly unfinishedIds: ReadonlySet<VariableId>;
   readonly latest: readonly VerifiedPulledValue[];
   readonly epoch: number;
   readonly collectWarning: (warning: string) => void;
@@ -197,7 +197,7 @@ function reconcileKnown(input: {
   const latestById = new Map(input.latest.map((value) => [value.variableId, value]));
   let alreadyCurrent = 0;
   for (const [variableId, previous] of input.known) {
-    const latest = latestById.get(variableIdOf(variableId));
+    const latest = latestById.get(variableId);
     if (latest === undefined) {
       if (input.unfinishedIds.has(variableId)) {
         // Vanished while unfinished = a concurrent deletion. Never silently dropped from the targets
@@ -208,7 +208,7 @@ function reconcileKnown(input: {
       continue;
     }
     const inconsistency = winnerInconsistency(
-      variableIdOf(variableId),
+      variableId,
       previous.known,
       latest,
       previous.currentVersion,
@@ -285,14 +285,14 @@ export const rescanEnvironment = Effect.fn("env-rotate-push.rescanEnvironment")(
    * transient failure also becomes the next pass's prev anchor, so it
    * passes the same consistency check.
    */
-  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  readonly known: ReadonlyMap<VariableId, ConflictedTarget>;
   /**
    * The variables that could **not finish** re-encrypting this pass (409,
    * transient failure, 404, epoch conflict). If these vanished from the
    * active set they are warned as concurrent deletions — "finished" is
    * only for the ones *seen* to vanish; never dropped silently.
    */
-  readonly unfinishedIds: ReadonlySet<string>;
+  readonly unfinishedIds: ReadonlySet<VariableId>;
   /**
    * The warnings' receptacle. To keep already-collected warnings (non-NFC
    * names, concurrent deletions) even on failure, they flow in here

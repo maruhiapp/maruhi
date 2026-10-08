@@ -40,7 +40,6 @@ import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ManifestFloor } from "./floor.ts";
-import { userIdOf } from "./ids.ts";
 
 /**
  * The evidence material of a verified manifest (§14.2-5's
@@ -226,7 +225,7 @@ export async function verifyDistributedManifest(input: {
           envMetaVersion: manifest.envMetaVersion,
           envMetaSigHashHex: manifest.envMetaSigHashHex,
           prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-          issuerUserId: userIdOf(manifest.issuerUserId),
+          issuerUserId: manifest.issuerUserId,
           chainHeadHashHex: manifest.chainHeadHashHex,
           chainHeadSeq: manifest.chainHeadSeq,
         },
@@ -256,7 +255,7 @@ export async function verifyDistributedManifest(input: {
             chainHeadSeq: manifest.chainHeadSeq,
             chainHeadHashHex: manifest.chainHeadHashHex,
             signatureHex: manifest.signatureHex,
-            issuerUserId: userIdOf(manifest.issuerUserId),
+            issuerUserId: manifest.issuerUserId,
             issuerKeyFingerprintHex: manifest.issuerKeyFingerprintHex,
           },
         }),

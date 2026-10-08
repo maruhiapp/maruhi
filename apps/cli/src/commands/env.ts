@@ -1,6 +1,6 @@
 // `maruhi env` (discipline: see commands/index.ts).
 
-import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -23,7 +23,6 @@ import { envRenameOp } from "../env-rename.ts";
 import { envRmOp } from "../env-rm.ts";
 import { envRotateOp } from "../env-rotate.ts";
 import { CliError, usageError } from "../errors.ts";
-import { environmentIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
@@ -142,7 +141,7 @@ function requireEnvironmentId(
   example: string,
 ): Effect.Effect<EnvironmentId, CliError> {
   return isEnvironmentId(value)
-    ? Effect.succeed(value)
+    ? Effect.succeed(decodeEnvironmentId(value))
     : Effect.fail(
         usageError(
           `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,
@@ -219,7 +218,7 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
     const receiptsFloor =
       syncConfig.receiptsEnvironment === environmentId
         ? context.floorHandle
-        : yield* floorHandleFor(context, environmentIdOf(syncConfig.receiptsEnvironment));
+        : yield* floorHandleFor(context, syncConfig.receiptsEnvironment);
     yield* advanceReceiptsAfterRotation({
       client: context.client,
       // The rotation advanced the chain: the cleanup starts from the

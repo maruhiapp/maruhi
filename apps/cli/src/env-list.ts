@@ -30,7 +30,12 @@
 // statement declaring a chain head beyond this run's view (or a listed ID
 // the view has not seen created yet) re-syncs once.
 
-import { type EnvironmentId, type UserId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  type EnvironmentId,
+  isEnvironmentId,
+  type UserId,
+} from "@maruhi/core";
 import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -41,7 +46,6 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedEnvironmentStatement } from "./floor-check.ts";
-import { environmentIdOf } from "./ids.ts";
 import { compareCodePoints } from "./scope.ts";
 import { serverDisclosures, serverKeysDisclosing } from "./server-disclosure.ts";
 import { verifyEnvironmentStatement } from "./values-verify.ts";
@@ -114,14 +118,20 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   CliError
 > {
   const listed = yield* indexListing(wire);
-  if ([...listed.keys()].some((environmentId) => !view.state.environments.has(environmentId))) {
+  if (
+    [...listed.keys()].some(
+      (environmentId) =>
+        !isEnvironmentId(environmentId) ||
+        !view.state.environments.has(decodeEnvironmentId(environmentId)),
+    )
+  ) {
     return { kind: "future" } as const;
   }
   const joined: JoinedEnvironment[] = [];
   for (const [environmentId, chainEnvironment] of view.state.environments) {
     const statement = yield* joinedStatement(
       view,
-      environmentIdOf(environmentId),
+      environmentId,
       chainEnvironment,
       listed.get(environmentId),
       resynced,
@@ -130,7 +140,7 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
       return { kind: "future" } as const;
     }
     joined.push({
-      environmentId: environmentIdOf(environmentId),
+      environmentId,
       statement,
       chain: chainEnvironment,
     });

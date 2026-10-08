@@ -42,7 +42,6 @@ import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import { userIdOf } from "./ids.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { decodeWrapped } from "./master-ops.ts";
@@ -257,10 +256,7 @@ const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
         .handoffApprovals({ params: { requestId: input.requestId } })
         .pipe(Effect.mapError(toCliError));
       received = page.approvals.length;
-      const assembled = assemble(
-        page.approvals.map((a) => ({ ...a, approverUserId: userIdOf(a.approverUserId) })),
-        input.groups,
-      );
+      const assembled = assemble(page.approvals, input.groups);
       return assembled === null
         ? { kind: "waiting" as const }
         : { kind: "assembled" as const, assembled };

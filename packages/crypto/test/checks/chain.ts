@@ -12,6 +12,7 @@ import {
   signChainEntry,
   verifyChain,
 } from "../../src/index.ts";
+import { testEnvironmentId } from "../support/fixture.ts";
 import {
   membersMatchVector,
   pendingMatchesVector,
@@ -103,7 +104,7 @@ function environmentMatches(
   environmentId: string,
   expected: (typeof vectorHeadStates)[number]["environments"][string],
 ): boolean {
-  const actual = state.environments.get(environmentId);
+  const actual = state.environments.get(testEnvironmentId(environmentId));
   if (actual === undefined) {
     return false;
   }

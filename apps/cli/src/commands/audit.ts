@@ -5,7 +5,13 @@ import {
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "@maruhi/api-schema";
-import { isEnvironmentId, isVariableId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  decodeUserId,
+  decodeVariableId,
+  isEnvironmentId,
+  isVariableId,
+} from "@maruhi/core";
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
@@ -20,7 +26,6 @@ import {
 } from "../audit.ts";
 import { openMetadataProject, openSession } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
-import { environmentIdOf, userIdOf, variableIdOf } from "../ids.ts";
 import { projectFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE } from "./shared.ts";
 
@@ -147,10 +152,10 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
   // Validated above: isEnvironmentId / isVariableId checks narrowed the raw flags
   return Effect.succeed({
     event: values.event ?? null,
-    actorUserId: values.actor === undefined ? null : userIdOf(values.actor),
-    targetUserId: values.target === undefined ? null : userIdOf(values.target),
-    environmentId: values.env === undefined ? null : environmentIdOf(values.env),
-    variableId: values.var === undefined ? null : variableIdOf(values.var),
+    actorUserId: values.actor === undefined ? null : decodeUserId(values.actor),
+    targetUserId: values.target === undefined ? null : decodeUserId(values.target),
+    environmentId: values.env === undefined ? null : decodeEnvironmentId(values.env),
+    variableId: values.var === undefined ? null : decodeVariableId(values.var),
   });
 }
 

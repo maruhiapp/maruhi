@@ -65,7 +65,6 @@ import { type CliServices, type EnvironmentContext, floorHandleFor } from "../co
 import { displayText } from "../display.ts";
 import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";
-import { environmentIdOf } from "../ids.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { type ExecInput, ProcessRunner } from "../run.ts";
@@ -307,11 +306,9 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   // push destination gets push's handle; the receipt
   // environment and the unified token's environment get the
   // same one the ledger returns)
-  const receiptsFloor = yield* floorOf(environmentIdOf(setup.config.receiptsEnvironment));
+  const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
   const tokenFloor =
-    target.driver.kind !== "http"
-      ? null
-      : yield* floorOf(environmentIdOf(target.driver.token.environment));
+    target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
   yield* syncApplyOp({
     client: context.client,
     verified: context.verified,

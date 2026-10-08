@@ -11,8 +11,7 @@
 // remaining wraps are verified with that key alone.
 
 import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
-import { decodeUserId } from "@maruhi/core";
+import { cryptoEffect, decodeUserId, isKeyFingerprintHex } from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -152,25 +151,34 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
  * the same 422). The reason-code order (identify → key → scope) is the same
  * across classes.
  */
-function checkWrapRecipient(
+function checkServerRecipient(
   state: ChainState,
   environmentId: EnvironmentId,
   wrap: DekWrapInput,
 ): DataRejection | null {
-  if (wrap.recipientClass === "server") {
-    const grant = state.serverGrants.get(wrap.recipientUserId);
-    if (grant === undefined) {
-      return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
-    }
-    if (grant.serverEncPubHex !== wrap.recipientEncPubHex) {
-      return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
-    }
-    if (!grant.scopeEnvironmentIds.includes(environmentId)) {
-      return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
-    }
-    return null;
+  const grant = isKeyFingerprintHex(wrap.recipientUserId)
+    ? state.serverGrants.get(wrap.recipientUserId)
+    : undefined;
+  if (grant === undefined) {
+    return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
   }
-  const member = state.members.get(wrap.recipientUserId);
+  if (grant.serverEncPubHex !== wrap.recipientEncPubHex) {
+    return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
+  }
+  if (!grant.scopeEnvironmentIds.includes(environmentId)) {
+    return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
+  }
+  return null;
+}
+
+function checkMemberRecipient(
+  state: ChainState,
+  environmentId: EnvironmentId,
+  wrap: DekWrapInput,
+): DataRejection | null {
+  // A member-class recipient is a user_id by declaration — reinterpret the
+  // union position as one (a member's id may itself be 32-hex-shaped).
+  const member = state.members.get(decodeUserId(wrap.recipientUserId));
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
@@ -187,6 +195,16 @@ function checkWrapRecipient(
     return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
   }
   return null;
+}
+
+function checkWrapRecipient(
+  state: ChainState,
+  environmentId: EnvironmentId,
+  wrap: DekWrapInput,
+): DataRejection | null {
+  return wrap.recipientClass === "server"
+    ? checkServerRecipient(state, environmentId, wrap)
+    : checkMemberRecipient(state, environmentId, wrap);
 }
 
 /**
@@ -271,7 +289,7 @@ const verifyOneWrapSignature = (
         projectId,
         environmentId,
         epoch: wrap.epoch,
-        recipientUserId: decodeUserId(wrap.recipientUserId),
+        recipientUserId: wrap.recipientUserId,
         recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
