@@ -41,6 +41,39 @@ const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 const LAYER_SPLIT_PLUGIN = "astryx-build-layer-split";
 const SPLIT_STYLESHEET = /^astryx-stylex-.*\.css$/;
 
+function outputDir(options: {
+  dir?: string | undefined;
+  file?: string | undefined;
+}): string | undefined {
+  return options.dir ?? (options.file === undefined ? undefined : dirname(options.file));
+}
+
+/** Take the passthrough files out of outDir; the returned function writes them back. */
+function parkPassthrough(outDir: string | undefined): () => void {
+  if (outDir === undefined) return () => {};
+  const parked = PUBLIC_PASSTHROUGH.map((name) => join(outDir, name))
+    .filter((filePath) => existsSync(filePath))
+    .map((filePath) => ({ filePath, content: readFileSync(filePath) }));
+  for (const file of parked) rmSync(file.filePath);
+  return () => {
+    for (const file of parked) writeFileSync(file.filePath, file.content);
+  };
+}
+
+/** Fail the build if the plugin took the separate-stylesheet branch. */
+function assertNoSplitStylesheet(outDir: string | undefined): void {
+  if (outDir === undefined) return;
+  const stray = readdirSync(outDir, { recursive: true, encoding: "utf8" }).filter((path) =>
+    SPLIT_STYLESHEET.test(basename(path)),
+  );
+  if (stray.length > 0) {
+    throw new Error(
+      `${LAYER_SPLIT_PLUGIN} wrote ${stray.join(", ")} instead of rewriting the SPA CSS in place: ` +
+        "the SPA HTML would not link it; re-check adaptAstryxLayerSplit",
+    );
+  }
+}
+
 function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
   const target = plugins.find((plugin) => plugin.name === LAYER_SPLIT_PLUGIN);
   if (target === undefined) {
@@ -67,43 +100,12 @@ function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
         return environment.name !== "ssr";
       },
       writeBundle(outputOptions, bundle) {
-        const outDir =
-          outputOptions.dir ??
-          (outputOptions.file === undefined ? undefined : dirname(outputOptions.file));
-        const snapshots =
-          outDir === undefined
-            ? []
-            : PUBLIC_PASSTHROUGH.flatMap((name) => {
-                const filePath = join(outDir, name);
-                return existsSync(filePath) ? [{ filePath, content: readFileSync(filePath) }] : [];
-              });
-        for (const snap of snapshots) rmSync(snap.filePath);
-        const restore = () => {
-          for (const snap of snapshots) writeFileSync(snap.filePath, snap.content);
-        };
+        const outDir = outputDir(outputOptions);
+        const restore = parkPassthrough(outDir);
         return Promise.resolve()
           .then(() => write.call(this, outputOptions, bundle))
-          .then(
-            () => {
-              restore();
-              const stray =
-                outDir === undefined
-                  ? []
-                  : readdirSync(outDir, { recursive: true, encoding: "utf8" }).filter((path) =>
-                      SPLIT_STYLESHEET.test(basename(path)),
-                    );
-              if (stray.length > 0) {
-                throw new Error(
-                  `${LAYER_SPLIT_PLUGIN} wrote ${stray.join(", ")} instead of rewriting the SPA CSS in place: ` +
-                    "the SPA HTML would not link it; re-check adaptAstryxLayerSplit",
-                );
-              }
-            },
-            (error: unknown) => {
-              restore();
-              throw error;
-            },
-          );
+          .finally(restore)
+          .then(() => assertNoSplitStylesheet(outDir));
       },
     };
     return adapted;
