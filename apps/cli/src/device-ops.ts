@@ -23,7 +23,12 @@
 // as already registered).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoEffect, type EnvironmentId, type UserId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  type EnvironmentId,
+  type KeyFingerprintHex,
+  type UserId,
+} from "@maruhi/core";
 import type {
   ChainDevice,
   ChainEntry,
@@ -221,7 +226,7 @@ function revokeRejection(input: {
   readonly actor: ChainMember;
   readonly actorDevice: ChainDevice;
   readonly target: ChainMember;
-  readonly revoking: readonly string[];
+  readonly revoking: readonly KeyFingerprintHex[];
 }): string | null {
   const { actor, target, revoking } = input;
   if (target.userId !== actor.userId) {
@@ -244,7 +249,7 @@ const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (inp
   readonly targetUserId: UserId;
   readonly fingerprintsHex: readonly string[];
 }): Effect.fn.Return<
-  { readonly entry: ChainEntry; readonly revoking: readonly string[] } | null,
+  { readonly entry: ChainEntry; readonly revoking: readonly KeyFingerprintHex[] } | null,
   CliError
 > {
   const actor = input.verified.state.members.get(input.signer.userId);
@@ -308,10 +313,10 @@ export const appendRevokeDevice = Effect.fn("device-ops.appendRevokeDevice")(fun
   readonly targetUserId: UserId;
   readonly fingerprintsHex: readonly string[];
 }): Effect.fn.Return<
-  { readonly verified: VerifiedProject; readonly revoked: readonly string[] },
+  { readonly verified: VerifiedProject; readonly revoked: readonly KeyFingerprintHex[] },
   CliError
 > {
-  let revoked: readonly string[] = [];
+  let revoked: readonly KeyFingerprintHex[] = [];
   const outcome = yield* appendWithCas({
     client: input.client,
     verified: input.verified,

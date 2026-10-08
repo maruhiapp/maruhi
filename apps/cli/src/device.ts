@@ -40,8 +40,8 @@
 // the chain; the local records are written only by the 3 paths — sealing,
 // approval, observation (K4-3).
 
-import { cryptoEffect, type ProjectId } from "@maruhi/core";
-import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
+import { type KeyFingerprintHex, type ProjectId, userKeyFingerprintHex } from "@maruhi/core";
+import { decodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -51,7 +51,7 @@ import { compareCodePoints } from "./scope.ts";
 
 /** One registry row (server-reported). */
 export interface RegistryRow {
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly label: string;
@@ -67,7 +67,7 @@ export const WORD_COUNT = 12;
 export function recomputeFingerprint(
   encPubHex: string,
   sigPubHex: string,
-): Effect.Effect<string | null, CliError> {
+): Effect.Effect<KeyFingerprintHex | null, CliError> {
   const enc = decodeHex(encPubHex);
   const sig = decodeHex(sigPubHex);
   if (enc === null || sig === null) {
@@ -76,8 +76,7 @@ export function recomputeFingerprint(
   // A malformed stored key materializes as InvalidInput, which is
   // a fingerprint that cannot match — null (the caller treats it as
   // "no such key"). Anything else is an invariant break and dies
-  return cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
-    Effect.map(encodeHex),
+  return userKeyFingerprintHex(enc, sig).pipe(
     Effect.catchTag("CryptoInvalidInput", () => Effect.succeed(null)),
     Effect.orDie,
   );
@@ -88,7 +87,7 @@ export function fetchRegistry(
   client: MaruhiClient,
 ): Effect.Effect<readonly RegistryRow[] | null, never> {
   return client.devices.list({}).pipe(
-    Effect.map((response) => response.devices as readonly RegistryRow[]),
+    Effect.map((response): readonly RegistryRow[] => response.devices),
     Effect.orElseSucceed(() => null),
   );
 }
