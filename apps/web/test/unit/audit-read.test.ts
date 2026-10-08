@@ -1,5 +1,6 @@
 // Unit test of the display derivation of the aggregated var.read
 // shape (src/dashboard/audit-read.ts).
+import { testVariableId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 // The canonical implementation (web carries no package dependencies,
@@ -32,7 +33,9 @@ describe("aggregatedReadVariables", () => {
   });
 
   it("returns null for the old shape (with a variableId column), another event, and no enumeration", () => {
-    expect(aggregatedReadVariables({ event: "var.read", variableId: "var-a" })).toBeNull();
+    expect(
+      aggregatedReadVariables({ event: "var.read", variableId: testVariableId("var-a") }),
+    ).toBeNull();
     expect(
       aggregatedReadVariables({
         event: "var.version_pushed",

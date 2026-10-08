@@ -70,7 +70,9 @@ import {
 } from "@maruhi/crypto";
 import {
   BASE_TIME_MS,
+  testEnvironmentId,
   testKeyFingerprintHex,
+  testProjectId,
   testUserId,
   toTypedEntry,
   unwrapResult,
@@ -550,8 +552,8 @@ async function deletionChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
     ["user_o", "user_o", "user_a", "user_a", "user_l"].map(makeKey),
   );
   const chain = new ChainBuilder();
-  const projectId = await chain.append(o!, genesisOp(o!));
-  for (const environmentId of ["dev", "prod"]) {
+  const projectId = testProjectId(await chain.append(o!, genesisOp(o!)));
+  for (const environmentId of ["dev", "prod"].map(testEnvironmentId)) {
     const dekCommitmentHex = unwrapResult(
       await computeDekCommitment({
         context: { suite: SUITE_ID, projectId, environmentId, epoch: 1 },
@@ -564,7 +566,10 @@ async function deletionChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
       payload: { environmentId, dekCommitmentHex },
     });
   }
-  const listed = (ids: string[]) => ({ scopeKind: "listed" as const, scopeEnvironmentIds: ids });
+  const listed = (ids: string[]) => ({
+    scopeKind: "listed" as const,
+    scopeEnvironmentIds: ids.map(testEnvironmentId),
+  });
   await chain.append(o!, {
     op: "add_member",
     payload: {
@@ -615,12 +620,15 @@ async function deletionChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
       payload: {
         serverEncPubHex: encodeHex(serverEncPub),
         serverKeyFingerprintHex: testKeyFingerprintHex(encodeHex(fingerprint)),
-        scopeEnvironmentIds: ids,
+        scopeEnvironmentIds: ids.map(testEnvironmentId),
         leasePolicy: [],
       },
     });
   }
-  await chain.append(o!, { op: "delete_environment", payload: { environmentId: "dev" } });
+  await chain.append(o!, {
+    op: "delete_environment",
+    payload: { environmentId: testEnvironmentId("dev") },
+  });
   return chain.entries;
 }
 

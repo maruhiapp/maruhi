@@ -2,7 +2,7 @@
 // Inputs are fixtures conforming to api-schema's wire types (the types
 // are bound by tsc).
 import type { KeyFingerprintHex, UserId } from "@maruhi/crypto";
-import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import { testEnvironmentId, testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import { reportedDeviceCount } from "../../src/dashboard/chain-view-reported.ts";
@@ -128,7 +128,7 @@ describe("deriveReportedView", () => {
         targetUserId: testUserId("user_a"),
         newRole: "member",
         scopeKind: "listed",
-        scopeEnvironmentIds: ["dev", "staging"],
+        scopeEnvironmentIds: ["dev", "staging"].map(testEnvironmentId),
       },
     };
     const before = deriveReportedView([genesis, add]);
@@ -163,7 +163,7 @@ describe("deriveReportedView", () => {
       payload: {
         serverEncPubHex: HEX64,
         serverKeyFingerprintHex: FP,
-        scopeEnvironmentIds: ["production"],
+        scopeEnvironmentIds: [testEnvironmentId("production")],
         leasePolicy: [],
       },
     };
@@ -191,13 +191,13 @@ describe("deriveReportedView", () => {
     const createEnv: ChainEntry = {
       ...base(),
       op: "create_environment",
-      payload: { environmentId: "production", dekCommitmentHex: HEX64 },
+      payload: { environmentId: testEnvironmentId("production"), dekCommitmentHex: HEX64 },
     };
     const rotate: ChainEntry = {
       ...base(),
       op: "rotate_epoch",
       payload: {
-        environmentId: "production",
+        environmentId: testEnvironmentId("production"),
         newEpoch: 2,
         reason: "manual",
         dekCommitmentHex: HEX64,
@@ -281,7 +281,7 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     const tail: ChainEntry = {
       ...base(),
       op: "create_environment",
-      payload: { environmentId: "dev", dekCommitmentHex: HEX64 },
+      payload: { environmentId: testEnvironmentId("dev"), dekCommitmentHex: HEX64 },
     };
     const entries = linked(
       [genesis, ownerA, member, policyEntry(2, ["remove_member"]), proposal, tail],
@@ -565,7 +565,15 @@ function addDevice(
     scopeEnvironmentIds: string[];
   } = { roleCap: "owner", scopeKind: "all", scopeEnvironmentIds: [] },
 ): ChainEntry {
-  return { ...signedBy(userId, signerFp), op: "add_device", payload: { ...keys, ...cap } };
+  return {
+    ...signedBy(userId, signerFp),
+    op: "add_device",
+    payload: {
+      ...keys,
+      ...cap,
+      scopeEnvironmentIds: cap.scopeEnvironmentIds.map(testEnvironmentId),
+    },
+  };
 }
 
 function revokeDevice(
@@ -1128,7 +1136,7 @@ function addListedMember(
       sigPubHex: HEX64,
       role,
       scopeKind: "listed",
-      scopeEnvironmentIds,
+      scopeEnvironmentIds: scopeEnvironmentIds.map(testEnvironmentId),
     },
   };
 }
@@ -1140,14 +1148,18 @@ function grantServer(fp: string, scopeEnvironmentIds: string[]): ChainEntry {
     payload: {
       serverEncPubHex: HEX64,
       serverKeyFingerprintHex: testKeyFingerprintHex(fp),
-      scopeEnvironmentIds,
+      scopeEnvironmentIds: scopeEnvironmentIds.map(testEnvironmentId),
       leasePolicy: [],
     },
   };
 }
 
 function deleteEnvironment(environmentId: string): ChainEntry {
-  return { ...signedBy("user_owner", FP), op: "delete_environment", payload: { environmentId } };
+  return {
+    ...signedBy("user_owner", FP),
+    op: "delete_environment",
+    payload: { environmentId: testEnvironmentId(environmentId) },
+  };
 }
 
 describe("deriveReportedView — environment deletion (§6.2 delete_environment)", () => {
@@ -1252,7 +1264,7 @@ describe("deriveReportedView — environment deletion (§6.2 delete_environment)
       ...signedBy("user_owner", FP),
       op: "propose",
       payload: {
-        inner: { op: "delete_environment", payload: { environmentId: "dev" } },
+        inner: { op: "delete_environment", payload: { environmentId: testEnvironmentId("dev") } },
         expiresAtMs: 4_000_000_000_000,
       },
     };
