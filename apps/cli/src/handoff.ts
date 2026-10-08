@@ -21,7 +21,7 @@
 // decision 7's existing gate). Plaintext segments, KEK, and B exist
 // only in local variables.
 
-import { cryptoEffect, cryptoPromise, fromCryptoResult } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, fromCryptoResult, type UserId } from "@maruhi/core";
 import {
   computeHandoffRequestId,
   decodeHex,
@@ -65,7 +65,7 @@ function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliErr
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
-  readonly approverUserId: string;
+  readonly approverUserId: UserId;
   readonly approverKeyFingerprintHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -120,7 +120,7 @@ function decodeBlobWrap(blob: {
 /** Opens an approval's value (segment) with the ephemeral key. A context mismatch = decryption failure = abort. */
 const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
   readonly ephemeral: EncryptionKeyPair;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly requestId: string;
   readonly approval: ApprovalWire;
 }): Effect.fn.Return<Uint8Array, CliError> {
@@ -150,7 +150,7 @@ const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
 const recoverBlob = Effect.fn("handoff.recoverBlob")(function* (input: {
   readonly client: MaruhiClient;
   readonly ephemeral: EncryptionKeyPair;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly requestId: string;
   readonly assembled: Assembled;
 }): Effect.fn.Return<Uint8Array, CliError, HttpClient.HttpClient> {

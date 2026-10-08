@@ -51,7 +51,12 @@ import {
   verifyEnvManifestSignature,
 } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
-import { testUserId } from "../support/fixture.ts";
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import {
   importVectorSigner,
@@ -130,15 +135,15 @@ interface ManifestNegative {
 function contextOf(v: VectorContext): EnvManifestContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
-    environmentId: v.environment_id,
+    projectId: testProjectId(v.project_id),
+    environmentId: testEnvironmentId(v.environment_id),
     epoch: v.epoch,
     manifestVersion: v.manifest_version,
     variablesDigestHex: v.variables_digest_hex,
     envMetaVersion: v.env_meta_version,
     envMetaSigHashHex: v.env_meta_sig_hash_hex,
     prevManifestSigHashHex: v.prev_manifest_sig_hash_hex,
-    issuerUserId: v.issuer_user_id,
+    issuerUserId: testUserId(v.issuer_user_id),
     chainHeadHashHex: v.chain_head_hash_hex,
     chainHeadSeq: v.chain_head_seq,
   };
@@ -146,7 +151,7 @@ function contextOf(v: VectorContext): EnvManifestContext {
 
 function entriesOf(entries: readonly VectorEntry[]): VariablesDigestEntry[] {
   return entries.map((entry) => ({
-    variableId: entry.variable_id,
+    variableId: testVariableId(entry.variable_id),
     status: entry.status as VariablesDigestEntry["status"],
     metaVersion: entry.meta_version,
     metaSigHashHex: entry.meta_sig_hash_hex,
@@ -236,7 +241,7 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
   // lowercases would create multiple canonical forms for one value, so
   // rejection is the spec's expected behavior)
   const validEntry: VariablesDigestEntry = {
-    variableId: "var-bounds-0001",
+    variableId: testVariableId("var-bounds-0001"),
     status: "active",
     metaVersion: 1,
     metaSigHashHex: "ab".repeat(32),
@@ -562,9 +567,12 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevManifestSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: "" } },
-    { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
-    { name: "empty issuer", context: { ...baseContext, issuerUserId: "" } },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
+    { name: "empty issuer", context: { ...baseContext, issuerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signEnvManifest({ context: bad.context, signingKey: pair.privateKey });
@@ -691,7 +699,7 @@ async function falseAttestationHistory(
     timestampMs: head3.timestampMs + 1000,
     op: "rotate_epoch",
     payload: {
-      environmentId: "env-prod-0001",
+      environmentId: testEnvironmentId("env-prod-0001"),
       newEpoch: 2,
       reason: "scheduled",
       dekCommitmentHex: rotateCommitment,
@@ -707,7 +715,7 @@ async function falseAttestationHistory(
     payload: {
       environments: [
         {
-          environmentId: "env-prod-0001",
+          environmentId: testEnvironmentId("env-prod-0001"),
           epoch: 2,
           manifestVersion: 1,
           manifestSigHashHex,

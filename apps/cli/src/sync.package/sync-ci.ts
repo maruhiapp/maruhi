@@ -56,9 +56,9 @@ interface CiSyncInput extends CiLeaseInput {
 /** Pulls a leased environment's material (its absence is an implementation inconsistency). */
 function materialOf(
   materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<VerifiedLeaseMaterial, CliError> {
-  const material = materials.get(environmentId as EnvironmentId);
+  const material = materials.get(environmentId);
   return material === undefined
     ? Effect.fail(cliError("The lease returned no material (internal inconsistency)"))
     : Effect.succeed(material);
@@ -81,10 +81,7 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
       : null;
   const materials = yield* leaseEnvironments({
     ...input,
-    environmentIds: [
-      target.environment as EnvironmentId,
-      ...(tokenEnvironment === null ? [] : [tokenEnvironment as EnvironmentId]),
-    ],
+    environmentIds: [target.environment, ...(tokenEnvironment === null ? [] : [tokenEnvironment])],
   });
   const source = yield* materialOf(materials, target.environment);
   const plan = yield* computePlan({

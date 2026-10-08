@@ -9,6 +9,7 @@ import { Redacted } from "effect";
 import { serializeStoredMasterKey, type StoredMasterKey } from "../../src/keychain.ts";
 import { formatRecoveryCode } from "../../src/recovery-code.ts";
 import type { TestUser } from "./crypto.ts";
+import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
 /** Shapes a test user's key pair into the keychain / ledger record form. */
@@ -35,7 +36,7 @@ export async function ledgerHandlerFor(
 ): Promise<{ handler: MockHandler; code: string }> {
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
-    userId,
+    userId: testUserId(userId),
     // JSON.stringify(record) cannot be used — the secret side would be
     // wrapped redacted, producing a blob that "decrypts fine but the key is
     // unreadable" (the same trap as production recovery.ts)

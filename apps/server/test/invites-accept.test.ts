@@ -19,6 +19,7 @@ import { describe, expect, it } from "vitest";
 
 import { InviteRepo, makeDbServices } from "../src/db.package/index.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
+import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   MEMBER,
@@ -140,7 +141,7 @@ describe("invite accept", () => {
       .bind(completed.id)
       .run();
     const revoked = await Effect.runPromise(
-      invites.revokeCas(projectId, completed.id, { role: "member" }, Date.now(), {
+      invites.revokeCas(testProjectId(projectId), completed.id, { role: "member" }, Date.now(), {
         userId: OWNER,
       }),
     );
@@ -257,7 +258,7 @@ describe("invite accept", () => {
     // (d) link tampering: signed at a different project's coordinates
     //     (the server reconstructs from the stored row)
     const wrongProject = await acceptAs(inviteFixture, STRANGER, keys, issued, {
-      projectId: "0".repeat(64),
+      projectId: testProjectId("0".repeat(64)),
     });
     expect(wrongProject.status).toBe(422);
 
@@ -293,7 +294,9 @@ describe("invite accept", () => {
   it("requires the key-material token condition (the §13-2 level)", async () => {
     const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    const narrow = await cliToken(9009, [{ project: projectId, permission: "admin" }]);
+    const narrow = await cliToken(9009, [
+      { project: testProjectId(projectId), permission: "admin" },
+    ]);
     const signatures = await signAcceptance(keys, issued, STRANGER);
     const response = await acceptRequest(bearer(narrow), {
       linkPubHex: issued.linkPubHex,
@@ -400,7 +403,7 @@ describe("invite list / revoke", () => {
       context: {
         suite: SUITE_ID,
         inviteId: listed.id,
-        projectId: listed.projectId,
+        projectId: testProjectId(listed.projectId),
         linkPubHex: issuance.linkPubHex,
         headHashHex: issuance.headHashHex,
         headSeq: issuance.headSeq,
@@ -409,16 +412,16 @@ describe("invite list / revoke", () => {
         inviterEncPubHex: owner.encPubHex,
         inviterSigPubHex: owner.sigPubHex,
         scopeKind: listed.scopeKind,
-        scopeEnvironmentIds: listed.scopeEnvironmentIds,
+        scopeEnvironmentIds: listed.scopeEnvironmentIds.map(testEnvironmentId),
       },
       signatureHex: issuance.issueSignatureHex,
     });
     expect(issueVerified.ok).toBe(true);
     const context = {
       suite: SUITE_ID,
-      projectId: listed.projectId,
+      projectId: testProjectId(listed.projectId),
       linkPubHex: issuance.linkPubHex,
-      inviteeUserId: acceptance.inviteeUserId,
+      inviteeUserId: testUserId(acceptance.inviteeUserId),
       inviteeEncPubHex: acceptance.inviteeEncPubHex,
       inviteeSigPubHex: acceptance.inviteeSigPubHex,
     };

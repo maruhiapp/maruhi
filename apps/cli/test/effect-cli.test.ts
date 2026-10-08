@@ -77,10 +77,10 @@ describe("the parser's 12 pitfall shapes fail at the argument layer", () => {
       ["pull", "--show", "false", "--env", "!bad"],
     ]) {
       const { env, server } = await startEnv();
-      // It passes the argument layer and fails at the environment-ID format
-      // check (the command body) = `--show` was read as a value-taking option
+      // It fails at the flag's brand schema (the environment id mints at the
+      // flag declaration) = `--show` was read as a value-taking option
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
-      expect(env.errors.join("\n")).toContain("Invalid environment ID");
+      expect(env.errors.join("\n")).toContain("Unacceptable value for flag --env");
       expect(server.requests).toHaveLength(0);
     }
   });
@@ -187,10 +187,12 @@ describe("the parser's 12 pitfall shapes fail at the argument layer", () => {
     const blank = await startEnv();
     expect(await runCli(["pull", "--env", "  "], blank.env.layer)).toBe(2);
     // Also pin on the **positive side** that the allowlist (SAFE_EXPECTATIONS)
-    // is alive: fixing the wording on only one side would leave the
-    // parenthetical silently dropped — a quiet degradation of the diagnostic
+    // is alive: the flag's brand schema's authored `expected` annotation is
+    // echoed in the parenthetical (the Schema machinery's "Expected" render
+    // prefix is stripped) — a rewording in project.ts drops it, so this side
+    // keeps the diagnostic honest rather than silently suppressed
     expect(blank.env.errors.join("\n")).toContain(
-      "Unacceptable value for flag --env (expected: a non-empty value",
+      "Unacceptable value for flag --env (expected: environment id",
     );
     // The typed value (whitespace) never appears in the diagnostic
     expect(blank.env.errors.join("\n")).not.toContain('"  "');

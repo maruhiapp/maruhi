@@ -39,6 +39,8 @@ import {
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import {
   type ExecCall,
   makeTestEnv,
@@ -293,7 +295,12 @@ async function decryptReceipt(fixture: Fixture, target: string): Promise<Record<
   const value = stored?.value as WireEncryptedPayload;
   const result = await decryptVariable({
     dek: dekReceipts,
-    context: value.aad,
+    context: {
+      ...value.aad,
+      projectId: testProjectId(value.aad.projectId),
+      environmentId: testEnvironmentId(value.aad.environmentId),
+      variableId: testVariableId(value.aad.variableId),
+    },
     nonce: hexBytes(value.nonceHex),
     ciphertext: hexBytes(value.ciphertextHex),
   });

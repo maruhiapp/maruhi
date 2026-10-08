@@ -40,7 +40,7 @@ import type {
   RecipientDek,
   SchemaPolicy,
 } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -137,7 +137,7 @@ const verifyStage = Effect.fn("values.verifyStage")(function* <T>(
  */
 function verifyManifestStage(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
@@ -179,10 +179,10 @@ function verifyManifestStage(input: {
  * thing future (the bounded-resync entry).
  */
 const verifyAllCommon = Effect.fn("values.verifyAllCommon")(function* <
-  T extends { readonly variableId: string; readonly name: string },
+  T extends { readonly variableId: VariableId; readonly name: string },
 >(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   pull: {
     readonly statement: DistributedEnvironmentMetaStatement;
     readonly deletedVariables: readonly DistributedVariableMetaStatement[];
@@ -290,7 +290,7 @@ const verifyAllCommon = Effect.fn("values.verifyAllCommon")(function* <
 
 const verifyAll = Effect.fn("values.verifyAll")(function* (
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   pull: PullWire,
   floorManifest: ManifestFloor | null,
   /**
@@ -654,7 +654,7 @@ interface VerifiedMetadataValue {
 
 function verifyAllMetadata(
   verified: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   pull: MetadataPullWire,
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<

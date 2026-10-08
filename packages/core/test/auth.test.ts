@@ -5,9 +5,10 @@
 import { describe, expect, it } from "vitest";
 
 import { parseTokenScopes, permissionAtLeast, scopePermissionFor } from "../src/auth.ts";
+import { decodeProjectId } from "../src/project.ts";
 
-const PROJECT = "ab".repeat(32);
-const OTHER = "cd".repeat(32);
+const PROJECT = decodeProjectId("ab".repeat(32));
+const OTHER = decodeProjectId("cd".repeat(32));
 
 describe("permissionAtLeast(read < write < admin)", () => {
   it("orders permissions correctly", () => {

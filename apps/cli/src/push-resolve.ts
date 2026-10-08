@@ -4,7 +4,7 @@
 // normal push) the send side (push.ts) drives.
 
 import type { RecipientDek } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -39,9 +39,13 @@ interface ActivationPrev {
  * existing active variable (meta untouched).
  */
 export type PushTarget =
-  | { readonly kind: "create"; readonly variableId: string }
-  | { readonly kind: "activate"; readonly variableId: string; readonly prev: ActivationPrev }
-  | { readonly kind: "push"; readonly variableId: string; readonly latest: VerifiedPulledValue };
+  | { readonly kind: "create"; readonly variableId: VariableId }
+  | { readonly kind: "activate"; readonly variableId: VariableId; readonly prev: ActivationPrev }
+  | {
+      readonly kind: "push";
+      readonly variableId: VariableId;
+      readonly latest: VerifiedPulledValue;
+    };
 
 export function nextVersionOf(target: PushTarget): number {
   // create and activate both write the first value (a declared variable has no value or version — §4.2)

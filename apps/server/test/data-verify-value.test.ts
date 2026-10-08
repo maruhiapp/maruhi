@@ -28,6 +28,7 @@ import {
   valueSignedBytesHashOf,
   vectorKeyOf,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -80,7 +81,13 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     // someone else's signature)
     const ownerSigned = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       "postgres://beta",
       {
         writerUserId: OWNER,
@@ -103,7 +110,13 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const value = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 1,
+      },
       "postgres://alpha",
       { writerUserId: MEMBER, head: fixture.head },
     );
@@ -270,10 +283,10 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     // violation)
     const context = {
       suite: "maruhi/v1",
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       epoch: 1,
-      variableId: "var-phantom-prev",
+      variableId: testVariableId("var-phantom-prev"),
       version: 1,
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(48),
@@ -356,10 +369,10 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
       history: verified.value.history,
       context: {
         suite: "maruhi/v1",
-        projectId,
-        environmentId: ENV,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
         epoch: pulled.value.aad.epoch,
-        variableId: pulled.variableId,
+        variableId: testVariableId(pulled.variableId),
         version: pulled.value.aad.version,
         nonceHex: pulled.value.nonceHex,
         ciphertextHex: pulled.value.ciphertextHex,
@@ -408,10 +421,10 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
       history: verified.value.history,
       context: {
         suite: "maruhi/v1",
-        projectId,
-        environmentId: ENV,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
         epoch: pulled.value.aad.epoch,
-        variableId: pulled.variableId,
+        variableId: testVariableId(pulled.variableId),
         version: pulled.value.aad.version,
         nonceHex: pulled.value.nonceHex,
         ciphertextHex: pulled.value.ciphertextHex,
@@ -493,10 +506,10 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     // head) precedes the prev check
     const context = {
       suite: "maruhi/v1" as const,
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       epoch: 1,
-      variableId: VAR,
+      variableId: testVariableId(VAR),
       version: 2,
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(48),

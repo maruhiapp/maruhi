@@ -8,6 +8,7 @@
 //   tests — the same shape as chain-accept.ts's chainCapacityExceeded)
 // - ensure*: the check lifted into a limit-exceeded rejection
 
+import type { EnvironmentId, VariableId } from "@maruhi/core";
 import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -44,7 +45,7 @@ export function projectQuotaExceeded(activeProjectCount: number): boolean {
 
 /** An extant (non-tombstone) environment. Absent → environment-not-found. */
 export const requireActiveEnvironment = Effect.fn("quotas.requireActiveEnvironment")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
 ) {
   const store = yield* DataStore;
   const environment = yield* store.findEnvironment(environmentId);
@@ -56,8 +57,8 @@ export const requireActiveEnvironment = Effect.fn("quotas.requireActiveEnvironme
 
 /** An extant (non-tombstone) variable. Absent → variable-not-found. */
 export const requireActiveVariable = Effect.fn("quotas.requireActiveVariable")(function* (
-  environmentId: string,
-  variableId: string,
+  environmentId: EnvironmentId,
+  variableId: VariableId,
 ) {
   const store = yield* DataStore;
   const variable = yield* store.findVariable(environmentId, variableId);
@@ -89,7 +90,7 @@ export const ensureEnvironmentQuota = Effect.gen(function* () {
 
 /** The quantity policy on variable count and variable-row count (tombstones included) (§12-8). */
 export const ensureVariableQuota = Effect.fn("quotas.ensureVariableQuota")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
 ) {
   const store = yield* DataStore;
   const counts = yield* store.countVariables(environmentId);

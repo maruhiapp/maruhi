@@ -42,6 +42,7 @@ import {
   valuesDigestOf,
   wrapDekForAll,
 } from "./data-crypto.ts";
+import { testEnvironmentId, testVariableId } from "./data-crypto.ts";
 import { queryProjectDo, resetProjectDo } from "./project-do.ts";
 
 export const OWNER = testUserId("user-owner-0001");
@@ -338,7 +339,7 @@ export async function storedCheckpointValues(
     environmentId,
   );
   return rows.map((row) => ({
-    variableId: String(row["variable_id"]),
+    variableId: testVariableId(String(row["variable_id"])),
     version: Number(row["version"]),
     valueSigHashHex: String(row["signed_bytes_hash_hex"]),
   }));
@@ -617,7 +618,7 @@ export async function deleteEnvironmentRequest(
     actorUserId,
     operation: {
       op: "delete_environment",
-      payload: { environmentId: options.entryEnvironmentId ?? environmentId },
+      payload: { environmentId: testEnvironmentId(options.entryEnvironmentId ?? environmentId) },
     },
   });
   const response = await requestJson(

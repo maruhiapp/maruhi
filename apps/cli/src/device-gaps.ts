@@ -28,6 +28,7 @@
 // enables it via an explicit input).
 
 import type { RecipientDek } from "@maruhi/api-schema";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { ChainDevice, SigningKeyPair } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
@@ -70,7 +71,7 @@ interface OwnDeviceGap {
  */
 function ownDeviceGapsOf(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly currentEpoch: number;
   readonly rows: readonly RecipientDek[];
@@ -111,7 +112,7 @@ function ownDeviceGapsOf(input: {
 export const fillOwnDeviceGaps = Effect.fn("device-gaps.fillOwnDeviceGaps")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   /** The signing key (this device). undefined = do not fill (anything but `maruhi pull` — K11-4). */
   readonly signer: { readonly signingKeyPair: SigningKeyPair } | undefined;
@@ -177,12 +178,12 @@ export const fillOwnDeviceGaps = Effect.fn("device-gaps.fillOwnDeviceGaps")(func
  * explicit (relying on the default environment would pull a different
  * one).
  */
-export function gapFillCommandOf(projectId: string, environmentId: string): string {
+export function gapFillCommandOf(projectId: ProjectId, environmentId: string): string {
   return `maruhi pull --project ${displayText(projectId)} --env ${displayText(environmentId)}`;
 }
 
 /** One sentence describing the fill path (shared by the backfill failures of approval / recovery / sync and by the warning of a device with gaps). */
-export function describeGapFillRoute(projectId: string, environmentId: string): string {
+export function describeGapFillRoute(projectId: ProjectId, environmentId: string): string {
   return `A registered device of yours whose cap covers environment ${displayText(environmentId)} and that holds its keys fills the missing epochs when it runs \`${gapFillCommandOf(projectId, environmentId)}\``;
 }
 
@@ -192,8 +193,8 @@ export function describeGapFillRoute(projectId: string, environmentId: string): 
  * list both the member-side backfill and the device backfill).
  */
 export function describeMissingOwnEpochs(
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   missingEpochs: readonly number[],
 ): string {
   return `no DEK wraps for you exist at epochs ${missingEpochs.join(", ")} (inconsistent with the CRYPTO_SPEC §7 all-epoch distribution). A backfill (after \`maruhi member add\`, or after a widening \`maruhi member change-role\`) may have been interrupted — historical versions in those epochs cannot be decrypted. Ask an administrator whose scope covers this environment to re-run \`maruhi member add\` or \`maruhi member change-role\` with your current role and scope (a \`maruhi env rotate\` of the environment also distributes the new epoch's key; or re-register through the repair path). If this machine was added as a device, the backfill to it may not have completed instead. ${describeGapFillRoute(projectId, environmentId)}`;
@@ -206,8 +207,8 @@ function epochList(epochs: readonly number[]): string {
 /** Reporting the fill (Note only — does not change pull's exit code). */
 export const reportOwnDeviceGapFills = Effect.fn("device-gaps.reportOwnDeviceGapFills")(
   function* (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly fills: readonly OwnDeviceGapFill[];
   }): Effect.fn.Return<void, never, CliIo> {
     const environment = displayText(input.environmentId);

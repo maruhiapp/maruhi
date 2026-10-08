@@ -4,8 +4,8 @@
 
 import {
   DataLimitExceededError,
+  DekWrapNotFoundError,
   ProjectLimitError,
-  ProjectNotFoundError,
   UnauthorizedError,
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
@@ -41,7 +41,8 @@ import {
   unsupportedCryptoCause,
   unsupportedCryptoMessage,
 } from "../src/session.ts";
-import { makeTestUser } from "./support/crypto.ts";
+import { makeTestUser, testVariableId } from "./support/crypto.ts";
+import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
 
@@ -102,8 +103,8 @@ describe("keychain record codecs", () => {
 
   it("keychain names are scoped by server origin (and userId)", () => {
     expect(tokenEntryName("https://a.example")).not.toBe(tokenEntryName("https://b.example"));
-    expect(masterKeyEntryName("https://a.example", "u1")).not.toBe(
-      masterKeyEntryName("https://a.example", "u2"),
+    expect(masterKeyEntryName("https://a.example", testUserId("u1"))).not.toBe(
+      masterKeyEntryName("https://a.example", testUserId("u2")),
     );
   });
 });
@@ -138,7 +139,7 @@ describe("resolveServerOrigin", () => {
 
 function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   return {
-    variableId: "v1",
+    variableId: testVariableId("v1"),
     name,
     version: 1,
     epoch: 1,
@@ -152,7 +153,7 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
 }
 
 describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
-  const ENTRY = masterKeyEntryName("https://maruhi.test", "user-1");
+  const ENTRY = masterKeyEntryName("https://maruhi.test", testUserId("user-1"));
 
   /**
    * A Keychain simulating concurrent runs: `onSet` injects "another process
@@ -732,7 +733,7 @@ describe("toCliError (terminal neutralization of server-sourced strings)", () =>
   it("neutralizes the error Schema's free-form string IDs", () => {
     // Schema.String fields unconstrained on the wire (a malicious server could embed ANSI / newlines)
     const notFound = toCliError(
-      new ProjectNotFoundError({ projectId: "x\u001b[31mred\u001b[0m\nfake" }),
+      new DekWrapNotFoundError({ epoch: 3, recipientUserId: "x\u001b[31mred\u001b[0m\nfake" }),
     );
     expect(notFound.message).not.toContain("\u001b");
     expect(notFound.message).not.toContain("\n");
@@ -1028,7 +1029,7 @@ describe("input validation and defect handling", () => {
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // A usage mistake is a usage error (2). The supplied value itself is not echoed
     expect(await runCli(["pull", "--project", "not-hex"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Invalid project ID");
+    expect(env.errors.join("\n")).toContain("Unacceptable value for flag --project");
     expect(env.errors.join("\n")).not.toContain("not-hex");
     const env2 = await makeTestEnv();
     await seedConfig(env2, {
@@ -1038,7 +1039,7 @@ describe("input validation and defect handling", () => {
     env2.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     // The environment ID format check runs before any network access (session resolution)
     expect(await runCli(["pull", "--env", "!bad"], env2.layer)).toBe(2);
-    expect(env2.errors.join("\n")).toContain("Invalid environment ID");
+    expect(env2.errors.join("\n")).toContain("Unacceptable value for flag --env");
     expect(env2.errors.join("\n")).not.toContain("!bad");
   });
 

@@ -21,7 +21,7 @@
 //   where reissuing (`maruhi key recovery`) can redo it first, in case
 //   the confirmation fails
 
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type UserId } from "@maruhi/core";
 import {
   decodeHex,
   encodeHex,
@@ -346,7 +346,7 @@ function readRecoveryBlob(bytes: Uint8Array): {
 const unwrapWithPromptedCode = Effect.fn("recovery.unwrapWithPromptedCode")(function* (input: {
   readonly nonce: Uint8Array;
   readonly ciphertext: Uint8Array;
-  readonly userId: string;
+  readonly userId: UserId;
 }): Effect.fn.Return<StoredMasterKey, CliError, CliIo> {
   const io = yield* CliIo;
   for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {

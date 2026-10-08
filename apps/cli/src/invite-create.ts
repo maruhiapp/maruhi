@@ -7,6 +7,7 @@ import {
   InvitePendingLimitError,
   InviteRateLimitedError,
 } from "@maruhi/api-schema";
+import type { UserId } from "@maruhi/core";
 import { cryptoEffect, ulid } from "@maruhi/core";
 import {
   type ChainMember,
@@ -93,7 +94,7 @@ function issueErrorToCliError(error: unknown): CliError {
  */
 const ensureCanIssue = Effect.fn("invite-create.ensureCanIssue")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly sessionUserId: string;
+  readonly sessionUserId: UserId;
   readonly role: InviteRole;
   readonly scope: MemberScope;
   readonly masterKeys: MasterKeys;
@@ -215,7 +216,7 @@ export const inviteCreateOp = Effect.fn("invite-create.inviteCreateOp")(function
   readonly role: InviteRole;
   /** The scope to grant (`--env` repetition → listed, omitted = all — AUTH_SPEC §15-3 / design record ruling K). */
   readonly scope: MemberScope;
-  readonly sessionUserId: string;
+  readonly sessionUserId: UserId;
   readonly masterKeys: MasterKeys;
   /** The addressee's GitHub login (`--github` — the backing source's check target. Kept only on the issuance pin). */
   readonly expectedGithubLogin: string | null;

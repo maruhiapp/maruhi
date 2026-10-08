@@ -29,6 +29,7 @@
 // unchanged, because the composite program passes it the **history
 // index after applying the entries**.
 
+import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
@@ -90,9 +91,9 @@ const MANIFEST_REJECT_REASONS: Readonly<Record<ManifestInvalidReason, ManifestRe
  * take no override.
  */
 export const manifestDigestEntries = Effect.fn("verify-manifest.manifestDigestEntries")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   override: {
-    readonly variableId: string;
+    readonly variableId: VariableId;
     readonly status: "active" | "deleted" | "declared";
     readonly metaVersion: number;
     readonly signedBytesHashHex: string;
@@ -123,7 +124,7 @@ export const manifestDigestEntries = Effect.fn("verify-manifest.manifestDigestEn
  * defect.
  */
 export const storedEnvMeta = Effect.fn("verify-manifest.storedEnvMeta")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
 ) {
   const store = yield* DataStore;
   const environment = yield* store.findEnvironment(environmentId);
@@ -149,13 +150,13 @@ export const storedEnvMeta = Effect.fn("verify-manifest.storedEnvMeta")(function
  */
 export const acceptManifestForMetaOp = Effect.fn("verify-manifest.acceptManifestForMetaOp")(
   function* (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly history: ChainHistoryIndex;
     readonly member: MemberWithDevice;
     readonly manifest: EnvManifestInput;
     readonly digestOverride: {
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly status: "active" | "deleted" | "declared";
       readonly metaVersion: number;
       readonly signedBytesHashHex: string;
@@ -188,8 +189,8 @@ export const acceptManifestForMetaOp = Effect.fn("verify-manifest.acceptManifest
 );
 
 interface AcceptEnvManifestInput {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   /**
    * `history` is the chain at acceptance time for non-composite meta
    * operations, and the **post-bundled-entry-application** history

@@ -121,7 +121,7 @@ function propertyOf(statement: VerifiedVariableStatement): SnapshotProperty {
  * code-unit order — the same rule as the schema table and env diff).
  */
 function buildSchemaSnapshot(
-  environmentId: string,
+  environmentId: EnvironmentId,
   variables: readonly VerifiedVariableStatement[],
 ): SchemaSnapshot {
   const sorted = variables.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

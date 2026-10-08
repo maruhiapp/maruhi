@@ -2,6 +2,7 @@
 
 import { hostname } from "node:os";
 
+import { ProjectIdSchema } from "@maruhi/core";
 import { ALL_SCOPE } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -21,7 +22,14 @@ import { CliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { scopeFromFlags } from "../scope.ts";
-import { NonBlank, scopeEnvFlag, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  scopeEnvFlag,
+  serverOnlyFlags,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "./flags.ts";
 import { reportSweepOutcome } from "./shared.ts";
 
 export const deviceAddConfig = {
@@ -37,9 +45,10 @@ export const deviceAddConfig = {
 };
 export const deviceApproveConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Register the device on this project only (default: every project you belong to)",
+    ProjectIdSchema,
   ),
   cap: singleValued(
     "cap",
@@ -59,16 +68,18 @@ export const deviceApproveConfig = {
 };
 export const deviceListConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Show only this project's chain (default: every project you belong to)",
+    ProjectIdSchema,
   ),
 };
 export const deviceRevokeConfig = {
   ...serverOnlyFlags(),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "Revoke on this project only (default: every project you belong to)",
+    ProjectIdSchema,
   ),
   user: singleValued(
     "user",

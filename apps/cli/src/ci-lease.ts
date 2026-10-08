@@ -19,8 +19,7 @@
 // project per token, so all requests under the same token must present the
 // same ephemeral key (AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1).
 
-import { cryptoPromise } from "@maruhi/core";
-import type { EnvironmentId, ProjectId } from "@maruhi/core";
+import { cryptoPromise, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";

@@ -12,7 +12,7 @@
 import { dirname } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { EnvironmentIdSchema, isProjectId } from "@maruhi/core";
+import { decodeProjectId, isProjectId, type ProjectId, EnvironmentIdSchema } from "@maruhi/core";
 import { MAX_SCOPE_ENVIRONMENTS } from "@maruhi/crypto";
 import { Effect, FileSystem, type PlatformError, Result, Schema } from "effect";
 
@@ -51,7 +51,7 @@ export function unknownKeys(record: Record<string, unknown>, allowed: readonly s
 export function parseConfigHeader(
   parsed: Record<string, unknown>,
   rootKeys: readonly string[],
-): { readonly projectId: string | undefined } | string {
+): { readonly projectId: ProjectId | undefined } | string {
   const unknown = unknownKeys(parsed, rootKeys);
   if (unknown.length > 0) {
     return `unknown top-level keys (${unknown.join(", ")}); accepted: ${rootKeys.join(", ")}`;
@@ -63,7 +63,7 @@ export function parseConfigHeader(
   if (project !== undefined && (typeof project !== "string" || !isProjectId(project))) {
     return "project must be the project ID (64 hex digits) when present";
   }
-  return { projectId: project };
+  return { projectId: project === undefined ? undefined : decodeProjectId(project) };
 }
 
 /**

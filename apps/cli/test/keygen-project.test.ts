@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, parseStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
 import { addMemberOp, buildChain, genesisOp, makeTestUser } from "./support/crypto.ts";
+import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -80,7 +81,7 @@ describe("maruhi key", () => {
     const env = await loggedInEnv(maruhi.origin, "user-0001");
     queueSaveConfirmation(env);
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
-    const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, "user-0001"));
+    const stored = env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001")));
     expect(stored).toBeDefined();
     const record = parseStoredMasterKey(stored ?? "");
     expect(record).not.toBeNull();

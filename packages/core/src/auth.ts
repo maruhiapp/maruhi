@@ -50,6 +50,28 @@ export const SIGNUP_DENIAL_REASONS = [
 export type SignupDenialReason = (typeof SIGNUP_DENIAL_REASONS)[number];
 
 // ---------------------------------------------------------------------------
+// Organization ids (AUTH_SPEC §9). Branded for the same reason UserId is:
+// organizations.id and memberships.org_id are ULID columns adjacent to
+// user-id columns of the same shape, and the brand is what keeps one out of
+// the other's positions. Minted only at trust boundaries — this schema (wire
+// decode), a branded Drizzle column, or generation (`newOrgId` on the
+// server); `.oxlintrc.json` pins the mint sites.
+// ---------------------------------------------------------------------------
+
+/** Schema for an organization id (AUTH_SPEC §9 `organizations.id`). Decoding mints an {@link OrgId}. */
+export const OrgIdSchema = Schema.String.pipe(Schema.brand("OrgId"));
+
+/** An organization id: the ULID identifying one organization row. */
+export type OrgId = typeof OrgIdSchema.Type;
+
+/**
+ * Mints an {@link OrgId} where no Schema field does the decoding — only at a
+ * trust boundary: generating a new organization id, a hand-written parser of
+ * a wire or stored record, or a branded column read.
+ */
+export const decodeOrgId: (value: string) => OrgId = Schema.decodeSync(OrgIdSchema);
+
+// ---------------------------------------------------------------------------
 // Org roles (AUTH_SPEC §9-1 — not involved in project access)
 // ---------------------------------------------------------------------------
 

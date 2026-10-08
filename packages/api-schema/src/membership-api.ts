@@ -6,7 +6,7 @@
 // plaintext secret, a DEK, or a master private key. Chain entries are
 // signed public data.
 
-import { ProjectIdSchema } from "@maruhi/core";
+import { OrgIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
@@ -76,7 +76,7 @@ export const HeadAttestationSubmissionSchema = Schema.Struct({
  */
 export const DistributedHeadAttestationSchema = Schema.Struct({
   suite: Schema.Literal("maruhi/v1"),
-  attesterUserId: Schema.String,
+  attesterUserId: UserIdSchema,
   attesterKeyFingerprintHex: KeyFingerprintHex,
   chainHeadHashHex: Sha256Hex,
   chainHeadSeq: PositiveInt,
@@ -156,7 +156,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
   .add(
     HttpApiEndpoint.post("init", "/projects", {
       // strict acceptance (§12-10 (1) — the chain-append surface carrying a genesis)
-      payload: strictPayload(Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema })),
+      payload: strictPayload(Schema.Struct({ orgId: OrgIdSchema, entry: ChainEntrySchema })),
       success: ChainHeadSchema,
       error: [
         ProjectAlreadyInitializedError,

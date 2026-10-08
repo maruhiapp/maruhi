@@ -58,7 +58,7 @@
 // only the target name, the workflow name, counts, versions, and
 // variable names (displayText).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
 import { type CliServices, type EnvironmentContext, floorHandleFor } from "../context.ts";
@@ -150,8 +150,8 @@ function targetCarries(target: SyncTarget, name: string): boolean {
 export function decidePushSync(
   setup: PushSyncSetup,
   input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly name: string;
   },
 ): Effect.Effect<PushSyncDecision, CliError> {
@@ -277,7 +277,7 @@ const triggerWorkflow = Effect.fn("sync-push.triggerWorkflow")(function* (
  */
 function floorLedger(
   context: EnvironmentContext,
-): (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices> {
+): (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, never, CliServices> {
   const handles = new Map<string, FloorHandle>([[context.environmentId, context.floorHandle]]);
   return (environmentId) =>
     Effect.gen(function* () {
@@ -296,7 +296,7 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   context: EnvironmentContext,
   setup: PushSyncSetup,
   target: SyncTarget,
-  floorOf: (environmentId: string) => Effect.Effect<FloorHandle, never, CliServices>,
+  floorOf: (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, never, CliServices>,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   yield* io.log(
@@ -317,7 +317,7 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
     target,
     // The push's environment = the sync source: passes push's advanced floor handle as-is
     sourceFloor: context.floorHandle,
-    receiptsEnvironment: setup.config.receiptsEnvironment as EnvironmentId,
+    receiptsEnvironment: setup.config.receiptsEnvironment,
     receiptsFloor,
     writerUserId: context.session.userId,
     signingKey: context.masterKeys.sigKeyPair.privateKey,

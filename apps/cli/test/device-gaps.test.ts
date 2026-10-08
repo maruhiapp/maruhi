@@ -27,7 +27,6 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
@@ -35,9 +34,12 @@ import {
   makeTestUser,
   manifestFor,
   rotateEpochOp,
+  testEnvironmentId,
+  testProjectId,
+  type BuiltChain,
   type TestUser,
-  wrapDekFor,
   type WireRecipientDek,
+  wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
@@ -64,7 +66,8 @@ function addDeviceOp(device: TestUser, environmentIds?: readonly string[]): Chai
       sigPubHex: device.sigPubHex,
       roleCap: environmentIds === undefined ? "owner" : "member",
       scopeKind: environmentIds === undefined ? "all" : "listed",
-      scopeEnvironmentIds: environmentIds === undefined ? [] : [...environmentIds],
+      scopeEnvironmentIds:
+        environmentIds === undefined ? [] : environmentIds.map(testEnvironmentId),
     },
   };
 }
@@ -202,8 +205,8 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
         ciphertext: decodeHex(wrap.ciphertextHex) ?? new Uint8Array(),
       },
       context: {
-        projectId: built.projectId,
-        environmentId: ENV_ID,
+        projectId: testProjectId(built.projectId),
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 1,
         recipientUserId: owner.userId,
       },
@@ -214,8 +217,8 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
     const signature = await verifyDekWrapSignature({
       context: {
         suite: SUITE_ID,
-        projectId: built.projectId,
-        environmentId: ENV_ID,
+        projectId: testProjectId(built.projectId),
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 1,
         recipientUserId: owner.userId,
         recipientEncPubHex: sibling.encPubHex,

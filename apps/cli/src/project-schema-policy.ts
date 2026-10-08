@@ -9,6 +9,7 @@
 // command is not gated in agent environments.
 
 import { ForbiddenError, type SchemaPolicy, SchemaPolicySchema } from "@maruhi/api-schema";
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -33,7 +34,7 @@ function describeSchemaPolicy(policy: SchemaPolicy): string {
 
 const fetchSchemaPolicy = (
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.Effect<SchemaPolicy, CliError> =>
   client.schemaPolicy.get({ params: { projectId } }).pipe(
     Effect.mapError(toCliError),
@@ -44,7 +45,7 @@ const fetchSchemaPolicy = (
 export const showSchemaPolicyOp = Effect.fn("project-schema-policy.showSchemaPolicyOp")(
   function* (input: {
     readonly client: MaruhiClient;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
   }): Effect.fn.Return<void, CliError, CliIo> {
     const io = yield* CliIo;
     const policy = yield* fetchSchemaPolicy(input.client, input.projectId);
@@ -61,7 +62,7 @@ export const showSchemaPolicyOp = Effect.fn("project-schema-policy.showSchemaPol
 export const setSchemaPolicyOp = Effect.fn("project-schema-policy.setSchemaPolicyOp")(
   function* (input: {
     readonly client: MaruhiClient;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly policy: SchemaPolicy;
   }): Effect.fn.Return<void, CliError, CliIo> {
     const io = yield* CliIo;

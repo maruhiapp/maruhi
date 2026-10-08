@@ -2,6 +2,7 @@
 // the registry (server-reported), and the local records (the provenance)
 // (the group's overview lives in device.ts).
 
+import { type ProjectId, type UserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -24,14 +25,14 @@ import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 
 /** The display rows' material: FP → on-chain appearances (one row per project) and the synced chains. */
 interface ListRows {
-  readonly rows: Map<string, { readonly projectId: string; readonly line: string }[]>;
-  readonly chains: readonly { readonly projectId: string; readonly verified: VerifiedProject }[];
+  readonly rows: Map<string, { readonly projectId: ProjectId; readonly line: string }[]>;
+  readonly chains: readonly { readonly projectId: ProjectId; readonly verified: VerifiedProject }[];
 }
 
 /** Collects my device from each project's chain (a project that cannot sync is a Note). */
 const collectChainRows = Effect.fn("device-list.collectChainRows")(function* (input: {
   readonly session: CliSession;
-  readonly projectIds: readonly string[];
+  readonly projectIds: readonly ProjectId[];
 }): Effect.fn.Return<ListRows, never, CliServices> {
   const rows: ListRows["rows"] = new Map();
   const chains: ListRows["chains"][number][] = [];
@@ -72,7 +73,7 @@ const collectChainRows = Effect.fn("device-list.collectChainRows")(function* (in
  */
 function chainLinesOf(input: {
   readonly listed: ListRows;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly fingerprintHex: string;
 }): readonly string[] {
   const active = (input.listed.rows.get(input.fingerprintHex) ?? []).map((row) => row.line);
@@ -119,7 +120,7 @@ function describeListRow(input: {
 export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const store = yield* OwnDeviceStore;
@@ -131,7 +132,7 @@ export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (inp
     Effect.catch((error) =>
       logNote(
         `your projects could not be listed (${error.message}), so no project chain is shown`,
-      ).pipe(Effect.as<readonly string[]>([])),
+      ).pipe(Effect.as<readonly ProjectId[]>([])),
     ),
   );
   const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
@@ -186,7 +187,7 @@ export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (inp
  */
 const printChainLines = Effect.fn("device-list.printChainLines")(function* (input: {
   readonly lines: readonly string[];
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
   /** The count of projects that could not be synced (the ones `collectChainRows` noted). */
   readonly unsynced: number;
 }): Effect.fn.Return<void, never, CliIo> {

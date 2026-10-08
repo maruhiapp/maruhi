@@ -32,6 +32,7 @@
 // Test vectors: test-vectors/lease-wrap.json
 
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId } from "./chain-types.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -63,8 +64,8 @@ export interface LeaseClaims {
  * `claimsDigestHex` is the lowercase-hex digest from `computeLeaseClaimsDigest`.
  */
 export interface LeaseWrapContext {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly claimsDigestHex: string;
 }

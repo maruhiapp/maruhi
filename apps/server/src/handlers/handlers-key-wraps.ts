@@ -34,7 +34,8 @@ import {
   MAX_HANDOFF_APPROVALS_PER_REQUEST,
   MAX_PASSKEY_WRAPS_PER_USER,
 } from "@maruhi/api-schema";
-import { auditActorOf, RequestAuth, type UserId } from "@maruhi/core";
+import type { KeyFingerprintHex } from "@maruhi/core";
+import { auditActorOf, decodeKeyFingerprintHex, RequestAuth, type UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -131,8 +132,8 @@ interface LogicalShareIndex {
 function indexLogicalShares(
   shares: readonly {
     readonly shareIndex: number;
-    readonly guardianUserId: string;
-    readonly guardianKeyFingerprintHex: string;
+    readonly guardianUserId: UserId;
+    readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   }[],
 ): LogicalShareIndex | "duplicate-guardian" {
   const guardianOfIndex = new Map<number, string>();
@@ -158,8 +159,8 @@ function guardianPolicyViolation(input: {
   readonly mode: "any" | "all";
   readonly shares: readonly {
     readonly shareIndex: number;
-    readonly guardianUserId: string;
-    readonly guardianKeyFingerprintHex: string;
+    readonly guardianUserId: UserId;
+    readonly guardianKeyFingerprintHex: KeyFingerprintHex;
   }[];
 }): "share-count" | "self-guardian" | "duplicate-guardian" | null {
   const indexed = indexLogicalShares(input.shares);
@@ -423,10 +424,15 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
+        const shares = payload.shares.map((s) => ({
+          ...s,
+          // The guardian key FP is a wire value (format-checked by the schema — the boundary mint)
+          guardianKeyFingerprintHex: decodeKeyFingerprintHex(s.guardianKeyFingerprintHex),
+        }));
         const violation = guardianPolicyViolation({
           wardUserId: principal.userId,
           mode: payload.mode,
-          shares: payload.shares,
+          shares,
         });
         if (violation !== null) {
           return yield* Effect.fail(new KeyWrapPolicyError({ reason: violation }));
@@ -442,7 +448,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           groupId,
           mode: payload.mode,
           wrap: payload.wrap,
-          shares: payload.shares,
+          shares,
           limit: MAX_GUARDIAN_GROUPS_PER_USER,
           nowMs: yield* Clock.currentTimeMillis,
           actor: auditActorOf(principal),

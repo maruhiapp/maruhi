@@ -1,6 +1,7 @@
 // Repository of the org-attribution metadata and the §11-5 membership
 // projection (AUTH_SPEC §11-3, §11-5 — never an authorization table).
 
+import type { OrgId, ProjectId, UserId } from "@maruhi/core";
 import { and, count, eq, gt, inArray } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -39,13 +40,13 @@ interface ProjectRepoShape {
    * projects row's insert.
    */
   readonly insertIfAbsent: (
-    projectId: string,
-    orgId: string,
-    ownerUserId: string,
+    projectId: ProjectId,
+    orgId: OrgId,
+    ownerUserId: UserId,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
-  readonly exists: (projectId: string) => Effect.Effect<boolean>;
+  readonly exists: (projectId: ProjectId) => Effect.Effect<boolean>;
   /**
    * The org's active project count (the decision input of AUTH_SPEC
    * §11-3's acceptance limit). In v1 it counts every `projects` row of
@@ -55,7 +56,7 @@ interface ProjectRepoShape {
    * atomicity against DO acceptance (§11-3 — a slight excess from
    * concurrent inits is accepted).
    */
-  readonly countInOrg: (orgId: string) => Effect.Effect<number>;
+  readonly countInOrg: (orgId: OrgId) => Effect.Effect<number>;
   /**
    * Maintaining the projection (§11-5): the row insert after an
    * add_member acceptance and the lazy insert on a successful chain
@@ -63,14 +64,18 @@ interface ProjectRepoShape {
    * pre-projection projects). Idempotent (equivalent to INSERT OR
    * IGNORE).
    */
-  readonly upsertMember: (projectId: string, userId: string, nowMs: number) => Effect.Effect<void>;
+  readonly upsertMember: (
+    projectId: ProjectId,
+    userId: UserId,
+    nowMs: number,
+  ) => Effect.Effect<void>;
   /**
    * Maintaining the projection (§11-5): deletion of a stale row the DO
    * answered non-member on at list read-time verification, after a
    * remove_member acceptance (convergence toward the chain truth).
    * Idempotent.
    */
-  readonly deleteMember: (projectId: string, userId: string) => Effect.Effect<void>;
+  readonly deleteMember: (projectId: ProjectId, userId: UserId) => Effect.Effect<void>;
   /**
    * The candidate enumeration of the list (§11-5): the project_ids of
    * the user's own projection rows, ascending, up to `limit` rows from
@@ -86,11 +91,11 @@ interface ProjectRepoShape {
    * and leak — the candidate space itself is closed inside the scope.
    */
   readonly listMemberProjectIds: (
-    userId: string,
-    afterProjectId: string | null,
+    userId: UserId,
+    afterProjectId: ProjectId | null,
     limit: number,
-    withinProjectIds: readonly string[] | null,
-  ) => Effect.Effect<readonly string[]>;
+    withinProjectIds: readonly ProjectId[] | null,
+  ) => Effect.Effect<readonly ProjectId[]>;
 }
 
 export class ProjectRepo extends Context.Service<ProjectRepo, ProjectRepoShape>()("ProjectRepo") {}
@@ -166,8 +171,8 @@ export function makeProjectRepo(db: Db): ProjectRepoShape {
     listMemberProjectIds: (userId, afterProjectId, limit, withinProjectIds) =>
       tryD1(async () => {
         const pageQuery = (
-          scopeChunk: readonly string[] | null,
-        ): Promise<{ projectId: string }[]> => {
+          scopeChunk: readonly ProjectId[] | null,
+        ): Promise<{ projectId: ProjectId }[]> => {
           const conditions = [eq(projectMembers.userId, userId)];
           if (afterProjectId !== null) {
             conditions.push(gt(projectMembers.projectId, afterProjectId));
@@ -196,7 +201,7 @@ export function makeProjectRepo(db: Db): ProjectRepoShape {
         // the same page as a single query (the chunks are disjoint ID
         // sets). The loop shape is also safe against old rows whose
         // stored scope exceeds the issuance-time cap
-        const merged: string[] = [];
+        const merged: ProjectId[] = [];
         for (let offset = 0; offset < withinProjectIds.length; offset += SCOPE_FILTER_CHUNK_SIZE) {
           const chunk = withinProjectIds.slice(offset, offset + SCOPE_FILTER_CHUNK_SIZE);
           merged.push(...(await pageQuery(chunk)).map((row) => row.projectId));

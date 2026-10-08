@@ -29,7 +29,6 @@ import { type CliServices, runCli } from "../src/cli.ts";
 import { IssuerEndpoints } from "../src/rotate-connector.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -39,12 +38,16 @@ import {
   makeTestUser,
   rotateEpochOp,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  type BuiltChain,
   type TestUser,
-  valueHashOf,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireRecipientDek,
   type WireStatementSchema,
+  valueHashOf,
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
@@ -234,10 +237,10 @@ async function decryptLatest(state: ValueEnvironmentState, dek: Uint8Array, vari
     nonce: hexBytes(stored.value.nonceHex),
     ciphertext: hexBytes(stored.value.ciphertextHex),
     context: {
-      projectId: built.projectId,
-      environmentId: stored.value.aad.environmentId,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(stored.value.aad.environmentId),
       epoch: stored.value.aad.epoch,
-      variableId,
+      variableId: testVariableId(variableId),
       version: stored.value.aad.version,
     },
   });

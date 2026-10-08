@@ -26,6 +26,7 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_PENDING_PROPOSALS, MAX_PROPOSAL_LIFETIME_MS } from "../src/policy.ts";
 import { addMemberOperation, hexBytes, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -176,8 +177,8 @@ async function submitAttestation(attesterUserId: string): Promise<void> {
   const signed = await signHeadAttestation({
     context: {
       suite: "maruhi/v1",
-      projectId,
-      attesterUserId,
+      projectId: testProjectId(projectId),
+      attesterUserId: testUserId(attesterUserId),
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     },

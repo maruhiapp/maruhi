@@ -26,6 +26,7 @@
 // checks ran (the first reason wins, like before); config-schema.ts renders
 // the failing issue as the same path-and-reason wording.
 
+import { type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
 import {
@@ -100,7 +101,7 @@ export type VariableRule =
 export interface ProxyConfig {
   readonly version: 1;
   /** The project the config belongs to (optional; checked against the resolved project when present). */
-  readonly projectId: string | undefined;
+  readonly projectId: ProjectId | undefined;
   /** Destinations no rule names: tunnelled as they are, or refused. */
   readonly unmatched: "allow" | "block";
   /** Variables the config does not name. */

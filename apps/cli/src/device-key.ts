@@ -18,7 +18,7 @@
 // the internal implementation (`capWithinCap`) (the same discipline as
 // ES K4-I).
 
-import { cryptoPromise } from "@maruhi/core";
+import { cryptoPromise, type UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, DeviceCap, SigningKeyPair } from "@maruhi/crypto";
 import { encodeHex, exportSigningPublicKey } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -59,7 +59,7 @@ export function findOwnDevice(member: ChainMember, ref: OwnKeyRef): ChainDevice 
  * request). A device listed on another project is added by syncing my
  * device listed here (DK K10-5).
  */
-function deviceNotOnChainMessage(userId: string): string {
+function deviceNotOnChainMessage(userId: UserId): string {
   return `The key on this machine is not one of your active device keys on this project's chain (member ${displayText(userId)}). This device has not been registered here yet. If \`maruhi device add\` is still waiting on this machine, approve it from a registered device with \`maruhi device approve\`. If this device is registered on other projects of yours, a device of yours that is registered here adds it when it runs a keyed command on this project at a terminal, if its cap covers this device's and it has synced a project that has it (\`maruhi device list\` shows where each device is registered)`;
 }
 
@@ -71,7 +71,7 @@ function deviceNotOnChainMessage(userId: string): string {
  * conditionally and checking is left to `device list` (`device list`
  * also shows revocation in each project — K13-6).
  */
-function deviceRevokedMessage(userId: string, fingerprintHex: string): string {
+function deviceRevokedMessage(userId: UserId, fingerprintHex: string): string {
   return `The key on this machine (${fingerprintHex}) was revoked on this project's chain (member ${displayText(userId)}), and a revoked key is never registered again. To use this machine here again, ${reAddDeviceRoute("this machine")}. If this key is still registered on other projects of yours, revoke it there once the new key is approved (\`maruhi device list\` shows where it is still registered)`;
 }
 
@@ -105,7 +105,7 @@ export function ownDeviceOrFail(
 /** Resolves a key reference to the FP of a key ever bound to that person (`keyHistory` — revoked keys also remain). */
 function historicalFingerprintOf(
   verified: VerifiedProject,
-  userId: string,
+  userId: UserId,
   ref: OwnKeyRef,
 ): string | undefined {
   if ("keyFingerprintHex" in ref) {
@@ -190,7 +190,7 @@ export interface DeviceProvenance {
   readonly seq: number;
   /** The device that signed the `add_device` (null = the member's first key: genesis / add_member). */
   readonly addedByFingerprintHex: string | null;
-  readonly addedByUserId: string;
+  readonly addedByUserId: UserId;
   /** Whether the adding device is still active for that user at the head (K4-4 counterexample 2). */
   readonly adderStillActive: boolean;
 }
@@ -201,7 +201,7 @@ export interface DeviceProvenance {
  */
 export function deviceProvenanceOf(
   verified: VerifiedProject,
-  userId: string,
+  userId: UserId,
   device: ChainDevice,
 ): DeviceProvenance {
   const entry = verified.entries.find((candidate) => candidate.seq === device.addedSeq);
@@ -232,7 +232,7 @@ export function deviceProvenanceOf(
  */
 export function revokedFingerprintsOf(
   verified: VerifiedProject,
-  userId: string,
+  userId: UserId,
 ): ReadonlySet<string> {
   const revoked = new Set<string>();
   for (const applied of verified.applied) {

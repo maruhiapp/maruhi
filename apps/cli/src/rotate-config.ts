@@ -30,6 +30,7 @@
 
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
 import {
@@ -87,7 +88,7 @@ export const EXEC_CONTROL_PREFIX = "MH_ROTATE_";
 
 /** Where an admin input lives: a variable of the target's environment (`environment` null) or of another one. */
 export interface InputRef {
-  readonly environment: string | null;
+  readonly environment: EnvironmentId | null;
   readonly name: string;
 }
 
@@ -154,7 +155,7 @@ export type RotateRule =
 export interface RotateConfig {
   readonly version: 1;
   /** The project the config belongs to (optional; checked against the resolved project when present). */
-  readonly projectId: string | undefined;
+  readonly projectId: ProjectId | undefined;
   /** Variable name → rule. */
   readonly variables: ReadonlyMap<string, RotateRule>;
 }
@@ -761,6 +762,6 @@ export function ruleFor(config: RotateConfig, name: string): ResolvedRule | null
 }
 
 /** Matching the config's `project` against the resolved project (a mismatch is a config of another project). */
-export function configNamesProject(config: RotateConfig, projectId: string): boolean {
+export function configNamesProject(config: RotateConfig, projectId: ProjectId): boolean {
   return config.projectId === undefined || config.projectId === projectId;
 }

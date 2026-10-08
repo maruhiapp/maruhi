@@ -16,6 +16,7 @@
 // from the token's issuer / sub / aud and does not depend on
 // identifying the element).
 
+import type { EnvironmentId } from "@maruhi/core";
 import type { LeasePolicyIssuer, ServerGrant } from "@maruhi/crypto";
 
 import type { VerifiedOidcToken } from "./oidc.package/index.ts";
@@ -81,6 +82,6 @@ export function leasePolicyAuthorizes(grant: ServerGrant, token: PolicyEvaluatio
 }
 
 /** Whether the disclosure scope (scope_environments) contains the target environment (§14-1). */
-export function grantCoversEnvironment(grant: ServerGrant, environmentId: string): boolean {
+export function grantCoversEnvironment(grant: ServerGrant, environmentId: EnvironmentId): boolean {
   return grant.scopeEnvironmentIds.includes(environmentId);
 }

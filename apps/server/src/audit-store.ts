@@ -14,7 +14,8 @@
 //   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
 //   mirror verification — `maruhi audit verify` — uses)
 
-import type { AuditEventRecord } from "@maruhi/core";
+import type { AuditEventRecord, KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import {
   assertProjectAuditPayload,
   auditPayloadWith,
@@ -155,18 +156,18 @@ export interface RotationFlagSourceRow {
    * exposure bound (the environment's epoch at detection — VH). NULL otherwise.
    */
   readonly epoch: number | null;
-  readonly targetUserId: string | null;
-  readonly targetKeyFingerprintHex: string | null;
+  readonly targetUserId: UserId | null;
+  readonly targetKeyFingerprintHex: KeyFingerprintHex | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
 /** The synchronous read surface used by detection and flag derivation (indexes in §4.2 / do-schema.ts). */
 export interface AuditRotationRead {
-  readonly membershipEventsFor: (targetUserId: string) => readonly MembershipEventRow[];
-  readonly deviceEventsFor: (targetUserId: string) => readonly DeviceEventRow[];
+  readonly membershipEventsFor: (targetUserId: UserId) => readonly MembershipEventRow[];
+  readonly deviceEventsFor: (targetUserId: UserId) => readonly DeviceEventRow[];
   readonly serverGrantEventsFor: (fpHex: string) => readonly GrantEventRow[];
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
-  readonly variableReadsBy: (actorUserId: string, range?: SeqRange) => readonly VariableReadRow[];
+  readonly variableReadsBy: (actorUserId: UserId, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
   /**
    * Every environment's epoch transitions from the chain mirror
@@ -281,8 +282,8 @@ interface AuditEventsQuery {
   readonly eventPrefix: string | null;
   /** Return only rows whose chain_seq is not NULL (§7). */
   readonly chainSeqPresent: boolean;
-  readonly actorUserId: string | null;
-  readonly targetUserId: string | null;
+  readonly actorUserId: UserId | null;
+  readonly targetUserId: UserId | null;
   readonly variableId: string | null;
   readonly environmentId: string | null;
   readonly visibility: AuditVisibility;
@@ -299,6 +300,10 @@ export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "paylo
   /** The wire row identifier (§5.1 row_id — 16 bytes random hex). */
   readonly rowId: string;
   readonly payload: Readonly<Record<string, unknown>> | null;
+  readonly actorUserId: UserId | null;
+  readonly actorKeyFingerprintHex: KeyFingerprintHex | null;
+  readonly targetUserId: UserId | null;
+  readonly targetKeyFingerprintHex: KeyFingerprintHex | null;
 }
 
 /**
@@ -628,11 +633,11 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
     clientTs: numberOrNull(row["client_ts"]),
     event: String(row["event"]),
     actorType: String(row["actor_type"]),
-    actorUserId: textOrNull(row["actor_user_id"]),
-    actorKeyFingerprintHex: textOrNull(row["actor_key_fingerprint"]),
+    actorUserId: brandOrNull(row["actor_user_id"], decodeUserId),
+    actorKeyFingerprintHex: brandOrNull(row["actor_key_fingerprint"], decodeKeyFingerprintHex),
     actorApiTokenId: textOrNull(row["actor_api_token_id"]),
-    targetUserId: textOrNull(row["target_user_id"]),
-    targetKeyFingerprintHex: textOrNull(row["target_key_fingerprint"]),
+    targetUserId: brandOrNull(row["target_user_id"], decodeUserId),
+    targetKeyFingerprintHex: brandOrNull(row["target_key_fingerprint"], decodeKeyFingerprintHex),
     environmentId: textOrNull(row["environment_id"]),
     variableId: textOrNull(row["variable_id"]),
     epoch: numberOrNull(row["epoch"]),
@@ -1136,6 +1141,10 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
+
+/** A NULL-or-brand column read (the mint is the stored-row decode boundary). */
+const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | null =>
+  value === null ? null : decode(String(value));
 const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
 
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
@@ -1148,6 +1157,10 @@ function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
     ...shared,
     rowId: String(row["row_id"]),
     payload: parsePayload(row["payload"]),
+    actorUserId: brandOrNull(shared.actorUserId, decodeUserId),
+    actorKeyFingerprintHex: brandOrNull(shared.actorKeyFingerprintHex, decodeKeyFingerprintHex),
+    targetUserId: brandOrNull(shared.targetUserId, decodeUserId),
+    targetKeyFingerprintHex: brandOrNull(shared.targetKeyFingerprintHex, decodeKeyFingerprintHex),
   };
 }
 
@@ -1174,7 +1187,7 @@ function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null 
 function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
   return Array.isArray(scope) && scope.every((id) => typeof id === "string")
-    ? (scope as readonly string[])
+    ? scope.map((id) => String(id))
     : null;
 }
 
@@ -1410,9 +1423,12 @@ function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFl
     variableId: String(row["variable_id"]),
     version: row["version"] === null ? null : Number(row["version"]),
     epoch: row["epoch"] === null ? null : Number(row["epoch"]),
-    targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
+    targetUserId:
+      row["target_user_id"] === null ? null : decodeUserId(String(row["target_user_id"])),
     targetKeyFingerprintHex:
-      row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),
+      row["target_key_fingerprint"] === null
+        ? null
+        : decodeKeyFingerprintHex(String(row["target_key_fingerprint"])),
     payload: parsePayload(row["payload"]),
   };
 }

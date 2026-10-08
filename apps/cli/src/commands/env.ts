@@ -1,6 +1,6 @@
 // `maruhi env` (discipline: see commands/index.ts).
 
-import { type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -112,7 +112,7 @@ export const envRmConfig = {
  */
 const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const context = yield* openProject(flags);
@@ -141,7 +141,7 @@ function requireEnvironmentId(
   example: string,
 ): Effect.Effect<EnvironmentId, CliError> {
   return isEnvironmentId(value)
-    ? Effect.succeed(value)
+    ? Effect.succeed(decodeEnvironmentId(value))
     : Effect.fail(
         usageError(
           `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,

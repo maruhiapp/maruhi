@@ -23,7 +23,7 @@ import {
   signChainEntry,
   verifyChainWithHistory,
 } from "../../src/index.ts";
-import { testUserId } from "../support/fixture.ts";
+import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";
 import {
   toTypedEntry,
   typedEntries,
@@ -37,7 +37,7 @@ function typedDigestEntries(
   entries: (typeof vectorValuesDigests)[number]["entries"],
 ): EnvValuesDigestEntry[] {
   return entries.map((entry) => ({
-    variableId: entry.variable_id,
+    variableId: testVariableId(entry.variable_id),
     version: Number(entry.version),
     valueSigHashHex: entry.value_sig_hash_hex,
   }));
@@ -84,7 +84,7 @@ async function valuesDigestVectorChecks(c: Checks): Promise<void> {
 /** Structural invalidity (version 0 / non-integer / uppercase hex / empty id / empty suite) is InvalidInput. */
 async function valuesDigestInvalidInputChecks(c: Checks): Promise<void> {
   const validEntry: EnvValuesDigestEntry = {
-    variableId: "var-a-0001",
+    variableId: testVariableId("var-a-0001"),
     version: 1,
     valueSigHashHex: "ab".repeat(32),
   };
@@ -101,7 +101,7 @@ async function valuesDigestInvalidInputChecks(c: Checks): Promise<void> {
       name: "uppercase value sig hash",
       entry: { ...validEntry, valueSigHashHex: "AB".repeat(32) },
     },
-    { name: "empty variable id", entry: { ...validEntry, variableId: "" } },
+    { name: "empty variable id", entry: { ...validEntry, variableId: testVariableId("") } },
   ];
   for (const bad of badEntries) {
     const result = await computeEnvValuesDigest("maruhi/v1", [bad.entry]);
@@ -199,7 +199,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
     c.push("checkpoint history: setup", false, "fixture missing");
     return;
   }
-  const baseTuple = view.state.checkpoints.get("env-prod-0001");
+  const baseTuple = view.state.checkpoints.get(testEnvironmentId("env-prod-0001"));
   if (baseTuple === undefined) {
     c.push("checkpoint history: setup", false, "baseline tuple missing");
     return;
@@ -214,7 +214,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
     payload: {
       environments: [
         {
-          environmentId: "env-prod-0001",
+          environmentId: testEnvironmentId("env-prod-0001"),
           epoch: 2,
           manifestVersion: 2,
           // A different-content manifest hash on the same coordinates (the
@@ -248,7 +248,7 @@ async function equivocationChecks(c: Checks): Promise<void> {
 /** Consistency between derived state and the history index: latestCheckpointFor = ChainState.checkpoints. */
 async function derivedStateChecks(c: Checks): Promise<void> {
   const view = await baselineView();
-  const fromState = view.state.checkpoints.get("env-prod-0001");
+  const fromState = view.state.checkpoints.get(testEnvironmentId("env-prod-0001"));
   const fromHistory = view.history.latestCheckpointFor("env-prod-0001");
   c.push(
     "checkpoint history: latest checkpoint mirrors chain state",
@@ -261,7 +261,7 @@ async function derivedStateChecks(c: Checks): Promise<void> {
   c.push(
     "checkpoint history: latest checkpoint absent for uncovered environment",
     view.history.latestCheckpointFor("env-stage-0003") === undefined &&
-      view.state.checkpoints.get("env-stage-0003") === undefined,
+      view.state.checkpoints.get(testEnvironmentId("env-stage-0003")) === undefined,
   );
   // On the canonical 12-entry chain (no checkpoints) every lookup is
   // undefined

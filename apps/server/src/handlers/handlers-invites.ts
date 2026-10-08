@@ -35,6 +35,7 @@ import {
   InviteSignatureInvalidError,
   maruhiApi,
 } from "@maruhi/api-schema";
+import type { UserId } from "@maruhi/core";
 import {
   auditActorOf,
   cryptoEffect,
@@ -132,7 +133,7 @@ const verifyAcceptanceSignatures = Effect.fn("handlers-invites.verifyAcceptanceS
   function* (input: {
     readonly record: InvitationRecord;
     readonly issuance: InviteIssuance;
-    readonly inviteeUserId: string;
+    readonly inviteeUserId: UserId;
     readonly encPubHex: string;
     readonly sigPubHex: string;
     readonly acceptSignatureHex: string;

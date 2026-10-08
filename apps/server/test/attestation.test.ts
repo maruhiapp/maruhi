@@ -31,6 +31,7 @@ import {
 } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
 import { hexBytes, resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 const ORG = "org-attest-0001";
@@ -103,8 +104,8 @@ async function signAttestation(attesterUserId: string, head: Head): Promise<stri
   const signed = await signHeadAttestation({
     context: {
       suite: "maruhi/v1",
-      projectId: vectorProjectId,
-      attesterUserId,
+      projectId: testProjectId(vectorProjectId),
+      attesterUserId: testUserId(attesterUserId),
       chainHeadHashHex: head.hashHex,
       chainHeadSeq: head.seq,
     },
@@ -172,7 +173,9 @@ beforeEach(async () => {
 describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16-1)", () => {
   it("a reader can submit under a read-scope token and lands on the distribution with attester info (acceptance time is not carried)", async () => {
     const head = await setupChain();
-    const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
+    const readOnly: readonly TokenScope[] = [
+      { project: testProjectId(vectorProjectId), permission: "read" },
+    ];
     const readToken = await cliToken(GITHUB_IDS[READER] ?? 0, readOnly);
     const response = await submitAttestation(READER, head, bearer(readToken));
     expect(response.status).toBe(204);

@@ -27,7 +27,8 @@
 // authority: duplicate-environment / unknown-environment / epoch ordering /
 // role / commitment format are all judged there.
 
-import type { ChainEntry, ChainState } from "@maruhi/crypto";
+import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
+import type { ChainEntry, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "../audit-store.ts";
@@ -49,6 +50,7 @@ import {
   requireRole,
   requireRoleInScope,
 } from "../data/data-plane.ts";
+import { projectIdOf } from "../data/data-plane.ts";
 import type { DataWriteOps } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import {
@@ -77,7 +79,7 @@ import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 /** The result of a composite acceptance (crosses the RPC boundary). */
 export interface EnvironmentChainResultValue {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly currentEpoch: number;
   readonly headSeq: number;
   readonly headHashHex: string;
@@ -95,8 +97,8 @@ export interface EnvironmentChainResultValue {
  * signed over a stale view is a 409).
  */
 const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposite")(function* (
-  callerUserId: string,
-  entryActorFingerprintHex: string,
+  callerUserId: UserId,
+  entryActorFingerprintHex: KeyFingerprintHex,
   entrySeq: number,
   cache: StateCache,
 ) {
@@ -122,7 +124,7 @@ const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposit
     });
   }
   yield* ensureDevicePermission(member, "member");
-  return { chain, state, history, member, projectId: chain.genesisHashHex };
+  return { chain, state, history, member, projectId: projectIdOf(chain) };
 });
 
 /**
@@ -139,9 +141,9 @@ const loadChainForComposite = Effect.fn("composite-programs.loadChainForComposit
  */
 const ensureCompositeScope = Effect.fn("composite-programs.ensureCompositeScope")(function* (
   state: ChainState,
-  callerUserId: string,
+  callerUserId: UserId,
   member: MemberWithDevice,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ) {
   yield* requireRoleInScope(state, callerUserId, "member", environmentId);
   yield* ensureDevicePermission(member, "member", environmentId);
@@ -157,8 +159,8 @@ const ensureCompositeScope = Effect.fn("composite-programs.ensureCompositeScope"
  */
 const ensureCompositeWrapSet = Effect.fn("composite-programs.ensureCompositeWrapSet")(
   function* (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
     readonly appliedState: ChainState;
     readonly member: MemberWithDevice;
     readonly establishedEpoch: number;
@@ -217,7 +219,7 @@ const ensureCompositeWrapSet = Effect.fn("composite-programs.ensureCompositeWrap
 const ensureBoundaryCheckpointShape = Effect.fn("composite-programs.ensureBoundaryCheckpointShape")(
   function* (input: {
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly establishedEpoch: number;
     readonly manifestVersion: number;
   }) {
@@ -254,7 +256,7 @@ const ensureCheckpointAuditHead = Effect.fn("composite-programs.ensureCheckpoint
   function* (input: {
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     readonly state: ChainState;
-    readonly callerUserId: string;
+    readonly callerUserId: UserId;
   }) {
     if (input.checkpoint.payload.auditHeadHashHex === "") {
       return;
@@ -275,10 +277,10 @@ const acceptBoundaryCheckpointPair = Effect.fn("composite-programs.acceptBoundar
   function* (input: {
     readonly chain: StoredChain;
     readonly state: ChainState;
-    readonly callerUserId: string;
+    readonly callerUserId: UserId;
     readonly entry: ChainEntry;
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly establishedEpoch: number;
     readonly manifestVersion: number;
   }) {
@@ -324,7 +326,7 @@ interface CompositeWriteContext {
   };
   readonly actor: DataActor;
   readonly member: MemberWithDevice;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly nowMs: number;
 }
 
@@ -348,7 +350,7 @@ const makeWriteContext = Effect.fn("composite-programs.makeWriteContext")(functi
   readonly dataStore: { readonly write: DataWriteOps };
   readonly actor: DataActor;
   readonly member: MemberWithDevice;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
 }) {
   const chainStore = yield* ChainStore;
   const audit = yield* AuditStore;
@@ -364,7 +366,7 @@ const makeWriteContext = Effect.fn("composite-programs.makeWriteContext")(functi
 });
 
 function compositeResult(
-  environmentId: string,
+  environmentId: EnvironmentId,
   currentEpoch: number,
   appliedState: ChainState,
 ): EnvironmentChainResultValue {
@@ -574,7 +576,7 @@ export const rotateEpochCompositeProgram = Effect.fn(
   "composite-programs.rotateEpochCompositeProgram",
 )(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   input: {
     readonly parentHeadHashHex: string;
     readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
@@ -744,7 +746,7 @@ export const deleteEnvironmentCompositeProgram = Effect.fn(
   "composite-programs.deleteEnvironmentCompositeProgram",
 )(function* (
   actor: DataActor,
-  environmentId: string,
+  environmentId: EnvironmentId,
   input: {
     readonly parentHeadHashHex: string;
     readonly entry: ChainEntry & { readonly op: "delete_environment" };

@@ -109,7 +109,7 @@ function resolveRule(input: VarRotateInput): Effect.Effect<ResolvedTarget, CliEr
 /** The decrypted values of one environment by name (the pull's view and wraps are reused for the keys). */
 const decryptedByName = Effect.fn("var-rotate.decryptedByName")(function* (
   context: EnvironmentContext,
-  environmentId: string,
+  environmentId: EnvironmentId,
   pulled: VerifiedEnvironmentPull,
 ): Effect.fn.Return<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError> {
   const keys = yield* environmentKeysFor({
@@ -138,7 +138,7 @@ const decryptedByName = Effect.fn("var-rotate.decryptedByName")(function* (
 /** Pulls and decrypts another environment the rule points at for an admin input (scope checked first — §6.3). */
 const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(function* (
   context: EnvironmentContext,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.fn.Return<ReadonlyMap<string, Redacted.Redacted<Uint8Array>>, CliError, CliServices> {
   yield* requireEnvironmentInScope({
     verified: context.verified,
@@ -150,7 +150,7 @@ const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(functi
   const pulled = yield* pullVerifiedEnvironment({
     client: context.client,
     verified: context.verified,
-    environmentId: environmentId as EnvironmentId,
+    environmentId,
     resync: context.resync,
     floor,
   });
@@ -291,7 +291,7 @@ function pushOne(
 ): Effect.Effect<PushedVersion, CliError> {
   return pushVariable({
     client: context.client,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     recipient: context.recipient,
     name,
     value: Redacted.make(bytes, { label: "variable-value" }),
@@ -362,7 +362,7 @@ export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   const pulled = yield* pullVerifiedEnvironment({
     client: context.client,
     verified: context.verified,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     resync: context.resync,
     floor: context.floorHandle,
   });
@@ -421,7 +421,7 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
   const base = {
     client: context.client,
     verified: context.verified,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     resync: context.resync,
     floor: context.floorHandle,
     recipient: context.recipient,
@@ -495,7 +495,7 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
 /** The report lines of a rotation (the command prints them; values never appear). */
 export function describeRotation(
   result: VarRotateResult,
-  environmentId: string,
+  environmentId: EnvironmentId,
   nowMs: number,
 ): string[] {
   const versions = result.pushed
@@ -523,7 +523,10 @@ export function describeRotation(
   return lines;
 }
 
-export function describeFinalization(result: VarFinalizeResult, environmentId: string): string[] {
+export function describeFinalization(
+  result: VarFinalizeResult,
+  environmentId: EnvironmentId,
+): string[] {
   const head =
     result.outcome.kind === "finalized"
       ? `Finalized the rotation of ${displayText(result.primary)} in environment ${displayText(environmentId)} (${result.connector}): the credential of version ${result.previousVersion} is invalidated; version ${result.latestVersion} stays current`

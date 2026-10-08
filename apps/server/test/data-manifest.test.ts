@@ -26,7 +26,9 @@ import {
   signEnvManifestAs,
   signMetaStatementAs,
   wrapDekForAll,
+  testVariableId,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -515,11 +517,13 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       expect(body).not.toContain("manifestVersion");
     }
     await expect(
-      callProjectDo(projectId, (instance) => instance.pullEnvironment({ userId: READER }, ENV)),
+      callProjectDo(projectId, (instance) =>
+        instance.pullEnvironment({ userId: READER }, testEnvironmentId(ENV)),
+      ),
     ).rejects.toThrow(missingRow);
     await expect(
       callProjectDo(projectId, (instance) =>
-        instance.pullEnvironmentMetadata({ userId: READER }, ENV),
+        instance.pullEnvironmentMetadata({ userId: READER }, testEnvironmentId(ENV)),
       ),
     ).rejects.toThrow(missingRow);
 
@@ -558,11 +562,14 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       callProjectDo(projectId, (instance) =>
         instance.renameVariable(
           { userId: MEMBER },
-          ENV,
-          VAR,
+          testEnvironmentId(ENV),
+          testVariableId(VAR),
           // The test wire types widen suite to string (the request Schema narrows it)
           toMetaStatementInput(statement as Parameters<typeof toMetaStatementInput>[0]),
-          toManifestInput(metaManifest),
+          toManifestInput({
+            ...metaManifest,
+            environmentId: testEnvironmentId(metaManifest.environmentId),
+          }),
         ),
       ),
     ).rejects.toThrow(missingRow);
@@ -597,11 +604,14 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     const rotateBody = await rotateCompositeBody(fixture, rotation);
     await expect(
       callProjectDo(projectId, (instance) =>
-        instance.rotateEpoch({ userId: MEMBER }, ENV, {
+        instance.rotateEpoch({ userId: MEMBER }, testEnvironmentId(ENV), {
           parentHeadHashHex: rotateBody.parentHeadHashHex,
           entry: rotateBody.entry as ChainEntry & { readonly op: "rotate_epoch" },
           deks: rotateBody.deks as readonly DekWrapInput[],
-          manifest: toManifestInput(rotateBody.manifest),
+          manifest: toManifestInput({
+            ...rotateBody.manifest,
+            environmentId: testEnvironmentId(rotateBody.manifest.environmentId),
+          }),
           checkpoint: rotateBody.checkpoint as ChainEntry & { readonly op: "checkpoint" },
         }),
       ),

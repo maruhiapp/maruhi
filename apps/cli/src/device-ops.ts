@@ -23,7 +23,7 @@
 // as already registered).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type UserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainEntry,
@@ -47,7 +47,7 @@ import { appendEntry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { capWithinSignerCap, describeCap, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -74,7 +74,7 @@ export interface DeviceCandidate {
 
 /** The signer of a device op: the person and the signing keypair of one of their devices. */
 export interface DeviceOpSigner {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }
 
@@ -241,7 +241,7 @@ function revokeRejection(input: {
 const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly fingerprintsHex: readonly string[];
 }): Effect.fn.Return<
   { readonly entry: ChainEntry; readonly revoking: readonly string[] } | null,
@@ -305,7 +305,7 @@ export const appendRevokeDevice = Effect.fn("device-ops.appendRevokeDevice")(fun
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly signer: DeviceOpSigner;
-  readonly targetUserId: string;
+  readonly targetUserId: UserId;
   readonly fingerprintsHex: readonly string[];
 }): Effect.fn.Return<
   { readonly verified: VerifiedProject; readonly revoked: readonly string[] },
@@ -339,7 +339,7 @@ export interface DeviceBackfillOutcome {
   readonly environments: number;
   readonly registered: number;
   readonly alreadyRegistered: number;
-  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
+  readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
 /**
@@ -354,10 +354,10 @@ export function deviceEnvironmentsOf(input: {
   readonly verified: VerifiedProject;
   readonly targetMember: ChainMember;
   readonly targetDevice: ChainDevice;
-}): readonly string[] {
+}): readonly EnvironmentId[] {
   const deletedVerified = chainDeletedEnvironments(input.verified);
   const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
-  return [...input.verified.state.environments.keys()]
+  return chainEnvironmentIds(input.verified)
     .filter(
       (environmentId) =>
         !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
@@ -377,7 +377,7 @@ export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(functio
   readonly recipient: DekRecipient;
   readonly targetMember: ChainMember;
   readonly targetDevice: ChainDevice;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<DeviceBackfillOutcome, CliError> {
   const environments = deviceEnvironmentsOf(input);
@@ -403,9 +403,9 @@ export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(functio
 
 /** Result of the device-revocation sweep (same shape as the member one — shares the report). */
 export type DeviceSweepOutcome = SweepOutcome & {
-  readonly skippedDeleted: readonly string[];
+  readonly skippedDeleted: readonly EnvironmentId[];
   /** Obligation environments that cannot be rotated because they are outside the signing device's effective scope (or role is insufficient) (K4-8 — carried over). */
-  readonly outOfScope: readonly string[];
+  readonly outOfScope: readonly EnvironmentId[];
 };
 
 /** Rotation reason recorded on the `rotate_epoch` entries of a device-revocation sweep. */
@@ -424,8 +424,8 @@ export const sweepAfterDeviceRevoke = Effect.fn("device-ops.sweepAfterDeviceRevo
 >(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly targetUserId: string;
-  readonly actorUserId: string;
+  readonly targetUserId: UserId;
+  readonly actorUserId: UserId;
   readonly actorDevice: ChainDevice;
   readonly rotate: SweepRotate<R>;
 }): Effect.fn.Return<DeviceSweepOutcome | null, CliError, R> {

@@ -3,6 +3,7 @@
 // registry signal -> request cancel (the group's overview lives in device.ts).
 
 import { DeviceRegistryLimitError, MAX_DEVICE_REGISTRY_ROWS_PER_USER } from "@maruhi/api-schema";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import type { DeviceCap } from "@maruhi/crypto";
 import { Clock, Effect, Result } from "effect";
 
@@ -114,7 +115,7 @@ const matchRequest = Effect.fn("device-approve.matchRequest")(function* (
 
 /** The approval result on one project. */
 interface ProjectApproveOutcome {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly state: "registered" | "already" | "skipped" | "failed";
   readonly backfill: DeviceBackfillOutcome | null;
   readonly message: string | null;
@@ -126,7 +127,7 @@ export const deviceApproveOp = Effect.fn("device-approve.deviceApproveOp")(funct
   readonly client: MaruhiClient;
   readonly ref: ApproveRef;
   readonly cap: DeviceCap;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
 }): Effect.fn.Return<readonly ProjectApproveOutcome[], CliError, CliServices> {
   const io = yield* CliIo;
   // The ceremony gate precedes fetching the request list (K4-6 counterexample 3)
@@ -266,7 +267,7 @@ type ProjectApprovePlan =
     }
   | {
       readonly kind: "append";
-      readonly projectId: string;
+      readonly projectId: ProjectId;
       readonly context: ProjectContext;
       readonly chainCap: null;
     };
@@ -274,7 +275,7 @@ type ProjectApprovePlan =
 /** Opens one project and judges its outcome (a failure is folded into the result — one failure doesn't stop the rest). */
 function planApproveOnProject(input: {
   readonly session: CliSession;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly request: ApprovableRequest;
   readonly cap: DeviceCap;
   readonly masterKeys: MasterKeys;
@@ -338,7 +339,7 @@ function sameCap(a: DeviceCap, b: DeviceCap): boolean {
 function approveCommandOf(
   fingerprintHex: string,
   cap: DeviceCap,
-  project: string | undefined,
+  project: ProjectId | undefined,
 ): string {
   const scope =
     cap.scope.kind === "all"
@@ -365,7 +366,7 @@ function refuseCapMismatch(input: {
   readonly plans: readonly ProjectApprovePlan[];
   readonly request: ApprovableRequest;
   readonly cap: DeviceCap;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
 }): Effect.Effect<void, CliError> {
   const present = input.plans.flatMap((plan) =>
     plan.chainCap === null ? [] : [{ projectId: plan.outcome.projectId, cap: plan.chainCap }],
@@ -497,7 +498,7 @@ export const reportRegisteredDevice = Effect.fn("device-approve.reportRegistered
     readonly action: string;
     readonly backfill: DeviceBackfillOutcome | null;
     /** Guidance for the path that fills the failed environments (DK K11-5 — the wording is built by device-gaps.ts). */
-    readonly rerun: (environmentId: string) => string;
+    readonly rerun: (environmentId: EnvironmentId) => string;
   }): Effect.fn.Return<number, never, CliIo> {
     const io = yield* CliIo;
     yield* io.log(`${input.label}: ${input.action}${describeBackfill(input.backfill)}`);

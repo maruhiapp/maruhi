@@ -3,7 +3,7 @@
 // The consumers are commands/{approval,member,server}.ts,
 // device-revoke.ts, and key-recover.ts.
 
-import { isEnvironmentId } from "@maruhi/core";
+import { isEnvironmentId, type EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { CliServices, ProjectContext } from "./context.ts";
@@ -31,10 +31,10 @@ export function sweepRotateFor(
   context: ProjectContext,
   reason: string,
 ): (
-  environmentId: string,
+  environmentId: EnvironmentId,
   mode: SweepRotateMode,
 ) => Effect.Effect<RotationSummary, CliError, CliServices> {
-  return (environmentId: string, mode: SweepRotateMode) =>
+  return (environmentId: EnvironmentId, mode: SweepRotateMode) =>
     Effect.gen(function* () {
       if (!isEnvironmentId(environmentId)) {
         return yield* Effect.fail(cliErrorForInvalidChainEnvironmentId());

@@ -34,6 +34,7 @@
 // Test vectors: test-vectors/invite-link.json
 
 import { decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
+import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
@@ -162,12 +163,12 @@ export async function deriveInviteLinkKeyPair(
 export interface InviteIssueContext extends ScopePayloadFields {
   readonly suite: string;
   readonly inviteId: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly linkPubHex: string;
   readonly headHashHex: string;
   readonly headSeq: number;
   readonly role: string;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   readonly inviterEncPubHex: string;
   readonly inviterSigPubHex: string;
 }

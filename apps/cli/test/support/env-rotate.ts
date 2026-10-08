@@ -39,6 +39,8 @@ import {
   type WireRecipientDek,
   type WireRotateBody,
 } from "./crypto.ts";
+import { testEnvironmentId, testProjectId } from "./crypto.ts";
+import { testUserId } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./server.ts";
 
@@ -534,7 +536,7 @@ export function makeServer(options: ServerOptions): ServerState {
 /** Reads the floor (the fold of the observation log) — for pinning M1-A4's floor advance / non-advance. */
 export async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
   const loaded = await Effect.runPromise(
-    makeFileFloorStore(env.floorDir).load(chainBase.projectId),
+    makeFileFloorStore(env.floorDir).load(testProjectId(chainBase.projectId)),
   );
   return loaded.floor;
 }
@@ -562,14 +564,14 @@ export async function verifyAndUnwrap(input: {
   const verified = await verifyDekWrapSignature({
     context: {
       suite: wrap.suite,
-      projectId: chainBase.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(chainBase.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       epoch: wrap.epoch,
-      recipientUserId: wrap.recipientUserId,
+      recipientUserId: testUserId(wrap.recipientUserId),
       recipientEncPubHex: wrap.recipientEncPubHex,
       encHex: wrap.encHex,
       ciphertextHex: wrap.ciphertextHex,
-      signerUserId: signer.userId,
+      signerUserId: testUserId(signer.userId),
     },
     signatureHex: wrap.signatureHex,
     signerPublicKey: signerKey.value,
@@ -586,10 +588,10 @@ export async function verifyAndUnwrap(input: {
     recipientKeyPair: pair.value,
     wrapped: { enc: hexBytes(wrap.encHex), ciphertext: hexBytes(wrap.ciphertextHex) },
     context: {
-      projectId: chainBase.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(chainBase.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       epoch: wrap.epoch,
-      recipientUserId: wrap.recipientUserId,
+      recipientUserId: testUserId(wrap.recipientUserId),
     },
   });
   if (!dek.ok) {

@@ -15,6 +15,7 @@
 //   uses key_wrap_windows with kind `device-request`
 //   (KeyWrapRepo.consumeWindow — no extra fixed-window implementation)
 
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 import { and, count, eq, gt, lte, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
@@ -33,7 +34,7 @@ type Db = ReturnType<typeof drizzle>;
 
 /** One registry row (§13-11). */
 export interface DeviceRecord {
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly label: string;
@@ -43,7 +44,7 @@ export interface DeviceRecord {
 
 /** One device-add request row (only unexpired ones are returned). */
 export interface DeviceAddRequestRecord {
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly label: string;
@@ -51,7 +52,7 @@ export interface DeviceAddRequestRecord {
 }
 
 export interface DeviceRepoShape {
-  readonly list: (userId: string) => Effect.Effect<readonly DeviceRecord[]>;
+  readonly list: (userId: UserId) => Effect.Effect<readonly DeviceRecord[]>;
   /**
    * Register in the registry / update the display label (upsert). A new
    * row enters only when under `limit` (a conditional INSERT — concurrent
@@ -60,8 +61,8 @@ export interface DeviceRepoShape {
    * false = cap refusal.
    */
   readonly upsert: (input: {
-    readonly userId: string;
-    readonly keyFingerprintHex: string;
+    readonly userId: UserId;
+    readonly keyFingerprintHex: KeyFingerprintHex;
     readonly encPubHex: string;
     readonly sigPubHex: string;
     readonly label: string;
@@ -70,15 +71,15 @@ export interface DeviceRepoShape {
     readonly nowMs: number;
   }) => Effect.Effect<boolean>;
   /** Return value = whether a row actually disappeared (false → the caller's uniform 404). */
-  readonly remove: (userId: string, keyFingerprintHex: string) => Effect.Effect<boolean>;
+  readonly remove: (userId: UserId, keyFingerprintHex: KeyFingerprintHex) => Effect.Effect<boolean>;
   /**
    * Create an add request. An unexpired request for the same FP =
    * `request-exists`; an existing registry row = `device-registered`
    * (§13-11's 409s). An expired request for the same FP is replaced.
    */
   readonly requestCreate: (input: {
-    readonly userId: string;
-    readonly keyFingerprintHex: string;
+    readonly userId: UserId;
+    readonly keyFingerprintHex: KeyFingerprintHex;
     readonly encPubHex: string;
     readonly sigPubHex: string;
     readonly label: string;
@@ -87,24 +88,27 @@ export interface DeviceRepoShape {
   }) => Effect.Effect<"created" | "request-exists" | "device-registered">;
   /** Unexpired requests only. */
   readonly requestList: (
-    userId: string,
+    userId: UserId,
     nowMs: number,
   ) => Effect.Effect<readonly DeviceAddRequestRecord[]>;
   readonly requestFind: (
-    userId: string,
-    keyFingerprintHex: string,
+    userId: UserId,
+    keyFingerprintHex: KeyFingerprintHex,
     nowMs: number,
   ) => Effect.Effect<DeviceAddRequestRecord | null>;
   /** Return value = whether a row actually disappeared (expired rows can be removed too — doubles as cleanup). */
-  readonly requestCancel: (userId: string, keyFingerprintHex: string) => Effect.Effect<boolean>;
+  readonly requestCancel: (
+    userId: UserId,
+    keyFingerprintHex: KeyFingerprintHex,
+  ) => Effect.Effect<boolean>;
   /** Opportunistic deletion of expired requests (that user only — call before create / list). */
-  readonly requestSweep: (userId: string, nowMs: number) => Effect.Effect<void>;
+  readonly requestSweep: (userId: UserId, nowMs: number) => Effect.Effect<void>;
 }
 
 export class DeviceRepo extends Context.Service<DeviceRepo, DeviceRepoShape>()("DeviceRepo") {}
 
 const toRequest = (row: {
-  readonly keyFingerprintHex: string;
+  readonly keyFingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly label: string;
@@ -151,8 +155,10 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           .select(
             db
               .select({
-                userId: sql<string>`${userId}`.as("user_id"),
-                keyFingerprintHex: sql<string>`${keyFingerprintHex}`.as("key_fingerprint_hex"),
+                userId: sql<UserId>`${userId}`.as("user_id"),
+                keyFingerprintHex: sql<KeyFingerprintHex>`${keyFingerprintHex}`.as(
+                  "key_fingerprint_hex",
+                ),
                 encPubHex: sql<string>`${encPubHex}`.as("enc_pub_hex"),
                 sigPubHex: sql<string>`${sigPubHex}`.as("sig_pub_hex"),
                 label: sql<string>`${label}`.as("label"),

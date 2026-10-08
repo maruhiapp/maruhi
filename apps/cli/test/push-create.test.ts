@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import { decryptWire, headOf, statementFor, variablesDigestOf } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandlerOf,
@@ -116,7 +117,7 @@ describe("maruhi push", () => {
     // confirmation (1-E′) promotes its own write into the floor; the
     // confirmation pull's verified manifest (= self-issued v2) is in the floor, and the intent closes
     const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+      makeFileFloorStore(env.floorDir).load(testProjectId(chainV1.projectId)),
     );
     const record = loaded.floor?.environments[ENV_ID];
     expect(record?.variables[body.statement.variableId]).toMatchObject({
@@ -169,7 +170,7 @@ describe("maruhi push", () => {
     const created = echo.body as CreateBody | null;
     expect(created).not.toBeNull();
     const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+      makeFileFloorStore(env.floorDir).load(testProjectId(chainV1.projectId)),
     );
     expect(
       loaded.floor?.environments[ENV_ID]?.variables[created?.statement.variableId ?? ""],
@@ -272,7 +273,7 @@ describe("maruhi push", () => {
     // The confirmation metadata pull did actually run (the post-acceptance check)
     expect(metadataCalls).toBeGreaterThanOrEqual(2);
     const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+      makeFileFloorStore(env.floorDir).load(testProjectId(chainV1.projectId)),
     );
     const record = loaded.floor?.environments[ENV_ID];
     // The self-issued manifest (v2) is not written to the floor — only verified
@@ -375,7 +376,7 @@ describe("maruhi push", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("distributes a different manifest at the issued manifestVersion");
     const loaded = await Effect.runPromise(
-      makeFileFloorStore(env.floorDir).load(chainV1.projectId),
+      makeFileFloorStore(env.floorDir).load(testProjectId(chainV1.projectId)),
     );
     // Confirmed that the issued manifest was not stored = the intent closes as
     // not-accepted (the verified distributed-side v2' remains in the floor as an observation)

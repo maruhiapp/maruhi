@@ -27,7 +27,7 @@
 // contract violation, but choosing what to carry is the config's
 // responsibility).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
@@ -395,7 +395,11 @@ export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
   receipt:
-    | { readonly kind: "loaded"; readonly loaded: LoadedReceipt; readonly environmentId: string }
+    | {
+        readonly kind: "loaded";
+        readonly loaded: LoadedReceipt;
+        readonly environmentId: EnvironmentId;
+      }
     | { readonly kind: "none-in-ci" },
   display: PlanDisplay = FULL_PLAN,
 ): Effect.fn.Return<void, CliError, CliIo> {
@@ -444,7 +448,7 @@ export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
   const pulled = yield* pullVerifiedEnvironment({
     client: input.client,
     verified: loaded.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     resync: input.resync,
     floor: input.sourceFloor,
   });
@@ -470,7 +474,7 @@ export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
 
 /** apply's input (plan's, plus the signing key and `--yes`). */
 interface SyncApplyInput extends SyncContextInput {
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
   /** The explicit consent for apply to a production target (supplement 14 M4). */
   readonly yes: boolean;
@@ -717,7 +721,7 @@ export const runDriver = Effect.fn("sync-plan.runDriver")(function* (
 
 /** Extracts the integration token from the decrypted variables (with a check). */
 export function integrationTokenOf(
-  token: { readonly environment: string; readonly name: string },
+  token: { readonly environment: EnvironmentId; readonly name: string },
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
 ): Effect.Effect<IntegrationToken, CliError> {
   const variable = variables.find((entry) => entry.name === token.name);
@@ -753,7 +757,7 @@ const fetchIntegrationToken = Effect.fn("sync-plan.fetchIntegrationToken")(funct
   const pulled = yield* pullVariables({
     client: input.client,
     verified,
-    environmentId: driver.token.environment as EnvironmentId,
+    environmentId: driver.token.environment,
     recipient: input.recipient,
     resync: input.resync,
     floor: input.tokenFloor,
@@ -961,7 +965,7 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   const meta = yield* pullVerifiedEnvironment({
     client: input.client,
     verified: loaded.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     resync: input.resync,
     floor: input.sourceFloor,
   });
@@ -988,7 +992,7 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   const pulled = yield* pullVariables({
     client: input.client,
     verified: meta.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     recipient: input.recipient,
     resync: input.resync,
     floor: input.sourceFloor,

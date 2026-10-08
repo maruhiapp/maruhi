@@ -22,7 +22,7 @@ import { cliError } from "../src/errors.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { EnvironmentFloor, FloorStoreShape } from "../src/floor.ts";
-
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/crypto.ts";
 const PROJECT_ID = "ab".repeat(32);
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
@@ -59,19 +59,23 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     store = makeFileFloorStore(dir);
   });
 
-  const load = () => Effect.runPromise(store.load(PROJECT_ID));
+  const load = () => Effect.runPromise(store.load(testProjectId(PROJECT_ID)));
   const logPath = () => join(dir, `${PROJECT_ID}.jsonl`);
 
   it("distinguishes missing file = missing (first run) from a non-empty file with zero readable records = corrupt", async () => {
     expect(await load()).toEqual({ floor: null, state: "missing", droppedRecords: 0 });
-    await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
+    await Effect.runPromise(
+      store.commitHead(testProjectId(PROJECT_ID), { seq: 1, hashHex: HASH_A }),
+    );
     expect((await load()).state).toBe("loaded");
     await writeFile(logPath(), "{broken\nnot-json-either\n");
     expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 2 });
   });
 
   it("counts partially unreadable lines as droppedRecords (the caller's warning material)", async () => {
-    await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
+    await Effect.runPromise(
+      store.commitHead(testProjectId(PROJECT_ID), { seq: 1, hashHex: HASH_A }),
+    );
     await appendFile(logPath(), "\n{torn-line-without-newline");
     const result = await load();
     expect(result.state).toBe("loaded");
@@ -81,7 +85,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
   it("retires droppedRecords on compaction (doesn't warn forever about an old torn line)", async () => {
     const compacting = makeFileFloorStore(dir, { compactionThreshold: 2 });
-    await Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A }));
+    await Effect.runPromise(
+      compacting.commitHead(testProjectId(PROJECT_ID), { seq: 1, hashHex: HASH_A }),
+    );
     await appendFile(logPath(), "\n{torn-line-without-newline");
     expect((await load()).droppedRecords).toBe(1);
     // Once enough snapshots accumulate past the threshold, the torn line
@@ -89,7 +95,7 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     // the fold point are warned about)
     for (let index = 0; index < 4; index += 1) {
       await Effect.runPromise(
-        compacting.commitHead(PROJECT_ID, { seq: 2 + index, hashHex: HASH_B }),
+        compacting.commitHead(testProjectId(PROJECT_ID), { seq: 2 + index, hashHex: HASH_B }),
       );
     }
     const result = await load();
@@ -98,24 +104,28 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   });
 
   it("commitHead only advances the head (a seq-regressing observation loses the join)", async () => {
-    await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
-    await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 3, hashHex: HASH_B }));
+    await Effect.runPromise(
+      store.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_A }),
+    );
+    await Effect.runPromise(
+      store.commitHead(testProjectId(PROJECT_ID), { seq: 3, hashHex: HASH_B }),
+    );
     const result = await load();
     expect(result.floor?.chainHead).toEqual({ seq: 5, hashHex: HASH_A });
   });
 
   it("commitPull performs the environment-floor join and head advance in a single appended record", async () => {
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         environment: envFloor(),
       }),
     );
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 4, hashHex: HASH_B },
-        environmentId: "dev",
+        environmentId: testEnvironmentId("dev"),
         environment: envFloor({ pullEpoch: 1, observedEpoch: 1, variables: {} }),
       }),
     );
@@ -129,17 +139,17 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
   it("commitPush advances the variable floor and does not move pullEpoch (rule (c)'s baseline)", async () => {
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         environment: envFloor({ pullEpoch: 2 }),
       }),
     );
     await Effect.runPromise(
-      store.commitPush(PROJECT_ID, {
+      store.commitPush(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
-        variableId: "va",
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("va"),
         variable: {
           status: "active",
           version: 4,
@@ -160,10 +170,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
   it("commitPush without an environment floor does not fabricate the rule (c) baseline (a partial observation of the variable floor only)", async () => {
     await Effect.runPromise(
-      store.commitPush(PROJECT_ID, {
+      store.commitPush(testProjectId(PROJECT_ID), {
         chainHead: { seq: 2, hashHex: HASH_A },
-        environmentId: "prod",
-        variableId: "va",
+        environmentId: testEnvironmentId("prod"),
+        variableId: testVariableId("va"),
         variable: { status: "deleted", metaVersion: 1, metaSigHashHex: HASH_A },
       }),
     );
@@ -179,9 +189,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
   it("commitMetadata joins only the environment level (fabricates no value floor, doesn't move the pull baseline)", async () => {
     await Effect.runPromise(
-      store.commitMetadata(PROJECT_ID, {
+      store.commitMetadata(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         observedEpoch: 4,
         metaVersion: 2,
         metaSigHashHex: HASH_B,
@@ -203,9 +213,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
   it("commitManifest advances only the manifest floor and the environment-level epoch observation (coordinate (ii))", async () => {
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         environment: envFloor({
           pullEpoch: 2,
           observedEpoch: 2,
@@ -214,9 +224,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       }),
     );
     await Effect.runPromise(
-      store.commitManifest(PROJECT_ID, {
+      store.commitManifest(testProjectId(PROJECT_ID), {
         chainHead: { seq: 4, hashHex: HASH_B },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         manifest: { manifestVersion: 2, epoch: 3, manifestSigHashHex: HASH_B },
       }),
     );
@@ -240,10 +250,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       const storeA = makeFileFloorStore(dir);
       const storeB = makeFileFloorStore(dir);
       await Effect.runPromise(
-        storeA.commitPush(PROJECT_ID, {
+        storeA.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
-          variableId: "va",
+          environmentId: testEnvironmentId("prod"),
+          variableId: testVariableId("va"),
           variable: {
             status: "active",
             version: 1,
@@ -255,10 +265,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
         }),
       );
       await Effect.runPromise(
-        storeB.commitPush(PROJECT_ID, {
+        storeB.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
-          variableId: "vb",
+          environmentId: testEnvironmentId("prod"),
+          variableId: testVariableId("vb"),
           variable: {
             status: "active",
             version: 2,
@@ -289,10 +299,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           metaSigHashHex: HASH_A,
         }) as const;
       await Effect.runPromise(
-        storeA.commitPush(PROJECT_ID, {
+        storeA.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
-          variableId: "va",
+          environmentId: testEnvironmentId("prod"),
+          variableId: testVariableId("va"),
           variable: variable(HASH_C),
         }),
       );
@@ -301,10 +311,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       // in the storage form — append only)
       await expect(
         Effect.runPromise(
-          storeB.commitPush(PROJECT_ID, {
+          storeB.commitPush(testProjectId(PROJECT_ID), {
             chainHead: { seq: 3, hashHex: HASH_A },
-            environmentId: "prod",
-            variableId: "va",
+            environmentId: testEnvironmentId("prod"),
+            variableId: testVariableId("va"),
             variable: variable(HASH_D),
           }),
         ),
@@ -326,17 +336,17 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
     it("different hashes at the same manifestVersion are a typed conflict too (rule (b)'s merge semantics)", async () => {
       await Effect.runPromise(
-        store.commitManifest(PROJECT_ID, {
+        store.commitManifest(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
+          environmentId: testEnvironmentId("prod"),
           manifest: { manifestVersion: 2, epoch: 1, manifestSigHashHex: HASH_C },
         }),
       );
       await expect(
         Effect.runPromise(
-          store.commitManifest(PROJECT_ID, {
+          store.commitManifest(testProjectId(PROJECT_ID), {
             chainHead: { seq: 3, hashHex: HASH_A },
-            environmentId: "prod",
+            environmentId: testEnvironmentId("prod"),
             manifest: { manifestVersion: 2, epoch: 1, manifestSigHashHex: HASH_D },
           }),
         ),
@@ -346,9 +356,11 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     });
 
     it("different chain-head hashes at the same seq are a fork typed conflict", async () => {
-      await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
+      await Effect.runPromise(
+        store.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_A }),
+      );
       await expect(
-        Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_B })),
+        Effect.runPromise(store.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_B })),
       ).rejects.toThrow("fork");
       const result = await load();
       expect(result.floor?.conflicts[0]).toMatchObject({ kind: "chain-head" });
@@ -356,19 +368,19 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
 
     it("an active observation with a metaVersion beyond deleted (terminal) is an undeletion typed conflict", async () => {
       await Effect.runPromise(
-        store.commitPush(PROJECT_ID, {
+        store.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
-          variableId: "va",
+          environmentId: testEnvironmentId("prod"),
+          variableId: testVariableId("va"),
           variable: { status: "deleted", metaVersion: 2, metaSigHashHex: HASH_A },
         }),
       );
       await expect(
         Effect.runPromise(
-          store.commitPush(PROJECT_ID, {
+          store.commitPush(testProjectId(PROJECT_ID), {
             chainHead: { seq: 3, hashHex: HASH_A },
-            environmentId: "prod",
-            variableId: "va",
+            environmentId: testEnvironmentId("prod"),
+            variableId: testVariableId("va"),
             variable: {
               status: "active",
               version: 1,
@@ -392,9 +404,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       // Process B has already committed a newer generation (pullEpoch 3,
       // va v5)
       await Effect.runPromise(
-        store.commitPull(PROJECT_ID, {
+        store.commitPull(testProjectId(PROJECT_ID), {
           chainHead: { seq: 5, hashHex: HASH_B },
-          environmentId: "prod",
+          environmentId: testEnvironmentId("prod"),
           environment: envFloor({
             pullEpoch: 3,
             observedEpoch: 3,
@@ -415,9 +427,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       // Process A's older pull (pullEpoch 2, va v3, with vb's tombstone)
       // lands later
       await Effect.runPromise(
-        store.commitPull(PROJECT_ID, {
+        store.commitPull(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
+          environmentId: testEnvironmentId("prod"),
           environment: envFloor(),
         }),
       );
@@ -436,9 +448,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   describe("self-recovery from a torn tail record", () => {
     it("a torn line (a crashed partial write) is ignored by fold and doesn't corrupt later appends", async () => {
       await Effect.runPromise(
-        store.commitPull(PROJECT_ID, {
+        store.commitPull(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
-          environmentId: "prod",
+          environmentId: testEnvironmentId("prod"),
           environment: envFloor(),
         }),
       );
@@ -451,10 +463,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       // The next append prepends a newline to isolate the torn line — the
       // new observation lands correctly
       await Effect.runPromise(
-        store.commitPush(PROJECT_ID, {
+        store.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 4, hashHex: HASH_B },
-          environmentId: "prod",
-          variableId: "va",
+          environmentId: testEnvironmentId("prod"),
+          variableId: testVariableId("va"),
           variable: {
             status: "active",
             version: 4,
@@ -474,7 +486,7 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   describe("intent / resolution(journal-before-send)", () => {
     const intentInput = {
       op: "rotate_epoch" as const,
-      environmentId: "prod",
+      environmentId: testEnvironmentId("prod"),
       epoch: 2,
       dekCommitmentHex: HASH_C,
       variableId: null,
@@ -484,23 +496,25 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     };
 
     it("an unresolved intent is surfaced by fold as 'needs reconciliation' and a resolution closes it", async () => {
-      const id = await Effect.runPromise(store.appendIntent(PROJECT_ID, intentInput));
+      const id = await Effect.runPromise(
+        store.appendIntent(testProjectId(PROJECT_ID), intentInput),
+      );
       let result = await load();
       expect(result.floor?.intents).toHaveLength(1);
       expect(result.floor?.intents[0]).toMatchObject({
         id,
         op: "rotate_epoch",
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         epoch: 2,
         dekCommitmentHex: HASH_C,
       });
-      await Effect.runPromise(store.resolveIntent(PROJECT_ID, id, "accepted"));
+      await Effect.runPromise(store.resolveIntent(testProjectId(PROJECT_ID), id, "accepted"));
       result = await load();
       expect(result.floor?.intents).toEqual([]);
     });
 
     it("an intent does not enter the join lattice (moves no floor observation coordinate)", async () => {
-      await Effect.runPromise(store.appendIntent(PROJECT_ID, intentInput));
+      await Effect.runPromise(store.appendIntent(testProjectId(PROJECT_ID), intentInput));
       const result = await load();
       expect(result.floor?.chainHead).toBeNull();
       expect(result.floor?.environments).toEqual({});
@@ -512,16 +526,22 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       const compacting = makeFileFloorStore(dir, { compactionThreshold: 4 });
       // Create one conflict (pins that the evidence survives across the
       // snapshot)
-      await Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_A }));
+      await Effect.runPromise(
+        compacting.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_A }),
+      );
       await expect(
-        Effect.runPromise(compacting.commitHead(PROJECT_ID, { seq: 5, hashHex: HASH_B })),
+        Effect.runPromise(
+          compacting.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_B }),
+        ),
       ).rejects.toThrow("fork");
       // Stack observations past the threshold (4 records) — commits onto a
       // conflicted floor keep failing, but the appends themselves still
       // happen (evidence only ever grows)
       for (let index = 0; index < 5; index += 1) {
         await Effect.runPromise(
-          Effect.ignore(compacting.commitHead(PROJECT_ID, { seq: 6 + index, hashHex: HASH_C })),
+          Effect.ignore(
+            compacting.commitHead(testProjectId(PROJECT_ID), { seq: 6 + index, hashHex: HASH_C }),
+          ),
         );
       }
       const raw = await readFile(logPath(), "utf8");
@@ -540,10 +560,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       const compacting = makeFileFloorStore(dir, { compactionThreshold: 2 });
       for (let index = 0; index < 4; index += 1) {
         await Effect.runPromise(
-          compacting.commitPush(PROJECT_ID, {
+          compacting.commitPush(testProjectId(PROJECT_ID), {
             chainHead: { seq: index + 1, hashHex: HASH_A },
-            environmentId: "prod",
-            variableId: "va",
+            environmentId: testEnvironmentId("prod"),
+            variableId: testVariableId("va"),
             variable: {
               status: "active",
               version: index + 1,
@@ -564,17 +584,17 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   it("missing means ENOENT only: other read errors are not conflated with first-run", async () => {
     // Place a directory at the floor log's path (readFile → EISDIR)
     await mkdir(logPath(), { recursive: true });
-    await expect(Effect.runPromise(store.load(PROJECT_ID))).rejects.toThrow(
+    await expect(Effect.runPromise(store.load(testProjectId(PROJECT_ID)))).rejects.toThrow(
       "Cannot read the local floor log",
     );
     // The write path also aborts (don't create a silently dead floor)
     await expect(
-      Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 1, hashHex: HASH_A })),
+      Effect.runPromise(store.commitHead(testProjectId(PROJECT_ID), { seq: 1, hashHex: HASH_A })),
     ).rejects.toThrow("Cannot write the local floor log");
   });
 
   it("enforces the project ID format (hex 64) before assembling the path", async () => {
-    await expect(Effect.runPromise(store.load("../escape"))).rejects.toThrow();
+    await expect(Effect.runPromise(store.load(testProjectId("../escape")))).rejects.toThrow();
   });
 });
 
@@ -591,17 +611,17 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
     // The sibling process has already established vb's tombstone (after this
     // process's openProject)
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         environment: envFloor({ pullEpoch: 3, observedEpoch: 3 }),
       }),
     );
     // This process's handle starts from the stale snapshot (no floor)
     const handle = makeFloorHandle({
       store,
-      projectId: PROJECT_ID,
-      environmentId: "prod",
+      projectId: testProjectId(PROJECT_ID),
+      environmentId: testEnvironmentId("prod"),
       initial: null,
     });
     await Effect.runPromise(
@@ -640,8 +660,8 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
     };
     const handle = makeFloorHandle({
       store: failing,
-      projectId: PROJECT_ID,
-      environmentId: "prod",
+      projectId: testProjectId(PROJECT_ID),
+      environmentId: testEnvironmentId("prod"),
       initial: envFloor({ manifest: { manifestVersion: 1, epoch: 1, manifestSigHashHex: HASH_A } }),
     });
     await expect(
@@ -660,17 +680,17 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
   it("intents are held per environment scope and resolveIntent closes idempotently", async () => {
     const handle = makeFloorHandle({
       store,
-      projectId: PROJECT_ID,
-      environmentId: "prod",
+      projectId: testProjectId(PROJECT_ID),
+      environmentId: testEnvironmentId("prod"),
       initial: null,
     });
     const id = await Effect.runPromise(
       handle.appendIntent({
         op: "meta-op",
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         epoch: 1,
         dekCommitmentHex: null,
-        variableId: "va",
+        variableId: testVariableId("va"),
         manifestVersion: 2,
         manifestSigHashHex: HASH_A,
         declaredHead: { seq: 3, hashHex: HASH_B },
@@ -681,7 +701,7 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
     expect(handle.unresolvedIntents()).toEqual([]);
     // A double resolution is a no-op (no extra resolution is logged)
     await Effect.runPromise(handle.resolveIntent(id, "accepted"));
-    const loaded = await Effect.runPromise(store.load(PROJECT_ID));
+    const loaded = await Effect.runPromise(store.load(testProjectId(PROJECT_ID)));
     expect(loaded.floor?.intents).toEqual([]);
   });
 });
@@ -691,9 +711,9 @@ describe("the floor log's non-sensitivity (the diskless invariant)", () => {
     const dir = await mkdtemp(join(tmpdir(), "maruhi-floor-shape-test-"));
     const store = makeFileFloorStore(dir);
     await Effect.runPromise(
-      store.commitPull(PROJECT_ID, {
+      store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 1, hashHex: HASH_A },
-        environmentId: "prod",
+        environmentId: testEnvironmentId("prod"),
         environment: envFloor(),
       }),
     );

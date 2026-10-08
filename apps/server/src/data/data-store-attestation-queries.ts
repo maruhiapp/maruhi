@@ -2,6 +2,8 @@
 // data store (AUTH_SPEC §16-1) — assembled into DataStoreShape by
 // dataStoreLayer in data-store.ts.
 
+import type { KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { ATTESTATION_WINDOW_MS } from "../policy.ts";
@@ -15,7 +17,7 @@ import type { StoredHeadAttestation } from "./data-store.ts";
  * the key became per-member.
  */
 export const makeAttestationQueries = (sql: SqlStorage) => ({
-  headAttestationSeq: (attesterUserId: string, keyFingerprintHex: string) =>
+  headAttestationSeq: (attesterUserId: UserId, keyFingerprintHex: KeyFingerprintHex) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -35,15 +37,17 @@ export const makeAttestationQueries = (sql: SqlStorage) => ({
       )
       .toArray()
       .map((row): StoredHeadAttestation => ({
-        attesterUserId: stringColumn(row, "attester_user_id"),
+        attesterUserId: decodeUserId(stringColumn(row, "attester_user_id")),
         suite: storedSuite(columnValue(row, "suite")),
         chainHeadSeq: numberColumn(row, "chain_head_seq"),
         chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
         signatureHex: stringColumn(row, "signature_hex"),
-        attesterKeyFingerprintHex: stringColumn(row, "attester_key_fingerprint"),
+        attesterKeyFingerprintHex: decodeKeyFingerprintHex(
+          stringColumn(row, "attester_key_fingerprint"),
+        ),
       })),
   ),
-  checkAttestationWindow: (attesterUserId: string, limit: number, nowMs: number) =>
+  checkAttestationWindow: (attesterUserId: UserId, limit: number, nowMs: number) =>
     Effect.sync(() => {
       const current = attestationWindowRow(sql, attesterUserId, nowMs);
       if (current === null || current.count < limit) {
@@ -54,7 +58,7 @@ export const makeAttestationQueries = (sql: SqlStorage) => ({
         retryAfterSeconds: Math.ceil((ATTESTATION_WINDOW_MS - current.elapsed) / 1000),
       };
     }),
-  recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => {
+  recordAttestationWindowUse: (attesterUserId: UserId, nowMs: number) => {
     if (attestationWindowRow(sql, attesterUserId, nowMs) === null) {
       sql.exec(
         `INSERT INTO attestation_windows (attester_user_id, window_start, count) VALUES (?, ?, 1)
@@ -75,7 +79,7 @@ export const makeAttestationQueries = (sql: SqlStorage) => ({
 /** The live row of the attestation window (same "live window" definition as the lease window's leaseWindowRow). */
 function attestationWindowRow(
   sql: SqlStorage,
-  attesterUserId: string,
+  attesterUserId: UserId,
   nowMs: number,
 ): { readonly count: number; readonly elapsed: number } | null {
   const row = sql

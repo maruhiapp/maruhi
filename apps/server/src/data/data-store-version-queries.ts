@@ -2,6 +2,8 @@
 // history / range / anchor, the ciphertext-bytes meter) — assembled into
 // DataStoreShape by dataStoreLayer in data-store.ts.
 
+import type { EnvironmentId, VariableId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { PulledVariableValue } from "./data-plane.ts";
@@ -22,7 +24,7 @@ import type { StoredVersionMeta } from "./data-store.ts";
  * bulk pull and the version value range). signed_bytes_hash_hex is never
  * selected = never distributed (AUTH_SPEC §12-2).
  */
-function pulledValueColumns(row: StoredRow, variableId: string): PulledVariableValue {
+function pulledValueColumns(row: StoredRow, variableId: VariableId): PulledVariableValue {
   return {
     variableId,
     version: numberColumn(row, "version"),
@@ -34,8 +36,8 @@ function pulledValueColumns(row: StoredRow, variableId: string): PulledVariableV
     chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
     chainHeadSeq: numberColumn(row, "chain_head_seq"),
     signatureHex: stringColumn(row, "signature_hex"),
-    writerUserId: stringColumn(row, "writer_user_id"),
-    writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+    writerUserId: decodeUserId(stringColumn(row, "writer_user_id")),
+    writerKeyFingerprintHex: decodeKeyFingerprintHex(stringColumn(row, "writer_key_fingerprint")),
   };
 }
 
@@ -45,7 +47,7 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
   // set — verifiability of past data by a since-deleted writer /
   // author). signed_bytes_hash_hex is not selected on either values or
   // statements = never distributed (AUTH_SPEC §12-2)
-  latestVersions: (environmentId: string) =>
+  latestVersions: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -78,19 +80,19 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          ...pulledValueColumns(row, stringColumn(row, "variable_id")),
+          ...pulledValueColumns(row, decodeVariableId(stringColumn(row, "variable_id"))),
           // The statement part reads the ms_* aliased columns as-is
           // (statementColumns's prefix). The environment ID is the
           // WHERE-clause argument; the variable ID is the row's value
           statement: {
             environmentId,
-            variableId: stringColumn(row, "variable_id"),
+            variableId: decodeVariableId(stringColumn(row, "variable_id")),
             ...statementColumns(row, "ms_", storedVariableStatus),
             ...variableStatementV3Fields(row, "ms_"),
           },
         })),
     ),
-  versionHistory: (environmentId: string, variableId: string) =>
+  versionHistory: (environmentId: EnvironmentId, variableId: VariableId) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -105,12 +107,19 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         .map((row): StoredVersionMeta => ({
           version: numberColumn(row, "version"),
           epoch: numberColumn(row, "epoch"),
-          writerUserId: stringColumn(row, "writer_user_id"),
-          writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
+          writerUserId: decodeUserId(stringColumn(row, "writer_user_id")),
+          writerKeyFingerprintHex: decodeKeyFingerprintHex(
+            stringColumn(row, "writer_key_fingerprint"),
+          ),
           pushedAtMs: numberColumn(row, "created_at"),
         })),
     ),
-  versionRange: (environmentId: string, variableId: string, fromVersion: number, limit: number) =>
+  versionRange: (
+    environmentId: EnvironmentId,
+    variableId: VariableId,
+    fromVersion: number,
+    limit: number,
+  ) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -129,7 +138,7 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         .toArray()
         .map((row) => pulledValueColumns(row, variableId)),
     ),
-  versionAnchor: (environmentId: string, variableId: string, version: number) =>
+  versionAnchor: (environmentId: EnvironmentId, variableId: VariableId, version: number) =>
     Effect.sync(() => {
       const row = sql
         .exec(

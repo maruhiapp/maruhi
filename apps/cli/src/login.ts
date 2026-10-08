@@ -457,12 +457,12 @@ export const loginOp = Effect.fn("login.loginOp")(function* (input: {
  */
 const nextStepHint: (
   origin: string,
-  userId: string,
+  userId: UserId,
   token: Redacted.Redacted<string>,
 ) => Effect.Effect<void, never, Keychain | CliIo | HttpClient.HttpClient> = Effect.fn(
   "login.nextStepHint",
 )(
-  function* (origin: string, userId: string, token: Redacted.Redacted<string>) {
+  function* (origin: string, userId: UserId, token: Redacted.Redacted<string>) {
     const keychain = yield* Keychain;
     const master = yield* keychain.get(masterKeyEntryName(origin, userId));
     const client = yield* makeApiClient({ baseUrl: origin, token });

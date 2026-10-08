@@ -22,6 +22,7 @@ import {
   MAX_PENDING_INVITES_PER_PROJECT,
 } from "../src/db.package/index.ts";
 import { BASE, bearer, cliToken, JSON_HEADERS } from "./support/auth.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   MEMBER,
@@ -144,7 +145,9 @@ describe("invite issue", () => {
 
   it("token scope gates issuance: out-of-scope 404, low permission 403", async () => {
     const payload = wirePayloadOf(await makeIssuePayload(inviteFixture, OWNER, "member"));
-    const outOfScope = await cliToken(9001, [{ project: "f".repeat(64), permission: "admin" }]);
+    const outOfScope = await cliToken(9001, [
+      { project: testProjectId("f".repeat(64)), permission: "admin" },
+    ]);
     const outResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(outOfScope) },
@@ -152,7 +155,9 @@ describe("invite issue", () => {
     });
     expect(outResponse.status).toBe(404);
 
-    const lowPermission = await cliToken(9001, [{ project: projectId, permission: "write" }]);
+    const lowPermission = await cliToken(9001, [
+      { project: testProjectId(projectId), permission: "write" },
+    ]);
     const lowResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(lowPermission) },

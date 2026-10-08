@@ -51,6 +51,7 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { type ProjectId, ProjectIdSchema } from "@maruhi/core";
 import { Clock, Context, Effect, FileSystem, Schema, Stdio } from "effect";
 
 import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "../agent-gate.ts";
@@ -63,7 +64,7 @@ import { logNote } from "../notice.ts";
 export interface AcceptedProxyConfig {
   readonly content: string;
   readonly acceptedAtMs: number;
-  readonly projectIds: readonly string[];
+  readonly projectIds: readonly ProjectId[];
 }
 
 /** A project a brokered run has used on this machine (which config, and when first seen). */
@@ -94,10 +95,10 @@ export interface ProxyAcceptStoreShape {
     accepted: AcceptedProxyConfig,
   ) => Effect.Effect<void, CliError>;
   /** The brokered-project mark (`missing` = never brokered here; `corrupt` is reported by the gate, never read as "never brokered"). */
-  readonly brokeredProject: (projectId: string) => Effect.Effect<BrokeredLookup, CliError>;
+  readonly brokeredProject: (projectId: ProjectId) => Effect.Effect<BrokeredLookup, CliError>;
   /** Marks a project as brokered on this machine (idempotent; keeps the first mark). */
   readonly markBrokered: (
-    projectId: string,
+    projectId: ProjectId,
     mark: BrokeredProject,
   ) => Effect.Effect<void, CliError>;
 }
@@ -131,7 +132,7 @@ const LEDGER = Schema.Struct({
     Schema.Struct({
       content: Schema.String,
       acceptedAtMs: Schema.Int,
-      projectIds: Schema.Array(Schema.String),
+      projectIds: Schema.Array(ProjectIdSchema),
     }),
   ),
   projects: Schema.Record(
@@ -188,7 +189,12 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
       const accepted = Object.hasOwn(loaded.file.accepted, configPath)
         ? loaded.file.accepted[configPath]
         : undefined;
-      return accepted === undefined ? { state: "missing" } : { state: "found", accepted };
+      return accepted === undefined
+        ? { state: "missing" }
+        : {
+            state: "found",
+            accepted,
+          };
     }),
     accept: (configPath, accepted) =>
       merge(
@@ -263,7 +269,7 @@ export const ensureProxyConfigAccepted = Effect.fn("proxy-accept.ensureProxyConf
     readonly path: string;
     readonly content: string;
     /** The project whose values the config is about to govern — the acceptance must name it (R-24). */
-    readonly projectId: string;
+    readonly projectId: ProjectId;
   }): Effect.fn.Return<void, CliError, ProxyAcceptStore | Stdio.Stdio> {
     const store = yield* ProxyAcceptStore;
     const lookup = yield* store.lookup(yield* resolvedPath(input.path));
@@ -303,7 +309,7 @@ export const acceptProxyConfig = Effect.fn("proxy-accept.acceptProxyConfig")(fun
   readonly path: string;
   readonly content: string;
   /** The project the config is for: marked as brokered on this machine at acceptance (R-18 — the gate must be armed before any run). */
-  readonly projectId: string;
+  readonly projectId: ProjectId;
 }): Effect.fn.Return<
   "first use" | "changed" | "project added" | "unchanged",
   CliError,
@@ -348,7 +354,7 @@ export const acceptProxyConfig = Effect.fn("proxy-accept.acceptProxyConfig")(fun
  * error: the mark is what gates the plain run later (R-18).
  */
 export const markProjectBrokered = Effect.fn("proxy-accept.markProjectBrokered")(function* (input: {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly configPath: string;
 }): Effect.fn.Return<void, CliError, ProxyAcceptStore> {
   const store = yield* ProxyAcceptStore;
@@ -370,7 +376,7 @@ export const markProjectBrokered = Effect.fn("proxy-accept.markProjectBrokered")
 export const ensurePlainRunOfBrokeredProjectAllowed = Effect.fn(
   "proxy-accept.ensurePlainRunOfBrokeredProjectAllowed",
 )(function* (
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.fn.Return<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
   const store = yield* ProxyAcceptStore;
   const lookup = yield* store.brokeredProject(projectId);

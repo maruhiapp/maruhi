@@ -3,6 +3,7 @@
 // non-agent gate — ADR-0016 decision 7) -> GitHub-signing-keys verification
 // when possible (the group's overview lives in member.ts).
 
+import { type UserId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
@@ -112,7 +113,7 @@ export function selectInvitation(
 export const confirmInviteeFingerprint = Effect.fn("member-add-ceremony.confirmInviteeFingerprint")(
   function* (input: {
     readonly origin: string;
-    readonly targetUserId: string;
+    readonly targetUserId: UserId;
     readonly role: Role;
     readonly fingerprintHex: string;
     readonly expectFingerprintHex: string | null;

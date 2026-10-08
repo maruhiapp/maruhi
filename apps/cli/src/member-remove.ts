@@ -55,7 +55,7 @@ interface MemberRemoveSummary extends MemberSweepOutcome {
  */
 const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly targetUserId: UserId;
   readonly proposing: boolean;
   readonly signingKeyPair: SigningKeyPair;
@@ -129,7 +129,7 @@ function removeRuleRejection(
 /** Signs a remove_member entry right after the current head (the shared core = chain-append.ts). */
 function signRemoveEntry(input: {
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly targetUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<ChainEntry, CliError> {
@@ -146,7 +146,7 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: UserId;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly rotateWith: (reason: string) => SweepRotate<R>;

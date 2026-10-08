@@ -36,6 +36,12 @@ import {
   verifyMetaStatementSignature,
 } from "../../src/index.ts";
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { importVectorSigner, vectorKeys } from "./chain-vector.ts";
 import { metaExtendedHistory } from "./meta-history.ts";
@@ -105,11 +111,11 @@ interface MetaNegative {
 function contextOf(v: VectorContext): MetaStatementContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
-    environmentId: v.environment_id,
+    projectId: testProjectId(v.project_id),
+    environmentId: testEnvironmentId(v.environment_id),
     target:
       v.kind === "variable"
-        ? { kind: "variable", variableId: v.variable_id ?? "" }
+        ? { kind: "variable", variableId: testVariableId(v.variable_id ?? "") }
         : { kind: "environment" },
     name: v.name,
     status: v.status as MetaStatementContext["status"],
@@ -117,7 +123,7 @@ function contextOf(v: VectorContext): MetaStatementContext {
     schema: v.required === undefined ? undefined : schemaOf(v),
     metaVersion: v.meta_version,
     prevMetaSigHashHex: v.prev_meta_sig_hash_hex,
-    authorUserId: v.author_user_id,
+    authorUserId: testUserId(v.author_user_id),
     chainHeadHashHex: v.chain_head_hash_hex,
     chainHeadSeq: v.chain_head_seq,
   };
@@ -577,12 +583,15 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevMetaSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: "" } },
-    { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
-    { name: "empty author", context: { ...baseContext, authorUserId: "" } },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
+    { name: "empty author", context: { ...baseContext, authorUserId: testUserId("") } },
     {
       name: "empty variable id",
-      context: { ...baseContext, target: { kind: "variable", variableId: "" } },
+      context: { ...baseContext, target: { kind: "variable", variableId: testVariableId("") } },
     },
   ];
   for (const bad of badContexts) {

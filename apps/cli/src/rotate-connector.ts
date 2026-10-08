@@ -34,6 +34,7 @@
 // Error wording carries the connector, the issuer's status code and
 // message — never a credential, a password, or a URL with a password in it.
 
+import { type EnvironmentId } from "@maruhi/core";
 import { Clock, Context, Data, Effect, Option, Redacted, Schema } from "effect";
 import {
   HttpBody,
@@ -131,7 +132,7 @@ export type RotateInputs = Readonly<Record<string, Uint8Array>>;
  */
 export interface RotationSite {
   readonly variable: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
 }
 
 /** One credential as stored: the rule's variable and its companions (the AWS access key id). */

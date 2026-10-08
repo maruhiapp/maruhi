@@ -29,6 +29,7 @@
 
 import { encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
+import type { ProjectId, UserId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { AttestationInvalidReason, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -54,9 +55,9 @@ const SHA256_HEX_LENGTH = 32 * 2;
  */
 export interface HeadAttestationContext {
   readonly suite: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The attester's own internal user id (binds attribution — same shape as §5.1). */
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   /** Entry hash of the chain head the attester verified (§6.1). */
   readonly chainHeadHashHex: string;
   /** Seq of that head. */

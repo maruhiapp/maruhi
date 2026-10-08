@@ -13,6 +13,12 @@ import { MAX_VERSIONS_PER_VARIABLE } from "../src/policy.ts";
 import { metaVersionsExceeded } from "../src/quotas.ts";
 import { metaSignedBytesHashOf, signMetaStatementAs, vectorKeyOf } from "./support/data-crypto.ts";
 import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "./support/data-crypto.ts";
+import {
   ALL_MEMBERS,
   appendOperation,
   createEnvironmentComposite,
@@ -400,14 +406,14 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       history: verified.value.history,
       context: {
         suite: pulled.statement.suite,
-        projectId,
-        environmentId: ENV,
-        target: { kind: "variable", variableId: pulled.variableId },
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        target: { kind: "variable", variableId: testVariableId(pulled.variableId) },
         name: pulled.statement.name,
         status: pulled.statement.status,
         metaVersion: pulled.statement.metaVersion,
         prevMetaSigHashHex: pulled.statement.prevMetaSigHashHex,
-        authorUserId: pulled.statement.authorUserId,
+        authorUserId: testUserId(pulled.statement.authorUserId),
         chainHeadHashHex: pulled.statement.chainHeadHashHex,
         chainHeadSeq: pulled.statement.chainHeadSeq,
       },

@@ -52,7 +52,7 @@ export const ScopeKindSchema = Schema.Literals(["all", "listed"]);
  */
 const scopePayloadFields = {
   scopeKind: ScopeKindSchema,
-  scopeEnvironmentIds: Schema.Array(Schema.String),
+  scopeEnvironmentIds: Schema.Array(EnvironmentIdSchema),
 };
 
 const GenesisPayloadSchema = Schema.Struct({ encPubHex: PublicKeyHex, sigPubHex: PublicKeyHex });
@@ -184,7 +184,7 @@ const LeasePolicyIssuerSchema = Schema.Struct({
 const GrantServerPayloadSchema = Schema.Struct({
   serverEncPubHex: PublicKeyHex,
   serverKeyFingerprintHex: KeyFingerprintHexSchema,
-  scopeEnvironmentIds: Schema.Array(Schema.String),
+  scopeEnvironmentIds: Schema.Array(EnvironmentIdSchema),
   // The wire carries the structured list in as-signed order
   // (canonicalization = the 3-level nested LP lives on the crypto side —
   // order is part of the signed payload, so it is kept as an array rather

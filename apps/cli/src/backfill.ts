@@ -10,6 +10,7 @@
 // the repair path), so that is the injection point.
 
 import { type WrappedDek } from "@maruhi/api-schema";
+import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type { SigningKeyPair } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
@@ -44,7 +45,7 @@ interface BackfillAggregate {
   readonly registered: number;
   readonly alreadyRegistered: number;
   readonly repaired: number;
-  readonly failed: readonly { readonly environmentId: string; readonly message: string }[];
+  readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
 /**
@@ -53,13 +54,13 @@ interface BackfillAggregate {
  * Failures are collected per environment and the run continues.
  */
 export const backfillEachEnvironment = Effect.fn("backfill.backfillEachEnvironment")(function* <R>(
-  environments: readonly string[],
-  run: (environmentId: string) => Effect.Effect<BackfillEnvironmentOutcome, CliError, R>,
+  environments: readonly EnvironmentId[],
+  run: (environmentId: EnvironmentId) => Effect.Effect<BackfillEnvironmentOutcome, CliError, R>,
 ): Effect.fn.Return<BackfillAggregate, never, R> {
   let registered = 0;
   let alreadyRegistered = 0;
   let repaired = 0;
-  const failed: { readonly environmentId: string; readonly message: string }[] = [];
+  const failed: { readonly environmentId: EnvironmentId; readonly message: string }[] = [];
   for (const environmentId of environments) {
     const result = yield* run(environmentId).pipe(
       Effect.map((outcome) => ({ kind: "ok", outcome }) as const),
@@ -88,14 +89,14 @@ export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor
   function* (input: {
     readonly client: MaruhiClient;
     readonly verified: VerifiedProject;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     /** Recipient info of myself (the DEK holder = the one performing the wrap — §7). */
     readonly recipient: DekRecipient;
     /** The wrap's destination (a server key / a new member). */
     readonly wrapRecipient: WrapRecipient;
     /** Destination label used in the wrap-generation failure message (e.g. "for the server"). */
     readonly recipientLabel: string;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
     /**
      * Resolution of a per-epoch 409 (omitted = treat as registered). member
@@ -205,8 +206,8 @@ function epochsToWrap(
  */
 export function registerWraps(
   client: MaruhiClient,
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
 ): (deks: readonly WrappedDek[]) => Effect.Effect<RegisterOutcome, CliError> {
   return (deks) =>
     client.deks.register({ params: { projectId, environmentId }, payload: { deks } }).pipe(

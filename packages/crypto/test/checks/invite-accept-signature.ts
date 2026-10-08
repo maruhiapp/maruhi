@@ -21,6 +21,7 @@ import {
   verifyInviteLinkSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/invite-accept-signature.json" with { type: "json" };
+import { testProjectId, testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.vectors[0];
@@ -41,9 +42,9 @@ interface VectorContext {
 function contextOf(v: VectorContext): InviteAcceptSignatureContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
+    projectId: testProjectId(v.project_id),
     linkPubHex: v.link_pub_hex,
-    inviteeUserId: v.invitee_user_id,
+    inviteeUserId: testUserId(v.invitee_user_id),
     inviteeEncPubHex: v.invitee_enc_pub_hex,
     inviteeSigPubHex: v.invitee_sig_pub_hex,
   };
@@ -162,7 +163,7 @@ function badAcceptContexts(): readonly { name: string; context: InviteAcceptSign
     { name: "short enc pub", context: { ...contextOf(base), inviteeEncPubHex: "ab" } },
     { name: "short sig pub", context: { ...contextOf(base), inviteeSigPubHex: "ab" } },
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
-    { name: "empty invitee", context: { ...contextOf(base), inviteeUserId: "" } },
+    { name: "empty invitee", context: { ...contextOf(base), inviteeUserId: testUserId("") } },
   ];
 }
 
@@ -256,11 +257,11 @@ async function roundtripChecks(c: Checks): Promise<void> {
 
   // Swapping the context fails verification (implementation-side re-confirmation of transplant to another invite)
   const wrongContext = await verifyInviteAcceptSignature({
-    context: { ...context, projectId: "proj-other" },
+    context: { ...context, projectId: testProjectId("proj-other") },
     signatureHex: signed.value,
   });
   const wrongLinkContext = await verifyInviteLinkSignature({
-    context: { ...context, projectId: "proj-other" },
+    context: { ...context, projectId: testProjectId("proj-other") },
     linkSignatureHex: linkSigned.value,
   });
   c.push(

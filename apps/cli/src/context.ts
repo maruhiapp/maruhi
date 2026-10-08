@@ -7,7 +7,15 @@
 //   openProjectWith         = with key (commands that encrypt / decrypt / sign values)
 //   openMetadataProjectWith = without key (commands that read only plaintext metadata — env diff)
 
-import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  decodeProjectId,
+  type EnvironmentId,
+  isEnvironmentId,
+  isProjectId,
+  type ProjectId,
+  type UserId,
+} from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Duration, Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/http";
@@ -196,7 +204,7 @@ const ensureMirrorOf = Effect.fn("context.ensureMirrorOf")(function* (
 export function resolveProjectId(
   flag: string | undefined,
   config: CliConfig,
-): Effect.Effect<string, CliError> {
+): Effect.Effect<ProjectId, CliError> {
   const value = flag ?? config.defaultProject;
   if (value === undefined) {
     return Effect.fail(
@@ -217,13 +225,13 @@ export function resolveProjectId(
         : usageError(shape),
     );
   }
-  return Effect.succeed(value);
+  return Effect.succeed(decodeProjectId(value));
 }
 
 function resolveEnvironmentId(
   flag: string | undefined,
   config: CliConfig,
-): Effect.Effect<string, CliError> {
+): Effect.Effect<EnvironmentId, CliError> {
   const value = flag ?? config.defaultEnvironment;
   if (value === undefined) {
     return Effect.fail(
@@ -241,7 +249,7 @@ function resolveEnvironmentId(
         : usageError(shape),
     );
   }
-  return Effect.succeed(value);
+  return Effect.succeed(decodeEnvironmentId(value));
 }
 
 export interface SessionContext {
@@ -287,7 +295,7 @@ export const openSession = Effect.fn("context.openSession")(function* (
  * metadata need no more than this (env diff).
  */
 export interface ProjectContextBase extends SessionContext {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly verified: VerifiedProject;
   /** The local floor at openProject time (§6.3; null when there is no floor). */
   readonly floor: ProjectFloor | null;
@@ -327,7 +335,7 @@ interface CheckedFloor {
  * evidence), so it stays an immediate rejection.
  */
 export const loadCheckedFloor = Effect.fn("context.loadCheckedFloor")(function* (
-  projectId: string,
+  projectId: ProjectId,
   verified: VerifiedProject,
   resync: Effect.Effect<VerifiedProject, CliError>,
 ): Effect.fn.Return<CheckedFloor, CliError, CliServices> {
@@ -453,7 +461,7 @@ function intentEntryMatches(entry: ChainEntry, intent: FloorIntent): boolean {
  */
 const reconcileCompositeIntents = Effect.fn("context.reconcileCompositeIntents")(function* (input: {
   readonly store: FloorStoreShape;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly verified: VerifiedProject;
   readonly intents: readonly FloorIntent[];
 }): Effect.fn.Return<boolean, CliError, CliServices> {
@@ -487,7 +495,7 @@ function isChainReconcilable(intent: FloorIntent): boolean {
 
 interface IntentSettlementInput {
   readonly store: FloorStoreShape;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly verified: VerifiedProject;
 }
 
@@ -557,7 +565,7 @@ const settleManifestIntent = Effect.fn("context.settleManifestIntent")(function*
  * and recovery (manual handling after out-of-band confirmation).
  */
 function anchorFailureOf(
-  projectId: string,
+  projectId: ProjectId,
   anchor: InviteAnchor,
   verified: VerifiedProject,
 ): string | null {
@@ -598,7 +606,7 @@ function anchorFailureOf(
  * stronger).
  */
 export const checkInviteAnchor = Effect.fn("context.checkInviteAnchor")(function* (
-  projectId: string,
+  projectId: ProjectId,
   verified: VerifiedProject,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
@@ -650,7 +658,7 @@ interface OpenProjectOptions {
  * view).
  */
 export const reconcileGossip = Effect.fn("context.reconcileGossip")(function* (
-  projectId: string,
+  projectId: ProjectId,
   verified: VerifiedProject,
   resync: Effect.Effect<VerifiedProject, CliError>,
 ): Effect.fn.Return<VerifiedProject, CliError, CliServices> {
@@ -687,9 +695,9 @@ export const reconcileGossip = Effect.fn("context.reconcileGossip")(function* (
  */
 const attachProject = Effect.fn("context.attachProject")(function* (
   context: SessionContext,
-  projectId: string,
+  projectId: ProjectId,
   options?: OpenProjectOptions,
-  attester?: { readonly userId: string; readonly signingKey: CryptoKey },
+  attester?: { readonly userId: UserId; readonly signingKey: CryptoKey },
 ): Effect.fn.Return<ProjectContextBase, CliError, CliServices> {
   const resync = syncProject(context.client, projectId);
   const synced = yield* resync;
@@ -840,7 +848,7 @@ export const openMetadataProject = Effect.fn("context.openMetadataProject")(func
 /** Per-environment floor handle (used by pull / push in the command for checks and commits). */
 export function floorHandleFor(
   context: ProjectContextBase,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<FloorHandle, never, CliServices> {
   return Effect.map(FloorStore, (store) =>
     makeFloorHandle({
@@ -861,7 +869,7 @@ export function floorHandleFor(
 }
 
 export interface EnvironmentContext extends ProjectContext {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** Per-environment floor handle (§6.3 — pull / push checks and commits). */
   readonly floorHandle: FloorHandle;
 }
@@ -920,7 +928,7 @@ export const openEnvironment = Effect.fn("context.openEnvironment")(function* (
  * reason for this command alone to drop the material pull / push keep).
  */
 export function commitVerifiedHead(
-  projectId: string,
+  projectId: ProjectId,
   verified: VerifiedProject,
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.flatMap(FloorStore, (store) =>
@@ -933,7 +941,7 @@ export function commitVerifiedHead(
 
 /** Keyless environment context (commands that read only metadata — maruhi schema). */
 interface MetadataEnvironmentContext extends ProjectContextBase {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** Per-environment floor handle (§6.3 — metadata-only pull checks and environment-level commits). */
   readonly floorHandle: FloorHandle;
 }

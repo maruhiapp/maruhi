@@ -8,6 +8,7 @@
 import type { EnvValuesDigestEntry, EnvValuesDigestSource } from "../../src/index.ts";
 import { computeEnvValuesDigest, selectEnvValuesDigestEntries } from "../../src/index.ts";
 import digestVectors from "../../test-vectors/checkpoint-digest.json" with { type: "json" };
+import { testVariableId } from "../support/fixture.ts";
 import { type CheckResult, Checks } from "./support.ts";
 
 interface VectorVariable {
@@ -33,20 +34,20 @@ interface DigestCase {
 function sourceOf(variable: VectorVariable): EnvValuesDigestSource {
   return variable.status === "active"
     ? {
-        variableId: variable.variable_id,
+        variableId: testVariableId(variable.variable_id),
         status: "active",
         version: Number(variable.version),
         valueSigHashHex: variable.value_sig_hash_hex ?? "",
       }
     : {
-        variableId: variable.variable_id,
+        variableId: testVariableId(variable.variable_id),
         status: variable.status as "declared" | "deleted",
       };
 }
 
 function entryOf(entry: VectorEntry): EnvValuesDigestEntry {
   return {
-    variableId: entry.variable_id,
+    variableId: testVariableId(entry.variable_id),
     version: Number(entry.version),
     valueSigHashHex: entry.value_sig_hash_hex,
   };

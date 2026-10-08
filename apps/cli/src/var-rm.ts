@@ -28,7 +28,7 @@
 // itself (the schema fields are only a part of it).
 
 import { ManifestVersionConflictError, MetaVersionConflictError } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
@@ -67,12 +67,12 @@ interface VarRmInput {
   readonly force: boolean;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
 }
 
 interface VarRmSummary {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly metaVersion: number;
   /** The pre-deletion state (active = the value is also gone / declared = declaration only). */
   readonly previousStatus: "active" | "declared";
@@ -96,7 +96,7 @@ const resolveDeletionTarget = Effect.fn("var-rm.resolveDeletionTarget")(function
   if (target !== null) {
     return { ...state, target };
   }
-  const isKeyed = (tombstone: { readonly name: string; readonly variableId: string }) =>
+  const isKeyed = (tombstone: { readonly name: string; readonly variableId: VariableId }) =>
     typeof key === "string" ? tombstone.name === key : tombstone.variableId === key.variableId;
   if (state.tombstones.some(isKeyed)) {
     // Deletion is terminal (§4.2) — rm on an already-deleted
@@ -140,7 +140,7 @@ function ensureDeletionConfirmed(
 }
 
 interface AcceptedDeletion {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
   readonly previousStatus: "active" | "declared";
@@ -156,9 +156,9 @@ interface AcceptedDeletion {
 /** A v1 variable's deletion statement (keeps the v1 form — never silently raises the layout). */
 const signDeleteStatementV1 = Effect.fn("var-rm.signDeleteStatementV1")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly target: VerifiedVariableStatement;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
 }) {
   // The signed context is built exactly once, and the wire is

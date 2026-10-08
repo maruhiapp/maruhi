@@ -22,6 +22,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeFileFingerprintBook } from "../src/known-fingerprints.ts";
+import { testUserId } from "./support/crypto.ts";
 
 const ORIGIN = "https://maruhi.example";
 const USER_A = "user-alice-1111";
@@ -38,22 +39,22 @@ async function makeBook() {
 describe("verified-fingerprint book (known-fingerprints.ts)", () => {
   it("record → lookup hits, and never mixes with another origin / another user_id", async () => {
     const { book } = await makeBook();
-    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));
+    await Effect.runPromise(book.record(ORIGIN, testUserId(USER_A), FP_A));
 
-    const hit = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
+    const hit = await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)));
     if (hit.state !== "hit") throw new Error(`expected hit, got ${hit.state}`);
     expect(hit.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_A]);
     expect(hit.entries[0]?.verifiedAtMs).toBeGreaterThan(0);
 
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_B))).state).toBe("miss");
-    expect((await Effect.runPromise(book.lookup("https://other.example", USER_A))).state).toBe(
-      "miss",
-    );
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_B)))).state).toBe("miss");
+    expect(
+      (await Effect.runPromise(book.lookup("https://other.example", testUserId(USER_A)))).state,
+    ).toBe("miss");
   });
 
   it("a missing file is a miss (fail-open)", async () => {
     const { book } = await makeBook();
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe("miss");
   });
 
   it("a user_id of 'constructor' (a legal book key, an inherited Object property) records and hits via own-property lookup", async () => {
@@ -61,23 +62,23 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     // floor.ts's floorRecordGet discipline: `users["constructor"]` would
     // resolve Object.prototype.constructor (a function), so lookups must
     // be own-property checks
-    await Effect.runPromise(book.record(ORIGIN, "constructor", FP_A));
+    await Effect.runPromise(book.record(ORIGIN, testUserId("constructor"), FP_A));
 
-    const hit = await Effect.runPromise(book.lookup(ORIGIN, "constructor"));
+    const hit = await Effect.runPromise(book.lookup(ORIGIN, testUserId("constructor")));
     if (hit.state !== "hit") throw new Error(`expected hit, got ${hit.state}`);
     expect(hit.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_A]);
   });
 
   it("a record for the same person adds to the fingerprint set, keeping other entries (read-merge-write — the DK device set)", async () => {
     const { book, path } = await makeBook();
-    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));
-    await Effect.runPromise(book.record(ORIGIN, USER_B, FP_B));
+    await Effect.runPromise(book.record(ORIGIN, testUserId(USER_A), FP_A));
+    await Effect.runPromise(book.record(ORIGIN, testUserId(USER_B), FP_B));
     // USER_A's second device (the ceremony succeeding again) adds to the
     // set (doesn't erase the first)
-    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
+    await Effect.runPromise(book.record(ORIGIN, testUserId(USER_A), FP_B));
 
-    const a = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
-    const b = await Effect.runPromise(book.lookup(ORIGIN, USER_B));
+    const a = await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)));
+    const b = await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_B)));
     if (a.state !== "hit" || b.state !== "hit") throw new Error("expected both hits");
     expect(a.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
       [FP_A, FP_B].toSorted(),
@@ -94,7 +95,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     await mkdir(path);
 
     const lookupFailed = await Effect.runPromise(
-      book.lookup(ORIGIN, USER_A).pipe(
+      book.lookup(ORIGIN, testUserId(USER_A)).pipe(
         Effect.map(() => null),
         Effect.catch((error) => Effect.succeed(error.message)),
       ),
@@ -102,7 +103,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect(lookupFailed).toContain("Cannot read the verified-fingerprint book");
 
     const recordFailed = await Effect.runPromise(
-      book.record(ORIGIN, USER_A, FP_A).pipe(
+      book.record(ORIGIN, testUserId(USER_A), FP_A).pipe(
         Effect.map(() => null),
         Effect.catch((error) => Effect.succeed(error.message)),
       ),
@@ -114,10 +115,12 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     const { book, path } = await makeBook();
     await writeFile(path, "{ not json");
 
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe(
+      "corrupt",
+    );
 
     const failed = await Effect.runPromise(
-      book.record(ORIGIN, USER_A, FP_A).pipe(
+      book.record(ORIGIN, testUserId(USER_A), FP_A).pipe(
         Effect.map(() => null),
         Effect.catch((error) => Effect.succeed(error.message)),
       ),
@@ -136,7 +139,9 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
         known: { [ORIGIN]: { [USER_A]: { fingerprints: { zz: { verifiedAtMs: 1 } } } } },
       }),
     );
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe(
+      "corrupt",
+    );
 
     // A version other than v2 is not read, even if its contents have the v2 shape
     await writeFile(
@@ -146,7 +151,9 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
         known: { [ORIGIN]: { [USER_A]: { fingerprints: { [FP_A]: { verifiedAtMs: 1 } } } } },
       }),
     );
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe(
+      "corrupt",
+    );
 
     // The `__proto__` key (JSON.parse creates it as an own property) is
     // rejected as whole-file corruption by the leading-`_` ban (structural
@@ -155,7 +162,9 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       path,
       `{"v":2,"known":{"${ORIGIN}":{"__proto__":{"fingerprints":{"${FP_A}":{"verifiedAtMs":1}}}}}}`,
     );
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe(
+      "corrupt",
+    );
   });
 
   it("record rejects malformed keys/fingerprints before writing (won't corrupt the next load)", async () => {
@@ -166,7 +175,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       [ORIGIN, USER_A, "not-hex"],
     ] as const) {
       const failed = await Effect.runPromise(
-        book.record(origin, userId, fp).pipe(
+        book.record(origin, testUserId(userId), fp).pipe(
           Effect.map(() => null),
           Effect.catch((error) => Effect.succeed(error.message)),
         ),
@@ -174,6 +183,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       expect(failed).toContain("Cannot write the verified-fingerprint book");
     }
     // A rejected write creates no file = subsequent loads stay healthy
-    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
+    expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe("miss");
   });
 });

@@ -26,6 +26,7 @@ import {
   encodeReceipt,
   receiptVariableName,
 } from "../src/sync.package/sync-receipt.ts";
+import { testVariableId } from "./support/crypto.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -788,7 +789,7 @@ describe("computePlan", () => {
           required: entry.required ?? false,
         })),
         declared: (input.declared ?? []).map((entry) => ({
-          variableId: `id-${entry.name}`,
+          variableId: testVariableId(`id-${entry.name}`),
           name: entry.name,
           required: entry.required,
           varType: "",

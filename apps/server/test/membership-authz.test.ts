@@ -27,6 +27,7 @@ import {
   vectorProjectId,
 } from "./support/chain-vectors.ts";
 import { resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendEntry,
   getChain,
@@ -117,7 +118,9 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
 
   it("enforces token scopes: read scope can get but cannot append (§9-2)", async () => {
     await replayVectorChain(1);
-    const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
+    const readOnly: readonly TokenScope[] = [
+      { project: testProjectId(vectorProjectId), permission: "read" },
+    ];
     const readToken = await cliToken(9001, readOnly);
 
     const get = await getChain(vectorProjectId, bearer(readToken));
@@ -138,7 +141,9 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
 
   it("conceals projects outside the token's scope with 404 (§11-2)", async () => {
     await replayVectorChain(1);
-    const otherScope: readonly TokenScope[] = [{ project: "ff".repeat(32), permission: "admin" }];
+    const otherScope: readonly TokenScope[] = [
+      { project: testProjectId("ff".repeat(32)), permission: "admin" },
+    ];
     const scopedToken = await cliToken(9001, otherScope);
     const response = await getChain(vectorProjectId, bearer(scopedToken));
     expect(response.status).toBe(404);

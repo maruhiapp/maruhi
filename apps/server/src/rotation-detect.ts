@@ -72,7 +72,7 @@ export interface EffectiveRotationFlag {
   readonly variableId: string;
   readonly basis: RotationBasis;
   /** Only on the remove_member / change_role variants. */
-  readonly targetUserId?: string;
+  readonly targetUserId?: UserId;
   /** Only on the revoke_server variant. */
   readonly targetServerKeyFingerprintHex?: string;
   // No audit seq is carried (the 2026-08-16 ruling C1): the gapless sequence

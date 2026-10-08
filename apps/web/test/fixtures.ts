@@ -7,7 +7,13 @@
 // check against the real Schemas lives in e2e.test.ts (ruling BV).
 // This is a test-process-only module and never enters the shipped
 // bundle (only screenshots.ts and e2e.test.ts import it).
-import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import {
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "@maruhi/crypto/test-support";
 
 import type {
   AuditEvent,
@@ -22,12 +28,15 @@ import type {
   TokenList,
 } from "../src/dashboard/types.ts";
 
-export const PROJECT_1 = "ab".repeat(32);
-export const PROJECT_2 = "cd".repeat(32);
+export const PROJECT_1 = testProjectId("ab".repeat(32));
+export const PROJECT_2 = testProjectId("cd".repeat(32));
 const HEX64 = "12".repeat(32);
 const USER_E2E = testUserId("user_e2e");
 const USER_COLLEAGUE = testUserId("user_colleague");
 const USER_GHOST = testUserId("user_ghost");
+const ENV_PRODUCTION = testEnvironmentId("production");
+const VAR_DATABASE_URL = testVariableId("var-database-url");
+const VAR_API_KEY = testVariableId("var-api-key");
 const SIG = "34".repeat(64);
 const FP = testKeyFingerprintHex("56".repeat(16));
 const ROW_ID_1 = "78".repeat(16);
@@ -43,7 +52,7 @@ const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
 
 export const meFixture: Me = { userId: USER_E2E, orgs: [] };
 
-export const PROJECT_GHOST_CURSOR = "ef".repeat(32);
+export const PROJECT_GHOST_CURSOR = testProjectId("ef".repeat(32));
 
 export const projectsPage1: ProjectList = {
   projects: [{ projectId: PROJECT_1, role: "admin" }],
@@ -109,7 +118,7 @@ export const chainFixture: ChainSnapshot = {
         ...KEYS_D2,
         roleCap: "member",
         scopeKind: "listed",
-        scopeEnvironmentIds: ["production"],
+        scopeEnvironmentIds: [ENV_PRODUCTION],
       },
     },
     {
@@ -158,7 +167,7 @@ export const chainWithUnreadableEntry: ChainSnapshot = {
 
 const environmentStatement = {
   suite: "maruhi/v1",
-  environmentId: "production",
+  environmentId: ENV_PRODUCTION,
   name: "production",
   chainHeadHashHex: HEX64,
   chainHeadSeq: 1,
@@ -166,23 +175,25 @@ const environmentStatement = {
   status: "active",
   metaVersion: 1,
   prevMetaSigHashHex: "",
-  authorUserId: "user_e2e",
+  authorUserId: USER_E2E,
   authorKeyFingerprintHex: FP,
 } as const;
 
 export const environmentsFixture: EnvironmentList = {
-  environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
+  environments: [
+    { environmentId: ENV_PRODUCTION, currentEpoch: 1, statement: environmentStatement },
+  ],
   schemaPolicy: "enabled",
 };
 
 export const metadataPullFixture: EnvironmentMetadataPull = {
-  environmentId: "production",
+  environmentId: ENV_PRODUCTION,
   currentEpoch: 1,
   statement: environmentStatement,
   variables: [
     {
       ...environmentStatement,
-      variableId: "var-database-url",
+      variableId: VAR_DATABASE_URL,
       name: "DATABASE_URL",
     },
   ],
@@ -191,7 +202,7 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
   // 0.28-draft — a schema-valid dummy; the dashboard never reads it)
   manifest: {
     suite: "maruhi/v1",
-    environmentId: "production",
+    environmentId: ENV_PRODUCTION,
     epoch: 1,
     manifestVersion: 1,
     variablesDigestHex: HEX64,
@@ -201,7 +212,7 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     chainHeadHashHex: HEX64,
     chainHeadSeq: 1,
     signatureHex: SIG,
-    issuerUserId: "user_e2e",
+    issuerUserId: USER_E2E,
     issuerKeyFingerprintHex: FP,
   },
   schemaPolicy: "enabled",
@@ -217,8 +228,8 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
       seq: 5,
       serverTs: 1_756_000_400_000,
       event: "chain.device_revoked",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_e2e",
+      actor: { type: "user", userId: USER_E2E, keyFingerprintHex: FP },
+      targetUserId: USER_E2E,
       chainSeq: 5,
       payload: { deviceKeyFingerprints: [FP_D2] },
     },
@@ -227,8 +238,8 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
       seq: 3,
       serverTs: 1_756_000_200_000,
       event: "chain.device_added",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_e2e",
+      actor: { type: "user", userId: USER_E2E, keyFingerprintHex: FP },
+      targetUserId: USER_E2E,
       chainSeq: 3,
       payload: {
         deviceKeyFingerprint: FP_D2,
@@ -242,8 +253,8 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
       seq: 2,
       serverTs: 1_756_000_100_000,
       event: "chain.member_added",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_colleague",
+      actor: { type: "user", userId: USER_E2E, keyFingerprintHex: FP },
+      targetUserId: USER_COLLEAGUE,
       chainSeq: 2,
     },
     {
@@ -251,8 +262,8 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
       seq: 1,
       serverTs: 1_756_000_000_000,
       event: "chain.genesis",
-      actor: { type: "user", userId: "user_e2e", keyFingerprintHex: FP },
-      targetUserId: "user_e2e",
+      actor: { type: "user", userId: USER_E2E, keyFingerprintHex: FP },
+      targetUserId: USER_E2E,
       chainSeq: 1,
     },
   ],
@@ -265,7 +276,7 @@ export const selfAuditEvents: { events: AuditEvent[] } = {
       id: ROW_ID_1,
       serverTs: 1_756_000_200_000,
       event: "auth.login_succeeded",
-      actor: { type: "user", userId: "user_e2e" },
+      actor: { type: "user", userId: USER_E2E },
     },
   ],
 };
@@ -273,10 +284,10 @@ export const selfAuditEvents: { events: AuditEvent[] } = {
 export const rotationFlagsFixture: RotationFlagList = {
   flags: [
     {
-      environmentId: "production",
-      variableId: "var-database-url",
+      environmentId: ENV_PRODUCTION,
+      variableId: VAR_DATABASE_URL,
       basis: "read",
-      targetUserId: "user_colleague",
+      targetUserId: USER_COLLEAGUE,
       recommendedAtMs: 1_756_000_300_000,
       triggerChainSeq: 3,
       trigger: "remove_member",
@@ -284,10 +295,10 @@ export const rotationFlagsFixture: RotationFlagList = {
     // The device-revocation variant (AUDIT_SPEC §4.1 — DK): trigger =
     // revoke_device; the target is a person (no FP is carried)
     {
-      environmentId: "production",
-      variableId: "var-api-key",
+      environmentId: ENV_PRODUCTION,
+      variableId: VAR_API_KEY,
       basis: "readable",
-      targetUserId: "user_e2e",
+      targetUserId: USER_E2E,
       recommendedAtMs: 1_756_000_400_000,
       triggerChainSeq: 5,
       trigger: "revoke_device",
@@ -332,7 +343,7 @@ const pendingInvite = {
   scopeKind: "all",
   scopeEnvironmentIds: [],
   status: "pending",
-  inviterUserId: "user_e2e",
+  inviterUserId: USER_E2E,
   issuance: issuanceFixture,
   createdAtMs: 1_756_000_000_000,
   expiresAtMs: FUTURE_MS,
@@ -349,7 +360,7 @@ export const invitationsFixture: InvitationList = {
       scopeKind: "all",
       scopeEnvironmentIds: [],
       status: "accepted",
-      inviterUserId: "user_e2e",
+      inviterUserId: USER_E2E,
       issuance: issuanceFixture,
       createdAtMs: 1_756_000_000_000,
       expiresAtMs: FUTURE_MS,
@@ -362,7 +373,7 @@ export const invitationsFixture: InvitationList = {
       scopeKind: "all",
       scopeEnvironmentIds: [],
       status: "completed",
-      inviterUserId: "user_e2e",
+      inviterUserId: USER_E2E,
       issuance: issuanceFixture,
       createdAtMs: 1_756_000_000_000,
       expiresAtMs: PAST_MS,

@@ -25,6 +25,7 @@ import {
   wrapDekTo,
   wrapDekToServer,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -61,7 +62,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       payload: {
         serverEncPubHex: SERVER_ENC_PUB_HEX,
         serverKeyFingerprintHex: fpHex,
-        scopeEnvironmentIds: scope,
+        scopeEnvironmentIds: scope.map(testEnvironmentId),
         leasePolicy: [],
       },
     });
@@ -524,7 +525,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
 const memberOf = (userId: string) =>
   [
-    userId,
+    testUserId(userId),
     {
       userId: testUserId(userId),
       role: "member",
@@ -551,12 +552,12 @@ const grantOf = (
   serverEncPubHex: string = "44".repeat(32),
 ) =>
   [
-    fingerprintHex,
+    testKeyFingerprintHex(fingerprintHex),
     {
       serverKeyFingerprintHex: testKeyFingerprintHex(fingerprintHex),
       serverEncPubHex,
       grantSeq: 1,
-      scopeEnvironmentIds: scope,
+      scopeEnvironmentIds: scope.map(testEnvironmentId),
       leasePolicy: [],
     },
   ] as const;
@@ -586,17 +587,17 @@ describe("expectedWrapRecipientCount", () => {
       headHashHex: "00".repeat(32),
     };
     // env-a: {user-1, collidingFp (member key), collidingFp (server key), otherFp} — 4 slots
-    expect(expectedWrapRecipientCount(state, "env-a")).toBe(4);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-a"))).toBe(4);
     // env-b: the only in-scope grant is otherFp
-    expect(expectedWrapRecipientCount(state, "env-b")).toBe(3);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-b"))).toBe(3);
     // Out-of-scope environments are members only
-    expect(expectedWrapRecipientCount(state, "env-c")).toBe(2);
+    expect(expectedWrapRecipientCount(state, testEnvironmentId("env-c"))).toBe(2);
 
     // The same id and same key (the member's enc public key = the server key) is one slot
     const sameKey: ChainState = {
       ...state,
       serverGrants: new Map([grantOf(collidingFp, ["env-a"], "11".repeat(32))]),
     };
-    expect(expectedWrapRecipientCount(sameKey, "env-a")).toBe(2);
+    expect(expectedWrapRecipientCount(sameKey, testEnvironmentId("env-a"))).toBe(2);
   });
 });

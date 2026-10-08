@@ -37,6 +37,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import tls from "node:tls";
 
+import { type EnvironmentId } from "@maruhi/core";
 import { Clock, Context, Effect, Redacted, type Stdio } from "effect";
 import { HttpClient } from "effect/http";
 
@@ -44,6 +45,7 @@ import { privateRuntimeDir } from "../agent.ts";
 import { displayText } from "../display.ts";
 import { cliError, type CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
+import { generateVariableId } from "../meta-statement.ts";
 import { logNote, logWarning } from "../notice.ts";
 import type { DecryptedVariable } from "../pull.ts";
 import { buildInjectionEnv, ProcessRunner, redactionFragments } from "../run.ts";
@@ -77,7 +79,7 @@ interface ProxyRunInput {
   readonly command: readonly string[];
   readonly config: ProxyConfig;
   readonly configPath: string;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly variables: readonly DecryptedVariable[];
   /** One stderr line per request the proxy handled. */
   readonly verbose: boolean;
@@ -493,7 +495,7 @@ const announcePlan = Effect.fn("proxy-run.announcePlan")(function* (
 function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, string>>, CliError> {
   const placeholderVariables: DecryptedVariable[] = [...plan.placeholders].map(
     ([name, placeholder]) => ({
-      variableId: `placeholder:${name}`,
+      variableId: generateVariableId(),
       name,
       version: 0,
       epoch: 0,

@@ -32,8 +32,14 @@ import {
   ChainHeadConflictError,
   CheckpointStateMismatchError,
 } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
-import { cryptoEffect, cryptoPromise, scopePermissionFor } from "@maruhi/core";
+import {
+  type EnvironmentId,
+  type ProjectId,
+  type UserId,
+  cryptoEffect,
+  cryptoPromise,
+  scopePermissionFor,
+} from "@maruhi/core";
 import type {
   ChainEntry,
   CheckpointEnvironmentEntry,
@@ -51,7 +57,7 @@ import { Effect, Schedule } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
@@ -92,7 +98,7 @@ const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** The issuance result (the material for display and the exit code). */
 interface CheckpointSummary {
   /** The notarized environment IDs (ascending byte order = payload order). */
-  readonly environmentIds: readonly string[];
+  readonly environmentIds: readonly EnvironmentId[];
   /** The environments left out of the all-environments coverage (SHOULD), with the reason (non-empty only for a subset issuance). */
   readonly skippedEnvironmentIds: readonly string[];
   /** Whether the audit head was notarized (effective admin only — §16-2). */
@@ -112,7 +118,7 @@ interface CheckpointInput {
    * completed).
    */
   readonly environmentIds: "all" | readonly EnvironmentId[];
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   /** The per-environment floor handle (for the verified pull's checks and commit). */
   readonly floorFor: (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, CliError>;
@@ -135,7 +141,7 @@ function compareUtf8Bytes(a: string, b: string): number {
 
 /** One environment's built tuple (a comparable shape — the material for the subset-fallback decision). */
 interface BuiltTuple {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly manifestVersion: number;
   readonly manifestSigHashHex: string;
@@ -168,7 +174,7 @@ const determineAuditAttestation = Effect.fn("checkpoint.determineAuditAttestatio
   function* (input: {
     readonly client: MaruhiClient;
     readonly verified: VerifiedProject;
-    readonly signerUserId: string;
+    readonly signerUserId: UserId;
   }): Effect.fn.Return<boolean, CliError> {
     const member = input.verified.state.members.get(input.signerUserId);
     if (member === undefined || (member.role !== "admin" && member.role !== "owner")) {
@@ -210,7 +216,7 @@ const resolveTargets = Effect.fn("checkpoint.resolveTargets")(function* (
     }
     return { targets: input.environmentIds, outOfScope: [] };
   }
-  const all = [...input.verified.state.environments.keys()];
+  const all = chainEnvironmentIds(input.verified);
   if (all.length === 0) {
     return { targets: [], outOfScope: [] };
   }
@@ -317,7 +323,7 @@ const buildTuples = Effect.fn("checkpoint.buildTuples")(function* (
  */
 export const fetchAuditHead = Effect.fn("checkpoint.fetchAuditHead")(function* (
   client: MaruhiClient,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.fn.Return<string, CliError, CliIo> {
   const io = yield* CliIo;
   // 503 failures absorbed so far (the count behind the message's
@@ -364,7 +370,7 @@ const sendCheckpoint = Effect.fn("checkpoint.sendCheckpoint")(function* (input: 
   readonly view: VerifiedProject;
   readonly tuples: readonly BuiltTuple[];
   readonly auditHeadHashHex: string;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.fn.Return<
@@ -686,10 +692,10 @@ function summarizeAccepted(input: {
   readonly headSeq: number;
   readonly warnings: readonly string[];
 }): CheckpointSummary {
-  const covered = (input.subset ?? input.targets).map(String);
+  const covered = input.subset ?? input.targets;
   return {
     environmentIds: covered,
-    skippedEnvironmentIds: input.targets.map(String).filter((id) => !covered.includes(id)),
+    skippedEnvironmentIds: input.targets.filter((id) => !covered.includes(id)),
     attestedAuditHead: input.attest,
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
@@ -733,7 +739,7 @@ function stableSubsetOrFail(input: {
         baseline.tuples.find((candidate) => candidate.environmentId === tuple.environmentId),
       ),
     )
-    .map((tuple) => tuple.environmentId as EnvironmentId);
+    .map((tuple) => tuple.environmentId);
   if (stableIds.length === 0) {
     return Effect.fail(
       cliError(
@@ -814,7 +820,7 @@ function latestCheckpointEntry(
 export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly signerUserId: string;
+  readonly signerUserId: UserId;
   readonly nowMs: number;
 }): Effect.fn.Return<string | null, never> {
   const member = input.verified.state.members.get(input.signerUserId);

@@ -37,6 +37,8 @@ import {
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
+import { testEnvironmentId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -285,7 +287,9 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
 
 /** Reads the floor (the fold of the observation log). The log is append-only JSONL (floor-log.ts). */
 async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
-  const loaded = await Effect.runPromise(makeFileFloorStore(env.floorDir).load(projectId));
+  const loaded = await Effect.runPromise(
+    makeFileFloorStore(env.floorDir).load(testProjectId(projectId)),
+  );
   expect(loaded.state).toBe("loaded");
   expect(loaded.floor).not.toBeNull();
   return loaded.floor as ProjectFloor;
@@ -1180,9 +1184,9 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
     // (a) The accepted attempt: declared head = seq 2 (right after create) →
     // slot seq 3 holds this intent's rotate entry
     await Effect.runPromise(
-      store.appendIntent(projectId, {
+      store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
-        environmentId: ENV_ID,
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 2,
         dekCommitmentHex: commitment,
         variableId: null,
@@ -1195,9 +1199,9 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
     // is old (seq 1) and its slot (seq 2) is occupied by a different entry
     // (create) = this attempt can never land now (settled refusal). The manifest's signed bytes also differ
     await Effect.runPromise(
-      store.appendIntent(projectId, {
+      store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
-        environmentId: ENV_ID,
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 2,
         dekCommitmentHex: commitment,
         variableId: null,
@@ -1209,9 +1213,9 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
     // (c) The intent awaiting landing: declared head = the current head
     // (seq 3) → slot seq 4 is empty = it could be in transit. Never settle it (leave it unresolved)
     await Effect.runPromise(
-      store.appendIntent(projectId, {
+      store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
-        environmentId: ENV_ID,
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 3,
         dekCommitmentHex: "8b".repeat(32),
         variableId: null,

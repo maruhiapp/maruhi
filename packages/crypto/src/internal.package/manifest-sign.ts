@@ -31,6 +31,7 @@
 // low-level normalization, signing, digest, and hashing.
 
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -49,7 +50,7 @@ const SHA256_HEX_LENGTH = 32 * 2;
  * layer is unchanged).
  */
 export interface VariablesDigestEntry {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly status: MetaStatementStatus;
   readonly metaVersion: number;
   /** SHA-256 (lowercase hex) of that statement's signed bytes (§4.2). */
@@ -107,8 +108,8 @@ export async function computeVariablesDigest(
  */
 export interface EnvManifestContext {
   readonly suite: string;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   /** The environment's current epoch at issuance (§4.3 — the core anchor). */
   readonly epoch: number;
   /** 1-based counter (environment creation = 1; each meta op / rotate increments). */
@@ -124,7 +125,7 @@ export interface EnvManifestContext {
    */
   readonly prevManifestSigHashHex: string;
   /** The issuer's own internal user id (binds attribution to the identity). */
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   /** Entry hash of the chain head the issuer last verified (§6.1). */
   readonly chainHeadHashHex: string;
   /** Seq of that head (both hash and seq are signed; mismatch fails). */

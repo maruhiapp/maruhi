@@ -1,6 +1,13 @@
 // `maruhi ci` (discipline: see commands/index.ts).
 
-import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  decodeProjectId,
+  isEnvironmentId,
+  isProjectId,
+  type EnvironmentId,
+  type ProjectId,
+} from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -209,8 +216,8 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
     (target) =>
       ciRunOp({
         origin: target.origin,
-        projectId: projectFlag,
-        environmentId: envFlag,
+        projectId: decodeProjectId(projectFlag),
+        environmentId: decodeEnvironmentId(envFlag),
         audience: target.audience,
         anchorPath: values.anchor,
         command: values.command,
@@ -248,7 +255,7 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
   yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
     ciSyncOp({
       origin: where.origin,
-      projectId: projectFlag,
+      projectId: decodeProjectId(projectFlag),
       audience: where.audience,
       anchorPath: values.anchor,
       target,
@@ -267,7 +274,7 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
 }): Effect.fn.Return<
   {
     readonly origin: string;
-    readonly projectId: string;
+    readonly projectId: ProjectId;
     readonly environmentId: EnvironmentId;
     readonly expiresInDays: number;
   },
@@ -293,7 +300,12 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
       usageError(`--expires-in must be a number of days from 1 to ${MAX_PROPOSAL_DAYS}`),
     );
   }
-  return { origin, projectId, environmentId, expiresInDays };
+  return {
+    origin,
+    projectId: decodeProjectId(projectId),
+    environmentId: decodeEnvironmentId(environmentId),
+    expiresInDays,
+  };
 });
 
 /** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */

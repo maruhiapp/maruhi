@@ -1,5 +1,6 @@
 // `maruhi invite` (discipline: see commands/index.ts).
 
+import { type EnvironmentId } from "@maruhi/core";
 import { ALL_SCOPE } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -86,7 +87,7 @@ export const inviteRevokeConfig = {
 const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
-    readonly env: readonly string[];
+    readonly env: readonly EnvironmentId[];
     readonly noEnvs: boolean;
     readonly github?: string | undefined;
   },

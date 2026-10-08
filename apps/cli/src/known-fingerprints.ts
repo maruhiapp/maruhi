@@ -42,6 +42,7 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { type UserId } from "@maruhi/core";
 import { Clock, Context, Effect, Schema, Stdio } from "effect";
 
 import { describeNonTerminal } from "./agent-gate.ts";
@@ -85,11 +86,11 @@ export type FingerprintLookup =
 export interface FingerprintBookShape {
   /** The file path for display (the path that lets deleting an entry force the ceremony to re-run). */
   readonly filePath: string;
-  readonly lookup: (origin: string, userId: string) => Effect.Effect<FingerprintLookup, CliError>;
+  readonly lookup: (origin: string, userId: UserId) => Effect.Effect<FingerprintLookup, CliError>;
   /** A read-merge-write append (adds a fingerprint to the same person's set; the same fingerprint refreshes its confirmation time). */
   readonly record: (
     origin: string,
-    userId: string,
+    userId: UserId,
     fingerprintHex: string,
   ) => Effect.Effect<void, CliError>;
 }
@@ -146,7 +147,7 @@ interface FingerprintBookConsult {
 export const consultFingerprintBook = Effect.fn("known-fingerprints.consultFingerprintBook")(
   function* (input: {
     readonly origin: string;
-    readonly userId: string;
+    readonly userId: UserId;
     readonly fingerprintHex: string;
   }): Effect.fn.Return<FingerprintBookConsult, CliError, FingerprintBook | CliIo> {
     const book = yield* FingerprintBook;

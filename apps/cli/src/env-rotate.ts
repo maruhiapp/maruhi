@@ -21,7 +21,7 @@
 // only variable names (already displayText'd) from verified statements,
 // counts, and epoch numbers.
 
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -620,8 +620,8 @@ const rotateWithWarnings = Effect.fn("env-rotate.rotateWithWarnings")(function* 
 
 /** Computing the new-epoch DEK's commitment (CRYPTO_SPEC §5.2). Failures are CliError. */
 function computeRotationCommitmentHex(input: {
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly newEpoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
 }): Effect.Effect<string, CliError> {

@@ -84,17 +84,22 @@ export const decodeProviderUserId: (value: string) => ProviderUserId =
 const KEY_FINGERPRINT_HEX = /^[0-9a-f]{32}$/;
 
 /**
- * The brand's single assertion. Unlike {@link UserId}, the brand carries a
- * format — 32 lowercase hex characters, so string equality is fingerprint
- * equality — and every string mint checks it.
+ * Format check matching {@link KeyFingerprintHexSchema}. Non-narrowing on
+ * purpose — 32 lowercase hex has the same shape as a proposal id and an
+ * audit row id, so a `value is` guard would be an unpinned mint (the mint
+ * is consolidated in the schema and `decodeKeyFingerprintHex`, see
+ * project.ts's header for the guard policy).
  */
-function isKeyFingerprintHex(value: string): value is KeyFingerprintHex {
+export function isKeyFingerprintHex(value: string): boolean {
   return KEY_FINGERPRINT_HEX.test(value);
 }
 
+const narrowsKeyFingerprintHex = (value: string): value is KeyFingerprintHex =>
+  KEY_FINGERPRINT_HEX.test(value);
+
 /** Schema for a key fingerprint field (16 bytes, lowercase hex). Decoding mints a {@link KeyFingerprintHex}. */
 export const KeyFingerprintHexSchema = Schema.String.pipe(
-  Schema.refine(isKeyFingerprintHex, {
+  Schema.refine(narrowsKeyFingerprintHex, {
     expected: "a key fingerprint (16 bytes, lowercase hex — CRYPTO_SPEC §3)",
   }),
 );

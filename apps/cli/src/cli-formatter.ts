@@ -22,6 +22,7 @@
 // `Expected even number, got ${n}`) leaks plaintext from the expectation
 // side. Show it **only when it matches wording we wrote**.
 
+import { ENVIRONMENT_ID_EXPECTED, PROJECT_ID_EXPECTED, VARIABLE_ID_EXPECTED } from "@maruhi/core";
 import type { HelpDoc } from "effect/cli";
 import { CliError, CliOutput } from "effect/cli";
 
@@ -64,7 +65,17 @@ export const NON_BLANK_MESSAGE = "a non-empty value (whitespace-only values are 
 export const PASSKEY_LABEL_MESSAGE =
   "1 to 64 characters without control or bidirectional-formatting characters";
 
-const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([NON_BLANK_MESSAGE, PASSKEY_LABEL_MESSAGE]);
+const SAFE_EXPECTATIONS: ReadonlySet<string> = new Set([
+  NON_BLANK_MESSAGE,
+  PASSKEY_LABEL_MESSAGE,
+  // The branded-id schemas' refine annotations — the "Expected" render
+  // prefix below is stripped before the match, so the allowlist keeps the
+  // authored wording. The annotation carries no input, so the echo is safe;
+  // effect-cli.test.ts's --env case pins the positive side.
+  ENVIRONMENT_ID_EXPECTED,
+  PROJECT_ID_EXPECTED,
+  VARIABLE_ID_EXPECTED,
+]);
 
 /** The built-in global flags (CliConfig's builtIns — absent from the declaration table). */
 const GLOBAL_FLAGS = ["--help", "--version"] as const;
@@ -186,7 +197,12 @@ function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): 
   ) {
     return commandKey === "agent" ? AGENT_COMMAND_REQUIRED : RUN_COMMAND_REQUIRED;
   }
-  const expectation = error.expected.replace("Schema validation failed: ", "");
+  // The Schema machinery renders a refine's `expected` annotation as
+  // "Expected <annotation>" — strip the render prefix so the allowlist and
+  // the echo carry the authored wording alone.
+  const expectation = error.expected
+    .replace("Schema validation failed: ", "")
+    .replace(/^Expected /, "");
   const detail = SAFE_EXPECTATIONS.has(expectation) ? ` (expected: ${expectation})` : "";
   return error.kind === "argument"
     ? `Unacceptable value for positional argument ${name}${detail}`

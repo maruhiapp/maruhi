@@ -9,7 +9,7 @@ import type { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect, Ref } from "effect";
 
 import type { ResolvedUser, SignupGateResult, UserOrg, VerifiedIdentity } from "../auth-domain.ts";
-import { newUserId, ulid } from "../ids.ts";
+import { newOrgId, newUserId } from "../ids.ts";
 import { type D1AuditActor, guardedAuditSelectColumns } from "./audit.ts";
 import { type D1Error, type D1FailureError, tryD1 } from "./errors.ts";
 import {
@@ -237,7 +237,7 @@ function createUserBatch(
   gate: SignupGate,
 ): Effect.Effect<UserId, InsertConflictError | SignupGateLostError | D1FailureError> {
   const userId = newUserId(nowMs);
-  const orgId = ulid(nowMs);
+  const orgId = newOrgId(nowMs);
   const actor: D1AuditActor = { userId };
   const chained = sql`changes() = 1`;
   // Every following statement is an INSERT…SELECT chained on the

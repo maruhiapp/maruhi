@@ -5,7 +5,13 @@ import {
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "@maruhi/api-schema";
-import { isEnvironmentId, isVariableId } from "@maruhi/core";
+import {
+  decodeEnvironmentId,
+  decodeUserId,
+  decodeVariableId,
+  isEnvironmentId,
+  isVariableId,
+} from "@maruhi/core";
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
@@ -143,12 +149,13 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
   if (problem !== null) {
     return Effect.fail(usageError(problem));
   }
+  // Validated above: isEnvironmentId / isVariableId checks narrowed the raw flags
   return Effect.succeed({
     event: values.event ?? null,
-    actorUserId: values.actor ?? null,
-    targetUserId: values.target ?? null,
-    environmentId: values.env ?? null,
-    variableId: values.var ?? null,
+    actorUserId: values.actor === undefined ? null : decodeUserId(values.actor),
+    targetUserId: values.target === undefined ? null : decodeUserId(values.target),
+    environmentId: values.env === undefined ? null : decodeEnvironmentId(values.env),
+    variableId: values.var === undefined ? null : decodeVariableId(values.var),
   });
 }
 

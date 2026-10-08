@@ -27,6 +27,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import { vectorKeyOf } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   MEMBER,
@@ -173,14 +174,18 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
 
   it("intersects with token scopes (out of scope = absent; a read level suffices)", async () => {
     // A read scope covering the target project → it appears
-    const scoped = await cliToken(9002, [{ project: projectId, permission: "read" }], "scoped-in");
+    const scoped = await cliToken(
+      9002,
+      [{ project: testProjectId(projectId), permission: "read" }],
+      "scoped-in",
+    );
     expect((await listOk(bearer(scoped))).projects).toEqual([{ projectId, role: "member" }]);
     // A scope limited to another project → absent even for a member
     // (a 200 with zero existence information)
     const other = fakeProjectId(1);
     const outOfScope = await cliToken(
       9002,
-      [{ project: other, permission: "admin" }],
+      [{ project: testProjectId(other), permission: "admin" }],
       "scoped-out",
     );
     expect((await listOk(bearer(outOfScope))).projects).toEqual([]);
@@ -195,7 +200,7 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
     }
     const scoped = await cliToken(
       9001,
-      [{ project: projectId, permission: "read" }],
+      [{ project: testProjectId(projectId), permission: "read" }],
       "scoped-owner",
     );
     const response = await listOk(bearer(scoped));
@@ -214,8 +219,8 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
     // would hard-fail (page 2 with after is worst-case 103)
     const fakes = Array.from({ length: 99 }, (_unused, index) => fakeProjectId(index + 1));
     const scopes = [
-      { project: projectId, permission: "read" as const },
-      ...fakes.map((project) => ({ project, permission: "read" as const })),
+      { project: testProjectId(projectId), permission: "read" as const },
+      ...fakes.map((project) => ({ project: testProjectId(project), permission: "read" as const })),
     ];
     expect(scopes).toHaveLength(100);
     for (const fake of fakes) {

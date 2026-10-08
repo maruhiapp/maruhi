@@ -37,12 +37,13 @@
 //   5. Unwrap → re-wrap → audit → response (the first-come-binding record is
 //      in the same synchronous block)
 
-import type { LeaseDenialReason } from "@maruhi/core";
+import type { EnvironmentId, LeaseDenialReason } from "@maruhi/core";
 import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore, type AuditEventInput } from "../audit-store.ts";
 import type { EnvironmentPullValue, InitializedChain } from "../data/data-plane.ts";
+import { projectIdOf } from "../data/data-plane.ts";
 import {
   currentEpochOf,
   loadInitializedChain,
@@ -206,7 +207,7 @@ interface AuthorizedWorkload {
  * it (windows, material, writes) is per program.
  */
 export const authorizeWorkload = Effect.fn("programs-lease.authorizeWorkload")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
@@ -284,7 +285,7 @@ export const authorizeWorkload = Effect.fn("programs-lease.authorizeWorkload")(f
 });
 
 export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
@@ -370,7 +371,7 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
   // 5. Unwrap → re-wrap (no plaintext DEK escapes the ServerKey closure)
   const leases = yield* serverKey
     .reseal({
-      projectId: chain.genesisHashHex,
+      projectId: projectIdOf(chain),
       environmentId,
       claimsDigestHex: facts.claimsDigestHex,
       workloadPubHex: ephemeralPubHex,

@@ -17,8 +17,7 @@
 // behind the display gate = display.ts, or at the crypto boundary =
 // push.ts).
 
-import type { EnvironmentId } from "@maruhi/core";
-import { cryptoEffect } from "@maruhi/core";
+import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core";
 import type { MetaVarType, SigningKeyPair } from "@maruhi/crypto";
 import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -41,7 +40,7 @@ import { pullVerifiedEnvironment } from "./values.ts";
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {
   /** The name from the verified meta statement (§4.2 — never trust a bare name). */
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
@@ -70,7 +69,7 @@ export interface DecryptedVariable {
  * session-46 §8 turn 3).
  */
 export interface DeclaredVariable {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly required: boolean;
   readonly varType: MetaVarType;
@@ -136,7 +135,7 @@ export function missingWrapReason(variable: {
  */
 export const decryptVerifiedValue = Effect.fnUntraced(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly variable: VerifiedPulledValue;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   /** The chain-derived current epoch (the declared epoch's cap — the defense line against a derivation inconsistency). */

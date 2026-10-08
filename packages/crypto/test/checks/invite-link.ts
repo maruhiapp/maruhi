@@ -25,6 +25,7 @@ import {
 } from "../../src/index.ts";
 import chainVectors from "../../test-vectors/chain-entries.json" with { type: "json" };
 import vectors from "../../test-vectors/invite-link.json" with { type: "json" };
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.issue.vectors[0];
@@ -52,17 +53,17 @@ function contextOf(v: VectorContext): InviteIssueContext {
   return {
     suite: v.suite,
     inviteId: v.invite_id,
-    projectId: v.project_id,
+    projectId: testProjectId(v.project_id),
     linkPubHex: v.link_pub_hex,
     headHashHex: v.head_hash_hex,
     headSeq: v.head_seq,
     role: v.role,
-    inviterUserId: v.inviter_user_id,
+    inviterUserId: testUserId(v.inviter_user_id),
     inviterEncPubHex: v.inviter_enc_pub_hex,
     inviterSigPubHex: v.inviter_sig_pub_hex,
     // scope (2026-09-14 ES — the last 2 fields of the §6.5 issue text)
     scopeKind: v.scope_kind as ScopeKind,
-    scopeEnvironmentIds: v.scope_environments,
+    scopeEnvironmentIds: v.scope_environments.map((id) => testEnvironmentId(id)),
   };
 }
 
@@ -206,7 +207,7 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
     { name: "empty invite id", context: { ...contextOf(base), inviteId: "" } },
     { name: "empty role", context: { ...contextOf(base), role: "" } },
-    { name: "empty inviter", context: { ...contextOf(base), inviterUserId: "" } },
+    { name: "empty inviter", context: { ...contextOf(base), inviterUserId: testUserId("") } },
     {
       name: "uppercase link pub",
       context: { ...contextOf(base), linkPubHex: base.link_pub_hex.toUpperCase() },
@@ -223,19 +224,27 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     // The structural rules of scope (same as §6.2 — all ⇒ empty list, no duplicates, closed-set kind, non-empty id)
     {
       name: "all scope with environments",
-      context: { ...contextOf(base), scopeKind: "all", scopeEnvironmentIds: ["env-dev-0002"] },
+      context: {
+        ...contextOf(base),
+        scopeKind: "all",
+        scopeEnvironmentIds: ["env-dev-0002"].map((id) => testEnvironmentId(id)),
+      },
     },
     {
       name: "duplicate scope environment",
       context: {
         ...contextOf(base),
         scopeKind: "listed",
-        scopeEnvironmentIds: ["env-dev-0002", "env-dev-0002"],
+        scopeEnvironmentIds: ["env-dev-0002", "env-dev-0002"].map((id) => testEnvironmentId(id)),
       },
     },
     {
       name: "empty scope environment id",
-      context: { ...contextOf(base), scopeKind: "listed", scopeEnvironmentIds: [""] },
+      context: {
+        ...contextOf(base),
+        scopeKind: "listed",
+        scopeEnvironmentIds: [testEnvironmentId("")],
+      },
     },
     {
       name: "unknown scope kind",
@@ -247,7 +256,7 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
       context: {
         ...contextOf(base),
         scopeKind: "listed",
-        scopeEnvironmentIds: ["e".repeat(1025)],
+        scopeEnvironmentIds: ["e".repeat(1025)].map((id) => testEnvironmentId(id)),
       },
     },
   ];

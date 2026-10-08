@@ -1,6 +1,5 @@
 // Helpers shared across command groups (discipline: see commands/index.ts). A leaf: nothing here imports another commands/ file.
 
-import { type EnvironmentId } from "@maruhi/core";
 import { Clock, Effect, Stdio } from "effect";
 
 import {
@@ -237,11 +236,7 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   }
   let exitCode = 0;
   for (const item of sweep.rotated) {
-    const code = yield* reportRotation(
-      item.environmentId as EnvironmentId,
-      item.summary,
-      item.forcedNewEpoch,
-    );
+    const code = yield* reportRotation(item.environmentId, item.summary, item.forcedNewEpoch);
     if (code !== 0) {
       exitCode = 1;
     }

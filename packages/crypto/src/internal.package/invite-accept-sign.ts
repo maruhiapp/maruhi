@@ -31,6 +31,7 @@
 // Test vectors: test-vectors/invite-accept-signature.json
 
 import { decodeHex } from "./bytes.ts";
+import type { ProjectId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { importSigningPublicKey } from "./keys.ts";
@@ -53,7 +54,7 @@ const PUB_KEY_HEX_LENGTH = 32 * 2;
  */
 export interface InviteAcceptSignatureContext {
   readonly suite: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The invite's link public key (Ed25519, lowercase hex — never the seed). */
   readonly linkPubHex: string;
   /** The acceptor's internal user id (the server requires caller == invitee). */

@@ -12,6 +12,7 @@
 // warning makes explicit that "displayed = actual value" does not hold
 // (showValues).
 
+import { type ProjectId } from "@maruhi/core";
 import { Effect, Redacted, type Stdio } from "effect";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
@@ -149,7 +150,7 @@ export function countNoun(count: number, singular: string): string {
 }
 
 /** Enumerating projects with the count ("2 projects (a, b)" — shared by the ledger-key decision sentences). */
-export function describeProjects(projectIds: readonly string[]): string {
+export function describeProjects(projectIds: readonly ProjectId[]): string {
   return `${countNoun(projectIds.length, "project")} (${projectIds.map(displayText).join(", ")})`;
 }
 

@@ -42,6 +42,7 @@ import {
   ScriptStoppedError,
 } from "../src/run.ts";
 import { signV4 } from "../src/sigv4.ts";
+import { testEnvironmentId } from "./support/crypto.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -856,7 +857,7 @@ describe("cloudflare-api-token connector", () => {
 });
 
 describe("exec connector (a script of the repository — PF8)", () => {
-  const SITE = { variable: "STRIPE_SECRET_KEY", environmentId: "prod" };
+  const SITE = { variable: "STRIPE_SECRET_KEY", environmentId: testEnvironmentId("prod") };
   const withFinalize: RotateRule = {
     connector: "exec",
     rotate: ["./rotate.sh", "--live"],
@@ -864,7 +865,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
     cwd: "/repo/ops",
     output: "value",
     companions: {},
-    inputs: { STRIPE_ADMIN_KEY: { environment: "ops", name: "STRIPE_ADMIN_KEY" } },
+    inputs: {
+      STRIPE_ADMIN_KEY: { environment: testEnvironmentId("ops"), name: "STRIPE_ADMIN_KEY" },
+    },
   };
   const noFinalize: RotateRule = { ...withFinalize, finalize: null, inputs: {} };
   const jsonRule: RotateRule = {

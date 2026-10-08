@@ -11,6 +11,7 @@
 // defect at a single derivation. Completion is judged by core's
 // `indexProposals` (shared with the server's mirror mapping — K5-F).
 
+import type { UserId } from "@maruhi/core";
 import { indexProposals, type ProposalIndex } from "@maruhi/core";
 import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
 
@@ -35,7 +36,7 @@ export interface AppliedOperation {
   readonly seq: number;
   readonly operation: ProposableOperation;
   /** The actor the operation is attributed to (the proposer for an applied inner op — §6.2). */
-  readonly actorUserId: string;
+  readonly actorUserId: UserId;
   /** Seq of the `propose` entry when applied through a proposal, else null. */
   readonly viaProposalSeq: number | null;
 }

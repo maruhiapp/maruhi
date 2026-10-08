@@ -2,6 +2,7 @@
 // push pass -> rescan -> verdict, and the classification of an incomplete
 // run (the stage overview lives in env-rotate.ts).
 
+import { type VariableId } from "@maruhi/core";
 import type { ChainDevice } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -44,7 +45,7 @@ interface ReencryptOutcome {
 
 /** Extracts just the message from a tagged failure (null-propagating). */
 function failureMessage(
-  failure: { readonly variableId: string; readonly message: string } | null,
+  failure: { readonly variableId: VariableId; readonly message: string } | null,
 ): string | null {
   return failure === null ? null : failure.message;
 }
@@ -56,8 +57,8 @@ function failureMessage(
  * another variable that is actually still unfinished (a conflict, etc.).
  */
 function pendingFailure(
-  failure: { readonly variableId: string; readonly message: string } | null,
-  staleIds: ReadonlySet<string>,
+  failure: { readonly variableId: VariableId; readonly message: string } | null,
+  staleIds: ReadonlySet<VariableId>,
 ): string | null {
   if (failure === null) {
     return null;
@@ -147,9 +148,9 @@ interface PushPassResult {
    * remain for other reasons, the run should be guided as an ordinary
    * partial completion).
    */
-  readonly epochStaleIds: ReadonlySet<string>;
+  readonly epochStaleIds: ReadonlySet<VariableId>;
   /** The variables that could not finish re-encrypting (409, transient failure, epoch conflict). */
-  readonly unfinishedIds: ReadonlySet<string>;
+  readonly unfinishedIds: ReadonlySet<VariableId>;
   /** My accepted writes (the ledger's new baseline). */
   readonly written: readonly VerifiedPulledValue[];
   /**
@@ -160,7 +161,7 @@ interface PushPassResult {
    * cause would hide another variable's real cause, so the caller can
    * drop it by matching against reality.
    */
-  readonly firstFailure: { readonly variableId: string; readonly message: string } | null;
+  readonly firstFailure: { readonly variableId: VariableId; readonly message: string } | null;
   readonly warnings: readonly string[];
 }
 
@@ -186,13 +187,13 @@ const runPushPass = Effect.fn("env-rotate-pass.runPushPass")(function* (input: {
   const io = yield* CliIo;
   const conflicted: ConflictedTarget[] = [];
   const written: VerifiedPulledValue[] = [];
-  const unfinishedIds = new Set<string>();
+  const unfinishedIds = new Set<VariableId>();
   const warnings: string[] = [];
   // The progress display's denominator is "the total known on this pass" (a rescan can grow the targets)
   const total = input.doneBefore + input.pending.length;
   let reencrypted = 0;
-  const epochStaleIds = new Set<string>();
-  let firstFailure: { readonly variableId: string; readonly message: string } | null = null;
+  const epochStaleIds = new Set<VariableId>();
+  let firstFailure: { readonly variableId: VariableId; readonly message: string } | null = null;
   for (const target of input.pending) {
     const attempt = yield* asOutcome(
       pushReencrypted({ context: input.context, view: input.view, target }),
@@ -276,7 +277,7 @@ const runPushPass = Effect.fn("env-rotate-pass.runPushPass")(function* (input: {
  * different).
  */
 function recordKnown(
-  known: Map<string, ConflictedTarget>,
+  known: Map<VariableId, ConflictedTarget>,
   values: readonly VerifiedPulledValue[],
 ): void {
   for (const value of values) {
@@ -295,7 +296,7 @@ function recordKnown(
  * carrying a 409-only set around reads as "still used by some judgment".
  */
 function recordConflicts(
-  known: Map<string, ConflictedTarget>,
+  known: Map<VariableId, ConflictedTarget>,
   conflicted: readonly ConflictedTarget[],
 ): void {
   for (const conflict of conflicted) {
@@ -316,7 +317,7 @@ type PassVerdict =
       /** The reasons of the unopened values (reported as the incompleteness cause). */
       readonly undecryptable: readonly string[];
       /** The ids of variables still below the target epoch (used to pick the cause). */
-      readonly staleIds: ReadonlySet<string>;
+      readonly staleIds: ReadonlySet<VariableId>;
       readonly alreadyCurrent: number;
     }
   /**
@@ -341,7 +342,7 @@ type PassVerdict =
 const settlePass = Effect.fn("env-rotate-pass.settlePass")(function* (input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
-  readonly known: ReadonlyMap<string, ConflictedTarget>;
+  readonly known: ReadonlyMap<VariableId, ConflictedTarget>;
   readonly pass: PushPassResult;
   readonly reencrypted: number;
   /** Whether a next pass exists (= whether decrypting the remaining targets has a point). */
@@ -529,7 +530,7 @@ export const reencryptCurrentValues = Effect.fn("env-rotate-pass.reencryptCurren
      */
     let staleCount = 0;
     /** The values that passed §6.3 verification this run (the baseline of the next pass's prev-anchor consistency check). */
-    const known = new Map<string, ConflictedTarget>();
+    const known = new Map<VariableId, ConflictedTarget>();
     /** My accepted writes (aggregated across passes — the receipt-advance material). */
     const written: ReencryptedVariable[] = [];
 

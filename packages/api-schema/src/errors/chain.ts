@@ -3,6 +3,7 @@
 // Errors carry only identifiers and counters (no fragments of plaintext
 // values or key material).
 
+import { ProjectIdSchema } from "@maruhi/core";
 import type { ChainInvalidReason } from "@maruhi/crypto";
 import { Schema } from "effect";
 
@@ -68,14 +69,14 @@ export const ChainInvalidReasonSchema = Schema.Literals(CHAIN_INVALID_REASONS);
 /** 404: no chain has been initialized under this project id. */
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFound",
-  { projectId: Schema.String },
+  { projectId: ProjectIdSchema },
   { httpApiStatus: 404 },
 ) {}
 
 /** 409: a chain already exists under this project id (duplicate genesis submission). */
 export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAlreadyInitializedError>()(
   "ProjectAlreadyInitialized",
-  { projectId: Schema.String },
+  { projectId: ProjectIdSchema },
   { httpApiStatus: 409 },
 ) {}
 

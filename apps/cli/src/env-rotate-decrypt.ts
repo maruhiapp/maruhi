@@ -2,6 +2,7 @@
 // `maruhi env rotate`, and the vocabulary for "a value cannot be opened"
 // (the stage overview lives in env-rotate.ts).
 
+import { type EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -29,7 +30,7 @@ import type { VerifiedPulledValue } from "./values-verify.ts";
 export const decryptForRotation = Effect.fn("env-rotate-decrypt.decryptForRotation")(
   function* (input: {
     readonly verified: VerifiedProject;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly values: readonly VerifiedPulledValue[];
     readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
     readonly chainEpoch: number;
@@ -105,7 +106,7 @@ interface DecryptOutcome {
 /** Decrypting the verified latest values (the re-encryption material). The decryption discipline is shared with pull. */
 export const decryptTargets = Effect.fn("env-rotate-decrypt.decryptTargets")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly values: readonly VerifiedPulledValue[];
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly chainEpoch: number;

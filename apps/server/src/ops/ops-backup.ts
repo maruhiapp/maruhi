@@ -17,6 +17,8 @@
 // self-hosted default — it does nothing, but not silently: it leaves
 // one static line per isolate.
 
+import type { ProjectId } from "@maruhi/core";
+import { decodeProjectId } from "@maruhi/core";
 import { Clock, Effect, Ref } from "effect";
 
 import type { OpsBackupAttempt } from "../db.package/index.ts";
@@ -85,7 +87,7 @@ function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
 /** Evacuation of one project (an RPC failure is recorded as failure — retried next sweep). */
 const backupOne = Effect.fn("ops-backup.backupOne")(function* (
   env: Env,
-  projectId: string,
+  projectId: ProjectId,
   nowMs: number,
   options: BackupSweepOptions,
 ): Effect.fn.Return<OpsBackupAttempt, never, OpsRepo> {
@@ -152,13 +154,13 @@ function tally(result: MutableSweepResult, attempt: OpsBackupAttempt): void {
 /** Visits one page's worth. Return value = the last project visited (mid-page when the budget ran out). */
 const sweepPage = Effect.fn("ops-backup.sweepPage")(function* (
   env: Env,
-  page: readonly string[],
+  page: readonly ProjectId[],
   result: MutableSweepResult,
   limits: SweepLimits,
   options: BackupSweepOptions,
-): Effect.fn.Return<string | null, never, OpsRepo> {
+): Effect.fn.Return<ProjectId | null, never, OpsRepo> {
   const ops = yield* OpsRepo;
-  let last: string | null = null;
+  let last: ProjectId | null = null;
   for (const projectId of page) {
     if (
       result.visited >= limits.maxProjects ||
@@ -190,9 +192,10 @@ const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
   options: BackupSweepOptions,
 ): Effect.fn.Return<void, never, OpsRepo> {
   const ops = yield* OpsRepo;
-  let cursor = yield* ops.getState(SWEEP_CURSOR_KEY);
+  const stored = yield* ops.getState(SWEEP_CURSOR_KEY);
+  let cursor = stored === null || stored === "" ? null : decodeProjectId(stored);
   for (;;) {
-    const page = yield* ops.listProjectIdsAfter(cursor === "" ? null : cursor, OPS_SWEEP_PAGE_SIZE);
+    const page = yield* ops.listProjectIdsAfter(cursor, OPS_SWEEP_PAGE_SIZE);
     const last = yield* sweepPage(env, page, result, limits, options);
     cursor = last ?? cursor;
     if (result.truncated) {

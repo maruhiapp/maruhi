@@ -2,6 +2,8 @@
 // the verified known latest, equivocation at the same coordinates, and
 // the adjacent prev-chain match — the value side and the meta side.
 
+import { type VariableId } from "@maruhi/core";
+
 import type { VerifiedPulledValue } from "./values-verify.ts";
 
 /**
@@ -14,7 +16,7 @@ import type { VerifiedPulledValue } from "./values-verify.ts";
  * rejection.
  */
 function winnerValueRegression(
-  variableId: string,
+  variableId: VariableId,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
@@ -60,7 +62,7 @@ function winnerValueRegression(
  * rejection.
  */
 function winnerMetaRegression(
-  variableId: string,
+  variableId: VariableId,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
 ): string | null {
@@ -86,7 +88,7 @@ function winnerMetaRegression(
 }
 
 function winnerRegression(
-  variableId: string,
+  variableId: VariableId,
   known: VerifiedPulledValue,
   winner: VerifiedPulledValue,
   currentVersion: number,
@@ -116,7 +118,7 @@ function winnerRegression(
  * the wording is unified as "the known latest".
  */
 export function winnerInconsistency(
-  variableId: string,
+  variableId: VariableId,
   known: VerifiedPulledValue | null,
   winner: VerifiedPulledValue,
   currentVersion: number,

@@ -24,6 +24,7 @@ import {
   createEnvironmentOp,
   genesisOp,
 } from "./support/crypto.ts";
+import { testEnvironmentId } from "./support/crypto.ts";
 import {
   ENV_ID,
   FAR_FUTURE_MS,
@@ -278,8 +279,8 @@ describe("the expected count of the complete wrap set (the server's same predica
     if (!verified.ok) throw new Error("chain");
     const view = { state: verified.value.state } as VerifiedProject;
     // env-a: owner's 1st device (all) + member = 2. owner's 2nd device does not hold env-a
-    expect(expectedWrapRecipientCount(view, "env-a")).toBe(2);
+    expect(expectedWrapRecipientCount(view, testEnvironmentId("env-a"))).toBe(2);
     // env-b: owner's 1st + 2nd devices = 2. member is out of scope
-    expect(expectedWrapRecipientCount(view, "env-b")).toBe(2);
+    expect(expectedWrapRecipientCount(view, testEnvironmentId("env-b"))).toBe(2);
   });
 });

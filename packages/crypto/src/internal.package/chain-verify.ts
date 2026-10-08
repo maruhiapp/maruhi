@@ -53,7 +53,9 @@ import {
   type ChainMember,
   type ChainState,
   type CheckpointEnvironmentEntry,
+  type EnvironmentChainState,
   type EnvironmentCheckpointState,
+  type EnvironmentId,
   type KeyFingerprintHex,
   type PendingProposal,
   type ProposableOperation,
@@ -1976,6 +1978,50 @@ function freezePendingProposals(
   return frozen;
 }
 
+/**
+ * Seals the mutable verification state as the branded {@link ChainState}.
+ * The map keys are minted here — a chain-verified mint like the fingerprint
+ * computation above: every key came out of a verified entry slot (a member
+ * slot's user id, a grant_server's verified fingerprint, a create_environment
+ * payload's environment id), so the brand records that provenance. The seal
+ * deliberately does NOT re-check the keys' form: consensus verifies only
+ * §6.1's free-string bound, and §12-1's id form is the server's write-time
+ * acceptance policy — promoting it into chain validity would brick a whole
+ * project chain on one out-of-form entry.
+ */
+function sealChainState(
+  state: MutableChainState,
+  headSeq: number,
+  headHashHex: string,
+): ChainState {
+  const members = new Map<UserId, ChainMember>();
+  for (const [userId, member] of state.members) {
+    members.set(userId as UserId, member);
+  }
+  const serverGrants = new Map<KeyFingerprintHex, ServerGrant>();
+  for (const [fingerprint, grant] of state.serverGrants) {
+    serverGrants.set(fingerprint as KeyFingerprintHex, grant);
+  }
+  const environments = new Map<EnvironmentId, EnvironmentChainState>();
+  for (const [environmentId, environment] of state.environments) {
+    environments.set(environmentId as EnvironmentId, environment);
+  }
+  const checkpoints = new Map<EnvironmentId, EnvironmentCheckpointState>();
+  for (const [environmentId, checkpoint] of state.checkpoints) {
+    checkpoints.set(environmentId as EnvironmentId, checkpoint);
+  }
+  return {
+    members,
+    serverGrants,
+    environments,
+    checkpoints,
+    approvalPolicy: state.approvalPolicy,
+    pendingProposals: freezePendingProposals(state.pendingProposals),
+    headSeq,
+    headHashHex,
+  };
+}
+
 async function verifyChainCore(
   entries: readonly ChainEntry[],
   history: ChainHistoryBuilder | null,
@@ -2019,19 +2065,7 @@ async function verifyChainCore(
     history?.recordEntryHash(prevHash);
   }
 
-  return {
-    ok: true,
-    value: {
-      members: state.members,
-      serverGrants: state.serverGrants,
-      environments: state.environments,
-      checkpoints: state.checkpoints,
-      approvalPolicy: state.approvalPolicy,
-      pendingProposals: freezePendingProposals(state.pendingProposals),
-      headSeq: entries.length,
-      headHashHex: prevHash,
-    },
-  };
+  return { ok: true, value: sealChainState(state, entries.length, prevHash) };
 }
 
 /**

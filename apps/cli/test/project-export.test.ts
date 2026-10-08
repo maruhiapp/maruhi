@@ -32,9 +32,10 @@ import { projectExportOp } from "../src/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import {
   buildChain,
-  type BuiltChain,
   genesisOp,
   makeTestUser,
+  testProjectId,
+  type BuiltChain,
   type TestUser,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
@@ -374,7 +375,12 @@ describe("maruhi project export (PF3)", () => {
     const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
     const out = join(dir, "interrupted.ndjson.gz");
     const fiber = Effect.runFork(
-      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+      projectExportOp({
+        client,
+        projectId: testProjectId(built.projectId),
+        verified,
+        outPath: out,
+      }),
     );
     // The first page is already written once the second is requested
     await secondPage;
@@ -423,7 +429,12 @@ describe("maruhi project export (PF3)", () => {
     const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
     const out = join(dir, "defect.ndjson.gz");
     const fiber = Effect.runFork(
-      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+      projectExportOp({
+        client,
+        projectId: testProjectId(built.projectId),
+        verified,
+        outPath: out,
+      }),
     );
     // The defect must land on a file that provably exists, or the stat
     // rejections below would pass without the release doing anything
@@ -473,7 +484,12 @@ describe("maruhi project export (PF3)", () => {
     const out = join(dir, "interrupt-companion.ndjson.gz");
     const companion = `${out}.identities.json`;
     const fiber = Effect.runFork(
-      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+      projectExportOp({
+        client,
+        projectId: testProjectId(built.projectId),
+        verified,
+        outPath: out,
+      }),
     );
     // The companion's wx create means the write has started — interrupt
     // while the payload may still be flushing (a tight poll, or the

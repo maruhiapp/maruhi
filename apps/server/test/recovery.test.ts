@@ -20,6 +20,7 @@ import {
   resetAuthDb,
   sessionHeaders,
 } from "./support/auth.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 
 beforeEach(async () => {
   await resetAuthDb();
@@ -105,7 +106,9 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
   });
 
   it("rejects a project-scoped admin token with 403 (§13-2's key-material management condition)", async () => {
-    const token = await cliToken(504, [{ project: "f0".repeat(32), permission: "admin" }]);
+    const token = await cliToken(504, [
+      { project: testProjectId("f0".repeat(32)), permission: "admin" },
+    ]);
     const put = await putWrap(bearer(token));
     expect(put.status).toBe(403);
   });

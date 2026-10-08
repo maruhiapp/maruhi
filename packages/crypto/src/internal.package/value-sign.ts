@@ -20,6 +20,7 @@
 // module holds only the low-level normalization, signing, and hashing.
 
 import { decodeHex, encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -37,10 +38,10 @@ const MIN_CIPHERTEXT_HEX_LENGTH = 16 * 2;
  */
 export interface ValueSignatureContext {
   readonly suite: string;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly epoch: number;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;

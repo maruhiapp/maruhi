@@ -29,7 +29,7 @@ import {
   MAX_DEVICE_REGISTRY_ROWS_PER_USER,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { cryptoEffect, RequestAuth } from "@maruhi/core";
+import { cryptoEffect, decodeKeyFingerprintHex, RequestAuth } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
@@ -58,7 +58,7 @@ const fingerprintOf = Effect.fn("handlers-devices.fingerprintOf")(function* (
   // A wrapped crypto failure stays a defect, like the die the
   // pre-bridge code raised on a failed fingerprint computation
   const digest = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(Effect.orDie);
-  return encodeHex(digest);
+  return decodeKeyFingerprintHex(encodeHex(digest));
 });
 
 /** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */
@@ -115,10 +115,11 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         yield* ensureFingerprintMatches(params.fp, payload.encPubHex, payload.sigPubHex);
+        const fp = decodeKeyFingerprintHex(params.fp);
         const repo = yield* DeviceRepo;
         const admitted = yield* repo.upsert({
           userId: principal.userId,
-          keyFingerprintHex: params.fp,
+          keyFingerprintHex: fp,
           encPubHex: payload.encPubHex,
           sigPubHex: payload.sigPubHex,
           label: payload.label,
@@ -143,7 +144,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
-        const removed = yield* repo.remove(principal.userId, params.fp);
+        const removed = yield* repo.remove(principal.userId, decodeKeyFingerprintHex(params.fp));
         if (!removed) {
           return yield* Effect.fail(new DeviceNotFoundError());
         }
@@ -216,7 +217,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const repo = yield* DeviceRepo;
         const row = yield* repo.requestFind(
           principal.userId,
-          params.fp,
+          decodeKeyFingerprintHex(params.fp),
           yield* Clock.currentTimeMillis,
         );
         if (row === null) {
@@ -231,7 +232,10 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
-        const removed = yield* repo.requestCancel(principal.userId, params.fp);
+        const removed = yield* repo.requestCancel(
+          principal.userId,
+          decodeKeyFingerprintHex(params.fp),
+        );
         if (!removed) {
           return yield* Effect.fail(new DeviceNotFoundError());
         }

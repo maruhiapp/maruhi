@@ -12,6 +12,7 @@
 
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { ROLE_RANK } from "./chain-device.ts";
+import type { EnvironmentId } from "./chain-types.ts";
 
 // The role order is defined only in chain-device.ts (re-exported here for the
 // signature modules)
@@ -171,7 +172,7 @@ export interface HeadAuthorizationReasons<R> {
  * that carry no environment (head attestations).
  */
 export interface HeadScopeCheck<R> {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly outOfScopeAtHead: R;
 }
 

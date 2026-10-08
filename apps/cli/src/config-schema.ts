@@ -13,7 +13,7 @@
 // is a complete reason. A reason never contains the offending value, and
 // never names an array entry's position (the wording never did).
 
-import { isEnvironmentId } from "@maruhi/core";
+import { environmentIdSchema, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema, SchemaIssue } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -92,8 +92,8 @@ export const stringLeaf = (message: string, test: (value: string) => boolean) =>
     Schema.makeFilter((value) => (test(value) ? undefined : message)),
   );
 
-/** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). */
-export const environmentId = (message: string) => stringLeaf(message, isEnvironmentId);
+/** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). Decoding mints an EnvironmentId. */
+export const environmentId = environmentIdSchema;
 
 /** An environment variable name leaf (run.ts's SAFE_ENV_NAME — a POSIX identifier). */
 export const envNameLeaf = (message: string) =>
@@ -145,7 +145,7 @@ export const closedRecord = (message: string, allowed: readonly string[], tail: 
 export function configHeader(
   record: Record<string, unknown>,
   rootKeys: readonly string[],
-): Parsed<{ readonly projectId: string | undefined }> {
+): Parsed<{ readonly projectId: ProjectId | undefined }> {
   const header = parseConfigHeader(record, rootKeys);
   return typeof header === "string" ? refuse(header) : Result.succeed(header);
 }

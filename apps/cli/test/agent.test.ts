@@ -48,6 +48,7 @@ import {
 import { formatRecoveryCode } from "../src/recovery-code.ts";
 import { buildChildEnvironment } from "../src/run.ts";
 import { makeTestUser, type TestUser } from "./support/crypto.ts";
+import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -173,7 +174,7 @@ describe("agent protocol (newline-delimited JSON)", () => {
     let clock = 1_000;
     const store = makeAgentStore({ keyTtlMs: 100, now: () => clock });
     const token = tokenEntryName("https://a");
-    const master = masterKeyEntryName("https://a", "u1");
+    const master = masterKeyEntryName("https://a", testUserId("u1"));
     store.apply({ v: 1, op: "set", name: token, value: "t" });
     store.apply({ v: 1, op: "set", name: master, value: "m" });
     clock = 1_099;
@@ -690,13 +691,19 @@ describeSocket("maruhi agent status", () => {
     const agent = makeAgentKeychain(server.socketPath);
     await Effect.runPromise(agent.set(tokenEntryName("https://maruhi.test"), "maruhi_pat_secret"));
     await Effect.runPromise(
-      agent.set(masterKeyEntryName("https://maruhi.test", "user-0001"), "master-secret"),
+      agent.set(
+        masterKeyEntryName("https://maruhi.test", testUserId("user-0001")),
+        "master-secret",
+      ),
     );
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
     // An origin containing `::` (IPv6 loopback) must not break the delimiter
     await Effect.runPromise(
-      agent.set(masterKeyEntryName("http://[::1]:8787", "user-0002"), "master-secret-2"),
+      agent.set(
+        masterKeyEntryName("http://[::1]:8787", testUserId("user-0002")),
+        "master-secret-2",
+      ),
     );
     expect(await runCli(["agent", "status"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
@@ -727,7 +734,7 @@ describeSocket("maruhi agent status", () => {
     // side's guidance
     await Effect.runPromise(
       agent.set(
-        masterKeyEntryName("https://maruhi.test", "user-0001"),
+        masterKeyEntryName("https://maruhi.test", testUserId("user-0001")),
         JSON.stringify({
           suite: "maruhi/v1",
           encPubHex: "zz",

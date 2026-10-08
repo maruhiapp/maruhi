@@ -24,13 +24,16 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import {
-  decryptWire,
   addMemberOp,
   addScopedMemberOp,
   buildChain,
   createEnvironmentOp,
+  decryptWire,
   genesisOp,
   makeTestUser,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
   valueHashOf,
   wrapDekFor,
 } from "./support/crypto.ts";
@@ -132,7 +135,12 @@ describe("maruhi env rotate", () => {
     expect(new Set(deks).size).toBe(1);
     const newDek = await newEpochDekOf(body);
     const matched = await verifyDekCommitment({
-      context: { suite: "maruhi/v1", projectId: built.projectId, environmentId: ENV_ID, epoch: 2 },
+      context: {
+        suite: "maruhi/v1",
+        projectId: testProjectId(built.projectId),
+        environmentId: testEnvironmentId(ENV_ID),
+        epoch: 2,
+      },
       dek: newDek,
       expectedCommitmentHex: body.entry.payload.dekCommitmentHex,
     });
@@ -243,7 +251,7 @@ describe("maruhi env rotate", () => {
     if (reencrypted === undefined) throw new Error("missing re-encrypted push");
     const digest = await computeEnvValuesDigest(SUITE_ID, [
       {
-        variableId: "vaa",
+        variableId: testVariableId("vaa"),
         version: reencrypted.value.aad.version,
         valueSigHashHex: await valueHashOf(reencrypted.value, owner.userId),
       },
@@ -405,12 +413,12 @@ describe("maruhi env rotate", () => {
     if (pushedA === undefined || pushedB === undefined) throw new Error("missing pushes");
     const digest = await computeEnvValuesDigest(SUITE_ID, [
       {
-        variableId: "vaa",
+        variableId: testVariableId("vaa"),
         version: pushedA.value.aad.version,
         valueSigHashHex: await valueHashOf(pushedA.value, owner.userId),
       },
       {
-        variableId: "vbb",
+        variableId: testVariableId("vbb"),
         version: pushedB.value.aad.version,
         valueSigHashHex: await valueHashOf(pushedB.value, owner.userId),
       },

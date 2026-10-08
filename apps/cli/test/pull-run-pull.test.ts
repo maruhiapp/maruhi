@@ -17,6 +17,8 @@ import {
   manifestFor,
   removeMemberOp,
   rotateEpochOp,
+  testEnvironmentId,
+  testProjectId,
   wrapDekFor,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
@@ -338,8 +340,8 @@ describe("maruhi pull", () => {
     const resigned = await signDekWrap({
       context: {
         suite: base.suite,
-        projectId: fixture.built.projectId,
-        environmentId: ENV_ID,
+        projectId: testProjectId(fixture.built.projectId),
+        environmentId: testEnvironmentId(ENV_ID),
         epoch: 1,
         recipientUserId: fixture.owner.userId,
         recipientEncPubHex: fixture.owner.encPubHex,

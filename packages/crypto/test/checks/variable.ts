@@ -12,6 +12,7 @@ import {
   type VariableContext,
 } from "../../src/index.ts";
 import variableVectors from "../../test-vectors/variable-encryption.json" with { type: "json" };
+import { testEnvironmentId, testProjectId, testVariableId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = variableVectors.vectors[0];
@@ -22,10 +23,10 @@ const base = baseVector;
 
 function baseContext(): VariableContext {
   return {
-    projectId: base.project_id,
-    environmentId: base.environment_id,
+    projectId: testProjectId(base.project_id),
+    environmentId: testEnvironmentId(base.environment_id),
     epoch: base.epoch,
-    variableId: base.variable_id,
+    variableId: testVariableId(base.variable_id),
     version: base.version,
   };
 }
@@ -52,7 +53,7 @@ async function aadMismatchChecks(c: Checks): Promise<void> {
   const mismatches: readonly { name: string; context: VariableContext }[] = [
     {
       name: "aad-environment-mismatch",
-      context: { ...baseContext(), environmentId: "env-dev-0002" },
+      context: { ...baseContext(), environmentId: testEnvironmentId("env-dev-0002") },
     },
     { name: "aad-epoch-mismatch", context: { ...baseContext(), epoch: 4 } },
   ];

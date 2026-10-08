@@ -29,6 +29,7 @@
 //   is a 409 — AUTH_SPEC §16-2, 2026-10-07). Precedes the consensus rule
 //   environment-out-of-scope (422) (defense in depth on the same state)
 
+import type { UserId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -177,7 +178,7 @@ export const standaloneCheckpointProgram = Effect.fn(
 )(function* (
   parentHeadHashHex: string,
   entry: ChainEntry & { readonly op: "checkpoint" },
-  callerUserId: string,
+  callerUserId: UserId,
   cache: StateCache,
 ) {
   const chain = yield* loadInitializedChain;

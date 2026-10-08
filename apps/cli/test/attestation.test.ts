@@ -26,11 +26,12 @@ import {
 import type { CliError } from "../src/errors.ts";
 import {
   addMemberOp,
-  type BuiltChain,
   buildChain,
   genesisOp,
   makeTestUser,
   removeMemberOp,
+  testProjectId,
+  type BuiltChain,
   type TestUser,
 } from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
@@ -85,7 +86,7 @@ async function attestationBy(
   const signed = await signHeadAttestation({
     context: {
       suite: "maruhi/v1",
-      projectId,
+      projectId: testProjectId(projectId),
       attesterUserId: attester.userId,
       chainHeadHashHex: head.hashHex,
       chainHeadSeq: head.seq,
@@ -116,7 +117,7 @@ function runReconcile(
 ) {
   return Effect.runPromiseExit(
     reconcileDistributedAttestations({
-      projectId: input.projectId,
+      projectId: testProjectId(input.projectId),
       view: input.view,
       resync: input.resync ?? Effect.die(new Error("resync must not be reached in this test")),
     }).pipe(Effect.provide(env.layer)),
@@ -389,7 +390,7 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
         });
         yield* submitHeadAttestationIfAdvanced({
           client,
-          projectId,
+          projectId: testProjectId(projectId),
           view,
           attesterUserId: owner.userId,
           signingKey: owner.sigKeyPair.privateKey,

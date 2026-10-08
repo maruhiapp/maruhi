@@ -2,6 +2,8 @@
 // lease fixed windows, lease bindings, the mirror-state check) —
 // assembled into DataStoreShape by dataStoreLayer in data-store.ts.
 
+import type { EnvironmentId, KeyFingerprintHex, UserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { LEASE_WINDOW_MS } from "../policy.ts";
@@ -10,7 +12,7 @@ import { columnValue, numberColumn, storedSuite, stringColumn } from "./data-sto
 import type { LeaseWindowKind } from "./data-store.ts";
 
 export const makeWrapQueries = (sql: SqlStorage) => ({
-  countWrapsForEpoch: (environmentId: string, epoch: number) =>
+  countWrapsForEpoch: (environmentId: EnvironmentId, epoch: number) =>
     Effect.sync(() => {
       const row = sql
         .exec(
@@ -25,7 +27,11 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
     const row = sql.exec("SELECT COUNT(*) AS n FROM dek_wraps").toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "n");
   }),
-  listWrapSlots: (environmentId: string, epoch: number, recipientUserId: string) =>
+  listWrapSlots: (
+    environmentId: EnvironmentId,
+    epoch: number,
+    recipientUserId: UserId | KeyFingerprintHex,
+  ) =>
     Effect.sync(() =>
       sql
         .exec(
@@ -41,9 +47,9 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
         })),
     ),
   wrapStoredRecipient: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     epoch: number,
-    recipientUserId: string,
+    recipientUserId: UserId | KeyFingerprintHex,
     recipientEncPubHex: string,
   ) =>
     Effect.sync(() => {
@@ -67,7 +73,10 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
   // cannot be looked up by user_id because the identifier shapes do
   // not intersect, but the class condition is stated explicitly to pin
   // the boundary
-  listWrapsForRecipient: (environmentId: string, recipientUserId: string) =>
+  listWrapsForRecipient: (
+    environmentId: EnvironmentId,
+    recipientUserId: UserId | KeyFingerprintHex,
+  ) =>
     Effect.sync(() =>
       selectWrapRows(sql, {
         environmentId,
@@ -79,8 +88,10 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
         ...wrapBodyOf(row),
         recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
         signatureHex: stringColumn(row, "signature_hex"),
-        signerUserId: stringColumn(row, "signer_user_id"),
-        signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
+        signerUserId: decodeUserId(stringColumn(row, "signer_user_id")),
+        signerKeyFingerprintHex: decodeKeyFingerprintHex(
+          stringColumn(row, "signer_key_fingerprint"),
+        ),
       })),
     ),
   // Narrowing by FP as well keeps an environment that went through
@@ -88,7 +99,7 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
   // addressed to the old server key that the current key cannot unwrap
   // (an unwrap failure is indistinguishable from a poisoned wrap and
   // would muddy the 503's reason)
-  listServerWraps: (environmentId: string, serverKeyFingerprintHex: string) =>
+  listServerWraps: (environmentId: EnvironmentId, serverKeyFingerprintHex: KeyFingerprintHex) =>
     Effect.sync(() =>
       selectWrapRows(sql, {
         environmentId,
@@ -183,9 +194,9 @@ function leaseWindowRow(
 function selectWrapRows(
   sql: SqlStorage,
   query: {
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     readonly recipientClass: "member" | "server";
-    readonly recipientUserId: string;
+    readonly recipientUserId: UserId | KeyFingerprintHex;
     readonly extraColumns?: string;
   },
 ): readonly Record<string, SqlStorageValue>[] {

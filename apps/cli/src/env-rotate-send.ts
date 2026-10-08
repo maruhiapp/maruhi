@@ -30,7 +30,7 @@ const MAX_ATTEMPTS = 5;
 /** Signs a rotate_epoch entry right after the current head (seq = head + 1). */
 const signRotateEntry = Effect.fn("env-rotate-send.signRotateEntry")(function* (input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly newEpoch: number;
   readonly reason: string;
   readonly dekCommitmentHex: string;
@@ -101,7 +101,7 @@ type RotateSendOutcome =
 const probeAmbiguousSend = Effect.fn("env-rotate-send.probeAmbiguousSend")(function* (input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly baseline: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly newEpoch: number;
   /** The commitment of the DEK I generated (judges whether **mine** was the accepted share). */
   readonly dekCommitmentHex: string;

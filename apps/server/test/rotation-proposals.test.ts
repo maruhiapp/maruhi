@@ -48,6 +48,7 @@ import {
   vectorKeyNamed,
   vectorKeyOf,
 } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -118,12 +119,12 @@ async function sealTo(input: {
     recipientPublicKey: publicKey.value,
     value: utf8(input.plaintext),
     context: {
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       proposalId: input.proposalId,
-      variableId: input.variableId,
+      variableId: testVariableId(input.variableId),
       baseVersion: input.baseVersion,
-      recipientUserId: input.recipientUserId,
+      recipientUserId: testUserId(input.recipientUserId),
     },
   });
   if (!sealed.ok) {
@@ -152,12 +153,12 @@ async function openAs(userId: string, proposalId: string, variableId: string, wr
     recipientKeyPair: pair.value,
     sealed: { enc: hexBytes(wrap.encHex), ciphertext: hexBytes(wrap.ciphertextHex) },
     context: {
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       proposalId,
-      variableId,
+      variableId: testVariableId(variableId),
       baseVersion,
-      recipientUserId: userId,
+      recipientUserId: testUserId(userId),
     },
   });
   return opened.ok ? new TextDecoder().decode(opened.value) : null;
@@ -349,7 +350,13 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     // Acceptance = the member's own push (§4.1), then the resolution naming it
     const v2 = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       NEW_VALUE,
       {
         writerUserId: MEMBER,

@@ -10,10 +10,14 @@ import type {
   AuditActor,
   AuditEventColumns,
   ChainMirrorEventName,
+  EnvironmentId,
   ProjectAuditEventName,
   ProjectAuditEventPayload,
+  ProjectId,
+  UserId,
+  VariableId,
 } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
+import { decodeKeyFingerprintHex, decodeProjectId, decodeUserId } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainHistoryIndex,
@@ -45,6 +49,15 @@ import { ChainStore, deriveStoredState } from "../do/chain-store.ts";
  * whose signer FP is taken not by the worker but by the DO from the
  * chain-derived member and recorded on the dek.registered event.
  */
+/**
+ * The genesis hash of the loaded chain IS the project id (§6.4): the
+ * mint of a stored-chain derived coordinate. Shared by every program /
+ * DO method that names the project.
+ */
+export function projectIdOf(chain: { readonly genesisHashHex: string }): ProjectId {
+  return decodeProjectId(chain.genesisHashHex);
+}
+
 export type DataActor = AuditActor;
 
 /**
@@ -73,7 +86,7 @@ export interface DekWrapInput {
   readonly suite: WireSuite;
   readonly epoch: number;
   readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
@@ -88,7 +101,7 @@ export interface DekWrapInput {
 export interface DekWrapRefInput {
   readonly epoch: number;
   readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
 }
 
@@ -167,7 +180,7 @@ export interface MetaStatementInput {
  */
 export interface DistributedMetaStatementValue {
   readonly suite: WireSuite;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly name: string;
   /** An environment statement is always active (deletion is the chain op delete_environment — §4.2 / §6.2). */
   readonly status: "active";
@@ -176,8 +189,8 @@ export interface DistributedMetaStatementValue {
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
-  readonly authorUserId: string;
-  readonly authorKeyFingerprintHex: string;
+  readonly authorUserId: UserId;
+  readonly authorKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -189,7 +202,7 @@ export interface DistributedVariableMetaStatementValue extends Omit<
   DistributedMetaStatementValue,
   "status"
 > {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly status: MetaStatementStatusInput;
   readonly layoutVersion?: number;
   readonly varType?: MetaVarTypeInput;
@@ -232,9 +245,9 @@ export interface EnvManifestInput {
  * §12-2).
  */
 export interface DistributedEnvManifestValue extends EnvManifestInput {
-  readonly environmentId: string;
-  readonly issuerUserId: string;
-  readonly issuerKeyFingerprintHex: string;
+  readonly environmentId: EnvironmentId;
+  readonly issuerUserId: UserId;
+  readonly issuerKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -263,14 +276,14 @@ export interface ValueInput {
 }
 
 export interface EnvironmentSummaryValue {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly currentEpoch: number;
   /** The latest environment meta statement (always active — a deleted environment is not listed; its deletion is a chain entry). */
   readonly statement: DistributedMetaStatementValue;
 }
 
 export interface VariableVersionValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly epoch: number;
 }
@@ -284,7 +297,7 @@ export interface VariableVersionValue {
  * hash is not distributed (a verifier recomputes it themselves).
  */
 export interface PulledVariableValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -294,8 +307,8 @@ export interface PulledVariableValue {
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
-  readonly writerUserId: string;
-  readonly writerKeyFingerprintHex: string;
+  readonly writerUserId: UserId;
+  readonly writerKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /**
@@ -318,13 +331,13 @@ export interface RecipientDekValue {
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly signatureHex: string;
-  readonly signerUserId: string;
-  readonly signerKeyFingerprintHex: string;
+  readonly signerUserId: UserId;
+  readonly signerKeyFingerprintHex: KeyFingerprintHex;
 }
 
 /** One entry of the checkpoint-time value snapshot (the distributed form — §12-7). */
 export interface CheckpointSnapshotEntryValue {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly version: number;
   readonly valueSigHashHex: string;
 }
@@ -360,7 +373,7 @@ export function optionalCheckpointSnapshot(checkpointSnapshot: CheckpointSnapsho
 }
 
 export interface EnvironmentPullValue {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly currentEpoch: number;
   /** The environment's own latest meta statement (the bundled verification material of §12-7). */
   readonly statement: DistributedMetaStatementValue;
@@ -406,7 +419,7 @@ export interface EnvironmentPullValue {
  * var.read is not recorded (AUDIT_SPEC §3.3).
  */
 export interface EnvironmentMetadataPullValue {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly currentEpoch: number;
   /** The environment's own latest meta statement. */
   readonly statement: DistributedMetaStatementValue;
@@ -567,10 +580,10 @@ export type DataRejection =
   // and before the existence 404. The worker maps it to
   // ForbiddenError [insufficient-scope])
   | { readonly kind: "insufficient-scope" }
-  | { readonly kind: "environment-not-found"; readonly environmentId: string }
+  | { readonly kind: "environment-not-found"; readonly environmentId: EnvironmentId }
   | {
       readonly kind: "environment-conflict";
-      readonly environmentId: string;
+      readonly environmentId: EnvironmentId;
       readonly reason: EnvironmentConflictReason;
     }
   // Chain-acceptance family (shared by the composite request §12-4 and
@@ -632,10 +645,10 @@ export type DataRejection =
   // The composite-internal consistency check (§12-4): a URL coordinate
   // disagrees with the bundled entry's payload
   | { readonly kind: "payload-mismatch"; readonly field: string }
-  | { readonly kind: "variable-not-found"; readonly variableId: string }
+  | { readonly kind: "variable-not-found"; readonly variableId: VariableId }
   | {
       readonly kind: "variable-conflict";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly reason: ResourceConflictReason;
     }
   | { readonly kind: "version-conflict"; readonly currentVersion: number }
@@ -646,7 +659,7 @@ export type DataRejection =
   // under locked
   | { readonly kind: "schema-policy-rejected"; readonly reason: SchemaPolicyRejectReason }
   // A normal push to a declared variable (§12-5 — requires the activation composite)
-  | { readonly kind: "activation-required"; readonly variableId: string }
+  | { readonly kind: "activation-required"; readonly variableId: VariableId }
   // The schema-description acceptance check (§12-8 — ≤1024 code points, no control characters)
   | { readonly kind: "description-rejected"; readonly reason: SchemaDescriptionRejectReason }
   | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
@@ -660,7 +673,7 @@ export type DataRejection =
   | {
       readonly kind: "dek-wrap-exists";
       readonly epoch: number;
-      readonly recipientUserId: string;
+      readonly recipientUserId: UserId | KeyFingerprintHex;
       /**
        * The stored recipient enc public key of the occupying wrap
        * (AUTH_SPEC §12-6). Not secret (all historical keys are
@@ -672,12 +685,12 @@ export type DataRejection =
   | {
       readonly kind: "dek-wrap-not-found";
       readonly epoch: number;
-      readonly recipientUserId: string;
+      readonly recipientUserId: UserId | KeyFingerprintHex;
     }
   | {
       readonly kind: "rotation-flag-not-found";
-      readonly environmentId: string;
-      readonly variableId: string;
+      readonly environmentId: EnvironmentId;
+      readonly variableId: VariableId;
     }
   // Sealed value proposals (AUTH_SPEC §14-5): the member-side resolution's
   // vocabulary (unknown / resolved / expired fold into not-found; an
@@ -793,7 +806,7 @@ export interface MemberWithDevice extends ChainMember {
 /** `member` + the valid device of the given FP (undefined when absent — the caller picks the reason code). */
 export function deviceOf(
   member: ChainMember,
-  keyFingerprintHex: string,
+  keyFingerprintHex: KeyFingerprintHex,
 ): MemberWithDevice | undefined {
   const device = member.devices.get(keyFingerprintHex);
   return device === undefined ? undefined : withDevice(member, device);
@@ -908,7 +921,7 @@ export const withSigningDevice = Effect.fn("data-plane.withSigningDevice")(funct
 export function ensureDevicePermission(
   device: MemberWithDevice,
   minimum: Role,
-  environmentId?: string,
+  environmentId?: EnvironmentId,
 ): Effect.Effect<void, DataRejectedError> {
   if (!roleAtLeast(device.permission.role, minimum)) {
     return Effect.fail(rejectData({ kind: "insufficient-role" }));
@@ -933,7 +946,7 @@ export function ensureDevicePermission(
  */
 export function requireRole(
   state: ChainState,
-  callerUserId: string,
+  callerUserId: UserId,
   minimum: Role,
 ): Effect.Effect<ChainMember, DataRejectedError> {
   const member = state.members.get(callerUserId);
@@ -962,7 +975,7 @@ export function requireRole(
  */
 function requireEnvironmentInScope<M extends ChainMember>(
   member: M,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<M, DataRejectedError> {
   return scopeIncludesEnvironment(member.scope, environmentId)
     ? Effect.succeed(member)
@@ -978,9 +991,9 @@ function requireEnvironmentInScope<M extends ChainMember>(
  */
 export function requireRoleInScope(
   state: ChainState,
-  callerUserId: string,
+  callerUserId: UserId,
   minimum: Role,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<ChainMember, DataRejectedError> {
   return Effect.flatMap(requireRole(state, callerUserId, minimum), (member) =>
     requireEnvironmentInScope(member, environmentId),
@@ -1005,7 +1018,7 @@ interface MemberContext {
    * deletions, dismissals) have no device and are judged on the person alone.
    */
   readonly member: ChainMember;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
 }
 
 /** An initialized chain (a StoredChain whose type guarantees the genesis hash exists). */
@@ -1039,14 +1052,14 @@ export const loadInitializedChain: Effect.Effect<InitializedChain, DataRejectedE
  * order). Derivation reuses the same cache as the chain API.
  */
 export const requireMemberState = Effect.fn("data-plane.requireMemberState")(function* (
-  callerUserId: string,
+  callerUserId: UserId,
   minimum: Role,
   cache: StateCache,
 ): Effect.fn.Return<MemberContext, DataRejectedError, ChainStore> {
   const chain = yield* loadInitializedChain;
   const { state, history } = yield* deriveStoredState(chain, cache);
   const member = yield* requireRole(state, callerUserId, minimum);
-  return { state, history, member, projectId: chain.genesisHashHex };
+  return { state, history, member, projectId: projectIdOf(chain) };
 });
 
 /**
@@ -1062,9 +1075,9 @@ export const requireMemberState = Effect.fn("data-plane.requireMemberState")(fun
  * distinguish "does not apply" from "forgot to call".
  */
 export const requireEnvironmentAccess = Effect.fn("data-plane.requireEnvironmentAccess")(function* (
-  callerUserId: string,
+  callerUserId: UserId,
   minimum: Role,
-  environmentId: string,
+  environmentId: EnvironmentId,
   cache: StateCache,
 ): Effect.fn.Return<MemberContext, DataRejectedError, ChainStore> {
   const context = yield* requireMemberState(callerUserId, minimum, cache);
@@ -1082,7 +1095,7 @@ export const requireEnvironmentAccess = Effect.fn("data-plane.requireEnvironment
  * chain has no environment is an invariant violation (a storage /
  * implementation bug) and is dropped as a defect.
  */
-export function currentEpochOf(state: ChainState, environmentId: string): number {
+export function currentEpochOf(state: ChainState, environmentId: EnvironmentId): number {
   const environment = state.environments.get(environmentId);
   if (environment === undefined) {
     throw new Error("environment missing from chain-derived state");
@@ -1169,7 +1182,7 @@ export function dataEvent(
  */
 export function dekRecipientTarget(
   recipientClass: DekRecipientClass,
-  recipientUserId: string,
+  recipientUserId: UserId | KeyFingerprintHex,
 ): Pick<AuditEventInput, "targetUserId" | "targetKeyFingerprintHex"> {
   return recipientClass === "server"
     ? { targetKeyFingerprintHex: decodeKeyFingerprintHex(recipientUserId) }

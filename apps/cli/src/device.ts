@@ -40,7 +40,7 @@
 // the chain; the local records are written only by the 3 paths — sealing,
 // approval, observation (K4-3).
 
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type ProjectId } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -96,8 +96,8 @@ export function fetchRegistry(
 /** Resolves the project set: `--project` only when given, otherwise the membership list (claimed = for discovery). */
 export function resolveProjectIds(
   client: MaruhiClient,
-  project: string | undefined,
-): Effect.Effect<readonly string[], CliError> {
+  project: ProjectId | undefined,
+): Effect.Effect<readonly ProjectId[], CliError> {
   return project === undefined
     ? fetchProjectMemberships(client).pipe(
         Effect.map((rows) => rows.map((row) => row.projectId).toSorted(compareCodePoints)),

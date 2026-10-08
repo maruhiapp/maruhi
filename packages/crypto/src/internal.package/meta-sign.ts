@@ -46,6 +46,7 @@
 // only the low-level normalization, signing, and hashing.
 
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId, ProjectId, UserId, VariableId } from "./chain-types.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
@@ -130,7 +131,7 @@ export function metaLayoutVersionOf(carrier: {
  * distinct domain strings, so signatures never transplant across kinds.
  */
 export type MetaStatementTarget =
-  | { readonly kind: "variable"; readonly variableId: string }
+  | { readonly kind: "variable"; readonly variableId: VariableId }
   | { readonly kind: "environment" };
 
 /**
@@ -140,8 +141,8 @@ export type MetaStatementTarget =
  */
 export interface MetaStatementContext {
   readonly suite: string;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly target: MetaStatementTarget;
   readonly name: string;
   readonly status: MetaStatementStatus;
@@ -162,7 +163,7 @@ export interface MetaStatementContext {
    */
   readonly prevMetaSigHashHex: string;
   /** The author's own internal user id (binds attribution to the identity). */
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   /** Entry hash of the chain head the author last verified (§6.1). */
   readonly chainHeadHashHex: string;
   /** Seq of that head (both hash and seq are signed; mismatch fails). */
@@ -224,7 +225,7 @@ type MetaLayout =
   | { readonly version: 1 }
   | {
       readonly version: 3;
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly schema: MetaVariableSchema;
     };
 

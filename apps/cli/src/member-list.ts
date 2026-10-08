@@ -1,6 +1,7 @@
 // `maruhi member list`: verified-chain-derived member rows (user id, role,
 // scope, devices — zero values. The group's overview lives in member.ts).
 
+import { type UserId } from "@maruhi/core";
 import type { ChainDevice, MemberScope, Role } from "@maruhi/crypto";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -14,7 +15,7 @@ import { describeScope } from "./scope.ts";
 
 /** One member row (verified-chain-derived — zero values. Design record ruling M / K4-E; the devices column is DK K4-20). */
 export interface MemberListRow {
-  readonly userId: string;
+  readonly userId: UserId;
   readonly role: Role;
   readonly scope: MemberScope;
   /** The member's device keys (fingerprint ascending — 2026-09-19 DK: a member can have multiple devices). */

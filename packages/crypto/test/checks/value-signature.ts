@@ -21,6 +21,12 @@ import {
   verifyValueSignature,
 } from "../../src/index.ts";
 import valueVectors from "../../test-vectors/value-signature.json" with { type: "json" };
+import {
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+} from "../support/fixture.ts";
 import { canonicalHistory, extendedHistory, extendedVectorChainHistory } from "./chain-history.ts";
 import { importVectorSigner } from "./chain-vector.ts";
 import {
@@ -69,15 +75,15 @@ interface RuleNegative {
 function contextOf(v: VectorContext): ValueSignatureContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
-    environmentId: v.environment_id,
+    projectId: testProjectId(v.project_id),
+    environmentId: testEnvironmentId(v.environment_id),
     epoch: v.epoch,
-    variableId: v.variable_id,
+    variableId: testVariableId(v.variable_id),
     version: v.version,
     nonceHex: v.nonce_hex,
     ciphertextHex: v.ciphertext_hex,
     prevValueSigHashHex: v.prev_value_sig_hash_hex,
-    writerUserId: v.writer_user_id,
+    writerUserId: testUserId(v.writer_user_id),
     chainHeadHashHex: v.chain_head_hash_hex,
     chainHeadSeq: v.chain_head_seq,
   };
@@ -334,12 +340,15 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "short prev hash", context: { ...baseContext, prevValueSigHashHex: "abcd" } },
     { name: "short head hash", context: { ...baseContext, chainHeadHashHex: "abcd" } },
     { name: "empty suite", context: { ...baseContext, suite: "" } },
-    { name: "empty project id", context: { ...baseContext, projectId: "" } },
-    { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
+    { name: "empty project id", context: { ...baseContext, projectId: testProjectId("") } },
+    {
+      name: "empty environment id",
+      context: { ...baseContext, environmentId: testEnvironmentId("") },
+    },
     // An empty variable id is rejected on par with the other coordinates
     // (same expectation as meta-sig's "empty variable id")
-    { name: "empty variable id", context: { ...baseContext, variableId: "" } },
-    { name: "empty writer", context: { ...baseContext, writerUserId: "" } },
+    { name: "empty variable id", context: { ...baseContext, variableId: testVariableId("") } },
+    { name: "empty writer", context: { ...baseContext, writerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signValue({ context: bad.context, signingKey: pair.privateKey });
@@ -406,7 +415,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   c.push("value-sig: roundtrip wrong key rejected", !wrongKey.ok);
 
   const wrongContext = await verifyValueSignature({
-    context: { ...context, variableId: "var-transplanted-9999" },
+    context: { ...context, variableId: testVariableId("var-transplanted-9999") },
     signatureHex: signed.value,
     writerPublicKey: signer.publicKey,
   });

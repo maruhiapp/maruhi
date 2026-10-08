@@ -26,6 +26,7 @@ import type {
 } from "./audit-payloads.ts";
 import type { AuthenticatedPrincipal, AuthMethod } from "./auth.ts";
 import type { KeyFingerprintHex, UserId } from "./identity.ts";
+import { decodeVariableId, isVariableId, type VariableId } from "./project.ts";
 
 /**
  * A resolved audit actor (AUDIT_SPEC §2): the internal user id plus, depending
@@ -565,7 +566,7 @@ export const VAR_READ_EVENT = "var.read";
 
 /** One variable listed by an aggregated `var.read` row (AUDIT_SPEC §3.3). */
 export interface AuditReadVariable {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly epoch: number;
   readonly version: number;
 }
@@ -611,8 +612,17 @@ export function auditReadVariablesOf(
       return [];
     }
     const { variableId, epoch, version } = entry as Record<string, unknown>;
-    return typeof variableId === "string" && Number.isInteger(epoch) && Number.isInteger(version)
-      ? [{ variableId, epoch: epoch as number, version: version as number }]
+    return typeof variableId === "string" &&
+      isVariableId(variableId) &&
+      Number.isInteger(epoch) &&
+      Number.isInteger(version)
+      ? [
+          {
+            variableId: decodeVariableId(variableId),
+            epoch: epoch as number,
+            version: version as number,
+          },
+        ]
       : [];
   });
 }

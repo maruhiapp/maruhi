@@ -9,6 +9,8 @@
 // Plain async functions: the restore worker has no Effect runtime.
 
 import { ChainEntrySchema } from "@maruhi/api-schema";
+import type { ProjectId, UserId } from "@maruhi/core";
+import { decodeProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainState } from "@maruhi/crypto";
 import {
   canonicalChainEntryBytes,
@@ -35,7 +37,7 @@ interface ScannedLine {
 }
 
 export type SnapshotChainOutcome =
-  | { readonly kind: "ok"; readonly projectId: string; readonly state: ChainState }
+  | { readonly kind: "ok"; readonly projectId: ProjectId; readonly state: ChainState }
   /** Not gzip, not JSON lines, or a chain table without its columns. */
   | { readonly kind: "snapshot-malformed" }
   /** No chain_entries rows (nothing to import). */
@@ -183,12 +185,12 @@ export async function verifySnapshotChain(body: ReadableStream): Promise<Snapsho
   }
   const genesis = rows[0]?.entryHashHex;
   return typeof genesis === "string"
-    ? { kind: "ok", projectId: genesis, state: verified.value.state }
+    ? { kind: "ok", projectId: decodeProjectId(genesis), state: verified.value.state }
     : { kind: "snapshot-chain-invalid" };
 }
 
 /** The user ids the verified chain lists as owners (a re-run is accepted under any of their project rows — ruling I revision). */
-export function chainOwners(state: ChainState): readonly string[] {
+export function chainOwners(state: ChainState): readonly UserId[] {
   return [...state.members.values()]
     .filter((member) => member.role === "owner")
     .map((member) => member.userId);

@@ -1,6 +1,7 @@
 // Server-side verification of value signatures and the (epoch,
 // version) CAS (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4).
 
+import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
@@ -25,7 +26,7 @@ import { DataStore } from "./data-store.ts";
 /** The CAS against the stored value's (epoch, version) (§12-5): only the current epoch × latest + 1. */
 function checkValueCas(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   latestVersion: number,
   value: ValueInput,
 ): DataRejection | null {
@@ -41,7 +42,7 @@ function checkValueCas(
 
 export const ensureValueCas = (
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   latestVersion: number,
   value: ValueInput,
 ): Effect.Effect<void, DataRejectedError> => {
@@ -111,9 +112,9 @@ const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRe
  */
 export const ensureValueSignature = Effect.fn("verify-value.ensureValueSignature")(
   function* (input: {
-    readonly projectId: string;
-    readonly environmentId: string;
-    readonly variableId: string;
+    readonly projectId: ProjectId;
+    readonly environmentId: EnvironmentId;
+    readonly variableId: VariableId;
     readonly history: ChainHistoryIndex;
     readonly member: MemberWithDevice;
     readonly value: ValueInput;

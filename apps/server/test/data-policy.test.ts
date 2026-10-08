@@ -33,6 +33,8 @@ import {
 } from "../src/policy.ts";
 import { wrapRowsExceeded } from "../src/quotas.ts";
 import { makeDek, signEntryAt, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -104,7 +106,7 @@ describe("suite persistence and the wire (§12-2 / CRYPTO_SPEC §2 design princi
       actorUserId: OWNER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: ENV, dekCommitmentHex: "ab".repeat(32) },
+        payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
     const compositeBase = {
@@ -368,7 +370,10 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
       actorUserId: OWNER,
       operation: {
         op: "create_environment",
-        payload: { environmentId: "env-head-form", dekCommitmentHex: "ab".repeat(32) },
+        payload: {
+          environmentId: testEnvironmentId("env-head-form"),
+          dekCommitmentHex: "ab".repeat(32),
+        },
       },
     });
     for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
@@ -412,7 +417,7 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
         actorUserId: OWNER,
         operation: {
           op: "create_environment",
-          payload: { environmentId: badId, dekCommitmentHex: "ab".repeat(32) },
+          payload: { environmentId: testEnvironmentId(badId), dekCommitmentHex: "ab".repeat(32) },
         },
       });
       const response = await requestJson("POST", "/environments", token(OWNER), {
@@ -516,7 +521,7 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
               recipientUserId: READER,
               storedRecipientEncPubHex: "ab".repeat(32),
             }),
-            projectId,
+            testProjectId(projectId),
             endpoint,
           ),
         ),
@@ -540,7 +545,7 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     const exit = Effect.runSyncExit(
       unwrapDataOutcome(
         rejectedOutcome({ kind: "version-conflict", currentVersion: 3 }),
-        projectId,
+        testProjectId(projectId),
         variablesGroup.endpoints.pull,
       ),
     );
@@ -552,7 +557,7 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
       Effect.flip(
         unwrapDataOutcome(
           rejectedOutcome({ kind: "not-member" }),
-          projectId,
+          testProjectId(projectId),
           variablesGroup.endpoints.pull,
         ),
       ),
@@ -569,10 +574,13 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "not-member": { kind: "not-member" },
     "insufficient-role": { kind: "insufficient-role" },
     "insufficient-scope": { kind: "insufficient-scope" },
-    "environment-not-found": { kind: "environment-not-found", environmentId: "env-contract" },
+    "environment-not-found": {
+      kind: "environment-not-found",
+      environmentId: testEnvironmentId("env-contract"),
+    },
     "environment-conflict": {
       kind: "environment-conflict",
-      environmentId: "env-contract",
+      environmentId: testEnvironmentId("env-contract"),
       reason: "duplicate-name",
     },
     "composite-required": { kind: "composite-required", op: "create_environment" },
@@ -595,10 +603,13 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
       maxTotalBytes: 1024,
     },
     "payload-mismatch": { kind: "payload-mismatch", field: "environmentId" },
-    "variable-not-found": { kind: "variable-not-found", variableId: "var-contract" },
+    "variable-not-found": {
+      kind: "variable-not-found",
+      variableId: testVariableId("var-contract"),
+    },
     "variable-conflict": {
       kind: "variable-conflict",
-      variableId: "var-contract",
+      variableId: testVariableId("var-contract"),
       reason: "duplicate-name",
     },
     "version-conflict": { kind: "version-conflict", currentVersion: 3 },
@@ -606,7 +617,10 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "value-rejected": { kind: "value-rejected", reason: "signature-invalid" },
     "meta-rejected": { kind: "meta-rejected", reason: "signature-invalid" },
     "schema-policy-rejected": { kind: "schema-policy-rejected", reason: "schema-required" },
-    "activation-required": { kind: "activation-required", variableId: "var-contract" },
+    "activation-required": {
+      kind: "activation-required",
+      variableId: testVariableId("var-contract"),
+    },
     "description-rejected": { kind: "description-rejected", reason: "too-long" },
     "meta-version-conflict": { kind: "meta-version-conflict", currentMetaVersion: 2 },
     "manifest-rejected": { kind: "manifest-rejected", reason: "manifest-digest-mismatch" },
@@ -625,8 +639,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "dek-wrap-not-found": { kind: "dek-wrap-not-found", epoch: 2, recipientUserId: READER },
     "rotation-flag-not-found": {
       kind: "rotation-flag-not-found",
-      environmentId: "env-contract",
-      variableId: "var-contract",
+      environmentId: testEnvironmentId("env-contract"),
+      variableId: testVariableId("var-contract"),
     },
     "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
     "rotation-proposal-not-found": {
@@ -732,13 +746,15 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     const { endpoint, rejection, endpointLabel } = contractCase;
     const label = `${endpointLabel} ← ${rejection.kind}`;
     const exit = Effect.runSyncExit(
-      unwrapDataOutcome(rejectedOutcome(rejection), projectId, endpoint),
+      unwrapDataOutcome(rejectedOutcome(rejection), testProjectId(projectId), endpoint),
     );
     const died = Exit.isFailure(exit) && Cause.hasDies(exit.cause);
     if (!died) {
       // When within the contract, the returned failure value itself also carries the tag the mapping prescribes
       const failed = Effect.runSync(
-        Effect.flip(unwrapDataOutcome(rejectedOutcome(rejection), projectId, endpoint)),
+        Effect.flip(
+          unwrapDataOutcome(rejectedOutcome(rejection), testProjectId(projectId), endpoint),
+        ),
       );
       expect(failed, label).toMatchObject({ _tag: expectedTagByKind[rejection.kind] });
     }
@@ -750,9 +766,11 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
 
   it("the DataRejection → error-class mapping (rejectionErrors) follows the golden table", () => {
     for (const rejection of Object.values(representativeRejections)) {
-      expect(dataRejectionError(rejection, projectId), rejection.kind).toMatchObject({
-        _tag: expectedTagByKind[rejection.kind],
-      });
+      expect(dataRejectionError(rejection, testProjectId(projectId)), rejection.kind).toMatchObject(
+        {
+          _tag: expectedTagByKind[rejection.kind],
+        },
+      );
     }
   });
 

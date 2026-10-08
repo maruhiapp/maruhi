@@ -20,6 +20,8 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { type IssuedInvitePin, issuedPinOf, makeFilePinStore } from "../src/pins.ts";
+import { testEnvironmentId } from "./support/crypto.ts";
+import { testProjectId } from "./support/crypto.ts";
 
 const PROJECT = "ab".repeat(32);
 const INVITE_A = "01JINVITEAAAAAAAAAAAAAAAAA";
@@ -30,7 +32,7 @@ function pin(environmentIds: readonly string[]): IssuedInvitePin {
     linkPubHex: "cd".repeat(32),
     role: "member",
     scopeKind: "listed",
-    scopeEnvironmentIds: environmentIds,
+    scopeEnvironmentIds: environmentIds.map(testEnvironmentId),
     // Far inside the retention window (never swept by the next write)
     expiresAtMs: Date.now() + 60 * 60 * 1000,
     expectedGithubLogin: null,
@@ -45,11 +47,11 @@ async function makeStore() {
 describe("invite-pin file (pins.ts)", () => {
   it("a pin the schema rejects (environment id `_bad`) is refused and the existing file stays byte-identical", async () => {
     const { path, store } = await makeStore();
-    await Effect.runPromise(store.saveIssuedPin(PROJECT, INVITE_A, pin(["prod"])));
+    await Effect.runPromise(store.saveIssuedPin(testProjectId(PROJECT), INVITE_A, pin(["prod"])));
     const before = await readFile(path);
 
     const failed = await Effect.runPromise(
-      store.saveIssuedPin(PROJECT, INVITE_B, pin(["_bad"])).pipe(
+      store.saveIssuedPin(testProjectId(PROJECT), INVITE_B, pin(["_bad"])).pipe(
         Effect.map(() => null),
         Effect.catch((error) => Effect.succeed(error.message)),
       ),
@@ -57,7 +59,7 @@ describe("invite-pin file (pins.ts)", () => {
     expect(failed).toContain("Cannot write the invite-pin file");
 
     expect((await readFile(path)).equals(before)).toBe(true);
-    const loaded = await Effect.runPromise(store.load(PROJECT));
+    const loaded = await Effect.runPromise(store.load(testProjectId(PROJECT)));
     expect(loaded.state).toBe("loaded");
     expect(issuedPinOf(loaded.pins, INVITE_A)?.scopeEnvironmentIds).toEqual(["prod"]);
     expect(issuedPinOf(loaded.pins, INVITE_B)).toBeUndefined();
@@ -65,24 +67,24 @@ describe("invite-pin file (pins.ts)", () => {
 
   it("an issued record keyed `__proto__` reads as corrupt (kept as an own key, rejected by the invite-id rule)", async () => {
     const { path, store } = await makeStore();
-    await Effect.runPromise(store.saveIssuedPin(PROJECT, INVITE_A, pin(["prod"])));
+    await Effect.runPromise(store.saveIssuedPin(testProjectId(PROJECT), INVITE_A, pin(["prod"])));
     const stored = await readFile(path, "utf8");
     // Rename the issued key in the raw text: JSON.stringify of an object
     // cannot produce an own `__proto__` key
     await writeFile(path, stored.replace(`"${INVITE_A}"`, `"__proto__"`));
     expect(await readFile(path, "utf8")).toContain(`"__proto__"`);
 
-    const loaded = await Effect.runPromise(store.load(PROJECT));
+    const loaded = await Effect.runPromise(store.load(testProjectId(PROJECT)));
     expect(loaded.state).toBe("corrupt");
     expect(loaded.pins).toBeNull();
   });
 
   it("a pin file with a leading byte-order mark loads", async () => {
     const { path, store } = await makeStore();
-    await Effect.runPromise(store.saveIssuedPin(PROJECT, INVITE_A, pin(["prod"])));
+    await Effect.runPromise(store.saveIssuedPin(testProjectId(PROJECT), INVITE_A, pin(["prod"])));
     await writeFile(path, `\uFEFF${await readFile(path, "utf8")}`);
 
-    const loaded = await Effect.runPromise(store.load(PROJECT));
+    const loaded = await Effect.runPromise(store.load(testProjectId(PROJECT)));
     expect(loaded.state).toBe("loaded");
     expect(issuedPinOf(loaded.pins, INVITE_A)?.scopeEnvironmentIds).toEqual(["prod"]);
   });

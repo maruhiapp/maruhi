@@ -31,13 +31,14 @@ import {
 import {
   addScopedMemberOp,
   buildChain,
-  type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
   deleteEnvironmentOp,
   genesisOp,
   makeTestUser,
   removeMemberOp,
+  testEnvironmentId,
+  type BuiltChain,
   type TestUser,
 } from "./support/crypto.ts";
 
@@ -97,7 +98,7 @@ describe("receiving-side scope rules (CRYPTO_SPEC §6.3 — K4-F)", () => {
         environmentKeysFor({
           client,
           verified: view,
-          environmentId: "env-prod",
+          environmentId: testEnvironmentId("env-prod"),
           recipient: { userId: dev.userId, encPubHex: dev.encPubHex, encKeyPair: dev.encKeyPair },
         }),
       ),
@@ -119,7 +120,11 @@ describe("concretizing a mandate's environment set (K4-J)", () => {
       "env-prod",
     ]);
     expect(
-      environmentsOfScopeAt(verified, { kind: "listed", environmentIds: ["env-prod"] }, 5),
+      environmentsOfScopeAt(
+        verified,
+        { kind: "listed", environmentIds: [testEnvironmentId("env-prod")] },
+        5,
+      ),
     ).toEqual(["env-prod"]);
   });
 
@@ -127,7 +132,7 @@ describe("concretizing a mandate's environment set (K4-J)", () => {
     const change = scopeChangeAt(
       verified,
       { kind: "all" },
-      { kind: "listed", environmentIds: ["env-dev"] },
+      { kind: "listed", environmentIds: [testEnvironmentId("env-dev")] },
       5,
     );
     expect(change.narrowed).toEqual(["env-prod"]);
@@ -137,8 +142,11 @@ describe("concretizing a mandate's environment set (K4-J)", () => {
 
 describe("containment predicates (CRYPTO_SPEC §6.2's set algebra — K4-I)", () => {
   const all = { kind: "all" } as const;
-  const devOnly = { kind: "listed", environmentIds: ["env-dev"] } as const;
-  const both = { kind: "listed", environmentIds: ["env-dev", "env-prod"] } as const;
+  const devOnly = { kind: "listed", environmentIds: [testEnvironmentId("env-dev")] } as const;
+  const both = {
+    kind: "listed",
+    environmentIds: [testEnvironmentId("env-dev"), testEnvironmentId("env-prod")],
+  } as const;
   const none = { kind: "listed", environmentIds: [] } as const;
 
   it("all ⊇ anything, listed ⊉ all, listed-to-listed is subset, and an empty listed is contained in everything", () => {
@@ -153,7 +161,12 @@ describe("containment predicates (CRYPTO_SPEC §6.2's set algebra — K4-I)", ()
   });
 
   it("sameScope compares as sets (order-insensitive; all and listed{} differ)", () => {
-    expect(sameScope(both, { kind: "listed", environmentIds: ["env-prod", "env-dev"] })).toBe(true);
+    expect(
+      sameScope(both, {
+        kind: "listed",
+        environmentIds: [testEnvironmentId("env-prod"), testEnvironmentId("env-dev")],
+      }),
+    ).toBe(true);
     expect(sameScope(all, none)).toBe(false);
     expect(sameScope({ scopeKind: "all", scopeEnvironmentIds: [] }, all)).toBe(true);
   });
@@ -244,7 +257,7 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
         requireEnvironmentInScope({
           verified: view,
           userId: user.userId,
-          environmentId: "env-dev",
+          environmentId: testEnvironmentId("env-dev"),
           operation: "pull values from",
         }),
       );
@@ -257,7 +270,7 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
       const exit = await Effect.runPromiseExit(
         requireWritingMember({
           verified: view,
-          environmentId: "env-dev",
+          environmentId: testEnvironmentId("env-dev"),
           target: "existing",
           signerUserId: user.userId,
           signingKeyPair: user.sigKeyPair,
@@ -274,7 +287,7 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
     const exit = await Effect.runPromiseExit(
       requireWritingMember({
         verified: view,
-        environmentId: "env-dev",
+        environmentId: testEnvironmentId("env-dev"),
         target: "new",
         signerUserId: owner.userId,
         signingKeyPair: owner.sigKeyPair,

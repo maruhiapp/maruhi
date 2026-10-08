@@ -36,6 +36,7 @@ import { beforeEach, expect } from "vitest";
 
 import { BASE, bearer, JSON_HEADERS } from "./auth.ts";
 import { hexBytes, vectorKeyOf } from "./data-crypto.ts";
+import { testProjectId, testUserId } from "./data-crypto.ts";
 import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 
@@ -128,12 +129,12 @@ export async function makeIssuePayload(
   const context: InviteIssueContext = {
     suite: SUITE_ID,
     inviteId: overrides?.id ?? ulid(),
-    projectId,
+    projectId: testProjectId(projectId),
     linkPubHex: encodeHex(linkKey.value.publicKeyRaw),
     headHashHex: fixture.head.hashHex,
     headSeq: fixture.head.seq,
     role,
-    inviterUserId: actorUserId,
+    inviterUserId: testUserId(actorUserId),
     inviterEncPubHex: inviter.encPubHex,
     inviterSigPubHex: inviter.sigPubHex,
     scopeKind: "all",
@@ -218,7 +219,7 @@ export async function signAcceptance(
 ): Promise<{ readonly acceptSignatureHex: string; readonly linkSignatureHex: string }> {
   const context: InviteAcceptSignatureContext = {
     suite: SUITE_ID,
-    projectId,
+    projectId: testProjectId(projectId),
     linkPubHex: issued.linkPubHex,
     inviteeUserId,
     inviteeEncPubHex: keys.encPubHex,

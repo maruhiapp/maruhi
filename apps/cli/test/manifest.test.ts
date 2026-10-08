@@ -39,6 +39,7 @@ import {
   wrapDekFor,
   type WireRotateBody,
 } from "./support/crypto.ts";
+import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -381,7 +382,10 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     // the distributed set ([ALPHA v1]) — the corresponding enumeration
     // (checkpointSnapshot) is bundled into the pull (rule 2 — PR-M3)
     const snapshotValues = await checkpointSnapshotValuesOf([alphaValue1]);
-    const valuesDigest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
+    const valuesDigest = await computeEnvValuesDigest(
+      SUITE_ID,
+      snapshotValues.map((entry) => ({ ...entry, variableId: testVariableId(entry.variableId) })),
+    );
     if (!valuesDigest.ok) throw new Error("values digest failed");
     const checkpointChain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -395,7 +399,7 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
           payload: {
             environments: [
               {
-                environmentId: ENV_ID,
+                environmentId: testEnvironmentId(ENV_ID),
                 epoch: 1,
                 manifestVersion: 1,
                 manifestSigHashHex: await manifestHashOf(projectId, v1),

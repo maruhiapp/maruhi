@@ -21,6 +21,7 @@
 import { describe, expect, it } from "vitest";
 
 import { encryptValue } from "./support/data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -268,7 +269,13 @@ describe("declared creation and activation (§12-5)", () => {
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const value = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 1 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 1,
+      },
       "secret-value",
       { writerUserId: MEMBER, head: fixture.head },
     );
@@ -309,7 +316,13 @@ describe("declared creation and activation (§12-5)", () => {
     // After activation, normal pushes are accepted (the declared gate is lifted)
     const next = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       "rotated-value",
       {
         writerUserId: MEMBER,

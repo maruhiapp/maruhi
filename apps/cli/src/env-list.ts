@@ -30,6 +30,12 @@
 // statement declaring a chain head beyond this run's view (or a listed ID
 // the view has not seen created yet) re-syncs once.
 
+import {
+  decodeEnvironmentId,
+  type EnvironmentId,
+  isEnvironmentId,
+  type UserId,
+} from "@maruhi/core";
 import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -58,7 +64,7 @@ function environmentStatusOf(environment: EnvironmentChainState): EnvironmentSta
 
 /** One listed environment (the verified chain's set, with a live environment's verified name). */
 export interface EnvironmentListRow {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The verified statement's display name; null for a deleted environment (none is distributed — §12-7). */
   readonly name: string | null;
   readonly status: EnvironmentStatus;
@@ -88,7 +94,7 @@ type ListedStatement = ListWire["environments"][number]["statement"];
 
 /** One chain environment joined with its verified listed statement (null = deleted on the chain). */
 interface JoinedEnvironment {
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly statement: VerifiedEnvironmentStatement | null;
   readonly chain: EnvironmentChainState;
 }
@@ -112,7 +118,13 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   CliError
 > {
   const listed = yield* indexListing(wire);
-  if ([...listed.keys()].some((environmentId) => !view.state.environments.has(environmentId))) {
+  if (
+    [...listed.keys()].some(
+      (environmentId) =>
+        !isEnvironmentId(environmentId) ||
+        !view.state.environments.has(decodeEnvironmentId(environmentId)),
+    )
+  ) {
     return { kind: "future" } as const;
   }
   const joined: JoinedEnvironment[] = [];
@@ -127,7 +139,11 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
     if (statement === "future") {
       return { kind: "future" } as const;
     }
-    joined.push({ environmentId, statement, chain: chainEnvironment });
+    joined.push({
+      environmentId,
+      statement,
+      chain: chainEnvironment,
+    });
   }
   return { kind: "ok", value: joined } as const;
 });
@@ -157,7 +173,7 @@ function indexListing(
  */
 const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
   view: VerifiedProject,
-  environmentId: string,
+  environmentId: EnvironmentId,
   chainEnvironment: EnvironmentChainState,
   statement: ListedStatement | undefined,
   resynced: boolean,
@@ -220,7 +236,7 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly ownKeyFingerprintHex: string | null;
 }): Effect.fn.Return<EnvironmentList, CliError> {
   if (!input.verified.state.members.has(input.userId)) {

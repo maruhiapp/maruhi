@@ -10,7 +10,13 @@
 // order — key uniqueness means at most one device can verify), and the
 // remaining wraps are verified with that key alone.
 
-import { cryptoEffect } from "@maruhi/core";
+import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  decodeKeyFingerprintHex,
+  decodeUserId,
+  isKeyFingerprintHex,
+} from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -43,7 +49,7 @@ import { ensureWrapRowCapacity } from "./quotas.ts";
 export function wrapRefKey(ref: {
   readonly epoch: number;
   readonly recipientClass: DekRecipientClass;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
 }): string {
   return `${ref.epoch}:${ref.recipientClass}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
@@ -64,7 +70,7 @@ export function wrapRefKey(ref: {
  */
 function wrapStorageKey(ref: {
   readonly epoch: number;
-  readonly recipientUserId: string;
+  readonly recipientUserId: UserId | KeyFingerprintHex;
   readonly recipientEncPubHex: string;
 }): string {
   return `${ref.epoch}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
@@ -83,7 +89,7 @@ function wrapStorageKey(ref: {
 export function deviceReceivesEnvironment(
   member: ChainMember,
   device: { readonly roleCap: ChainMember["role"]; readonly scope: ChainMember["scope"] },
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): boolean {
   return scopeIncludesEnvironment(effectivePermissionOf(member, device).scope, environmentId);
 }
@@ -97,7 +103,10 @@ export function deviceReceivesEnvironment(
  * check of composite requests use this single definition (the acceptance
  * boundary does not shift).
  */
-export function expectedWrapRecipientCount(state: ChainState, environmentId: string): number {
+export function expectedWrapRecipientCount(
+  state: ChainState,
+  environmentId: EnvironmentId,
+): number {
   // Because the storage key (= the registration path's duplicate-detection key
   // wrapStorageKey) carries no recipient class, if a member's user_id and a
   // valid grant's server key FP collide on the same key, those two recipients
@@ -147,25 +156,34 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
  * the same 422). The reason-code order (identify → key → scope) is the same
  * across classes.
  */
-function checkWrapRecipient(
+function checkServerRecipient(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   wrap: DekWrapInput,
 ): DataRejection | null {
-  if (wrap.recipientClass === "server") {
-    const grant = state.serverGrants.get(wrap.recipientUserId);
-    if (grant === undefined) {
-      return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
-    }
-    if (grant.serverEncPubHex !== wrap.recipientEncPubHex) {
-      return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
-    }
-    if (!grant.scopeEnvironmentIds.includes(environmentId)) {
-      return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
-    }
-    return null;
+  const grant = isKeyFingerprintHex(wrap.recipientUserId)
+    ? state.serverGrants.get(decodeKeyFingerprintHex(wrap.recipientUserId))
+    : undefined;
+  if (grant === undefined) {
+    return { kind: "dek-wrap-rejected", reason: "recipient-not-granted" };
   }
-  const member = state.members.get(wrap.recipientUserId);
+  if (grant.serverEncPubHex !== wrap.recipientEncPubHex) {
+    return { kind: "dek-wrap-rejected", reason: "recipient-key-mismatch" };
+  }
+  if (!grant.scopeEnvironmentIds.includes(environmentId)) {
+    return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
+  }
+  return null;
+}
+
+function checkMemberRecipient(
+  state: ChainState,
+  environmentId: EnvironmentId,
+  wrap: DekWrapInput,
+): DataRejection | null {
+  // A member-class recipient is a user_id by declaration — reinterpret the
+  // union position as one (a member's id may itself be 32-hex-shaped).
+  const member = state.members.get(decodeUserId(wrap.recipientUserId));
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
@@ -182,6 +200,16 @@ function checkWrapRecipient(
     return { kind: "dek-wrap-rejected", reason: "scope-out-of-range" };
   }
   return null;
+}
+
+function checkWrapRecipient(
+  state: ChainState,
+  environmentId: EnvironmentId,
+  wrap: DekWrapInput,
+): DataRejection | null {
+  return wrap.recipientClass === "server"
+    ? checkServerRecipient(state, environmentId, wrap)
+    : checkMemberRecipient(state, environmentId, wrap);
 }
 
 /**
@@ -208,7 +236,7 @@ export function allRecipientsAreOwnDevices(
 /** Per-wrap check (split for cognitive complexity). Returns null when ok. */
 function checkOneWrap(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   currentEpoch: number,
   wrap: DekWrapInput,
   seen: Set<string>,
@@ -233,7 +261,7 @@ function checkOneWrap(
 
 function checkWrapRecipients(
   state: ChainState,
-  environmentId: string,
+  environmentId: EnvironmentId,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
 ): DataRejection | null {
@@ -253,8 +281,8 @@ function checkWrapRecipients(
 
 /** Verify one wrap's registration signature with one key (the signed signer = the calling principal — §12-6). */
 const verifyOneWrapSignature = (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   signer: MemberWithDevice,
   signerPublicKey: CryptoKey,
   wrap: DekWrapInput,
@@ -317,8 +345,8 @@ const importSignerKey = Effect.fn("dek-wraps.importSignerKey")(function* (
  * rejects with recipient-missing).
  */
 const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(function* (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   caller: ChainMember,
   wraps: readonly DekWrapInput[],
 ) {
@@ -349,7 +377,7 @@ const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(functio
  * existing (epoch, recipient, device key).
  */
 const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
-  environmentId: string,
+  environmentId: EnvironmentId,
   state: ChainState,
   wraps: readonly DekWrapInput[],
 ) {
@@ -408,8 +436,8 @@ const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
  * audit. null when there are no wraps).
  */
 export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAcceptable")(function* (
-  projectId: string,
-  environmentId: string,
+  projectId: ProjectId,
+  environmentId: EnvironmentId,
   state: ChainState,
   caller: ChainMember,
   currentEpoch: number,
@@ -440,7 +468,7 @@ export function dekRegisteredEvent(
   actor: DataActor,
   signer: { readonly keyFingerprintHex: KeyFingerprintHex },
   nowMs: number,
-  environmentId: string,
+  environmentId: EnvironmentId,
   wrap: DekWrapInput,
 ): AuditEventInput {
   return dataEvent(actor, nowMs, {

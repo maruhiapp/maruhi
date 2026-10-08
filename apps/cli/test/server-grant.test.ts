@@ -27,6 +27,7 @@ import {
   type TestUser,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testEnvironmentId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -239,7 +240,7 @@ describe("maruhi server grant", () => {
           payload: {
             serverEncPubHex: SERVER_ENC_PUB_HEX,
             serverKeyFingerprintHex: serverFpHex,
-            scopeEnvironmentIds: [ENV_ID],
+            scopeEnvironmentIds: [testEnvironmentId(ENV_ID)],
             leasePolicy: [],
           },
         },
@@ -478,7 +479,7 @@ describe("maruhi server grant", () => {
           payload: {
             serverEncPubHex: SERVER_ENC_PUB_HEX,
             serverKeyFingerprintHex: serverFpHex,
-            scopeEnvironmentIds: [ENV_ID, "env-two-2"],
+            scopeEnvironmentIds: [testEnvironmentId(ENV_ID), testEnvironmentId("env-two-2")],
             leasePolicy: [],
           },
         },

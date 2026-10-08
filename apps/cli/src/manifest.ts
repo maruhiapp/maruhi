@@ -19,7 +19,12 @@
 // same verdict as a dropped environment statement.
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
-import { CryptoEnvManifestInvalidError, cryptoEffect } from "@maruhi/core";
+import {
+  CryptoEnvManifestInvalidError,
+  cryptoEffect,
+  type EnvironmentId,
+  type UserId,
+} from "@maruhi/core";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
 import {
   computeEnvManifestSignedBytesHash,
@@ -55,7 +60,7 @@ export interface VerifiedManifest {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly signatureHex: string;
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   readonly issuerKeyFingerprintHex: string;
 }
 
@@ -65,7 +70,7 @@ export type ManifestDigestEntry = VariablesDigestEntry;
 /** Issuance input: the previous manifest (none = env create's v1) and the post-issuance meta state. */
 interface SignManifestInput {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   /** The current epoch at issuance time (rotate compound = new_epoch; otherwise = the verified view's current epoch). */
   readonly epoch: number;
   /** The verified previous manifest (null = no stored manifest → manifestVersion 1). */
@@ -77,7 +82,7 @@ interface SignManifestInput {
   readonly entries: readonly ManifestDigestEntry[];
   /** The latest form of the post-issuance environment meta statement. */
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-  readonly issuerUserId: string;
+  readonly issuerUserId: UserId;
   readonly signingKey: CryptoKey;
   /**
    * The declared head. Compound (env create / rotate) = the current
@@ -184,7 +189,7 @@ export type ManifestVerifyOutcome =
  */
 export async function verifyDistributedManifest(input: {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };

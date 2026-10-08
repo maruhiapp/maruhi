@@ -21,6 +21,7 @@
 // never creates a shape where the duty is structurally orphaned).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainEntry,
@@ -91,7 +92,7 @@ const SCOPE_NARROWED_ROTATION_REASON = "scope-narrowed";
  */
 export function memberMandatesFor(
   verified: VerifiedProject,
-  targetUserId: string,
+  targetUserId: UserId,
 ): readonly RotationMandate[] {
   // The device-revocation duty (`device-revoked`) is fulfilled by `device
   // revoke`'s own sweep (device-ops.ts) — member commands' re-runs never
@@ -110,7 +111,7 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
   readonly verified: VerifiedProject;
   readonly mandates: readonly RotationMandate[];
   /** The actor. A duty environment outside scope cannot be rotated (§7), so it is dropped from the targets and noted. */
-  readonly actorUserId: string;
+  readonly actorUserId: UserId;
   /** The key of the device the actor signs with (the fulfillable range = the device's effective scope — DK K4-17). */
   readonly signingKeyPair: SigningKeyPair;
   /** The per-duty-kind rotation injection (the rotate entry's reason matches the duty). */
@@ -159,7 +160,7 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
  */
 const actorEffectiveScope = Effect.fn("member.actorEffectiveScope")(function* (
   verified: VerifiedProject,
-  actorUserId: string,
+  actorUserId: UserId,
   signingKeyPair: SigningKeyPair,
 ): Effect.fn.Return<MemberScope, CliError> {
   const actor = verified.state.members.get(actorUserId);
@@ -187,8 +188,8 @@ const actorEffectiveScope = Effect.fn("member.actorEffectiveScope")(function* (
 export function sweepMemberMandates<R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  readonly targetUserId: string;
-  readonly actorUserId: string;
+  readonly targetUserId: UserId;
+  readonly actorUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.Effect<MemberSweepOutcome | null, CliError, R> {
@@ -198,9 +199,9 @@ export function sweepMemberMandates<R>(input: {
 
 /** The member-family sweep result (includes deleted environments and ones that could not be rotated because they are outside the actor's scope). */
 export type MemberSweepOutcome = SweepOutcome & {
-  readonly skippedDeleted: readonly string[];
+  readonly skippedDeleted: readonly EnvironmentId[];
   /** Duty environments outside the actor's scope that cannot be rotated (§7 — left to another member's fulfillment). */
-  readonly outOfScope: readonly string[];
+  readonly outOfScope: readonly EnvironmentId[];
 };
 
 const MANDATE_REASONS = {
@@ -281,8 +282,8 @@ export function appendWithCas(input: {
 /** Resolving the actor and the target (the shared prologue of remove / change_role). */
 export function resolveActorAndTarget(
   verified: VerifiedProject,
-  signerUserId: string,
-  targetUserId: string,
+  signerUserId: UserId,
+  targetUserId: UserId,
 ): Effect.Effect<
   { readonly actor: ChainMember; readonly target: ChainMember | undefined },
   CliError

@@ -17,7 +17,7 @@ import {
   type InviteLinkData,
   parseInviteAcceptInput,
 } from "../src/invite-link.ts";
-
+import { testProjectId, testUserId } from "./support/crypto.ts";
 /** The invite-link key seed (a test-only pattern value — CRYPTO_SPEC §6.5). */
 const SEED_HEX = "d0".repeat(32);
 
@@ -26,10 +26,10 @@ function sampleLinkData(): InviteLinkData {
   return {
     inviteId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     linkSeedHex: Redacted.make(SEED_HEX, { label: "invite-link-seed" }),
-    projectId: "ab".repeat(32),
+    projectId: testProjectId("ab".repeat(32)),
     headHashHex: "cd".repeat(32),
     headSeq: 1,
-    inviterUserId: "user-inviter-11",
+    inviterUserId: testUserId("user-inviter-11"),
     inviterEncPubHex: "ef".repeat(32),
     inviterSigPubHex: "01".repeat(32),
     role: "member",

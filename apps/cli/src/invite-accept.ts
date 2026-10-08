@@ -9,7 +9,7 @@ import {
   InviteNotFoundError,
   InviteSignatureInvalidError,
 } from "@maruhi/api-schema";
-import { cryptoEffect } from "@maruhi/core";
+import { cryptoEffect, type ProjectId } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -52,7 +52,7 @@ import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 // ---------------------------------------------------------------------------
 
 interface InviteAcceptSummary {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: InviteRole;
 }
 

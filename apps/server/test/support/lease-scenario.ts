@@ -18,6 +18,7 @@ import { expect } from "vitest";
 
 import { JSON_HEADERS } from "./auth.ts";
 import { hexBytes, wrapDekToServer } from "./data-crypto.ts";
+import { testEnvironmentId, testProjectId } from "./data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -63,7 +64,7 @@ export async function grantServer(input: {
     payload: {
       serverEncPubHex: key.encPubHex,
       serverKeyFingerprintHex: key.fingerprintHex,
-      scopeEnvironmentIds: input.scope,
+      scopeEnvironmentIds: input.scope.map(testEnvironmentId),
       leasePolicy: input.leasePolicy ?? defaultPolicy(),
     },
   });
@@ -225,8 +226,8 @@ export async function openLease(input: {
       ciphertext: hexBytes(input.lease.ciphertextHex),
     },
     context: {
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       epoch: input.lease.epoch,
       claimsDigestHex: input.claimsDigestHex,
     },

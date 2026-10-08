@@ -23,7 +23,8 @@
 // entry_hash_hex) (no capability is carried on keys, jobs, or
 // results).
 
-import { decodeProviderUserId, decodeUserId, type UserId } from "@maruhi/core";
+import type { ProjectId } from "@maruhi/core";
+import { decodeProjectId, decodeProviderUserId, decodeUserId, type UserId } from "@maruhi/core";
 
 import type {
   ImportClassification,
@@ -235,9 +236,9 @@ type ImportJob = RestoreJob & { readonly identitiesKey: string };
 interface CheckedImport {
   readonly file: IdentitiesFile;
   /** The genesis hash of the verified chain (the DO's name — no second scan of the file). */
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   /** The verified chain's owners (a re-run is accepted under any of their project rows). */
-  readonly owners: readonly string[];
+  readonly owners: readonly UserId[];
   readonly classification: Extract<ImportClassification, { kind: "ok" }>;
   /** The etag of the snapshot object the chain was verified from (the DO restores that body or refuses). */
   readonly etag: string;
@@ -349,7 +350,7 @@ async function importIdentities(
  * so this is effectively a full scan — the restore itself is a full
  * scan, and this is accepted as a one-off operational operation).
  */
-export async function projectIdFromSnapshot(body: ReadableStream): Promise<string | null> {
+export async function projectIdFromSnapshot(body: ReadableStream): Promise<ProjectId | null> {
   const reader = body
     .pipeThrough(new DecompressionStream("gzip"))
     .pipeThrough(new TextDecoderStream())
@@ -359,7 +360,11 @@ export async function projectIdFromSnapshot(body: ReadableStream): Promise<strin
   for (;;) {
     const { done, value } = await reader.read();
     if (done) {
-      return carry === "" ? null : scanner.consider(carry);
+      if (carry === "") {
+        return null;
+      }
+      const hit = scanner.consider(carry);
+      return hit === null ? null : decodeProjectId(hit);
     }
     carry += value;
     let index = carry.indexOf("\n");
@@ -367,7 +372,7 @@ export async function projectIdFromSnapshot(body: ReadableStream): Promise<strin
       const found = scanner.consider(carry.slice(0, index));
       if (found !== null) {
         await reader.cancel();
-        return found;
+        return decodeProjectId(found);
       }
       carry = carry.slice(index + 1);
       index = carry.indexOf("\n");
@@ -436,7 +441,7 @@ function toJobResult(outcome: OpsRestoreOutcome, target: RestoreJob["target"]): 
 }
 
 interface RestoredProject {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly outcome: OpsRestoreOutcome;
   readonly stub: DurableObjectStub<ProjectChainDO>;
 }
@@ -446,7 +451,7 @@ async function restoreFromSnapshot(
   env: RestoreEnv,
   job: RestoreJob,
   /** The project id the import's pre-check established from the verified chain (no second scan — ruling H revision). */
-  verifiedProjectId?: string,
+  verifiedProjectId?: ProjectId,
   /** The etag of the snapshot the pre-check verified: the DO restores that body or refuses `object-changed`. */
   etag?: string,
 ): Promise<RestoredProject | Extract<RestoreJobResult, { status: "failed" }>> {
@@ -491,7 +496,7 @@ async function scannedProjectId(
   env: RestoreEnv,
   objectKey: string,
 ): Promise<
-  | { readonly projectId: string; readonly etag: string }
+  | { readonly projectId: ProjectId; readonly etag: string }
   | Extract<RestoreJobResult, { status: "failed" }>
 > {
   const object = await env.OPS_BACKUP_BUCKET.get(objectKey);
@@ -502,7 +507,7 @@ async function scannedProjectId(
   // lines) is returned as a static code — letting the exception
   // escape leaves the job in place and the every-minute cron would
   // repeat the same failure forever
-  let projectId: string | null;
+  let projectId: ProjectId | null;
   try {
     projectId = await projectIdFromSnapshot(object.body);
   } catch (error) {

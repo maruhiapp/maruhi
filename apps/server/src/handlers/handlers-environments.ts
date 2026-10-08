@@ -24,6 +24,7 @@ import {
 } from "../data/data-http.ts";
 import type { EnvironmentListValue } from "../data/data-plane.ts";
 import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
+import { recipientOf } from "./handlers-recipient.ts";
 
 /**
  * §12-4: the chain entry's actor and the wrap's signer must strictly
@@ -84,7 +85,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
               parentHeadHashHex: payload.parentHeadHashHex,
               entry: payload.entry,
               statement: toMetaStatementInput(payload.statement),
-              deks: payload.deks,
+              deks: payload.deks.map((d) => ({ ...d, recipientUserId: recipientOf(d) })),
               manifest: toManifestInput(payload.manifest),
               checkpoint: payload.checkpoint,
             }),
@@ -107,7 +108,7 @@ export const environmentsLive = HttpApiBuilder.group(maruhiApi, "environments", 
             stub.rotateEpoch(actor, params.environmentId, {
               parentHeadHashHex: payload.parentHeadHashHex,
               entry: payload.entry,
-              deks: payload.deks,
+              deks: payload.deks.map((d) => ({ ...d, recipientUserId: recipientOf(d) })),
               manifest: toManifestInput(payload.manifest),
               checkpoint: payload.checkpoint,
             }),

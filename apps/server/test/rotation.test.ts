@@ -66,6 +66,12 @@ import {
 } from "./support/data-crypto.ts";
 import { commitmentOf } from "./support/data-crypto.ts";
 import {
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
+  testVariableId,
+} from "./support/data-crypto.ts";
+import {
   ALL_MEMBERS,
   appendOperation,
   createEnvironmentComposite,
@@ -156,10 +162,10 @@ async function createVariableAsOwner(input: {
   const value = await encryptValue(
     input.dek,
     {
-      projectId,
-      environmentId: input.environmentId,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(input.environmentId),
       epoch: 1,
-      variableId: input.variableId,
+      variableId: testVariableId(input.variableId),
       version: 1,
     },
     `${input.name}-plaintext`,
@@ -207,10 +213,10 @@ async function pushNextVersion(input: {
   const value = await encryptValue(
     input.dek,
     {
-      projectId,
-      environmentId: ENV,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
       epoch: input.epoch ?? 1,
-      variableId: VAR,
+      variableId: testVariableId(VAR),
       version: input.version,
     },
     `value-v${input.version}`,
@@ -552,7 +558,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       payload: {
         serverEncPubHex: key.encPubHex,
         serverKeyFingerprintHex: key.fingerprintHex,
-        scopeEnvironmentIds: [ENV],
+        scopeEnvironmentIds: [testEnvironmentId(ENV)],
         leasePolicy: [
           {
             issuerUrl: OIDC_ISSUER,
@@ -666,7 +672,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       payload: {
         serverEncPubHex: key.encPubHex,
         serverKeyFingerprintHex: key.fingerprintHex,
-        scopeEnvironmentIds: [ENV],
+        scopeEnvironmentIds: [testEnvironmentId(ENV)],
         leasePolicy,
       },
     });
@@ -709,7 +715,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       payload: {
         serverEncPubHex: key.encPubHex,
         serverKeyFingerprintHex: key.fingerprintHex,
-        scopeEnvironmentIds: [ENV, widenEnv],
+        scopeEnvironmentIds: [testEnvironmentId(ENV), testEnvironmentId(widenEnv)],
         leasePolicy,
       },
     });
@@ -979,7 +985,13 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const value = await encryptValue(
       dek,
-      { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
+      {
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(ENV),
+        epoch: 1,
+        variableId: testVariableId(VAR),
+        version: 2,
+      },
       "value-v2",
       {
         writerUserId: OWNER,
@@ -1061,7 +1073,7 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
 
 describe("the value range's ciphertext byte budget (§12-7 — VH)", () => {
   const row = (version: number, bytes: number) => ({
-    variableId: VAR,
+    variableId: testVariableId(VAR),
     version,
     suite: "maruhi/v1" as const,
     epoch: 1,
@@ -1072,7 +1084,7 @@ describe("the value range's ciphertext byte budget (§12-7 — VH)", () => {
     chainHeadSeq: 1,
     signatureHex: "00".repeat(64),
     writerUserId: OWNER,
-    writerKeyFingerprintHex: "00".repeat(16),
+    writerKeyFingerprintHex: testKeyFingerprintHex("00".repeat(16)),
   });
 
   it("stops before the version that would exceed the budget, and always keeps the first", () => {

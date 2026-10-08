@@ -1,6 +1,7 @@
 // `maruhi mirror mark` / `maruhi mirror promote` (discipline: see commands/index.ts).
 
 import { type MirrorStatus } from "@maruhi/api-schema";
+import { decodeKeyFingerprintHex, isKeyFingerprintHex, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 import { type HttpClient } from "effect/http";
@@ -96,7 +97,7 @@ const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(f
 const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(function* (
   context: SessionContext,
   sourceOrigin: string,
-  projectId: string,
+  projectId: ProjectId,
   forced: boolean,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const here = yield* syncProject(context.client, projectId);
@@ -323,7 +324,7 @@ const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteComma
  */
 const promotionGuard = Effect.fn("commands-mirror-write.promotionGuard")(function* (
   context: SessionContext,
-  projectId: string,
+  projectId: ProjectId,
   sourceOrigin: string,
   status: {
     readonly head: SourceHead;
@@ -510,7 +511,7 @@ type SourceState =
 const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   config: MaruhiCliConfig,
   sourceOrigin: string,
-  projectId: string,
+  projectId: ProjectId,
   thisOrigin: string,
 ): Effect.fn.Return<SourceState, never, CliServices> {
   const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
@@ -560,7 +561,7 @@ const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
 const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
   client: MaruhiClient,
   origin: string,
-  projectId: string,
+  projectId: ProjectId,
   prefetched: VerifiedProject | null = null,
 ): Effect.fn.Return<readonly string[], CliError, CliServices> {
   const verified = prefetched ?? (yield* syncProject(client, projectId));
@@ -579,7 +580,10 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
       `Another server key is granted on this chain: ${grant.serverKeyFingerprintHex} (environments ${grant.scopeEnvironmentIds.map(displayText).join(", ")}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke --fingerprint ${grant.serverKeyFingerprintHex}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
     );
   }
-  if (own !== null && !verified.state.serverGrants.has(own)) {
+  if (
+    own !== null &&
+    (!isKeyFingerprintHex(own) || !verified.state.serverGrants.has(decodeKeyFingerprintHex(own)))
+  ) {
     lines.push(
       `This deployment's server key (${own}) is not granted on the chain: CI leases are not issued here until an owner runs \`maruhi server grant --server ${origin}\``,
     );

@@ -20,8 +20,7 @@
 // (reconcileDistributedAttestations). A lease response bundles no
 // declarations (§14-2), so it is always empty there.
 
-import type { ProjectId } from "@maruhi/core";
-import { cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { type ProjectId, type UserId, cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -52,7 +51,7 @@ export interface KeyBinding {
  */
 export interface DistributedAttestationWire {
   readonly suite: "maruhi/v1";
-  readonly attesterUserId: string;
+  readonly attesterUserId: UserId;
   readonly attesterKeyFingerprintHex: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
@@ -78,7 +77,7 @@ export interface VerifiedProject {
    * lookups use the history side instead (dedupe must not erase
    * tenure — session-14 ruling A).
    */
-  readonly keyHistory: ReadonlyMap<string, readonly KeyBinding[]>;
+  readonly keyHistory: ReadonlyMap<UserId, readonly KeyBinding[]>;
   /**
    * The verified chain's entry list (in seq order). A read-only
    * view for consulting historical facts that do not appear in
@@ -123,10 +122,10 @@ class ChainDerivationError extends Data.TaggedError("ChainDerivationError")<{
 
 const buildKeyHistory = Effect.fn("chain-sync.buildKeyHistory")(function* (
   applied: readonly AppliedOperation[],
-): Effect.fn.Return<ReadonlyMap<string, readonly KeyBinding[]>, ChainDerivationError> {
-  const history = new Map<string, KeyBinding[]>();
+): Effect.fn.Return<ReadonlyMap<UserId, readonly KeyBinding[]>, ChainDerivationError> {
+  const history = new Map<UserId, KeyBinding[]>();
   const seen = new Set<string>();
-  const add = (userId: string, binding: KeyBinding) => {
+  const add = (userId: UserId, binding: KeyBinding) => {
     const dedupe = `${userId}#${bindingKey(binding)}`;
     if (seen.has(dedupe)) {
       return;
@@ -296,7 +295,10 @@ export const syncProject = Effect.fn("chain-sync.syncProject")(function* (
     entries: snapshot.entries,
     claimedHeadSeq: snapshot.headSeq,
     claimedHeadHashHex: snapshot.headHashHex,
-    attestations: snapshot.attestations,
+    attestations: snapshot.attestations.map((a) => ({
+      ...a,
+      attesterUserId: a.attesterUserId,
+    })),
   });
 });
 

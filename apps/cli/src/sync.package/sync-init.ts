@@ -16,6 +16,7 @@
 // supplement 13 W3), and `production` defers to the preset's
 // judgment (the explicit form is `--production`).
 
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { type CliError, usageError } from "../errors.ts";
@@ -34,7 +35,7 @@ interface SyncInitInput {
   readonly environment: string;
   /** The receipt environment ID (`--receipts`). */
   readonly receipts: string;
-  readonly project: string | undefined;
+  readonly project: ProjectId | undefined;
   /** Comma-separated variable names (omitted = "all"). */
   readonly variables: string | undefined;
   /** Comma-separated exclusion names (only when `variables` is omitted). */

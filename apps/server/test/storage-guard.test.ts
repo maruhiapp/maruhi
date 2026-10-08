@@ -30,7 +30,7 @@ import {
   variablesGroup,
 } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
-import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import { testKeyFingerprintHex, testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
@@ -84,6 +84,8 @@ import {
 import { ServerLoggerLive } from "../src/server-logger.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
 import { addMemberOperation, signEntryAt } from "./support/data-crypto.ts";
+import { testEnvironmentId } from "./support/data-crypto.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -164,7 +166,8 @@ const dummyValueInput = (version: number) =>
   toValueInput({ ...unsignedPayload(aadFor(1, version)), suite: "maruhi/v1" });
 const dummyVariableStatement = (variableId: string, name: string) =>
   toMetaStatementInput({ ...unsignedVariableStatement(variableId, name), suite: "maruhi/v1" });
-const dummyManifest = () => toManifestInput(unsignedManifest());
+const dummyManifest = () =>
+  toManifestInput({ ...unsignedManifest(), environmentId: testEnvironmentId(ENV) });
 const dummyEnvStatement = (name: string, status: "active" = "active") =>
   toMetaStatementInput({
     suite: "maruhi/v1",
@@ -244,7 +247,7 @@ describe("error contract â€” every endpoint on a rejection-effective surface dec
         Effect.flip(
           unwrapDataOutcome(
             { kind: "rejected", rejection: STORAGE_REJECTION },
-            projectId,
+            testProjectId(projectId),
             endpoint as HttpApiEndpoint.Top,
           ),
         ),
@@ -279,13 +282,13 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       payload: {
         serverEncPubHex: "ab".repeat(32),
         serverKeyFingerprintHex: testKeyFingerprintHex("cd".repeat(16)),
-        scopeEnvironmentIds: [ENV],
+        scopeEnvironmentIds: [testEnvironmentId(ENV)],
         leasePolicy: [],
       },
     });
     const createEnv = await signedEntry({
       op: "create_environment",
-      payload: { environmentId: "env-new", dekCommitmentHex: "ab".repeat(32) },
+      payload: { environmentId: testEnvironmentId("env-new"), dekCommitmentHex: "ab".repeat(32) },
     });
     const checkpoint = await signedEntry({
       op: "checkpoint",
@@ -298,19 +301,35 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
         const outcomes = {
           push: rejectionOf(
             await run(
-              pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, cache),
+              pushVersionProgram(
+                actor(OWNER),
+                testEnvironmentId(ENV),
+                VAR,
+                dummyValueInput(2),
+                undefined,
+                cache,
+              ),
             ),
           ),
           lineagePush: rejectionOf(
-            await run(pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), 1, cache)),
+            await run(
+              pushVersionProgram(
+                actor(OWNER),
+                testEnvironmentId(ENV),
+                VAR,
+                dummyValueInput(2),
+                1,
+                cache,
+              ),
+            ),
           ),
           createVariable: rejectionOf(
             await run(
               createVariableProgram(
                 actor(OWNER),
-                ENV,
+                testEnvironmentId(ENV),
                 {
-                  variableId: "var-new",
+                  variableId: testVariableId("var-new"),
                   statement: dummyVariableStatement("var-new", "NEW"),
                   value: dummyValueInput(1),
                   manifest: dummyManifest(),
@@ -323,9 +342,9 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             await run(
               createVariableProgram(
                 actor(OWNER),
-                ENV,
+                testEnvironmentId(ENV),
                 {
-                  variableId: "var-declared",
+                  variableId: testVariableId("var-declared"),
                   statement: dummyVariableStatement("var-declared", "DECLARED"),
                   manifest: dummyManifest(),
                 },
@@ -337,7 +356,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             await run(
               activateVariableProgram(
                 actor(OWNER),
-                ENV,
+                testEnvironmentId(ENV),
                 VAR,
                 {
                   value: dummyValueInput(1),
@@ -352,7 +371,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             await run(
               renameVariableProgram(
                 actor(OWNER),
-                ENV,
+                testEnvironmentId(ENV),
                 VAR,
                 dummyVariableStatement(VAR, "RENAMED"),
                 dummyManifest(),
@@ -364,7 +383,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             await run(
               renameEnvironmentProgram(
                 actor(OWNER),
-                ENV,
+                testEnvironmentId(ENV),
                 dummyEnvStatement("Renamed"),
                 dummyManifest(),
                 cache,
@@ -372,7 +391,9 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
             ),
           ),
           registerWraps: rejectionOf(
-            await run(registerDekWrapsProgram(actor(OWNER), ENV, [dummyWrap], cache)),
+            await run(
+              registerDekWrapsProgram(actor(OWNER), testEnvironmentId(ENV), [dummyWrap], cache),
+            ),
           ),
           createEnvironment: rejectionOf(
             await run(
@@ -417,7 +438,10 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
     // Nothing was written: still 1 variable, version still 1, the chain unchanged
     const versions = await runInProject(0, async (run) => {
       const pulled = await run(
-        pullEnvironmentProgram(actor(READER), ENV, { current: null, chain: null }),
+        pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), {
+          current: null,
+          chain: null,
+        }),
       );
       return Exit.isSuccess(pulled) ? pulled.value.variables.map((v) => v.version) : null;
     });
@@ -555,12 +579,15 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       seq: fixture.head.seq + 1,
       prevHashHex: staleParent,
       actorUserId: OWNER,
-      operation: { op: "delete_environment", payload: { environmentId: ENV } },
+      operation: {
+        op: "delete_environment",
+        payload: { environmentId: testEnvironmentId(ENV) },
+      },
     });
     const rotate = await signedEntry({
       op: "rotate_epoch",
       payload: {
-        environmentId: "env-other",
+        environmentId: testEnvironmentId("env-other"),
         newEpoch: 2,
         reason: "scheduled",
         dekCommitmentHex: "ab".repeat(32),
@@ -569,16 +596,22 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
     await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
       const cache: StateCache = { current: null, chain: null };
       // (a) reads â€” succeed (a value pull carries a var.read audit append but is accepted)
-      const pulled = await run(pullEnvironmentProgram(actor(READER), ENV, cache));
+      const pulled = await run(
+        pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache),
+      );
       expect(Exit.isSuccess(pulled)).toBe(true);
       expect(
-        Exit.isSuccess(await run(pullEnvironmentMetadataProgram(actor(READER), ENV, cache))),
+        Exit.isSuccess(
+          await run(pullEnvironmentMetadataProgram(actor(READER), testEnvironmentId(ENV), cache)),
+        ),
       ).toBe(true);
       expect(Exit.isSuccess(await run(listEnvironmentsProgram(actor(READER), cache)))).toBe(true);
       expect(Exit.isSuccess(await run(snapshotProgram(READER, cache)))).toBe(true);
-      expect(Exit.isSuccess(await run(listMyDekWrapsProgram(actor(READER), ENV, cache)))).toBe(
-        true,
-      );
+      expect(
+        Exit.isSuccess(
+          await run(listMyDekWrapsProgram(actor(READER), testEnvironmentId(ENV), cache)),
+        ),
+      ).toBe(true);
       // (b) deletions â€” pass the guard and are rejected for another reason (dummy input:
       // the variable statement's metaVersion 1 fails the CAS; the environment
       // deletion composite's stale parent fails the chain-head CAS)
@@ -587,7 +620,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
           await run(
             deleteVariableProgram(
               actor(OWNER),
-              ENV,
+              testEnvironmentId(ENV),
               VAR,
               dummyVariableStatement(VAR, "WRONG_NAME"),
               dummyManifest(),
@@ -601,7 +634,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
           await run(
             deleteEnvironmentCompositeProgram(
               actor(OWNER),
-              ENV,
+              testEnvironmentId(ENV),
               {
                 parentHeadHashHex: staleParent,
                 entry: deleteEnv.entry as ChainEntry & { readonly op: "delete_environment" },
@@ -616,7 +649,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
           await run(
             deleteDekWrapsProgram(
               actor(OWNER),
-              ENV,
+              testEnvironmentId(ENV),
               [
                 {
                   epoch: 7,
@@ -646,7 +679,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
           await run(
             rotateEpochCompositeProgram(
               actor(OWNER),
-              ENV,
+              testEnvironmentId(ENV),
               {
                 parentHeadHashHex: fixture.head.hashHex,
                 entry: rotate.entry as ChainEntry & { readonly op: "rotate_epoch" },
@@ -741,9 +774,11 @@ describe("materializing the audit-head derived column (the Â§12-8 (a) exception 
       // again
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
-          true,
-        );
+        expect(
+          Exit.isSuccess(
+            await run(pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache)),
+          ),
+        ).toBe(true);
         expect(rejectionOf(await run(auditHeadProgram(actor(OWNER), cache)))).toEqual(
           STORAGE_REJECTION,
         );
@@ -767,7 +802,14 @@ describe("the warning threshold (Â§12-8 â€” operations log)", () => {
         for (let i = 0; i < 3; i += 1) {
           const rejection = rejectionOf(
             await run(
-              pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, cache),
+              pushVersionProgram(
+                actor(OWNER),
+                testEnvironmentId(ENV),
+                VAR,
+                dummyValueInput(2),
+                undefined,
+                cache,
+              ),
             ),
           );
           expect(rejection?.kind).toBe("value-rejected");
@@ -799,13 +841,17 @@ describe("the warning threshold (Â§12-8 â€” operations log)", () => {
         const cache: StateCache = { current: null, chain: null };
         // Observation only â€” the pull is accepted (a var.read is also recorded)
         for (let i = 0; i < 3; i += 1) {
-          expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
-            true,
-          );
+          expect(
+            Exit.isSuccess(
+              await run(pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache)),
+            ),
+          ).toBe(true);
         }
         // A metadata-only pull is a read that writes no audit row = it has no observation point
         expect(
-          Exit.isSuccess(await run(pullEnvironmentMetadataProgram(actor(READER), ENV, cache))),
+          Exit.isSuccess(
+            await run(pullEnvironmentMetadataProgram(actor(READER), testEnvironmentId(ENV), cache)),
+          ),
         ).toBe(true);
       });
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -813,12 +859,16 @@ describe("the warning threshold (Â§12-8 â€” operations log)", () => {
       // Pulls also pass in the rejection band; the rejection-band log fires once (no rejection actually happens)
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
-          true,
-        );
-        expect(Exit.isSuccess(await run(pullEnvironmentProgram(actor(READER), ENV, cache)))).toBe(
-          true,
-        );
+        expect(
+          Exit.isSuccess(
+            await run(pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache)),
+          ),
+        ).toBe(true);
+        expect(
+          Exit.isSuccess(
+            await run(pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache)),
+          ),
+        ).toBe(true);
       });
       expect(errorSpy).toHaveBeenCalledTimes(1);
     } finally {
@@ -835,10 +885,17 @@ describe("the warning threshold (Â§12-8 â€” operations log)", () => {
       await runInProject(DO_STORAGE_WARN_BYTES - 1, async (run) => {
         const rejection = rejectionOf(
           await run(
-            pushVersionProgram(actor(OWNER), ENV, VAR, dummyValueInput(2), undefined, {
-              current: null,
-              chain: null,
-            }),
+            pushVersionProgram(
+              actor(OWNER),
+              testEnvironmentId(ENV),
+              VAR,
+              dummyValueInput(2),
+              undefined,
+              {
+                current: null,
+                chain: null,
+              },
+            ),
           ),
         );
         expect(rejection?.kind).toBe("value-rejected");

@@ -2,6 +2,7 @@
 // Assumes the fixture of data-scenario.ts (registerDataScenario).
 
 import { encryptValue } from "./data-crypto.ts";
+import { testEnvironmentId, testProjectId, testVariableId } from "./data-crypto.ts";
 import { MEMBER, projectId, requestJson } from "./data-fixture.ts";
 import {
   ENV,
@@ -32,7 +33,13 @@ export async function createVariableV3Request(input: {
   });
   const value = await encryptValue(
     input.dek,
-    { projectId, environmentId: ENV, epoch: 1, variableId: input.variableId, version: 1 },
+    {
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(input.variableId),
+      version: 1,
+    },
     input.plaintext,
     { writerUserId: actorUserId, head: fixture.head },
   );

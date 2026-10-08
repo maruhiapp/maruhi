@@ -40,7 +40,7 @@
 // target name, counts, versions, and variable names
 // (displayText).
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
@@ -70,7 +70,7 @@ import {
  */
 export function checkRotateConfigProject(
   config: SyncConfig,
-  projectId: string,
+  projectId: ProjectId,
 ): Effect.Effect<void, CliError> {
   if (config.projectId !== undefined && config.projectId !== projectId) {
     return Effect.fail(
@@ -83,7 +83,10 @@ export function checkRotateConfigProject(
 }
 
 /** The targets syncing from the rotated environment (in config order). */
-function targetsSyncedFrom(config: SyncConfig, environmentId: string): readonly SyncTarget[] {
+function targetsSyncedFrom(
+  config: SyncConfig,
+  environmentId: EnvironmentId,
+): readonly SyncTarget[] {
   return [...config.targets.values()].filter((target) => target.environment === environmentId);
 }
 
@@ -154,7 +157,7 @@ interface AdvanceReceiptsInput {
   readonly written: readonly ReencryptedVariable[];
   /** The receipt environment's floor handle (when it is the same environment that was rotated, the rotate's one is shared). */
   readonly receiptsFloor: FloorHandle;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
 }
 
@@ -174,7 +177,7 @@ const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   CliError,
   CliIo
 > {
-  const receiptsEnvironment = input.config.receiptsEnvironment as EnvironmentId;
+  const receiptsEnvironment = input.config.receiptsEnvironment;
   const loaded = yield* loadReceipt({
     client: input.client,
     verified,

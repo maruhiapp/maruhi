@@ -16,6 +16,7 @@ import {
   verifyDekWrapSignature,
 } from "../../src/index.ts";
 import vectors from "../../test-vectors/dek-wrap-signature.json" with { type: "json" };
+import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 const baseVector = vectors.vectors[0];
@@ -39,14 +40,14 @@ interface VectorContext {
 function contextOf(v: VectorContext): DekWrapSignatureContext {
   return {
     suite: v.suite,
-    projectId: v.project_id,
-    environmentId: v.environment_id,
+    projectId: testProjectId(v.project_id),
+    environmentId: testEnvironmentId(v.environment_id),
     epoch: v.epoch,
-    recipientUserId: v.recipient_user_id,
+    recipientUserId: testUserId(v.recipient_user_id),
     recipientEncPubHex: v.recipient_enc_pub_hex,
     encHex: v.enc_hex,
     ciphertextHex: v.ciphertext_hex,
-    signerUserId: v.signer_user_id,
+    signerUserId: testUserId(v.signer_user_id),
   };
 }
 
@@ -120,7 +121,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     },
     { name: "short enc hex", context: { ...contextOf(base), encHex: "ab" } },
     { name: "empty suite", context: { ...contextOf(base), suite: "" } },
-    { name: "empty signer", context: { ...contextOf(base), signerUserId: "" } },
+    { name: "empty signer", context: { ...contextOf(base), signerUserId: testUserId("") } },
   ];
   for (const bad of badContexts) {
     const signed = await signDekWrap({ context: bad.context, signingKey: pair.privateKey });
@@ -174,7 +175,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
 
   // Swapping the context fails verification (implementation-side re-confirmation of coordinate transplants)
   const wrongContext = await verifyDekWrapSignature({
-    context: { ...contextOf(base), projectId: "proj-other" },
+    context: { ...contextOf(base), projectId: testProjectId("proj-other") },
     signatureHex: signed.value,
     signerPublicKey: signer.publicKey,
   });

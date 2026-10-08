@@ -13,6 +13,7 @@
 // delete_environment prunes its id from every scope), never the server's
 // report. No request is made.
 
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -25,7 +26,7 @@ import { compareCodePoints } from "./scope.ts";
 export interface ServerDisclosure {
   readonly serverKeyFingerprintHex: string;
   /** The grant's scope (ID ascending; never empty — a grant whose scope was emptied by deletions discloses nothing). */
-  readonly environmentIds: readonly string[];
+  readonly environmentIds: readonly EnvironmentId[];
   /** The number of lease-policy elements (0 = no lease path — §9.1). */
   readonly leasePolicyCount: number;
   /** Seq of the grant_server entry that established the active grant. */
@@ -48,7 +49,7 @@ export function serverDisclosures(verified: VerifiedProject): readonly ServerDis
 /** The server keys an environment is disclosed to (fingerprint ascending; empty = none). */
 export function serverKeysDisclosing(
   disclosures: readonly ServerDisclosure[],
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): readonly string[] {
   return disclosures
     .filter((disclosure) => disclosure.environmentIds.includes(environmentId))
@@ -56,12 +57,12 @@ export function serverKeysDisclosing(
 }
 
 /** "environment prod" / "environments prod, staging" (IDs neutralized). */
-function describeEnvironments(environmentIds: readonly string[]): string {
+function describeEnvironments(environmentIds: readonly EnvironmentId[]): string {
   return `${environmentIds.length === 1 ? "environment" : "environments"} ${environmentIds.map(displayText).join(", ")}`;
 }
 
 /** The Note's text for one grant (names the project: a multi-project sweep prints one per project, and the ledger keeps identical lines once). */
-function describeServerDisclosure(projectId: string, disclosure: ServerDisclosure): string {
+function describeServerDisclosure(projectId: ProjectId, disclosure: ServerDisclosure): string {
   return `project ${displayText(projectId)} is disclosed to the server (CRYPTO_SPEC §9): server key ${disclosure.serverKeyFingerprintHex} can decrypt the values of ${describeEnvironments(disclosure.environmentIds)}`;
 }
 

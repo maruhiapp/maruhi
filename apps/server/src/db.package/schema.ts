@@ -31,7 +31,14 @@
 // read from (an invitation's invitee — the add_member target; a guardian
 // group's ward and guardians; a handoff request's ward).
 
-import type { AuthMethod, ProviderUserId, UserId } from "@maruhi/core";
+import type {
+  AuthMethod,
+  KeyFingerprintHex,
+  OrgId,
+  ProjectId,
+  ProviderUserId,
+  UserId,
+} from "@maruhi/core";
 import {
   index,
   integer,
@@ -72,7 +79,7 @@ export const linkedIdentities = sqliteTable(
 export const organizations = sqliteTable(
   "organizations",
   {
-    id: text("id").primaryKey(),
+    id: text("id").$type<OrgId>().primaryKey(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     createdAt: integer("created_at").notNull(),
@@ -85,9 +92,11 @@ export const memberships = sqliteTable(
   "memberships",
   {
     orgId: text("org_id")
+      .$type<OrgId>()
       .notNull()
       .references(() => organizations.id),
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** The org role: 'owner' | 'admin' | 'member' (does not participate in project access) */
@@ -185,7 +194,7 @@ export const signupInvites = sqliteTable(
     /** Issued + 7 days (drafting value — the issuance script computes it) */
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
-    usedByUserId: text("used_by_user_id"),
+    usedByUserId: text("used_by_user_id").$type<UserId>(),
     usedAt: integer("used_at"),
   },
   (t) => [uniqueIndex("sgn_token_hash").on(t.tokenHash)],
@@ -253,6 +262,7 @@ export const cliLoginFlows = sqliteTable(
 export const recoveryWraps = sqliteTable("recovery_wraps", {
   /** At most one per user (AUTH_SPEC §13-1) */
   userId: text("user_id")
+    .$type<UserId>()
     .primaryKey()
     .references(() => users.id),
   /** The suite identifier (CRYPTO_SPEC §2 design principle 4) */
@@ -278,6 +288,7 @@ export const masterKeyWraps = sqliteTable(
     /** wrap_id (ULID) */
     id: text("id").primaryKey(),
     userId: text("user_id")
+      .$type<UserId>()
       .notNull()
       .references(() => users.id),
     /** 'passkey-prf' */
@@ -341,7 +352,9 @@ export const guardianShares = sqliteTable(
     /** The seal target (a key the ward client has confirmed) */
     guardianEncPubHex: text("guardian_enc_pub_hex").notNull(),
     /** The seal target's device key FP (one row per guardian device — DK) */
-    guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex").notNull(),
+    guardianKeyFingerprintHex: text("guardian_key_fingerprint_hex")
+      .$type<KeyFingerprintHex>()
+      .notNull(),
     encHex: text("enc_hex").notNull(),
     /** A 32-byte segment + a 16-byte tag = 48 bytes */
     ciphertextHex: text("ciphertext_hex").notNull(),
@@ -374,9 +387,10 @@ export const guardianShares = sqliteTable(
  */
 const deviceKeyColumns = () => ({
   userId: text("user_id")
+    .$type<UserId>()
     .notNull()
     .references(() => users.id),
-  keyFingerprintHex: text("key_fingerprint_hex").notNull(),
+  keyFingerprintHex: text("key_fingerprint_hex").$type<KeyFingerprintHex>().notNull(),
   encPubHex: text("enc_pub_hex").notNull(),
   sigPubHex: text("sig_pub_hex").notNull(),
   label: text("label").notNull(),
@@ -442,8 +456,10 @@ export const keyHandoffApprovals = sqliteTable(
     /** group_id (a guardian group. The old device-path 'device' was removed in 2026-09-19 DK K4) */
     source: text("source").notNull(),
     shareIndex: integer("share_index").notNull(),
-    approverUserId: text("approver_user_id").notNull(),
-    approverKeyFingerprintHex: text("approver_key_fingerprint_hex").notNull(),
+    approverUserId: text("approver_user_id").$type<UserId>().notNull(),
+    approverKeyFingerprintHex: text("approver_key_fingerprint_hex")
+      .$type<KeyFingerprintHex>()
+      .notNull(),
     encHex: text("enc_hex").notNull(),
     ciphertextHex: text("ciphertext_hex").notNull(),
     createdAt: integer("created_at").notNull(),
@@ -460,7 +476,7 @@ export const keyHandoffApprovals = sqliteTable(
 export const keyWrapWindows = sqliteTable(
   "key_wrap_windows",
   {
-    userId: text("user_id").notNull(),
+    userId: text("user_id").$type<UserId>().notNull(),
     kind: text("kind").notNull(),
     windowStart: integer("window_start").notNull(),
     count: integer("count").notNull().default(0),
@@ -472,9 +488,10 @@ export const projects = sqliteTable(
   "projects",
   {
     /** Project ID = genesis entry hash (64 lowercase hex chars; CRYPTO_SPEC §6.4) */
-    id: text("id").primaryKey(),
+    id: text("id").$type<ProjectId>().primaryKey(),
     /** Org belonging (AUTH_SPEC §11-3. NOT NULL = a project without an org does not exist) */
     orgId: text("org_id")
+      .$type<OrgId>()
       .notNull()
       .references(() => organizations.id),
     createdAt: integer("created_at").notNull(),
@@ -503,9 +520,9 @@ export const projectMembers = sqliteTable(
   "project_members",
   {
     /** The genesis hash (64 lowercase hex chars) */
-    projectId: text("project_id").notNull(),
+    projectId: text("project_id").$type<ProjectId>().notNull(),
     /** The internal user_id (ULID) */
-    userId: text("user_id").notNull(),
+    userId: text("user_id").$type<UserId>().notNull(),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
@@ -527,7 +544,7 @@ export const invitations = sqliteTable(
      * org-belonging metadata (an invite may well come into being while a
      * §11-3 partial-failure repair is in progress)
      */
-    projectId: text("project_id").notNull(),
+    projectId: text("project_id").$type<ProjectId>().notNull(),
     /**
      * The link public key (Ed25519, 64 lowercase hex chars — CRYPTO_SPEC
      * §6.5). The client generates and declares it at issuance. The
@@ -550,7 +567,7 @@ export const invitations = sqliteTable(
      * it without verifying
      */
     scopeEnvironments: text("scope_environments").notNull(),
-    inviterUserId: text("inviter_user_id").notNull(),
+    inviterUserId: text("inviter_user_id").$type<UserId>().notNull(),
     /** 'pending' | 'accepted' | 'completed' | 'revoked' (expiry is derived from expires_at) */
     status: text("status").notNull(),
     /** Issued + 7 days (§15-1 drafting value) */
@@ -610,8 +627,8 @@ const auditEventColumns = {
   actorApiTokenId: text("actor_api_token_id"),
   /** The target of a member operation */
   targetUserId: text("target_user_id").$type<UserId>(),
-  orgId: text("org_id"),
-  projectId: text("project_id"),
+  orgId: text("org_id").$type<OrgId>(),
+  projectId: text("project_id").$type<ProjectId>(),
   /** JSON. Supplements such as auth_method and snapshots. Contains nothing §1-2/1-3 forbids */
   payload: text("payload"),
 };
@@ -694,7 +711,7 @@ export const opsCounters = sqliteTable(
  * warn / reject).
  */
 export const opsBackups = sqliteTable("ops_backups", {
-  projectId: text("project_id").primaryKey(),
+  projectId: text("project_id").$type<ProjectId>().primaryKey(),
   doIdHex: text("do_id_hex").notNull(),
   lastAttemptAt: integer("last_attempt_at").notNull(),
   lastSuccessAt: integer("last_success_at"),

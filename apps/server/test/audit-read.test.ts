@@ -27,6 +27,7 @@ import {
   scopedToken,
   seedProjectActivity,
 } from "./support/audit-read-scenario.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   MEMBER,
@@ -103,7 +104,7 @@ describe("enforcing the visibility classes (§6)", () => {
     // distinct name so same-name rotation (AUTH_SPEC §6) does not revoke
     // the fixture's token
     const readToken = await scopedToken(9001, "read-only-audit", [
-      { project: projectId, permission: "read" },
+      { project: testProjectId(projectId), permission: "read" },
     ]);
     const { status, events } = await fetchEvents(readToken, { limit: "200" });
     expect(status).toBe(200);

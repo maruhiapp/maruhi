@@ -28,7 +28,6 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
   encryptValueFor,
@@ -38,6 +37,10 @@ import {
   hexBytes,
   makeTestUser,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  type BuiltChain,
   type TestUser,
   type WireRecipientDek,
   wrapDekFor,
@@ -125,10 +128,10 @@ async function sealedWrap(recipient: TestUser, spec: ProposedVariableSpec): Prom
     recipientPublicKey: publicKey.value,
     value: new TextEncoder().encode(spec.plaintext),
     context: {
-      projectId: built.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       proposalId: PROPOSAL_ID,
-      variableId: spec.variableId,
+      variableId: testVariableId(spec.variableId),
       baseVersion: spec.baseVersion,
       recipientUserId: recipient.userId,
     },
@@ -320,10 +323,10 @@ async function latestPlaintext(
     nonce: hexBytes(stored.value.nonceHex),
     ciphertext: hexBytes(stored.value.ciphertextHex),
     context: {
-      projectId: built.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(built.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       epoch: stored.value.aad.epoch,
-      variableId,
+      variableId: testVariableId(variableId),
       version: stored.value.aad.version,
     },
   });

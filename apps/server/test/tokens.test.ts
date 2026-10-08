@@ -21,6 +21,7 @@ import {
   resetAuthDb,
   sessionHeaders,
 } from "./support/auth.ts";
+import { testProjectId } from "./support/data-crypto.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "__Host-maruhi_session";
@@ -96,7 +97,7 @@ describe("the default TTL (AUTH_SPEC §6)", () => {
 
     const scoped = await cliToken(
       806,
-      [{ project: "ef".repeat(32), permission: "read" }],
+      [{ project: testProjectId("ef".repeat(32)), permission: "read" }],
       "scoped",
     );
     const viaScoped = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(scoped) });
@@ -167,7 +168,7 @@ describe("GET /auth/tokens (listing — AUTH_SPEC §6)", () => {
 
     const scoped = await cliToken(
       814,
-      [{ project: "ab".repeat(32), permission: "admin" }],
+      [{ project: testProjectId("ab".repeat(32)), permission: "admin" }],
       "scoped",
     );
     const denied = await SELF.fetch(`${BASE}/auth/tokens`, { headers: bearer(scoped) });
@@ -247,7 +248,7 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
     const sibling = await exchange(825, { tokenName: "sibling" });
     const scoped = await cliToken(
       825,
-      [{ project: "cd".repeat(32), permission: "admin" }],
+      [{ project: testProjectId("cd".repeat(32)), permission: "admin" }],
       "scoped",
     );
 

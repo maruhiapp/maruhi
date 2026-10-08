@@ -9,7 +9,7 @@
 // hand-written decoders' tolerance; required fields and field forms are
 // all strict.
 
-import { EnvironmentIdSchema, isEnvironmentId, isVariableId, VariableIdSchema } from "@maruhi/core";
+import { isEnvironmentId, isVariableId, EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Result, Schema } from "effect";
 
 import type { ChainHeadFloor } from "./floor.ts";
@@ -22,6 +22,8 @@ const HashHex = Schema.String.check(Schema.isPattern(HEX_64));
 
 /** A safe integer >= 1 (the positive form the wire carries for versions / epochs). */
 const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+const EnvironmentIdField = EnvironmentIdSchema;
+const VariableIdField = VariableIdSchema;
 
 /** An intent / resolution id (16 lowercase hex — randomIntentId's output form). */
 const IntentId = Schema.String.check(Schema.isPattern(INTENT_ID));
@@ -113,8 +115,8 @@ const ConflictSchema = Schema.Struct({
     "manifest",
     "undeletion",
   ]),
-  environmentId: Schema.NullOr(EnvironmentIdSchema),
-  variableId: Schema.NullOr(VariableIdSchema),
+  environmentId: Schema.NullOr(EnvironmentIdField),
+  variableId: Schema.NullOr(VariableIdField),
   firstVersion: Schema.Natural,
   firstHashHex: Schema.String,
   secondVersion: Schema.Natural,
@@ -125,10 +127,10 @@ const IntentSchema = Schema.Union([
   Schema.Struct({
     id: IntentId,
     op: Schema.Literals(["create_environment", "rotate_epoch", "meta-op"]),
-    environmentId: EnvironmentIdSchema,
+    environmentId: EnvironmentIdField,
     epoch: PositiveInt,
     dekCommitmentHex: Schema.NullOr(HashHex),
-    variableId: Schema.NullOr(VariableIdSchema),
+    variableId: Schema.NullOr(VariableIdField),
     manifestVersion: PositiveInt,
     manifestSigHashHex: HashHex,
     declaredHead: ChainHeadFloorSchema,
@@ -137,7 +139,7 @@ const IntentSchema = Schema.Union([
   Schema.Struct({
     id: IntentId,
     op: Schema.Literal("delete_environment"),
-    environmentId: EnvironmentIdSchema,
+    environmentId: EnvironmentIdField,
     declaredHead: ChainHeadFloorSchema,
   }),
 ]);
@@ -155,7 +157,7 @@ export type SnapshotState = typeof SnapshotStateSchema.Type;
 /** The shared coordinates (head + environmentId) of environment-scoped records. */
 const Scoped = {
   head: ChainHeadFloorSchema,
-  environmentId: EnvironmentIdSchema,
+  environmentId: EnvironmentIdField,
 } as const;
 
 const FloorLogRecordSchema = Schema.Union([
@@ -168,7 +170,7 @@ const FloorLogRecordSchema = Schema.Union([
   Schema.Struct({
     r: Schema.Literal("push"),
     ...Scoped,
-    variableId: VariableIdSchema,
+    variableId: VariableIdField,
     variable: VariableFloorSchema,
   }),
   Schema.Struct({

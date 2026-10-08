@@ -24,7 +24,6 @@ import { runCli } from "../src/cli.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import {
   buildChain,
-  type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
   encryptValueFor,
@@ -38,6 +37,9 @@ import {
   revokeServerOp,
   rotateEpochOp,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
+  type BuiltChain,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
@@ -293,8 +295,8 @@ async function leaseWrapFor(input: {
     workloadPublicKey: publicKey.value,
     dek: input.dek,
     context: {
-      projectId: fixture.built.projectId,
-      environmentId: ENV_ID,
+      projectId: testProjectId(fixture.built.projectId),
+      environmentId: testEnvironmentId(ENV_ID),
       epoch: input.epoch,
       claimsDigestHex: input.claimsDigestHex,
     },

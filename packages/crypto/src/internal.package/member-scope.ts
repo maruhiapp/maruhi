@@ -18,6 +18,7 @@
 //   containable by any listed)
 
 import { encodeHex } from "./bytes.ts";
+import type { EnvironmentId } from "./chain-types.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
 
 /** Scope kind on the wire (CRYPTO_SPEC §6.2). */
@@ -27,7 +28,7 @@ export type ScopeKind = "all" | "listed";
 export interface ScopePayloadFields {
   readonly scopeKind: ScopeKind;
   /** Environment ids in as-signed order (empty when `scopeKind` is `all`). */
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
 }
 
 /**
@@ -37,7 +38,7 @@ export interface ScopePayloadFields {
  */
 export type MemberScope =
   | { readonly kind: "all" }
-  | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
+  | { readonly kind: "listed"; readonly environmentIds: readonly EnvironmentId[] };
 
 /**
  * An environment set in the containment algebra of principle 1 (§6.2):
@@ -69,7 +70,7 @@ export function scopePayloadFieldsOf(scope: MemberScope): ScopePayloadFields {
 }
 
 /** Lowercase hex of the nested LP of the environment id list (`scope_environments_lp_hex`). */
-export function canonicalScopeEnvironmentsHex(environmentIds: readonly string[]): string {
+export function canonicalScopeEnvironmentsHex(environmentIds: readonly EnvironmentId[]): string {
   return encodeHex(encodeLengthPrefixed(environmentIds));
 }
 
@@ -101,7 +102,7 @@ export function scopeShapeOk(
 
 /** Whether `environmentId` is inside `scope` (environment-targeting ops / §6.3's 3′ / the R(E) predicate). */
 export function scopeIncludesEnvironment(scope: MemberScope, environmentId: string): boolean {
-  return scope.kind === "all" || scope.environmentIds.includes(environmentId);
+  return scope.kind === "all" || scope.environmentIds.some((id) => id === environmentId);
 }
 
 /**
@@ -110,7 +111,7 @@ export function scopeIncludesEnvironment(scope: MemberScope, environmentId: stri
  * pruning rule shared by the verification state and the history index.
  */
 export function scopeWithout(scope: MemberScope, environmentId: string): MemberScope {
-  if (scope.kind === "all" || !scope.environmentIds.includes(environmentId)) {
+  if (scope.kind === "all" || !scope.environmentIds.some((id) => id === environmentId)) {
     return scope;
   }
   return {
@@ -177,7 +178,7 @@ export function scopeContainsEnvironmentSet(actor: MemberScope, set: Environment
     return false;
   }
   for (const id of set.ids) {
-    if (!actor.environmentIds.includes(id)) {
+    if (!actor.environmentIds.some((e) => e === id)) {
       return false;
     }
   }

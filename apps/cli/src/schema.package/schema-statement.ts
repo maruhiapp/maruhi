@@ -26,6 +26,7 @@
 // is "" or a decimal in the signed payload, a number or null on the
 // wire. The conversions stay inside this module.
 
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -37,21 +38,21 @@ import { signStatementAndHash } from "../meta-statement.ts";
 /** The shared input of a v3 statement (creation / continuation is fixed by the 3 functions below). */
 export interface VariableStatementV3Input {
   readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   /** The display name (NFC-normalized by the caller — §4.2 / §12-1). */
   readonly name: string;
   /** The schema fields (§4.2 — required is a boolean. Mapped to the string form at signing). */
   readonly schema: VerifiedSchemaFields;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
 }
 
 /** The v3 statement's wire form (§12-2 — layoutVersion 3 + schema fields). */
 interface WireVariableStatementV3Base {
   readonly suite: typeof SUITE_ID;
-  readonly environmentId: string;
-  readonly variableId: string;
+  readonly environmentId: EnvironmentId;
+  readonly variableId: VariableId;
   readonly name: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;

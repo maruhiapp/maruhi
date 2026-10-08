@@ -21,7 +21,7 @@
 //   my assumption onto the floor — only verified observations are
 //   recorded)
 
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -43,7 +43,7 @@ import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } fro
 export const issueManifestWithIntent = Effect.fn("meta-confirm.issueManifestWithIntent")(
   function* (input: {
     readonly verified: VerifiedProject;
-    readonly environmentId: string;
+    readonly environmentId: EnvironmentId;
     /** The current epoch at issuance time (the chain-derived value). */
     readonly epoch: number;
     readonly previous: {
@@ -53,11 +53,11 @@ export const issueManifestWithIntent = Effect.fn("meta-confirm.issueManifestWith
     /** The meta set after the operation is applied (tombstones included — §4.3 (3)'s recomputation target). */
     readonly entries: readonly ManifestDigestEntry[];
     readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-    readonly issuerUserId: string;
+    readonly issuerUserId: UserId;
     readonly signingKey: CryptoKey;
     readonly floor: FloorHandle;
     /** The intent's collation coordinate (the meta operation's target variable; null = the environment's own statement — env rename). */
-    readonly variableId: string | null;
+    readonly variableId: VariableId | null;
   }): Effect.fn.Return<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
     const chainHead = {
       seq: input.verified.state.headSeq,

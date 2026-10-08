@@ -9,6 +9,7 @@
 import type { AuditHeadRow } from "../../src/index.ts";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "../../src/index.ts";
 import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
+import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";
 import { type CheckResult, Checks } from "./support.ts";
 
 /** A row of the vector JSON (taken as a structural type, not an inferred literal type — passed from both chain and null_vs_empty). */
@@ -40,13 +41,13 @@ function toTypedRow(row: VectorRow): AuditHeadRow {
     clientTs: row.client_ts,
     event: row.event,
     actorType: row.actor_type,
-    actorUserId: row.actor_user_id,
+    actorUserId: row.actor_user_id === null ? null : testUserId(row.actor_user_id),
     actorKeyFingerprintHex: row.actor_key_fingerprint,
     actorApiTokenId: row.actor_api_token_id,
-    targetUserId: row.target_user_id,
+    targetUserId: row.target_user_id === null ? null : testUserId(row.target_user_id),
     targetKeyFingerprintHex: row.target_key_fingerprint,
-    environmentId: row.environment_id,
-    variableId: row.variable_id,
+    environmentId: row.environment_id === null ? null : testEnvironmentId(row.environment_id),
+    variableId: row.variable_id === null ? null : testVariableId(row.variable_id),
     epoch: row.epoch,
     version: row.version,
     chainSeq: row.chain_seq,

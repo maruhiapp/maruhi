@@ -28,8 +28,6 @@ import { runCli } from "../src/cli.ts";
 import { verifyLeaseDistribution } from "../src/values.ts";
 import {
   buildChain,
-  type BuiltChain,
-  type ChainStep,
   checkpointSnapshotValuesOf,
   createEnvironmentOp,
   encryptValueFor,
@@ -41,6 +39,9 @@ import {
   manifestHashOf,
   rotateEpochOp,
   statementFor,
+  testEnvironmentId,
+  type BuiltChain,
+  type ChainStep,
   type TestUser,
   type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
@@ -50,6 +51,7 @@ import {
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
+import { testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -152,14 +154,17 @@ beforeAll(async () => {
     manifestVersion: 1,
   });
   const snapshotValues = await checkpointSnapshotValuesOf([valueA, valueB]);
-  const digest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
+  const digest = await computeEnvValuesDigest(
+    SUITE_ID,
+    snapshotValues.map((entry) => ({ ...entry, variableId: testVariableId(entry.variableId) })),
+  );
   if (!digest.ok) throw new Error("values digest failed");
   checkpointOperation = {
     op: "checkpoint",
     payload: {
       environments: [
         {
-          environmentId: ENV_ID,
+          environmentId: testEnvironmentId(ENV_ID),
           epoch: 2,
           manifestVersion: 1,
           manifestSigHashHex: await manifestHashOf(projectId, manifestMain),
@@ -222,8 +227,8 @@ function pullHandler(overrides: PullOverrides = {}): MockHandler {
       currentEpoch: 2,
       statement: envStatement,
       variables: overrides.variables ?? [
-        { variableId: "va", statement: stmtA, value: valueA },
-        { variableId: "vb", statement: stmtB, value: valueB },
+        { variableId: testVariableId("va"), statement: stmtA, value: valueA },
+        { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
       ],
       deletedVariables: overrides.deletedVariables ?? [],
       deks: wraps,
@@ -298,7 +303,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
       chainHandler(chain),
       pullHandler({
         variables: [
-          { variableId: "va", statement: stmtA, value: valueA },
+          { variableId: testVariableId("va"), statement: stmtA, value: valueA },
           { variableId: "vb", statement: stmtB, value: advanced },
         ],
       }),
@@ -352,8 +357,8 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
       chainHandler(chain),
       pullHandler({
         variables: [
-          { variableId: "va", statement: stmtA, value: valueA },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("va"), statement: stmtA, value: valueA },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
           { variableId: "vc", statement: stmtC, value: valueC },
         ],
         manifest: await manifestNext([stmtA, stmtB, stmtC]),
@@ -444,7 +449,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
       {
         variables: [
           { variableId: "va", statement: stmtA, value: rolledBack },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
         ],
       },
       "a value rollback below the checkpointed state",
@@ -469,7 +474,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
       {
         variables: [
           { variableId: "va", statement: stmtA, value: substituted },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
         ],
       },
       "signed bytes differing from the checkpointed hash",
@@ -494,7 +499,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
       {
         variables: [
           { variableId: "va", statement: stmtA, value: injected },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
         ],
       },
       "evidence of forward injection with an old epoch key",
@@ -534,8 +539,8 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
     await expectRejected(
       {
         variables: [
-          { variableId: "va", statement: stmtA, value: valueA },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("va"), statement: stmtA, value: valueA },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
           { variableId: "vc", statement: stmtC, value: backdated },
         ],
         manifest: await manifestNext([stmtA, stmtB, stmtC]),
@@ -630,7 +635,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
     // retriable
     const missingAfterFetch = await checkCheckpointIntegrity({
       history: verified.history,
-      environmentId: ENV_ID,
+      environmentId: testEnvironmentId(ENV_ID),
       snapshot: undefined,
       variables: [],
       tombstoneIds: new Set(),
@@ -641,7 +646,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
     // evidence rejection
     const missingStored = await checkCheckpointIntegrity({
       history: verified.history,
-      environmentId: ENV_ID,
+      environmentId: testEnvironmentId(ENV_ID),
       snapshot: undefined,
       variables: [],
       tombstoneIds: new Set(),
@@ -652,7 +657,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
     // fetch view → stale-distribution evidence rejection
     const staleStored = await checkCheckpointIntegrity({
       history: verified.history,
-      environmentId: ENV_ID,
+      environmentId: testEnvironmentId(ENV_ID),
       snapshot: { chainSeq: 2, entryHashHex: chain.hashes[1] ?? "", values: [] },
       variables: [],
       tombstoneIds: new Set(),
@@ -683,7 +688,7 @@ describe("cross-layer: rule 2 does not substitute for floor rule (a) (ruling W)"
       pullHandler({
         variables: [
           { variableId: "va", statement: stmtA, value: v3 },
-          { variableId: "vb", statement: stmtB, value: valueB },
+          { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
         ],
       }),
     ]);
@@ -720,14 +725,14 @@ describe("the lease path (§14-2 — reaching the same implementation and the ba
     return {
       statement: envStatement,
       variables: overrides.variables ?? [
-        { variableId: "va", statement: stmtA, value: valueA },
-        { variableId: "vb", statement: stmtB, value: valueB },
+        { variableId: testVariableId("va"), statement: stmtA, value: valueA },
+        { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
       ],
       deletedVariables: overrides.deletedVariables ?? [],
       manifest: overrides.manifest ?? manifestMain,
       ...(served === null ? {} : { checkpointSnapshot: served }),
       schemaPolicy: "enabled" as const,
-    } as LeaseWire;
+    } as unknown as LeaseWire;
   }
 
   async function expectLeaseRejected(

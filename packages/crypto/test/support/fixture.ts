@@ -10,13 +10,17 @@ import type {
   ChainEntry,
   ChainOperation,
   CryptoResult,
+  EnvironmentId,
   KeyFingerprintHex,
+  ProjectId,
   UnsignedChainEntry,
   UserId,
+  VariableId,
   ValueSignatureContext,
 } from "../../src/index.ts";
 import {
   computeChainEntryHash,
+  computeDekCommitment,
   computeValueSignedBytesHash,
   decodeHex,
   SUITE_ID,
@@ -54,6 +58,26 @@ export function testUserId(value: string): UserId {
  */
 export function testKeyFingerprintHex(value: string): KeyFingerprintHex {
   return value as KeyFingerprintHex;
+}
+
+/**
+ * Test-only mints of {@link ProjectId}, {@link EnvironmentId} and
+ * {@link VariableId} from fixture literals and test-vector ids. The package
+ * itself never mints them; production code mints only through the
+ * format-checked schemas in `@maruhi/core`. Like {@link testUserId}, they are
+ * plain casts with no format check: test data is the test suites' trust
+ * boundary, and negative vectors carry malformed ids on purpose.
+ */
+export function testProjectId(value: string): ProjectId {
+  return value as ProjectId;
+}
+
+export function testEnvironmentId(value: string): EnvironmentId {
+  return value as EnvironmentId;
+}
+
+export function testVariableId(value: string): VariableId {
+  return value as VariableId;
 }
 
 /** Hex inside tests is always well-formed (a null from decodeHex = an assembly bug = throw). */
@@ -147,10 +171,10 @@ export function valueContextOf(
 ): ValueSignatureContext {
   return {
     suite: payload.suite,
-    projectId: payload.aad.projectId,
-    environmentId: payload.aad.environmentId,
+    projectId: testProjectId(payload.aad.projectId),
+    environmentId: testEnvironmentId(payload.aad.environmentId),
     epoch: payload.aad.epoch,
-    variableId: payload.aad.variableId,
+    variableId: testVariableId(payload.aad.variableId),
     version: payload.aad.version,
     nonceHex: payload.nonceHex,
     ciphertextHex: payload.ciphertextHex,
@@ -173,5 +197,29 @@ export async function valueSignedBytesHashOf(
   return unwrapResult(
     await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
     "computeValueSignedBytesHash",
+  );
+}
+
+/**
+ * The §5.2 commitment of an environment's DEK (64 lowercase hex chars),
+ * minting the ids at the test boundary. Shared by the app test-supports.
+ */
+export async function testDekCommitmentHex(
+  projectId: string,
+  environmentId: string,
+  epoch: number,
+  dek: Uint8Array,
+): Promise<string> {
+  return unwrapResult(
+    await computeDekCommitment({
+      context: {
+        suite: SUITE_ID,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(environmentId),
+        epoch,
+      },
+      dek,
+    }),
+    "computeDekCommitment",
   );
 }

@@ -65,7 +65,7 @@ export function isTokenEntryName(name: string): boolean {
 }
 
 /** Keychain entry name for the master keypair of one (server, user). */
-export function masterKeyEntryName(origin: string, userId: string): string {
+export function masterKeyEntryName(origin: string, userId: UserId): string {
   return `master::${origin}::${userId}`;
 }
 

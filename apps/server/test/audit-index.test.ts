@@ -21,7 +21,7 @@
 // from duplicating the statements).
 
 import { auditReadPayload } from "@maruhi/core";
-import { testUserId } from "@maruhi/crypto/test-support";
+import { testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -99,7 +99,11 @@ function readEvent(index: number): AuditEventInput {
     actorUserId: testUserId("user-reader-0001"),
     environmentId: "env-density-0001",
     payload: auditReadPayload([
-      { variableId: `var-density-${String(index % 100).padStart(4, "0")}`, epoch: 1, version: 1 },
+      {
+        variableId: testVariableId(`var-density-${String(index % 100).padStart(4, "0")}`),
+        epoch: 1,
+        version: 1,
+      },
     ]),
   };
 }
@@ -133,13 +137,16 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
         {
           label: "Q1 membershipEventsFor (target_user_id = ?)",
           index: "ae_target",
-          run: () => void store.readRotationSync.membershipEventsFor("user-x"),
+          run: () => void store.readRotationSync.membershipEventsFor(testUserId("user-x")),
         },
         {
           label: "Q3 variableReadsBy (actor_user_id = ? AND seq range)",
           index: "ae_actor",
           run: () =>
-            void store.readRotationSync.variableReadsBy("user-x", { afterSeq: 10, beforeSeq: 20 }),
+            void store.readRotationSync.variableReadsBy(testUserId("user-x"), {
+              afterSeq: 10,
+              beforeSeq: 20,
+            }),
         },
         {
           label: "Q6 serverGrantEventsFor (target_key_fingerprint = ?)",
@@ -162,7 +169,7 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
               eventPrefix: null,
               chainSeqPresent: false,
               actorUserId: null,
-              targetUserId: "user-x",
+              targetUserId: testUserId("user-x"),
               variableId: null,
               environmentId: null,
               visibility: { kind: "admin" },
@@ -179,7 +186,7 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
               eventPrefix: null,
               chainSeqPresent: false,
               actorUserId: null,
-              targetUserId: "user-x",
+              targetUserId: testUserId("user-x"),
               variableId: null,
               environmentId: null,
               visibility: { kind: "class1-or-self", selfUserId: "user-self" },
@@ -205,7 +212,7 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
       // var.read at seq 1..10 (all the same actor)
       store.appendManySync(Array.from({ length: 10 }, (_row, index) => readEvent(index)));
       captured.length = 0;
-      const bounded = store.readRotationSync.variableReadsBy("user-reader-0001", {
+      const bounded = store.readRotationSync.variableReadsBy(testUserId("user-reader-0001"), {
         afterSeq: 3,
         beforeSeq: 7,
       });
@@ -217,10 +224,12 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
         /USING INDEX ae_actor \(actor_user_id=\? AND seq>\? AND seq<\?\)/,
       );
       // Omitted / non-finite ends are unbounded (the traditional all-seq)
-      expect(store.readRotationSync.variableReadsBy("user-reader-0001").length).toBe(10);
+      expect(store.readRotationSync.variableReadsBy(testUserId("user-reader-0001")).length).toBe(
+        10,
+      );
       expect(
         store.readRotationSync
-          .variableReadsBy("user-reader-0001", {
+          .variableReadsBy(testUserId("user-reader-0001"), {
             afterSeq: Number.NEGATIVE_INFINITY,
             beforeSeq: Number.POSITIVE_INFINITY,
           })

@@ -30,6 +30,7 @@ import {
   indexProposals,
 } from "../src/audit.ts";
 import { decodeKeyFingerprintHex, decodeProviderUserId, decodeUserId } from "../src/identity.ts";
+import { decodeEnvironmentId } from "../src/project.ts";
 
 const providerSubject = decodeProviderUserId("583231");
 const providerLogin = "octocat";
@@ -351,7 +352,7 @@ describe("the chain mirror writes only spec'd payloads (§3.4)", () => {
             sigPubHex: "22".repeat(32),
             roleCap: "member",
             scopeKind: "listed",
-            scopeEnvironmentIds: ["env-1"],
+            scopeEnvironmentIds: [decodeEnvironmentId("env-1")],
           },
         }),
         extra(101, {
@@ -361,7 +362,10 @@ describe("the chain mirror writes only spec'd payloads (§3.4)", () => {
             deviceFingerprintsHex: [testKeyFingerprintHex("cd".repeat(16))],
           },
         }),
-        extra(102, { op: "delete_environment", payload: { environmentId: "env-1" } }),
+        extra(102, {
+          op: "delete_environment",
+          payload: { environmentId: decodeEnvironmentId("env-1") },
+        }),
         extra(103, {
           op: "checkpoint",
           payload: { environments: [], auditHeadHashHex: "ef".repeat(32) },

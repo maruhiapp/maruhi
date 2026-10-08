@@ -24,6 +24,7 @@
 // with a floor (§14.3-5 — the most important non-guarantee; do not put a
 // check here that could be mistaken for "detected").
 
+import { type EnvironmentId, type ProjectId, type VariableId, type UserId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -37,6 +38,7 @@ import {
   type FloorIntent,
   type FloorIntentInput,
   type FloorIntentOutcome,
+  floorKeyAsVariableId,
   floorRecordGet,
   type FloorStoreShape,
   joinEnvironmentFloor,
@@ -57,7 +59,7 @@ export interface VerifiedMetaEvidence {
   readonly chainHeadHashHex: string;
   /** The distributed author signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly authorKeyFingerprintHex: string;
 }
 
@@ -68,7 +70,7 @@ export interface VerifiedEnvironmentStatement extends VerifiedMetaEvidence {
 
 /** A verified tombstone (a deleted statement). */
 export interface VerifiedTombstone extends VerifiedMetaEvidence {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   /** A verified deleted statement's name (keeps the immediately preceding active name — §4.2). */
   readonly name: string;
 }
@@ -127,7 +129,7 @@ export interface VerifiedSchemaFields {
  * active and declared flow, §12-7; the status field discriminates).
  */
 export interface VerifiedVariableStatement extends VerifiedMetaEvidence {
-  readonly variableId: string;
+  readonly variableId: VariableId;
   /** The verified statement's name (name resolution trusts nothing else — §12-2). */
   readonly name: string;
   /** The wire's layoutVersion (omitted = 1 — §12-2). */
@@ -145,7 +147,7 @@ export interface PulledValueEvidence {
   readonly chainHeadHashHex: string;
   /** The distributed writer signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
-  readonly writerUserId: string;
+  readonly writerUserId: UserId;
   readonly writerKeyFingerprintHex: string;
 }
 
@@ -173,30 +175,30 @@ export type FloorViolation =
     }
   | {
       readonly kind: "variable-omitted";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: VariableFloor;
     }
   | {
       readonly kind: "value-rollback";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: ActiveVariableFloor;
       readonly pulled: PulledValueEvidence;
     }
   | {
       readonly kind: "value-equivocation";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: ActiveVariableFloor;
       readonly pulled: PulledValueEvidence;
     }
   | {
       readonly kind: "value-epoch-regression";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: ActiveVariableFloor;
       readonly pulled: PulledValueEvidence;
     }
   | {
       readonly kind: "stale-epoch-injection";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       /** The rule (c) baseline (the chain-derived current epoch at the last successful pull). */
       readonly baselineEpoch: number;
       readonly floorVersion: number;
@@ -205,26 +207,26 @@ export type FloorViolation =
   | {
       readonly kind: "meta-rollback";
       readonly target: "variable" | "environment";
-      readonly variableId: string | null;
+      readonly variableId: VariableId | null;
       readonly floor: FloorMetaEvidence;
       readonly pulled: VerifiedMetaEvidence;
     }
   | {
       readonly kind: "meta-equivocation";
       readonly target: "variable" | "environment";
-      readonly variableId: string | null;
+      readonly variableId: VariableId | null;
       readonly floor: FloorMetaEvidence;
       readonly pulled: VerifiedMetaEvidence;
     }
   | {
       readonly kind: "deletion-revoked";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: FloorMetaEvidence;
       readonly pulled: VerifiedMetaEvidence;
     }
   | {
       readonly kind: "tombstone-mismatch";
-      readonly variableId: string;
+      readonly variableId: VariableId;
       readonly floor: FloorMetaEvidence;
       readonly pulled: VerifiedMetaEvidence;
     }
@@ -348,7 +350,7 @@ function metaEvidenceOf(value: VerifiedPulledValue): VerifiedMetaEvidence {
 /** The floor check of variable meta (regression = (a); a difference at the same metaVersion = (b). Advancement is not guaranteed). */
 function checkMetaAgainstFloor(
   target: "variable" | "environment",
-  variableId: string | null,
+  variableId: VariableId | null,
   floor: FloorMetaEvidence,
   pulled: VerifiedMetaEvidence,
 ): FloorViolation | null {
@@ -454,7 +456,7 @@ function checkActiveVariable(
 
 /** The meta-level check of a variable the floor records as active (3 branches: active / tombstone / omitted). */
 function checkFloorActiveMeta(
-  variableId: string,
+  variableId: VariableId,
   floor: ActiveVariableFloor,
   active: VerifiedMetaEvidence | undefined,
   tombstone: VerifiedTombstone | undefined,
@@ -473,7 +475,7 @@ function checkFloorActiveMeta(
 
 /** The check of a variable the floor records as active (value level + meta level). */
 function checkFloorActive(
-  variableId: string,
+  variableId: VariableId,
   floor: ActiveVariableFloor,
   active: VerifiedPulledValue | undefined,
   tombstone: VerifiedTombstone | undefined,
@@ -492,7 +494,7 @@ function checkFloorActive(
  * is rule (a)/(b); omission is variable-omitted.
  */
 function checkFloorDeclared(
-  variableId: string,
+  variableId: VariableId,
   floor: Extract<VariableFloor, { status: "declared" }>,
   meta: VerifiedMetaEvidence | undefined,
   tombstone: VerifiedTombstone | undefined,
@@ -506,7 +508,7 @@ function checkFloorDeclared(
 
 /** The check of a variable the floor records as deleted (deletion is a terminal state — §4.2 / session-15 §2-2). */
 function checkFloorDeleted(
-  variableId: string,
+  variableId: VariableId,
   floor: Extract<VariableFloor, { status: "deleted" }>,
   active: VerifiedMetaEvidence | undefined,
   tombstone: VerifiedTombstone | undefined,
@@ -539,7 +541,7 @@ function checkFloorDeleted(
  * / metadata-only). values-verify.ts has already refused an active / deleted pair
  * on the same ID.
  */
-function checkFloorCommon<T extends { readonly variableId: string }>(
+function checkFloorCommon<T extends { readonly variableId: VariableId }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
   activeList: readonly T[],
@@ -551,7 +553,7 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   declaredList: readonly VerifiedVariableStatement[],
   tombstoneList: readonly VerifiedTombstone[],
   checkActive: (
-    variableId: string,
+    variableId: VariableId,
     variableFloor: ActiveVariableFloor,
     active: T | undefined,
     tombstone: VerifiedTombstone | undefined,
@@ -570,7 +572,12 @@ function checkFloorCommon<T extends { readonly variableId: string }>(
   if (environmentViolation !== null) {
     return environmentViolation;
   }
-  for (const [variableId, variableFloor] of Object.entries(floor.variables)) {
+  for (const [key, variableFloor] of Object.entries(floor.variables)) {
+    // The floor's variable keys satisfy §12-1's form by construction
+    // (floor-log-decode.ts's keysAreIds) — a Record's string index erases
+    // the brand, so it is taken back through the same guard; out of form
+    // here is an internal inconsistency
+    const variableId = floorKeyAsVariableId(key);
     const active = actives.get(variableId);
     // For the meta-level check of a declared / deleted floor, a declared
     // distribution can also serve as evidence. An active floor requires the
@@ -770,7 +777,7 @@ export interface FloorHandle {
   ) => Effect.Effect<void, CliError>;
   /** The variable-floor advance of an accepted push (pullEpoch does not move). */
   readonly commitPush: (
-    variableId: string,
+    variableId: VariableId,
     variable: VariableFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
@@ -828,8 +835,8 @@ export function rejectIntentOnServerRejection(
 /** Builds an environment floor handle over the floor store. */
 export function makeFloorHandle(input: {
   readonly store: FloorStoreShape;
-  readonly projectId: string;
-  readonly environmentId: string;
+  readonly projectId: ProjectId;
+  readonly environmentId: EnvironmentId;
   readonly initial: EnvironmentFloor | null;
   /** This environment's unresolved intents as of openProject (surfaced by the fold — 3-F). */
   readonly intents?: readonly FloorIntent[];

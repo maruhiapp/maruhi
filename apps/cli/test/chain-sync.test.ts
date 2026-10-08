@@ -19,6 +19,7 @@ import {
   rotateEpochOp,
   type TestUser,
 } from "./support/crypto.ts";
+import { testEnvironmentId, testProjectId } from "./support/crypto.ts";
 import { type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 let owner: TestUser;
@@ -61,7 +62,7 @@ function runSync(origin: string, projectId: string) {
         baseUrl: origin,
         token: Redacted.make("maruhi_pat_test"),
       });
-      return yield* syncProject(client, projectId);
+      return yield* syncProject(client, testProjectId(projectId));
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 }
@@ -96,7 +97,7 @@ describe("syncProject (§6.3)", () => {
     expect([...verified.state.members.keys()]).toEqual([owner.userId]);
     // The environment set is chain-derived (§6.2): current epoch,
     // creation seq, epoch-start seq, and per-epoch commitments
-    const prod = verified.state.environments.get("prod");
+    const prod = verified.state.environments.get(testEnvironmentId("prod"));
     expect(prod?.currentEpoch).toBe(2);
     expect(prod?.createdAtSeq).toBe(3);
     expect(prod?.epochStartSeqs.get(1)).toBe(3);

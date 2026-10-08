@@ -7,7 +7,7 @@
 // server, so it appears in no type. Only public values sit on the row
 // (issue document, signatures).
 
-import type { KeyFingerprintHex, UserId } from "@maruhi/core";
+import type { EnvironmentId, KeyFingerprintHex, ProjectId, UserId } from "@maruhi/core";
 
 /** Chain roles grantable via an invite (owner is never granted through invites — §15-1). */
 export type InviteRole = "reader" | "member" | "admin";
@@ -15,7 +15,7 @@ export type InviteRole = "reader" | "member" | "admin";
 /** The to-be-granted scope (AUTH_SPEC §15-2 — 2026-09-14 ES; same shape as CRYPTO_SPEC §6.2). */
 export interface InviteScope {
   readonly scopeKind: "all" | "listed";
-  readonly scopeEnvironmentIds: readonly string[];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
 }
 
 /** The stored invite state (expiry is derived from expires_at, not a stored state). */
@@ -48,11 +48,11 @@ export interface InviteAcceptance {
 /** Domain representation of an invite row. */
 export interface InvitationRecord {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly role: InviteRole;
   /** The to-be-granted scope (part of the issue document — covered by the issue signature. §15-2) */
   readonly scope: InviteScope;
-  readonly inviterUserId: string;
+  readonly inviterUserId: UserId;
   readonly status: InviteStatus;
   readonly expiresAtMs: number;
   readonly createdAtMs: number;
@@ -86,7 +86,7 @@ export interface InviteAcceptInput {
 
 /** The target of the accepted → completed comparison at add_member acceptance (§15-2). */
 export interface InviteCompletionTarget {
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;

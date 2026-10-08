@@ -30,7 +30,7 @@ import {
   MetaVersionConflictError,
   VariableConflictError,
 } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
@@ -250,7 +250,7 @@ interface SchemaSetInput {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
   /** The author (one's own internal user_id) and the master sig key (§4.2). */
-  readonly authorUserId: string;
+  readonly authorUserId: UserId;
   readonly signingKey: CryptoKey;
   /**
    * true = allow declaration creation only (`maruhi schema import` —
@@ -266,7 +266,7 @@ interface SchemaSetInput {
 export interface SchemaSetSummary {
   /** true = newly created as a declaration (declared, metaVersion 1), false = a reissue. */
   readonly created: boolean;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly metaVersion: number;
   readonly schema: VerifiedSchemaFields;
   readonly warnings: readonly string[];
@@ -313,7 +313,7 @@ export interface SchemaSetState {
  * an ID never changes and is never reused, so a concurrent rename keeps the
  * confirmed target).
  */
-export type SchemaTargetKey = string | { readonly variableId: string };
+export type SchemaTargetKey = string | { readonly variableId: VariableId };
 
 /**
  * Name (or ID) → meta-operation target resolution (via verified statements
@@ -360,7 +360,7 @@ export const resolveSchemaTarget = Effect.fn("schema.resolveSchemaTarget")(funct
 
 interface AcceptedSchemaSet {
   readonly created: boolean;
-  readonly variableId: string;
+  readonly variableId: VariableId;
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
   readonly schema: VerifiedSchemaFields;
@@ -416,7 +416,7 @@ function preSignRejection(
  */
 export function requireVerifiedEnvironment(
   state: SchemaSetState,
-  environmentId: string,
+  environmentId: EnvironmentId,
 ): Effect.Effect<
   NonNullable<ReturnType<VerifiedProject["state"]["environments"]["get"]>>,
   CliError
@@ -476,7 +476,7 @@ const attemptSchemaSet = Effect.fn("schema.attemptSchemaSet")(function* (
   // reissue (implemented in meta-confirm.ts — shared with push's
   // create / activation)
   const issueManifestAndIntent = (issued: {
-    readonly variableId: string;
+    readonly variableId: VariableId;
     readonly status: "active" | "declared";
     readonly metaVersion: number;
     readonly metaSigHashHex: string;
