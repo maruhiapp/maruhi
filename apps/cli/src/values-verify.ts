@@ -543,9 +543,22 @@ export async function verifyDeletedStatements(
   deleted: readonly DistributedVariableMetaStatement[],
   liveIds: ReadonlySet<string>,
 ): Promise<VerifyOutcome<readonly VerifiedTombstone[]>> {
+  // Each statement's signature verification is independent, so they run in
+  // parallel; the checks below then replay in input order and the reported
+  // first failure is unchanged (P-5).
+  const outcomes = await Promise.all(
+    deleted.map((statement) =>
+      verifyVariableStatement(
+        verified,
+        environmentId,
+        statement,
+        `deleted variable ${displayText(statement.variableId)}'s meta statement`,
+      ),
+    ),
+  );
   const seen = new Set<string>();
   const tombstones: VerifiedTombstone[] = [];
-  for (const statement of deleted) {
+  for (const [index, statement] of deleted.entries()) {
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
@@ -568,12 +581,7 @@ export async function verifyDeletedStatements(
         message: `A non-deleted statement was served in the deleted list: ${displayText(statement.variableId)}`,
       };
     }
-    const result = await verifyVariableStatement(
-      verified,
-      environmentId,
-      statement,
-      `deleted variable ${displayText(statement.variableId)}'s meta statement`,
-    );
+    const result = outcomes[index]!;
     if (result.kind !== "ok") {
       return result;
     }
@@ -629,9 +637,21 @@ export async function verifyVariableStatements(
     readonly ids: Set<string>;
   }>
 > {
+  // Parallel signature verifications; the checks replay in input order so
+  // the first reported failure is unchanged (P-5).
+  const outcomes = await Promise.all(
+    statements.map((statement) =>
+      verifyVariableStatement(
+        verified,
+        environmentId,
+        statement,
+        `variable ${displayText(statement.variableId)}'s meta statement`,
+      ),
+    ),
+  );
   const seenIds = new Set<string>();
   const values: VerifiedVariableStatement[] = [];
-  for (const statement of statements) {
+  for (const [index, statement] of statements.entries()) {
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
@@ -647,12 +667,7 @@ export async function verifyVariableStatements(
       };
     }
     seenIds.add(statement.variableId);
-    const outcome = await verifyVariableStatement(
-      verified,
-      environmentId,
-      statement,
-      `variable ${displayText(statement.variableId)}'s meta statement`,
-    );
+    const outcome = outcomes[index]!;
     if (outcome.kind !== "ok") {
       return outcome;
     }
@@ -693,9 +708,21 @@ export async function verifyDeclaredStatements(
     readonly ids: Set<string>;
   }>
 > {
+  // Parallel signature verifications; the checks replay in input order so
+  // the first reported failure is unchanged (P-5).
+  const outcomes = await Promise.all(
+    declared.map((statement) =>
+      verifyVariableStatement(
+        verified,
+        environmentId,
+        statement,
+        `declared variable ${displayText(statement.variableId)}'s meta statement`,
+      ),
+    ),
+  );
   const seenIds = new Set<string>();
   const values: VerifiedVariableStatement[] = [];
-  for (const statement of declared) {
+  for (const [index, statement] of declared.entries()) {
     if (statement.environmentId !== environmentId) {
       return {
         kind: "rejected",
@@ -725,12 +752,7 @@ export async function verifyDeclaredStatements(
             : `A deleted statement was served in the declared list: ${displayText(statement.variableId)}`,
       };
     }
-    const outcome = await verifyVariableStatement(
-      verified,
-      environmentId,
-      statement,
-      `declared variable ${displayText(statement.variableId)}'s meta statement`,
-    );
+    const outcome = outcomes[index]!;
     if (outcome.kind !== "ok") {
       return outcome;
     }
@@ -754,9 +776,16 @@ export async function verifyActiveVariables(
 ): Promise<
   VerifyOutcome<{ readonly values: readonly VerifiedPulledValue[]; readonly ids: Set<string> }>
 > {
+  // Per-variable verification (statement signature + value signature) is
+  // independent, so it runs in parallel; the duplicate-id check and the
+  // outcome replay stay in input order so the first reported failure is
+  // unchanged (P-5).
+  const outcomes = await Promise.all(
+    variables.map((variable) => verifyOne(verified, environmentId, variable)),
+  );
   const seenIds = new Set<string>();
   const values: VerifiedPulledValue[] = [];
-  for (const variable of variables) {
+  for (const [index, variable] of variables.entries()) {
     // A duplicate variableId within one response is refused
     // unconditionally (covers the transport shape of equivocation that
     // juxtaposes different signed bytes at the same coordinates — ruling G)
@@ -768,7 +797,7 @@ export async function verifyActiveVariables(
       };
     }
     seenIds.add(variable.variableId);
-    const outcome = await verifyOne(verified, environmentId, variable);
+    const outcome = outcomes[index]!;
     if (outcome.kind !== "ok") {
       return outcome;
     }
