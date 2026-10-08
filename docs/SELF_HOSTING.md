@@ -109,11 +109,14 @@ bunx wrangler secret put GITHUB_CLIENT_ID
 bunx wrangler secret put GITHUB_CLIENT_SECRET
 ```
 
-(Secret registration stays on `wrangler secret put`, which reads the value on
-stdin — cf's `workers secrets update` only accepts the value inline via
-`--text`, which puts it on the process argv and in shell history. wrangler
-remains an installed devDependency for this path until cf can take secrets
-from stdin.) The update takes effect immediately (no redeploy).
+(`wrangler secret put` prompts for the value with masked input, or reads it
+from a pipe, and finds the Worker from the project config. The cf equivalent
+also keeps the value off the process argv and out of shell history when
+`--text` is left out — it prompts with masked input or reads a piped value —
+but needs the Worker name and the secret type spelled out:
+`bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server`.
+Never pass the value with `--text`, which puts it on the process argv and in
+shell history.) The update takes effect immediately (no redeploy).
 
 ### 6. Smoke-check
 
@@ -122,7 +125,7 @@ curl <deploy-url>/auth/config
 # → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
-#   (list registered secrets with `bunx cf workers secrets list` — values are not shown)
+#   (list registered secrets with `bunx cf workers secrets list --worker maruhi-server` — values are not shown)
 ```
 
 ### 7. Connect from the CLI
@@ -889,7 +892,7 @@ or newer.
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
   unregistered (a missed `wrangler secret put` — step 5). List registered secrets with
-  `bunx cf workers secrets list` (values are not shown)
+  `bunx cf workers secrets list --worker maruhi-server` (values are not shown)
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
   transit. Run `maruhi login` again for a fresh link
@@ -934,7 +937,7 @@ or newer.
   done — with one re-verification item: whether the button understands
   `cloudflare.config.ts` (it predates cf and was designed around wrangler
   configs).
-  Three points remain unverified and can only be verified against a public
+  Four points remain unverified and can only be verified against a public
   repository, so they will be checked at public release:
   (1) whether the button's monorepo support detects
   `apps/server/cloudflare.config.ts` from the repository-root URL and
@@ -948,6 +951,12 @@ or newer.
   Cloudflare's docs recommend documenting a default and "update the config
   with the ID of the newly created resource", so if the button does not
   replace it the deploy fails with an API error against a UUID that does not
-  exist (in that case the placeholder has to be removed)
+  exist (in that case the placeholder has to be removed). (4) how the
+  button's provisioning interacts with `--no-provision`: the `apps/server`
+  `deploy` script runs `cf deploy --no-provision`, which turns off cf's own
+  auto-provisioning, so the D1 database must already exist before that
+  script runs. If the button relies on cf's deploy-time provisioning rather
+  than creating resources in its own step first, the button needs its own
+  deploy command (one that keeps provisioning on for the first deploy)
 - For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md`; for the
   crypto spec see `docs/CRYPTO_SPEC.md`
