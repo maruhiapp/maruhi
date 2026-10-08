@@ -386,14 +386,16 @@ product API and its acceptance rules are untouched.
 
 Run `bun scripts/d1-export.ts --output <file>` on a schedule
 (it blocks other requests to the database while it runs, so pick a quiet
-hour), encrypt the dump with a key you control (e.g. `age`), and keep it
-outside the Workers account. The export contains only what D1 contains: user
+hour). The script calls the D1 export API directly — cf has no `d1 export`
+command — so it reads `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from
+the environment rather than a `cf auth login` profile. Encrypt the dump with
+a key you control (e.g. `age`), and keep it outside the Workers account. The export contains only what D1 contains: user
 rows, session and token **hashes**, and the authentication audit log — no
 secret values, which never reach the server in plaintext. The reference
 workflow used for the hosted service is
 `.github/workflows/ops-backup.yml` (disabled unless the repository variable
 `OPS_BACKUP_ENABLED` is `true`). The API token it needs is **D1: Edit** plus
-**Workers R2 Storage: Edit** (account scope): `d1 export` fails with
+**Workers R2 Storage: Edit** (account scope): the export fails with
 `Authentication error [10000]` under D1: Read, and `r2 object put` returns 403
 under the bucket-scoped "Workers R2 Storage Bucket Item" permission. Prefer an
 *Account* API token over a user token for CI, and allow a few minutes for
@@ -415,8 +417,11 @@ bun scripts/d1-import.ts <new-database-id> --file d1.ordered.sql
 rm d1.sql d1.ordered.sql                                    # the decrypted dump is operator data — do not keep it around
 ```
 
-The script puts every `CREATE TABLE` first, then the `INSERT`s in foreign-key
-order (parents before children), then the indexes, and drops `BEGIN`/`COMMIT`.
+`d1-import.ts` calls the D1 import API directly, so it takes the same
+`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` environment variables as the
+export. The reorder script puts every `CREATE TABLE` first, then the
+`INSERT`s in foreign-key order (parents before children), then the indexes,
+and drops `BEGIN`/`COMMIT`.
 Compare per-table `select count(*)` against the source afterwards (a few tables
 per statement — D1 caps the number of terms in a compound `SELECT`), then point
 the `DB` binding's `id` in `cloudflare.config.ts` at the new database and
