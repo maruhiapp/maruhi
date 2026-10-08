@@ -161,8 +161,8 @@ export interface StandingGroups {
 export function groupStandings(standings: KeyStandings): StandingGroups {
   const groups = {
     active: [] as StandingGroups["active"][number][],
-    revoked: [] as ProjectId[],
-    absent: [] as ProjectId[],
+    revoked: [] as StandingGroups["revoked"][number][],
+    absent: [] as StandingGroups["absent"][number][],
     unsynced: [] as StandingGroups["unsynced"][number][],
   };
   for (const { projectId, standing } of standings.projects) {

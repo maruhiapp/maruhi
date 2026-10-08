@@ -739,7 +739,7 @@ function stableSubsetOrFail(input: {
         baseline.tuples.find((candidate) => candidate.environmentId === tuple.environmentId),
       ),
     )
-    .map((tuple) => tuple.environmentId as EnvironmentId);
+    .map((tuple) => tuple.environmentId);
   if (stableIds.length === 0) {
     return Effect.fail(
       cliError(

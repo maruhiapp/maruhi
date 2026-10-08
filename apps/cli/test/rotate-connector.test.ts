@@ -865,7 +865,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
     cwd: "/repo/ops",
     output: "value",
     companions: {},
-    inputs: { STRIPE_ADMIN_KEY: { environment: "ops", name: "STRIPE_ADMIN_KEY" } },
+    inputs: {
+      STRIPE_ADMIN_KEY: { environment: testEnvironmentId("ops"), name: "STRIPE_ADMIN_KEY" },
+    },
   };
   const noFinalize: RotateRule = { ...withFinalize, finalize: null, inputs: {} };
   const jsonRule: RotateRule = {

@@ -152,13 +152,13 @@ function inputEnvironments(
   rule: RotateRule,
   environmentId: EnvironmentId,
 ): readonly EnvironmentId[] {
-  const others = new Set<string>();
+  const others = new Set<EnvironmentId>();
   for (const ref of Object.values(rule.inputs)) {
     if (ref.environment !== null && ref.environment !== environmentId) {
       others.add(ref.environment);
     }
   }
-  return [...others].toSorted() as EnvironmentId[];
+  return [...others].toSorted();
 }
 
 function missingValue(name: string, where: string, primary: string): CliError {
@@ -200,7 +200,7 @@ const leasedInputs = Effect.fn("ci-rotate.leasedInputs")(function* (
   const inputs: Record<string, Uint8Array> = {};
   for (const [inputName, ref] of Object.entries(rule.inputs)) {
     const sourceEnvironment = ref.environment ?? environmentId;
-    const material = materials.get(sourceEnvironment as EnvironmentId);
+    const material = materials.get(sourceEnvironment);
     const value = material === undefined ? undefined : byNameOf(material).get(ref.name);
     if (value === undefined) {
       const where =

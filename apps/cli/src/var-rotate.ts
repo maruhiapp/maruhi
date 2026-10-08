@@ -292,7 +292,7 @@ function pushOne(
 ): Effect.Effect<PushedVersion, CliError> {
   return pushVariable({
     client: context.client,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     recipient: context.recipient,
     name,
     value: Redacted.make(bytes, { label: "variable-value" }),
@@ -363,7 +363,7 @@ export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   const pulled = yield* pullVerifiedEnvironment({
     client: context.client,
     verified: context.verified,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     resync: context.resync,
     floor: context.floorHandle,
   });
@@ -422,7 +422,7 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
   const base = {
     client: context.client,
     verified: context.verified,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     resync: context.resync,
     floor: context.floorHandle,
     recipient: context.recipient,

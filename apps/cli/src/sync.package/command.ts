@@ -1,6 +1,5 @@
 // `maruhi sync` (discipline: see commands/index.ts).
 
-import { type EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -183,7 +182,7 @@ export function makeSyncCommands() {
         resync: opened.context.resync,
         target: opened.target,
         sourceFloor: opened.sourceFloor,
-        receiptsEnvironment: opened.config.receiptsEnvironment as EnvironmentId,
+        receiptsEnvironment: opened.config.receiptsEnvironment,
         receiptsFloor: opened.receiptsFloor,
       });
     }),
@@ -205,7 +204,7 @@ export function makeSyncCommands() {
         resync: opened.context.resync,
         target: opened.target,
         sourceFloor: opened.sourceFloor,
-        receiptsEnvironment: opened.config.receiptsEnvironment as EnvironmentId,
+        receiptsEnvironment: opened.config.receiptsEnvironment,
         receiptsFloor: opened.receiptsFloor,
         // The receipt's signature (§4.1): writer = my internal user_id, key = the master sig key
         writerUserId: opened.context.session.userId,

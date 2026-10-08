@@ -320,7 +320,7 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
     target,
     // The push's environment = the sync source: passes push's advanced floor handle as-is
     sourceFloor: context.floorHandle,
-    receiptsEnvironment: setup.config.receiptsEnvironment as EnvironmentId,
+    receiptsEnvironment: setup.config.receiptsEnvironment,
     receiptsFloor,
     writerUserId: context.session.userId,
     signingKey: context.masterKeys.sigKeyPair.privateKey,

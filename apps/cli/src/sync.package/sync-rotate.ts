@@ -177,7 +177,7 @@ const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   CliError,
   CliIo
 > {
-  const receiptsEnvironment = input.config.receiptsEnvironment as EnvironmentId;
+  const receiptsEnvironment = input.config.receiptsEnvironment;
   const loaded = yield* loadReceipt({
     client: input.client,
     verified,

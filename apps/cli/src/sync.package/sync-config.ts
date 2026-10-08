@@ -31,7 +31,7 @@
 
 import { dirname, join } from "node:path";
 
-import { type ProjectId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
 import {
@@ -70,7 +70,7 @@ export const DEFAULT_SYNC_CONFIG_PATH = "maruhi.sync.json";
 
 /** Where the integration token lives: a normal variable of some environment. */
 export interface TokenRef {
-  readonly environment: string;
+  readonly environment: EnvironmentId;
   readonly name: string;
 }
 
@@ -122,7 +122,7 @@ export interface SyncTarget {
   readonly preset: SyncPreset;
   readonly driver: TargetDriver;
   /** The maruhi environment ID to decrypt. */
-  readonly environment: string;
+  readonly environment: EnvironmentId;
   /** An explicit list of variable names to carry, or every active variable of the environment (`"all"`). */
   readonly variables: readonly string[] | "all";
   /**
@@ -147,7 +147,7 @@ export interface SyncConfig {
   /** The project the config belongs to (optional. When given, checked against the resolved project). */
   readonly projectId: ProjectId | undefined;
   /** The environment ID where receipt variables live (supplement 15 X3 (a)). */
-  readonly receiptsEnvironment: string;
+  readonly receiptsEnvironment: EnvironmentId;
   readonly targets: ReadonlyMap<string, SyncTarget>;
 }
 
@@ -425,7 +425,7 @@ interface TargetHead {
   readonly record: Record<string, unknown>;
   readonly preset: SyncPreset;
   readonly driverKind: DriverKind;
-  readonly environment: string;
+  readonly environment: EnvironmentId;
 }
 
 /** Interpreting the target's shape (record, keys, preset, driver, environment). */
@@ -622,7 +622,7 @@ function parseTargets(
   record: Record<string, unknown>,
   root: {
     readonly configDir: string;
-    readonly receiptsEnvironment: string;
+    readonly receiptsEnvironment: EnvironmentId;
     readonly projectId: ProjectId | undefined;
   },
 ): Parsed<ReadonlyMap<string, SyncTarget>> {

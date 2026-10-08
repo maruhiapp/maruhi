@@ -92,8 +92,9 @@ export const stringLeaf = (message: string, test: (value: string) => boolean) =>
     Schema.makeFilter((value) => (test(value) ? undefined : message)),
   );
 
-/** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). */
-export const environmentId = (message: string) => stringLeaf(message, isEnvironmentId);
+/** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). Decoding mints an EnvironmentId. */
+export const environmentId = (message: string) =>
+  Schema.String.annotate({ message }).pipe(Schema.refine(isEnvironmentId, { message }));
 
 /** An environment variable name leaf (run.ts's SAFE_ENV_NAME — a POSIX identifier). */
 export const envNameLeaf = (message: string) =>

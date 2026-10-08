@@ -50,7 +50,7 @@ export const SIGNUP_DENIAL_REASONS = [
 export type SignupDenialReason = (typeof SIGNUP_DENIAL_REASONS)[number];
 
 // ---------------------------------------------------------------------------
-// Organization ids (AUTH_SPEC §9). Branded for the same reason as UserId:
+// Organization ids (AUTH_SPEC §9). Branded for the same reason UserId is:
 // organizations.id and memberships.org_id are ULID columns adjacent to
 // user-id columns of the same shape, and the brand is what keeps one out of
 // the other's positions. Minted only at trust boundaries — this schema (wire

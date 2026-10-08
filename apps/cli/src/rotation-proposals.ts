@@ -317,7 +317,7 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
   const pulled = yield* pullVerifiedEnvironment({
     client: context.client,
     verified: context.verified,
-    environmentId: context.environmentId as EnvironmentId,
+    environmentId: context.environmentId,
     resync: context.resync,
     floor: context.floorHandle,
   });
@@ -407,7 +407,7 @@ const pushProposed = Effect.fn("rotation-proposals.pushProposed")(function* (
   for (const entry of toPush) {
     const version = yield* pushVariable({
       client: context.client,
-      environmentId: context.environmentId as EnvironmentId,
+      environmentId: context.environmentId,
       recipient: context.recipient,
       name: entry.name,
       value: entry.value,

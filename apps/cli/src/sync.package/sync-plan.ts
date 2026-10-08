@@ -448,7 +448,7 @@ export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
   const pulled = yield* pullVerifiedEnvironment({
     client: input.client,
     verified: loaded.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     resync: input.resync,
     floor: input.sourceFloor,
   });
@@ -721,7 +721,7 @@ export const runDriver = Effect.fn("sync-plan.runDriver")(function* (
 
 /** Extracts the integration token from the decrypted variables (with a check). */
 export function integrationTokenOf(
-  token: { readonly environment: string; readonly name: string },
+  token: { readonly environment: EnvironmentId; readonly name: string },
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
 ): Effect.Effect<IntegrationToken, CliError> {
   const variable = variables.find((entry) => entry.name === token.name);
@@ -757,7 +757,7 @@ const fetchIntegrationToken = Effect.fn("sync-plan.fetchIntegrationToken")(funct
   const pulled = yield* pullVariables({
     client: input.client,
     verified,
-    environmentId: driver.token.environment as EnvironmentId,
+    environmentId: driver.token.environment,
     recipient: input.recipient,
     resync: input.resync,
     floor: input.tokenFloor,
@@ -965,7 +965,7 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   const meta = yield* pullVerifiedEnvironment({
     client: input.client,
     verified: loaded.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     resync: input.resync,
     floor: input.sourceFloor,
   });
@@ -992,7 +992,7 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   const pulled = yield* pullVariables({
     client: input.client,
     verified: meta.verified,
-    environmentId: input.target.environment as EnvironmentId,
+    environmentId: input.target.environment,
     recipient: input.recipient,
     resync: input.resync,
     floor: input.sourceFloor,

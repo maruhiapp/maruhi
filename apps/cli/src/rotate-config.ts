@@ -30,7 +30,7 @@
 
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
-import { type ProjectId } from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
 import {
@@ -88,7 +88,7 @@ export const EXEC_CONTROL_PREFIX = "MH_ROTATE_";
 
 /** Where an admin input lives: a variable of the target's environment (`environment` null) or of another one. */
 export interface InputRef {
-  readonly environment: string | null;
+  readonly environment: EnvironmentId | null;
   readonly name: string;
 }
 
