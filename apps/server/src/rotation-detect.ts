@@ -34,6 +34,16 @@
 //   mandatory-rotation sweep from auto-resolving everything), and a rollback to
 //   a value the subject could read re-opens a resolved flag. A dismissal
 //   covers the flags effective when it is recorded and is sticky
+// - Environment and variable ids stay plain strings here, unlike the rest of
+//   the server (EnvironmentId / VariableId). The inputs are audit rows,
+//   which replay stored text (audit-api.ts's AuditEventSchema), and a brand
+//   has no safe mint at this read. Detection runs inside the chain
+//   acceptance task (chain-accept.ts), so a checked decode that throws on a
+//   corrupt row would refuse `remove_member` / `revoke_*` themselves, and a
+//   decode that skips the row would silently drop a rotation candidate.
+//   Here, (environment, variable) pairs travel together in row shapes and
+//   `pairKey`. A seam that takes both ids from an already-typed caller takes
+//   the brands instead (`rotationFlagEventsFor` in audit-store.ts)
 
 import type {
   AuditEventRecordOf,

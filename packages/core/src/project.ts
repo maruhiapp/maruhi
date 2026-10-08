@@ -18,20 +18,22 @@
 // reads. `.oxlintrc.json` enforces this: the schemas and `decode*` mints
 // below may be imported only by the listed mint sites.
 //
-// The `is*` guards have two policies:
+// Every exported `is*` guard is a non-narrowing predicate. The only
+// brand-returning predicates are module-private and feed a `Schema.refine`
+// mint: the `narrows*` below, `narrowsKeyFingerprintHex` and `isUserId` in
+// identity.ts (which accepts every string, because `UserId` records
+// provenance, not a format).
 //
-// - `isUserId` narrows (identity.ts): "non-empty" IS the brand's definition,
-//   so a narrowing check is a verified mint by construction.
-// - `isProjectId` / `isEnvironmentId` / `isVariableId` (and
-//   `isKeyFingerprintHex` in identity.ts) are non-narrowing predicates —
-//   every one of these formats collides with another domain's: env and var
-//   ids share one regex, a 64-hex project id has the shape of every SHA-256
-//   hex (chain head hashes, proposal ids), and a 32-hex fingerprint matches
-//   proposal / audit row ids. A `value is` guard would let any file mint
-//   one brand from another domain's same-shaped string — the very confusion
-//   the brands exist to prevent. Minting is consolidated in the schemas and
-//   `decode*` below (`.oxlintrc.json`-restricted); a boolean check mints
-//   nothing, so it needs no restriction.
+// `isProjectId` / `isEnvironmentId` / `isVariableId` (and
+// `isKeyFingerprintHex` in identity.ts) do not narrow because every one of
+// these formats collides with another domain's: env and var ids share one
+// regex, a 64-hex project id has the shape of every SHA-256 hex (chain head
+// hashes, proposal ids), and a 32-hex fingerprint matches proposal / audit
+// row ids. A `value is` guard would let any file mint one brand from another
+// domain's same-shaped string — the very confusion the brands exist to
+// prevent. Minting is consolidated in the schemas and `decode*` below
+// (`.oxlintrc.json`-restricted); a boolean check mints nothing, so it needs
+// no restriction.
 
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
 import { Schema } from "effect";
