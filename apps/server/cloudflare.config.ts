@@ -56,9 +56,11 @@ const PROJECT_CHAIN_EXPORTS = {
   }),
 };
 
+// The `as const`s keep the literal types cf/config's WorkerConfig expects
+// (a widened `string` fails the server typecheck, which covers this file).
 const SPA_ASSETS = {
-  htmlHandling: "auto-trailing-slash",
-  notFoundHandling: "single-page-application",
+  htmlHandling: "auto-trailing-slash" as const,
+  notFoundHandling: "single-page-application" as const,
   runWorkerFirst: ["/auth/*", "/projects", "/projects/*", "/invites", "/invites/*"],
 };
 
