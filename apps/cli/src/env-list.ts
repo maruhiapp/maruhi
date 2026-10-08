@@ -85,10 +85,9 @@ export interface EnvironmentList {
   readonly headSeq: number;
 }
 
-// The decoded success body (effect 4.0.2 unions the client method's success
-// with the response-mode results — the wire shape is the schema's decoded
-// type, not the method's Success)
-type ListWire = (typeof EnvironmentListSchema)["Type"];
+// The decoded success body (the client method's Success also carries the
+// response-mode results)
+type ListWire = typeof EnvironmentListSchema.Type;
 type ListedStatement = ListWire["environments"][number]["statement"];
 
 /** One chain environment joined with its verified listed statement (null = deleted on the chain). */
