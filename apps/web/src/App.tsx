@@ -6,6 +6,7 @@
 import { Router } from "@funstack/router";
 import { bindRoute } from "@funstack/router/server";
 
+import { FocusOnNavigation } from "./components/FocusOnNavigation.tsx";
 import { Providers } from "./components/Providers.tsx";
 import { AccountAuditScreen } from "./dashboard/AccountAuditScreen.tsx";
 import { DashboardScreen } from "./dashboard/DashboardScreen.tsx";
@@ -47,6 +48,8 @@ const routes = [
 export default function App() {
   return (
     <Providers>
+      {/* focus moves to the page h1 after each SPA navigation (audit A-2) */}
+      <FocusOnNavigation />
       {/* fallback="static": browsers without the Navigation API degrade to MPA (full page loads) */}
       <Router routes={routes} fallback="static" />
     </Providers>
