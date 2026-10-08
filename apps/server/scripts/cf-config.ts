@@ -19,7 +19,7 @@ export function cfD1Binding(mode: string | undefined, caller: string) {
 
 // The D1 export/import envelopes carry signed URLs for unencrypted dumps; a
 // thrown error string ends up in CI logs, so URL-shaped values are scrubbed
-// before raw CLI output is interpolated into errors.
+// before raw API output is interpolated into errors.
 export function redactUrls(text: string): string {
   return text.replace(/https?:\/\/\S+/g, "[redacted-url]");
 }

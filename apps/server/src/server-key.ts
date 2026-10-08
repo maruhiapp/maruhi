@@ -172,15 +172,17 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
   // replayed to every later call, the same guarantee the hand-made
   // `cached ??=` Promise gave
   const derived = Effect.runSync(Effect.cached(derive(ikmHex)));
-  // Accesses hold the memo evaluation uninterruptibly. An interrupted
-  // first caller would otherwise leave an interrupted Exit in the
-  // cell permanently, poisoning the key until the isolate is recycled
-  // (the detached Promise had no such failure mode). The mask must
-  // wrap the access, not the derivation: the pending interrupt
+  // Accesses hold the memo evaluation uninterruptibly, so the one
+  // derivation always completes and is stored even when every caller
+  // waiting on it is interrupted. `cached` itself treats interruption
+  // as abandonment (since effect 4.0.1): an interrupted run is never
+  // stored, so it cannot poison the cell, but without the mask an
+  // abandoned run would be derived again by the next caller. The mask
+  // must wrap the access, not the derivation: the pending interrupt
   // surfaces when the mask lifts, which inside `cached` would still be
-  // within the cell's scope — here the store lands first and the
-  // caller's interrupt only takes effect after it. Waiters wait out
-  // the one-shot derivation before their own interrupt lands
+  // within the run — here the store lands first and the caller's
+  // interrupt only takes effect after it. Waiters wait out the
+  // one-shot derivation before their own interrupt lands
   const shared = Effect.uninterruptible(derived);
   return {
     info: Effect.map(shared, (key) => key?.info ?? null),
