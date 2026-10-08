@@ -3,7 +3,7 @@
 // standing report (the group's overview lives in device.ts).
 
 import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
-import { type EnvironmentId, type ProjectId } from "@maruhi/core";
+import { type EnvironmentId, type KeyFingerprintHex, type ProjectId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
@@ -96,7 +96,7 @@ export const deviceAddOp = Effect.fn("device-add.deviceAddOp")(function* (input:
 /** This key's live request (null if none. A lookup failure other than 404 is reported — K4-33). */
 function pendingRequestOf(
   client: MaruhiClient,
-  fingerprintHex: string,
+  fingerprintHex: KeyFingerprintHex,
 ): Effect.Effect<{ readonly expiresAtMs: number } | null, CliError> {
   return client.devices.requestGet({ params: { fp: fingerprintHex } }).pipe(
     Effect.map((request) => ({ expiresAtMs: request.expiresAtMs })),
