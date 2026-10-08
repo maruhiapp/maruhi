@@ -126,7 +126,6 @@
         "apps/server/src/data/data-store-write-ops.ts",
         "apps/server/src/db.package/invites.ts",
         "apps/server/src/audit-store.ts",
-        "apps/server/src/handlers/handlers-devices.ts",
         "apps/server/src/handlers/handlers-membership.ts",
         "apps/server/src/handlers/handlers-rotation.ts",
         "apps/server/src/import-check.ts",
