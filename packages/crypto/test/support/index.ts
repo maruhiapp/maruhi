@@ -25,6 +25,7 @@ export {
   testProjectId,
   testUserId,
   testVariableId,
+  testDekCommitmentHex,
   unwrapResult,
   valueContextOf,
   valueSignedBytesHashOf,

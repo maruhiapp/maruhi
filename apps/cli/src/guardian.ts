@@ -457,23 +457,24 @@ const reportShare = Effect.fn("guardian.reportShare")(function* (
   chainMembers: ReadonlyMap<string, ChainMember> | null,
 ): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
-  const userId = rows[0]?.guardianUserId ?? null;
+  const first = rows[0];
+  if (first === undefined) {
+    // shareIndexes come from the rows themselves — a segment always has ≥1 row
+    return;
+  }
+  const userId = first.guardianUserId;
   const live = rows.filter((row) => stalenessOf(row, chainMembers) === null);
   const gone = rows.filter((row) => stalenessOf(row, chainMembers) !== null);
   const stale = chainMembers !== null && live.length === 0;
   yield* io.log(
-    `  ${shareIndex}. ${userId === null ? "unknown" : displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
+    `  ${shareIndex}. ${displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
   );
   if (stale) {
     const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
-    if (userId !== null) {
-      yield* logWarning(staleShareWarning(userId, left, mode));
-    }
+    yield* logWarning(staleShareWarning(userId, left, mode));
   } else if (chainMembers !== null && gone.length > 0) {
     // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
-    if (userId !== null) {
-      yield* logNote(partiallyRevokedNote(userId, gone, live.length));
-    }
+    yield* logNote(partiallyRevokedNote(userId, gone, live.length));
   }
 });
 

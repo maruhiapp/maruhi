@@ -19,7 +19,6 @@ import type {
   UserId,
 } from "@maruhi/crypto";
 import {
-  computeDekCommitment,
   computeEnvManifestSignedBytesHash,
   computeMetaSignedBytesHash,
   computeUserKeyFingerprint,
@@ -55,6 +54,7 @@ import {
   testProjectId,
   testUserId,
   testVariableId,
+  testDekCommitmentHex,
   unwrapResult,
   valueSignedBytesHashOf,
 } from "@maruhi/crypto/test-support";
@@ -63,7 +63,6 @@ export type { BuiltChain, LazyChainOperation };
 export {
   hexBytes,
   testEnvironmentId,
-  testKeyFingerprintHex,
   testProjectId,
   testUserId,
   testVariableId,
@@ -198,26 +197,8 @@ export function removeMemberOp(target: TestUser): ChainOperation {
   return { op: "remove_member", payload: { targetUserId: target.userId } };
 }
 
-/** The §5.2 commitment (64 lowercase hex chars). */
-async function dekCommitmentFor(
-  projectId: string,
-  environmentId: string,
-  epoch: number,
-  dek: Uint8Array,
-): Promise<string> {
-  return unwrapResult(
-    await computeDekCommitment({
-      context: {
-        suite: SUITE_ID,
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(environmentId),
-        epoch,
-      },
-      dek,
-    }),
-    "computeDekCommitment",
-  );
-}
+/** The §5.2 commitment (64 lowercase hex chars — {@link testDekCommitmentHex} of the test-supports). */
+const dekCommitmentFor = testDekCommitmentHex;
 
 /**
  * create_environment (with the epoch-1 commitment — §6.2). Because the

@@ -20,7 +20,6 @@ import type {
 } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
-  computeDekCommitment,
   computeEnvManifestSignedBytesHash,
   computeEnvValuesDigest,
   computeMetaSignedBytesHash,
@@ -48,6 +47,7 @@ import {
   BASE_TIME_MS,
   buildChainWith,
   hexBytes,
+  testDekCommitmentHex,
   testEnvironmentId,
   testKeyFingerprintHex,
   testProjectId,
@@ -272,26 +272,8 @@ export function changeRoleOperation(
   };
 }
 
-/** The §5.2 commitment (hex lowercase, 64 chars). */
-export async function commitmentOf(
-  projectId: string,
-  environmentId: string,
-  epoch: number,
-  dek: Uint8Array,
-): Promise<string> {
-  return unwrapResult(
-    await computeDekCommitment({
-      context: {
-        suite: SUITE_ID,
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(environmentId),
-        epoch,
-      },
-      dek,
-    }),
-    "computeDekCommitment",
-  );
-}
+/** The §5.2 commitment (hex lowercase, 64 chars — the shared {@link testDekCommitmentHex}). */
+export const commitmentOf = testDekCommitmentHex;
 
 /** Payload for create_environment (with the epoch-1 commitment — §6.2). */
 export function createEnvironmentOperation(

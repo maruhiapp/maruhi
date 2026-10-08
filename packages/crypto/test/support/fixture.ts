@@ -20,6 +20,7 @@ import type {
 } from "../../src/index.ts";
 import {
   computeChainEntryHash,
+  computeDekCommitment,
   computeValueSignedBytesHash,
   decodeHex,
   SUITE_ID,
@@ -196,5 +197,29 @@ export async function valueSignedBytesHashOf(
   return unwrapResult(
     await computeValueSignedBytesHash(valueContextOf(payload, writerUserId)),
     "computeValueSignedBytesHash",
+  );
+}
+
+/**
+ * The §5.2 commitment of an environment's DEK (64 lowercase hex chars),
+ * minting the ids at the test boundary. Shared by the app test-supports.
+ */
+export async function testDekCommitmentHex(
+  projectId: string,
+  environmentId: string,
+  epoch: number,
+  dek: Uint8Array,
+): Promise<string> {
+  return unwrapResult(
+    await computeDekCommitment({
+      context: {
+        suite: SUITE_ID,
+        projectId: testProjectId(projectId),
+        environmentId: testEnvironmentId(environmentId),
+        epoch,
+      },
+      dek,
+    }),
+    "computeDekCommitment",
   );
 }

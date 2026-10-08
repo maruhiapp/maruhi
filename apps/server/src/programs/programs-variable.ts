@@ -662,8 +662,26 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
   },
 );
 
-export const renameVariableProgram = Effect.fn("programs-variable.renameVariableProgram")(
-  function* (
+/**
+ * The frame the variable meta-op programs share: take the
+ * (actor, environmentId, variableId, statement, manifest, cache) tuple,
+ * resolve the variable's meta-op context, then run the op's own pipeline.
+ */
+const variableMetaProgram = <A, E, R>(
+  name: string,
+  body: (
+    context: Effect.Success<ReturnType<typeof requireVariableMetaOpContext>>,
+    input: {
+      readonly actor: DataActor;
+      readonly environmentId: EnvironmentId;
+      readonly variableId: VariableId;
+      readonly statement: MetaStatementInput;
+      readonly manifest: EnvManifestInput;
+      readonly cache: StateCache;
+    },
+  ) => Effect.Effect<A, E, R>,
+) =>
+  Effect.fn(name)(function* (
     actor: DataActor,
     environmentId: EnvironmentId,
     variableId: VariableId,
@@ -671,135 +689,147 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     manifest: EnvManifestInput,
     cache: StateCache,
   ) {
-    const { history, member, projectId, variable } = yield* requireVariableMetaOpContext(
+    const context = yield* requireVariableMetaOpContext(
       actor,
       environmentId,
       variableId,
       statement,
       cache,
     );
-    // The DO storage total guard (§12-8): rename / schema reissue is a growth
-    // surface that stacks a statement row + a manifest (applies independently
-    // of the metaVersion bound). It sits after the existence and layout checks
-    // and before CAS / signature verification (keeps the same prefix shape as
-    // the delete path — delete does not call the guard)
-    yield* ensureStorageAdmitsGrowth;
-    yield* ensureNfcName(statement.name);
-    const store = yield* DataStore;
-    if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
-      return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
-    }
-    // rename / schema reissue never changes status (§12-5): declared →
-    // active is only the activation composite (with value), and active →
-    // declared is forbidden. The wire can carry both statuses, so the
-    // pipeline pins the match against the predecessor after the CAS. The
-    // manifest is recomputed and cross-checked on the set after the rename
-    // is applied
-    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
-      projectId,
+    return yield* body(context, {
+      actor,
       environmentId,
       variableId,
-      operation: "reissue",
-      latestMetaVersion: variable.latestMetaVersion,
-      history,
-      member,
       statement,
       manifest,
-      digestStatus: statement.status,
+      cache,
     });
-    const audit = yield* AuditStore;
-    const now = yield* Clock.currentTimeMillis;
-    // Audit-event branching (AUDIT_SPEC §3.3): only a reissue that actually
-    // changed the name is var.renamed; a name-preserving reissue (setting or
-    // changing schema fields — the §12-5 schema reissue) is
-    // var.schema_reissued. The wire has the same operation shape for both, so
-    // branch on a byte comparison against the previous statement's name at
-    // acceptance time (do not record an operation that did not rename as
-    // "renamed"). Changing the name and the schema fields at once is a single
-    // var.renamed row (the rename is the main event — the one-row-per-
-    // operation recording discipline)
-    const event = statement.name === variable.name ? "var.schema_reissued" : "var.renamed";
-    yield* Effect.sync(() => {
-      store.write.insertVariableMetaStatement(
+  });
+
+export const renameVariableProgram = variableMetaProgram(
+  "programs-variable.renameVariableProgram",
+  (
+    { history, member, projectId, variable },
+    { actor, environmentId, variableId, statement, manifest },
+  ) =>
+    Effect.gen(function* () {
+      // The DO storage total guard (§12-8): rename / schema reissue is a growth
+      // surface that stacks a statement row + a manifest (applies independently
+      // of the metaVersion bound). It sits after the existence and layout checks
+      // and before CAS / signature verification (keeps the same prefix shape as
+      // the delete path — delete does not call the guard)
+      yield* ensureStorageAdmitsGrowth;
+      yield* ensureNfcName(statement.name);
+      const store = yield* DataStore;
+      if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
+        return yield* rejectData({
+          kind: "variable-conflict",
+          variableId,
+          reason: "duplicate-name",
+        });
+      }
+      // rename / schema reissue never changes status (§12-5): declared →
+      // active is only the activation composite (with value), and active →
+      // declared is forbidden. The wire can carry both statuses, so the
+      // pipeline pins the match against the predecessor after the CAS. The
+      // manifest is recomputed and cross-checked on the set after the rename
+      // is applied
+      const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
+        projectId,
         environmentId,
         variableId,
+        operation: "reissue",
+        latestMetaVersion: variable.latestMetaVersion,
+        history,
+        member,
         statement,
-        signedBytesHashHex,
-        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
-        now,
-      );
-      acceptedManifest.writeSync(now);
-      audit.appendSync(
-        dataEvent(actor, now, {
-          event,
+        manifest,
+        digestStatus: statement.status,
+      });
+      const audit = yield* AuditStore;
+      const now = yield* Clock.currentTimeMillis;
+      // Audit-event branching (AUDIT_SPEC §3.3): only a reissue that actually
+      // changed the name is var.renamed; a name-preserving reissue (setting or
+      // changing schema fields — the §12-5 schema reissue) is
+      // var.schema_reissued. The wire has the same operation shape for both, so
+      // branch on a byte comparison against the previous statement's name at
+      // acceptance time (do not record an operation that did not rename as
+      // "renamed"). Changing the name and the schema fields at once is a single
+      // var.renamed row (the rename is the main event — the one-row-per-
+      // operation recording discipline)
+      const event = statement.name === variable.name ? "var.schema_reissued" : "var.renamed";
+      yield* Effect.sync(() => {
+        store.write.insertVariableMetaStatement(
           environmentId,
           variableId,
-          payload: { name: statement.name },
-          actorKeyFingerprintHex: author.keyFingerprintHex,
-        }),
-      );
-    });
-  },
+          statement,
+          signedBytesHashHex,
+          { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
+          now,
+        );
+        acceptedManifest.writeSync(now);
+        audit.appendSync(
+          dataEvent(actor, now, {
+            event,
+            environmentId,
+            variableId,
+            payload: { name: statement.name },
+            actorKeyFingerprintHex: author.keyFingerprintHex,
+          }),
+        );
+      });
+    }),
 );
 
-export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariableProgram")(
-  function* (
-    actor: DataActor,
-    environmentId: EnvironmentId,
-    variableId: VariableId,
-    statement: MetaStatementInput,
-    manifest: EnvManifestInput,
-    cache: StateCache,
-  ) {
-    const { history, member, projectId, variable } = yield* requireVariableMetaOpContext(
-      actor,
-      environmentId,
-      variableId,
-      statement,
-      cache,
-    );
-    // A deleted statement preserves the previous name, schema fields and
-    // layout (§4.2 — byte-exact): the pipeline checks this after the
-    // metaVersion CAS (§12-5's check order). The manifest is recomputed and
-    // cross-checked on the set including the tombstone (a digest mismatch
-    // from hiding a tombstone is caught here — §4.3 (3))
-    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
-      projectId,
-      environmentId,
-      variableId,
-      operation: "delete",
-      latestMetaVersion: variable.latestMetaVersion,
-      history,
-      member,
-      statement,
-      manifest,
-      digestStatus: "deleted",
-    });
-    const store = yield* DataStore;
-    const audit = yield* AuditStore;
-    const now = yield* Clock.currentTimeMillis;
-    // Write phase: tombstone + delete all versions + the deleted statement
-    // row (keeps being stored and distributed — §12-5) + the manifest +
-    // var.deleted (author FP — AUDIT_SPEC §3.3)
-    yield* Effect.sync(() => {
-      store.write.retireVariable(environmentId, variableId, now);
-      store.write.insertVariableMetaStatement(
+export const deleteVariableProgram = variableMetaProgram(
+  "programs-variable.deleteVariableProgram",
+  (
+    { history, member, projectId, variable },
+    { actor, environmentId, variableId, statement, manifest },
+  ) =>
+    Effect.gen(function* () {
+      // A deleted statement preserves the previous name, schema fields and
+      // layout (§4.2 — byte-exact): the pipeline checks this after the
+      // metaVersion CAS (§12-5's check order). The manifest is recomputed and
+      // cross-checked on the set including the tombstone (a digest mismatch
+      // from hiding a tombstone is caught here — §4.3 (3))
+      const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
+        projectId,
         environmentId,
         variableId,
+        operation: "delete",
+        latestMetaVersion: variable.latestMetaVersion,
+        history,
+        member,
         statement,
-        signedBytesHashHex,
-        { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
-        now,
-      );
-      acceptedManifest.writeSync(now);
-      audit.appendSync(
-        dataEvent(actor, now, {
-          event: "var.deleted",
+        manifest,
+        digestStatus: "deleted",
+      });
+      const store = yield* DataStore;
+      const audit = yield* AuditStore;
+      const now = yield* Clock.currentTimeMillis;
+      // Write phase: tombstone + delete all versions + the deleted statement
+      // row (keeps being stored and distributed — §12-5) + the manifest +
+      // var.deleted (author FP — AUDIT_SPEC §3.3)
+      yield* Effect.sync(() => {
+        store.write.retireVariable(environmentId, variableId, now);
+        store.write.insertVariableMetaStatement(
           environmentId,
           variableId,
-          actorKeyFingerprintHex: author.keyFingerprintHex,
-        }),
-      );
-    });
-  },
+          statement,
+          signedBytesHashHex,
+          { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
+          now,
+        );
+        acceptedManifest.writeSync(now);
+        audit.appendSync(
+          dataEvent(actor, now, {
+            event: "var.deleted",
+            environmentId,
+            variableId,
+            actorKeyFingerprintHex: author.keyFingerprintHex,
+          }),
+        );
+      });
+    }),
 );

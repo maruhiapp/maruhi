@@ -9,35 +9,12 @@
 // declaration (api-schema) — no hand-written enumeration.
 
 import { maruhiApi } from "@maruhi/api-schema";
-import type { KeyFingerprintHex, UserId } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { callProjectData, noContent } from "../data/data-http.ts";
 import type { RecipientDekValue } from "../data/data-plane.ts";
-
-/** The recipient position of a wrap: a member's user id for class member, the server key FP for class server (wire-boundary mint — AUTH_SPEC §12-6 / CRYPTO_SPEC §9). */
-/**
- * A `server`-class ref whose recipient is not fingerprint-shaped can never
- * name a stored server wrap — brand it as a user-id value so the lookup
- * misses (404) instead of throwing on the mint.
- */
-const mintServerRecipient = (value: string): UserId | KeyFingerprintHex => {
-  try {
-    return decodeKeyFingerprintHex(value);
-  } catch {
-    return decodeUserId(value);
-  }
-};
-
-const recipientOf = (d: {
-  readonly recipientClass: "member" | "server";
-  readonly recipientUserId: string;
-}): UserId | KeyFingerprintHex =>
-  d.recipientClass === "server"
-    ? mintServerRecipient(d.recipientUserId)
-    : decodeUserId(d.recipientUserId);
+import { recipientOf } from "./handlers-recipient.ts";
 
 export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
   handlers
