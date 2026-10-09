@@ -122,7 +122,7 @@ takes effect immediately (no redeploy).
 curl <deploy-url>/auth/config
 # → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
-# → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
+# → 503 {"_tag":"SetupIncomplete",...} means a secret registration from step 5 was skipped
 #   (list registered secrets with `bunx cf workers secrets list --worker maruhi-server` — values are not shown)
 ```
 
@@ -465,7 +465,9 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 # 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see `case "hosted"` in
 #    cloudflare.config.ts; put your D1 database ID there and register the same
-#    secrets on the hosted Worker with --worker maruhi-server-hosted).
+#    secrets on the hosted Worker with --worker maruhi-server-hosted, after
+#    the deploy: the secrets API writes to an existing Worker, and until the
+#    secrets are in place the new Worker answers 503 SetupIncomplete).
 #    Note: the hosted mode publishes a separate Worker, `maruhi-server-hosted`
 #    (named explicitly in cloudflare.config.ts) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
@@ -473,11 +475,11 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 #    and OAuth codes — keep `observability.logs.invocationLogs: false` and
 #    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
+bun run db:migrate:hosted
+bunx cf deploy --mode hosted --no-provision
 bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server-hosted
 bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server-hosted
 bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --type secret_text --worker maruhi-server-hosted   # optional
-bun run db:migrate:hosted
-bunx cf deploy --mode hosted --no-provision
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,
