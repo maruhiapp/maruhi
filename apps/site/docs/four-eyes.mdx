@@ -3,6 +3,11 @@ title: Four-eyes approvals
 description: Require the signatures of two (or more) owners before a member is removed, a server key is granted, a role is changed, or the policy itself changes. The requirement is a rule of the project's signed chain, not a server setting.
 sidebar:
   order: 9
+related:
+  - /docs/invite-a-teammate
+  - /docs/github-actions
+  - /docs/environment-scopes
+  - /docs/recover-your-key
 ---
 
 With a four-eyes policy, a sensitive operation on the project's membership chain is applied only when enough **distinct owners** have signed it: the person who wants it appends a proposal, other owners append approvals, and the approval that reaches the quorum applies the operation. Every client verifies this when it reads the chain, so one owner's account — stolen, or acting alone — cannot remove a member, disclose keys to the server, or promote someone to owner. The server holds no switch that turns the rule off.

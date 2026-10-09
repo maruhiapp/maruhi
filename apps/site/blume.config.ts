@@ -61,6 +61,9 @@ export default defineConfig({
     dismissible: true,
     id: "private-preview",
   },
+  // The project's contributors hold the copyright together (CONTRIBUTING.md
+  // — DCO); plain text, rendered in the footer row of every page
+  footer: { copyright: "© 2026 maruhi contributors" },
   // docs are served under `/docs/*`; the site root is owned by the LP
   // (pages/index.astro)
   basePath: "/docs",
