@@ -1,6 +1,7 @@
-import type { TokenList, TokenSummary } from "./types.ts";
 // The wording of the token revocation dialog and its announcement, shared
 // by the tokens screen and the devices screen.
+
+import type { TokenList, TokenSummary } from "./types.ts";
 import type { ResourceState } from "./use-api-resource.ts";
 
 /** The armed token (if still in the list). */
