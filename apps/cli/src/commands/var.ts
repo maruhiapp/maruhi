@@ -3,7 +3,7 @@
 import { Clock, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
-import { type CliServices, openEnvironment, openMetadataEnvironment } from "../context.ts";
+import type { CliServices } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
@@ -20,15 +20,7 @@ import {
   loadPushSyncConfig,
   syncAfterPush,
 } from "../sync.package/index.ts";
-import { formatVarHistory, varHistoryJson, varHistoryOp, varRollbackOp } from "../var-history.ts";
-import { varRmOp } from "../var-rm.ts";
-import {
-  describeFinalization,
-  describeRotation,
-  logRotationWarnings,
-  varFinalizeOp,
-  varRotateOp,
-} from "../var-rotate.ts";
+import type { VarFinalizeInput, VarRotateInput } from "../var-rotate.ts";
 import { NonBlank, commonFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 
@@ -139,9 +131,16 @@ function checkPreviousFlag(values: {
 
 /** `maruhi var rotate <name> --finalize`: invalidates the previous credential and reports. */
 const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
-  input: Parameters<typeof varFinalizeOp>[0],
+  input: VarFinalizeInput,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
+  const { describeFinalization, logRotationWarnings, varFinalizeOp } = yield* Effect.promise(() =>
+    import("../var-rotate.ts").then((m) => ({
+      describeFinalization: m.describeFinalization,
+      logRotationWarnings: m.logRotationWarnings,
+      varFinalizeOp: m.varFinalizeOp,
+    })),
+  );
   const result = yield* varFinalizeOp(input);
   yield* logRotationWarnings(result.warnings);
   for (const line of describeFinalization(result, input.context.environmentId)) {
@@ -151,10 +150,17 @@ const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
 
 /** `maruhi var rotate <name>`: the rotation, its report, the checkpoint proposal, and the onPush sync. */
 const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
-  input: Parameters<typeof varRotateOp>[0],
+  input: VarRotateInput,
   syncSetup: PushSyncSetup | null,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
+  const { describeRotation, logRotationWarnings, varRotateOp } = yield* Effect.promise(() =>
+    import("../var-rotate.ts").then((m) => ({
+      describeRotation: m.describeRotation,
+      logRotationWarnings: m.logRotationWarnings,
+      varRotateOp: m.varRotateOp,
+    })),
+  );
   const { context } = input;
   const syncDecision =
     syncSetup === null
@@ -182,6 +188,12 @@ export function makeVarCommands() {
     varRmConfig,
     Effect.fn("commands-var.varRm")(function* (values) {
       const io = yield* CliIo;
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+      );
+      const { varRmOp } = yield* Effect.promise(() =>
+        import("../var-rm.ts").then((m) => ({ varRmOp: m.varRmOp })),
+      );
       const context = yield* openEnvironment(values);
       const summary = yield* varRmOp({
         client: context.client,
@@ -214,6 +226,18 @@ export function makeVarCommands() {
     varHistoryConfig,
     Effect.fn("commands-var.varHistory")(function* (values) {
       const io = yield* CliIo;
+      const { openMetadataEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({
+          openMetadataEnvironment: m.openMetadataEnvironment,
+        })),
+      );
+      const { formatVarHistory, varHistoryJson, varHistoryOp } = yield* Effect.promise(() =>
+        import("../var-history.ts").then((m) => ({
+          formatVarHistory: m.formatVarHistory,
+          varHistoryJson: m.varHistoryJson,
+          varHistoryOp: m.varHistoryOp,
+        })),
+      );
       // Metadata only (§12-7): keyless, scope-agnostic, no value is read —
       // the agent gate does not apply (zero values — the permissive side)
       const context = yield* openMetadataEnvironment(values);
@@ -245,6 +269,12 @@ export function makeVarCommands() {
     varRollbackConfig,
     Effect.fn("commands-var.varRollback")(function* (values) {
       const io = yield* CliIo;
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+      );
+      const { varRollbackOp } = yield* Effect.promise(() =>
+        import("../var-history.ts").then((m) => ({ varRollbackOp: m.varRollbackOp })),
+      );
       const toVersion = values.to;
       if (toVersion === undefined || toVersion < 1) {
         return yield* Effect.fail(
@@ -304,6 +334,9 @@ export function makeVarCommands() {
     "rotate",
     varRotateConfig,
     Effect.fn("commands-var.varRotate")(function* (values) {
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+      );
       yield* checkPreviousFlag(values);
       // Both configs are read before any network: a broken or absent rotation
       // config is a usage problem, not something to find after a pull

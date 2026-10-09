@@ -61,7 +61,7 @@
 import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
-import { type CliServices, type EnvironmentContext, floorHandleFor } from "../context.ts";
+import type { CliServices, EnvironmentContext } from "../context.ts";
 import { displayText } from "../display.ts";
 import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";
@@ -77,7 +77,10 @@ import {
   type SyncTarget,
 } from "./sync-config.ts";
 import { GH_ENV, scrubVendorOutput } from "./sync-exec.ts";
-import { syncApplyOp } from "./sync-plan.ts";
+
+// P-6: context.ts / sync-plan.ts are imported lazily inside the bodies
+// that use them — index.ts re-exports this file, so an eager import here
+// would be paid by every CLI run (see commands/shared.ts's P-6 note).
 
 /** The sync config `maruhi push` found, and how. */
 export interface PushSyncSetup {
@@ -285,6 +288,9 @@ function floorLedger(
       if (known !== undefined) {
         return known;
       }
+      const { floorHandleFor } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ floorHandleFor: m.floorHandleFor })),
+      );
       const handle = yield* floorHandleFor(context, environmentId);
       handles.set(environmentId, handle);
       return handle;
@@ -299,6 +305,9 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
   floorOf: (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, never, CliServices>,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
+  const { syncApplyOp } = yield* Effect.promise(() =>
+    import("./sync-plan.ts").then((m) => ({ syncApplyOp: m.syncApplyOp })),
+  );
   yield* io.log(
     `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,
   );

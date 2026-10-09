@@ -27,6 +27,8 @@ import type { DecryptedVariable } from "./pull.ts";
 export const DAY_MS = 24 * 60 * 60 * 1000;
 /** How far ahead `rotation list`'s "due soon" looks (also the `--due-within` default). */
 export const DUE_SOON_DAYS = 14;
+/** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */
+export const MAX_PROPOSAL_DAYS = 30;
 
 /** A variable whose verified statement declares a max age (the only kind this module looks at). */
 export interface MaxAgeCandidate {

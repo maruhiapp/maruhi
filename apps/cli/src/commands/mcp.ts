@@ -1,8 +1,8 @@
 // `maruhi mcp` (discipline: see commands/index.ts).
 
+import { Effect } from "effect";
 import { Command } from "effect/cli";
 
-import { mcpServeOp } from "../mcp.ts";
 import { commonFlags } from "./flags.ts";
 
 /**
@@ -18,7 +18,14 @@ export function makeMcpCommand() {
   // `maruhi schema`, and the agent-gate does not apply: it is the
   // agent-facing surface by construction and serves no values
   // (pf5-design.md rulings M3 / M7)
-  const mcp = Command.make("mcp", mcpConfig, mcpServeOp).pipe(
+  // P-6: mcpServeOp (the effect/ai Toolkit graph) loads only when the
+  // command runs — see commands/shared.ts's P-6 note
+  const mcp = Command.make("mcp", mcpConfig, (flags) =>
+    Effect.flatMap(
+      Effect.promise(() => import("../mcp.ts").then((m) => ({ mcpServeOp: m.mcpServeOp }))),
+      ({ mcpServeOp }) => mcpServeOp(flags),
+    ),
+  ).pipe(
     Command.withDescription(
       "Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values",
     ),

@@ -3,7 +3,6 @@
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { openSession } from "../context.ts";
 import { tokenListOp, tokenRevokeOp } from "../token.ts";
 import { NonBlank, serverOnlyFlags } from "./flags.ts";
 
@@ -21,6 +20,10 @@ export function makeTokenCommands() {
     "list",
     tokenListConfig,
     Effect.fn("commands-token.tokenList")(function* (values) {
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
+      );
+
       const context = yield* openSession(values.server);
       yield* tokenListOp({ client: context.client });
     }),
@@ -30,6 +33,10 @@ export function makeTokenCommands() {
     "revoke",
     tokenRevokeConfig,
     Effect.fn("commands-token.tokenRevoke")(function* (values) {
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
+      );
+
       const context = yield* openSession(values.server);
       yield* tokenRevokeOp({ client: context.client, tokenId: values["token-id"] });
     }),

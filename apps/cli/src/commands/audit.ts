@@ -15,16 +15,7 @@ import {
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
-import { auditReconcileOp } from "../audit-reconcile.ts";
-import {
-  type AuditListFilters,
-  type AuditPageOptions,
-  auditInvitesOp,
-  auditListOp,
-  auditSelfOp,
-  auditVerifyOp,
-} from "../audit.ts";
-import { openMetadataProject, openSession } from "../context.ts";
+import type { AuditListFilters, AuditPageOptions } from "../audit.ts";
 import { CliError, usageError } from "../errors.ts";
 import { projectFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE } from "./shared.ts";
@@ -179,6 +170,13 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     readonly expandReads?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
+      const { auditListOp } = yield* Effect.promise(() =>
+        import("../audit.ts").then((m) => ({ auditListOp: m.auditListOp })),
+      );
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
+      );
+
       const page = yield* parseAuditPage(values.limit, values.before);
       const filters = yield* parseAuditFilters({
         event: values.event,
@@ -206,6 +204,13 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     "invites",
     auditInvitesConfig,
     Effect.fn("commands-audit.auditInvites")(function* (values) {
+      const { auditInvitesOp } = yield* Effect.promise(() =>
+        import("../audit.ts").then((m) => ({ auditInvitesOp: m.auditInvitesOp })),
+      );
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
+      );
+
       const page = yield* parseAuditPage(values.limit, values.before);
       const context = yield* openMetadataProject({
         server: values.server,
@@ -219,6 +224,13 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     "self",
     auditSelfConfig,
     Effect.fn("commands-audit.auditSelf")(function* (values) {
+      const { auditSelfOp } = yield* Effect.promise(() =>
+        import("../audit.ts").then((m) => ({ auditSelfOp: m.auditSelfOp })),
+      );
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
+      );
+
       const page = yield* parseAuditPage(values.limit, values.before);
       const context = yield* openSession(values.server);
       onExitCode(yield* auditSelfOp(context, page));
@@ -229,6 +241,13 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     "verify",
     auditVerifyConfig,
     Effect.fn("commands-audit.auditVerify")(function* (values) {
+      const { auditVerifyOp } = yield* Effect.promise(() =>
+        import("../audit.ts").then((m) => ({ auditVerifyOp: m.auditVerifyOp })),
+      );
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
+      );
+
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,
@@ -245,6 +264,13 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     "reconcile",
     auditReconcileConfig,
     Effect.fn("commands-audit.auditReconcile")(function* (values) {
+      const { auditReconcileOp } = yield* Effect.promise(() =>
+        import("../audit-reconcile.ts").then((m) => ({ auditReconcileOp: m.auditReconcileOp })),
+      );
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
+      );
+
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,

@@ -8,11 +8,6 @@ import {
   parseProposalExpiry,
 } from "../approval-rules.ts";
 import { type ProposalInput, type ProposedSummary } from "../approval.ts";
-import {
-  ANCHOR_REFRESH_PROPOSAL,
-  ANCHOR_STALE_AFTER_ROTATION,
-  checkpointProposal,
-} from "../checkpoint.ts";
 import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
 import { type CliServices, type ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
@@ -23,7 +18,13 @@ import { Keychain, tokenEntryName } from "../keychain.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
 import { type SweepOutcome } from "../rotation-sweep.ts";
-import { normalizeHttpOrigin } from "../session.ts";
+
+// P-6: the heavy implementation graph (context / api / session and the op
+// modules) is imported lazily inside the bodies that use it, so that
+// parsing / help / version never pay its module cost. `import()` inside an
+// `Effect.promise` resolves only when the command handler actually runs.
+// Each load reads its names off the module inside the `.then` — the only
+// shape fallow credits per export (pinned by test/lazy-imports.test.ts).
 
 /** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
 const RUN_TERMINATOR_HINT =
@@ -78,6 +79,9 @@ export const ENV_FLAG_SHAPE_MESSAGE =
 export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(function* (
   raw: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
+  );
   const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
     fix: "mirror in your config",
   });
@@ -141,6 +145,12 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
     context: Pick<ProjectContext, "client" | "verified" | "session">,
     options: { readonly includeAnchor: boolean },
   ): Effect.fn.Return<void, never, CliServices> {
+    const { ANCHOR_REFRESH_PROPOSAL, checkpointProposal } = yield* Effect.promise(() =>
+      import("../checkpoint.ts").then((m) => ({
+        ANCHOR_REFRESH_PROPOSAL: m.ANCHOR_REFRESH_PROPOSAL,
+        checkpointProposal: m.checkpointProposal,
+      })),
+    );
     const proposal = yield* checkpointProposal({
       client: context.client,
       verified: context.verified,
@@ -252,6 +262,11 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   }
   if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
     // The anchor-update proposal — emitted as one line across the whole sweep
+    const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
+      import("../checkpoint.ts").then((m) => ({
+        ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
+      })),
+    );
     yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
   }
   return exitCode;

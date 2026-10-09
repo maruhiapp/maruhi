@@ -6,23 +6,16 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 import { type HttpClient } from "effect/http";
 
-import { type MaruhiClient, makeApiClient } from "../api.ts";
-import { type VerifiedProject, syncProject } from "../chain-sync.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
 import { type CliConfig as MaruhiCliConfig } from "../config.ts";
-import {
-  type CliServices,
-  type SessionContext,
-  openSession,
-  openSessionWith,
-  resolveProjectId,
-} from "../context.ts";
+import type { CliServices, SessionContext } from "../context.ts";
 import { countNoun, displayText } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { isNoAnswer, toCliError } from "../failure.ts";
 import { CliIo } from "../io.ts";
 import { headOnChain } from "../mirror.ts";
 import { logNote, logWarning } from "../notice.ts";
-import { normalizeHttpOrigin } from "../session.ts";
 import { projectFlags, singleFlag, singleValued } from "./flags.ts";
 import { PROMOTE_PROBE_TIMEOUT, sameDeployment } from "./mirror-core.ts";
 
@@ -51,6 +44,16 @@ const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(f
   readonly source?: string | undefined;
   readonly force?: boolean | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
+  const { openSession, resolveProjectId } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({
+      openSession: m.openSession,
+      resolveProjectId: m.resolveProjectId,
+    })),
+  );
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
+  );
+
   const io = yield* CliIo;
   if (flags.source === undefined) {
     return yield* Effect.fail(
@@ -100,6 +103,13 @@ const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(functio
   projectId: ProjectId,
   forced: boolean,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
+  );
+  const { openSessionWith } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openSessionWith: m.openSessionWith })),
+  );
+
   const here = yield* syncProject(context.client, projectId);
   // Each read stands alone (round 10): a transient failure of the mark's
   // read does not discard the chain already read, nor the other way round
@@ -278,6 +288,13 @@ const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteComma
     readonly project?: string | undefined;
     readonly force?: boolean | undefined;
   }): Effect.fn.Return<void, CliError, CliServices> {
+    const { openSession, resolveProjectId } = yield* Effect.promise(() =>
+      import("../context.ts").then((m) => ({
+        openSession: m.openSession,
+        resolveProjectId: m.resolveProjectId,
+      })),
+    );
+
     const io = yield* CliIo;
     const context = yield* openSession(flags.server);
     const projectId = yield* resolveProjectId(flags.project, context.config);
@@ -336,6 +353,10 @@ const promotionGuard = Effect.fn("commands-mirror-write.promotionGuard")(functio
   CliError,
   CliServices
 > {
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
+  );
+
   const source = yield* sourceState(context.config, sourceOrigin, projectId, context.origin);
   const frozenAt =
     typeof source === "string" ? null : "frozenAt" in source ? source.frozenAt : null;
@@ -514,6 +535,10 @@ const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   projectId: ProjectId,
   thisOrigin: string,
 ): Effect.fn.Return<SourceState, never, CliServices> {
+  const { openSessionWith } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openSessionWith: m.openSessionWith })),
+  );
+
   const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
     Effect.flatMap((source) =>
       source.client.mirror.status({ params: { projectId } }).pipe(
@@ -564,6 +589,10 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
   projectId: ProjectId,
   prefetched: VerifiedProject | null = null,
 ): Effect.fn.Return<readonly string[], CliError, CliServices> {
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
+  );
+
   const verified = prefetched ?? (yield* syncProject(client, projectId));
   const own = yield* client.auth.authConfig({}).pipe(
     Effect.map((config) => config.serverKeyFingerprintHex ?? null),
@@ -592,6 +621,10 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
 const sourceAnswers = Effect.fn("commands-mirror-write.sourceAnswers")(function* (
   sourceOrigin: string,
 ): Effect.fn.Return<boolean, never, HttpClient.HttpClient> {
+  const { makeApiClient } = yield* Effect.promise(() =>
+    import("../api.ts").then((m) => ({ makeApiClient: m.makeApiClient })),
+  );
+
   const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(
     Effect.map(() => true),

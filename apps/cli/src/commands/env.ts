@@ -4,29 +4,12 @@ import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruh
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { ANCHOR_STALE_AFTER_ROTATION } from "../checkpoint.ts";
-import {
-  type CliServices,
-  type CommonFlags,
-  commitVerifiedHead,
-  floorHandleFor,
-  openEnvironment,
-  openMetadataEnvironmentPair,
-  openMetadataProject,
-  openProject,
-} from "../context.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
-import { envCreateOp } from "../env-create.ts";
-import { envDiffOp, reportEnvironmentDiff } from "../env-diff.ts";
-import { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } from "../env-list.ts";
-import { envRenameOp } from "../env-rename.ts";
-import { envRmOp } from "../env-rm.ts";
-import { envRotateOp } from "../env-rotate.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
-import { loadMasterKeys } from "../session.ts";
 import {
   loadSyncConfig,
   advanceReceiptsAfterRotation,
@@ -114,6 +97,16 @@ const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { floorHandleFor, openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openProject: m.openProject,
+    })),
+  );
+  const { envCreateOp } = yield* Effect.promise(() =>
+    import("../env-create.ts").then((m) => ({ envCreateOp: m.envCreateOp })),
+  );
+
   const io = yield* CliIo;
   const context = yield* openProject(flags);
   const floor = yield* floorHandleFor(context, environmentId);
@@ -158,6 +151,21 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<number, CliError, CliServices> {
+  const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
+    import("../checkpoint.ts").then((m) => ({
+      ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
+    })),
+  );
+  const { floorHandleFor, openEnvironment } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openEnvironment: m.openEnvironment,
+    })),
+  );
+  const { envRotateOp } = yield* Effect.promise(() =>
+    import("../env-rotate.ts").then((m) => ({ envRotateOp: m.envRotateOp })),
+  );
+
   // The sync config (M1) is read **before any network**: detecting a
   // broken file or another project's config is never placed behind the
   // epoch advance (failing after advancing would make the rotation look
@@ -245,6 +253,13 @@ const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
   environmentId: EnvironmentId,
   newName: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openEnvironment } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+  );
+  const { envRenameOp } = yield* Effect.promise(() =>
+    import("../env-rename.ts").then((m) => ({ envRenameOp: m.envRenameOp })),
+  );
+
   const io = yield* CliIo;
   const context = yield* openEnvironment({ ...flags, env: environmentId });
   const renamed = yield* envRenameOp({
@@ -268,6 +283,13 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
   flags: CommonFlags & { readonly force: boolean },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openEnvironment } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+  );
+  const { envRmOp } = yield* Effect.promise(() =>
+    import("../env-rm.ts").then((m) => ({ envRmOp: m.envRmOp })),
+  );
+
   const io = yield* CliIo;
   const context = yield* openEnvironment({ ...flags, env: environmentId });
   const deleted = yield* envRmOp({
@@ -298,6 +320,22 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
 const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
   flags: CommonFlags & { readonly all: boolean; readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { openMetadataProject } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
+  );
+  const { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } = yield* Effect.promise(
+    () =>
+      import("../env-list.ts").then((m) => ({
+        envListJson: m.envListJson,
+        envListOp: m.envListOp,
+        formatEnvListRow: m.formatEnvListRow,
+        shownEnvironmentRows: m.shownEnvironmentRows,
+      })),
+  );
+  const { loadMasterKeys } = yield* Effect.promise(() =>
+    import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
+  );
+
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   // A missing or unusable key is not an error here: the listing says which
@@ -343,6 +381,19 @@ const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
   environmentId: EnvironmentId,
   otherEnvironmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
+  const { commitVerifiedHead, openMetadataEnvironmentPair } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({
+      commitVerifiedHead: m.commitVerifiedHead,
+      openMetadataEnvironmentPair: m.openMetadataEnvironmentPair,
+    })),
+  );
+  const { envDiffOp, reportEnvironmentDiff } = yield* Effect.promise(() =>
+    import("../env-diff.ts").then((m) => ({
+      envDiffOp: m.envDiffOp,
+      reportEnvironmentDiff: m.reportEnvironmentDiff,
+    })),
+  );
+
   // The prologue (chain sync + §6.3 verification) runs exactly once. The
   // master key is not required (nothing is decrypted — context.ts's
   // openMetadataProjectWith)

@@ -11,7 +11,6 @@ import {
   singleValued,
   singleValuedAs,
 } from "../commands/flags.ts";
-import { floorHandleFor, openProject } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
@@ -20,7 +19,6 @@ import {
   requireSyncTarget,
 } from "./sync-config.ts";
 import { syncInitOp } from "./sync-init.ts";
-import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
 
 /**
  * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The
@@ -148,6 +146,13 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
   readonly config: string | undefined;
   readonly target: string;
 }) {
+  const { floorHandleFor, openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openProject: m.openProject,
+    })),
+  );
+
   // The config is read before any network (a broken file's detection is never placed behind a round trip)
   const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
   const target = yield* requireSyncTarget(config, values.target);
@@ -179,6 +184,10 @@ export function makeSyncCommands() {
     "plan",
     syncPlanConfig,
     Effect.fn("sync-command.syncPlan")(function* (values) {
+      const { syncPlanOp } = yield* Effect.promise(() =>
+        import("./sync-plan.ts").then((m) => ({ syncPlanOp: m.syncPlanOp })),
+      );
+
       const opened = yield* openSyncTarget(values);
       yield* syncPlanOp({
         client: opened.context.client,
@@ -201,6 +210,10 @@ export function makeSyncCommands() {
     "apply",
     syncApplyConfig,
     Effect.fn("sync-command.syncApply")(function* (values) {
+      const { syncApplyOp } = yield* Effect.promise(() =>
+        import("./sync-plan.ts").then((m) => ({ syncApplyOp: m.syncApplyOp })),
+      );
+
       const opened = yield* openSyncTarget(values);
       yield* syncApplyOp({
         client: opened.context.client,

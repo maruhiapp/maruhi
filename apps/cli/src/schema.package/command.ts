@@ -7,22 +7,12 @@ import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { NonBlank, commonFlags, singleFlag, singleValued } from "../commands/flags.ts";
-import { type CliServices, openEnvironment, openMetadataEnvironment } from "../context.ts";
+import type { CliServices } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
-import { ensureImportCeremonyAllowed, schemaImportOp } from "./schema-import.ts";
-import { scanPaths, schemaLintOp } from "./schema-lint.ts";
-import { schemaExportOp, schemaVerifySnapshotOp } from "./schema-snapshot.ts";
-import {
-  type FieldUpdate,
-  type SchemaFieldUpdates,
-  type SchemaSetSummary,
-  ensureEntropyAcknowledged,
-  schemaSetOp,
-  schemaShowOp,
-} from "./schema.ts";
+import type { FieldUpdate, SchemaFieldUpdates, SchemaSetSummary } from "./schema.ts";
 
 /** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit).
  * @public
@@ -132,6 +122,13 @@ const runSchemaShow = Effect.fn("schema-command.runSchemaShow")(function* (value
   readonly project?: string | undefined;
   readonly env?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
+  const { openMetadataEnvironment } = yield* Effect.promise(() =>
+    import("../context.ts").then((m) => ({ openMetadataEnvironment: m.openMetadataEnvironment })),
+  );
+  const { schemaShowOp } = yield* Effect.promise(() =>
+    import("./schema.ts").then((m) => ({ schemaShowOp: m.schemaShowOp })),
+  );
+
   const context = yield* openMetadataEnvironment(values);
   yield* schemaShowOp({
     client: context.client,
@@ -237,6 +234,16 @@ export function makeSchemaCommands() {
     "set",
     schemaSetConfig,
     Effect.fn("schema-command.schemaSet")(function* (values) {
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+      );
+      const { ensureEntropyAcknowledged, schemaSetOp } = yield* Effect.promise(() =>
+        import("./schema.ts").then((m) => ({
+          ensureEntropyAcknowledged: m.ensureEntropyAcknowledged,
+          schemaSetOp: m.schemaSetOp,
+        })),
+      );
+
       const io = yield* CliIo;
       // Interpreting the column specifications precedes the network
       // (partial update §1-2 — unspecified = keep, only an explicit flag
@@ -277,6 +284,16 @@ export function makeSchemaCommands() {
     "import",
     schemaImportConfig,
     Effect.fn("schema-command.schemaImport")(function* (values) {
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
+      );
+      const { ensureImportCeremonyAllowed, schemaImportOp } = yield* Effect.promise(() =>
+        import("./schema-import.ts").then((m) => ({
+          ensureImportCeremonyAllowed: m.ensureImportCeremonyAllowed,
+          schemaImportOp: m.schemaImportOp,
+        })),
+      );
+
       // The ceremony gate (the ceremony-family deny archetype of ADR-0016
       // decision 7) is judged **before any communication or file read**:
       // the per-variable interactive approval is the ceremony's core, and
@@ -328,6 +345,15 @@ export function makeSchemaCommands() {
     "export",
     schemaExportConfig,
     Effect.fn("schema-command.schemaExport")(function* (values) {
+      const { openMetadataEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({
+          openMetadataEnvironment: m.openMetadataEnvironment,
+        })),
+      );
+      const { schemaExportOp } = yield* Effect.promise(() =>
+        import("./schema-snapshot.ts").then((m) => ({ schemaExportOp: m.schemaExportOp })),
+      );
+
       const context = yield* openMetadataEnvironment(values);
       yield* schemaExportOp({
         client: context.client,
@@ -347,6 +373,17 @@ export function makeSchemaCommands() {
     "verify-snapshot",
     schemaVerifySnapshotConfig,
     Effect.fn("schema-command.schemaVerifySnapshot")(function* (values) {
+      const { openMetadataEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({
+          openMetadataEnvironment: m.openMetadataEnvironment,
+        })),
+      );
+      const { schemaVerifySnapshotOp } = yield* Effect.promise(() =>
+        import("./schema-snapshot.ts").then((m) => ({
+          schemaVerifySnapshotOp: m.schemaVerifySnapshotOp,
+        })),
+      );
+
       const { file, ...flags } = values;
       // The file is read before any network (a wrong path drops before a
       // round trip). Only the path is reported — never the content or
@@ -377,6 +414,18 @@ export function makeSchemaCommands() {
     "lint",
     schemaLintConfig,
     Effect.fn("schema-command.schemaLint")(function* (values) {
+      const { openMetadataEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then((m) => ({
+          openMetadataEnvironment: m.openMetadataEnvironment,
+        })),
+      );
+      const { scanPaths, schemaLintOp } = yield* Effect.promise(() =>
+        import("./schema-lint.ts").then((m) => ({
+          scanPaths: m.scanPaths,
+          schemaLintOp: m.schemaLintOp,
+        })),
+      );
+
       // The scan precedes the network (a wrong path / an unreadable tree drops before a round trip)
       const scan = yield* scanPaths(values.paths);
       const context = yield* openMetadataEnvironment(values);

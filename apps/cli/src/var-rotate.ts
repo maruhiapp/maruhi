@@ -50,7 +50,7 @@ import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
 
-interface VarRotateInput {
+export interface VarRotateInput {
   readonly context: EnvironmentContext;
   readonly config: RotateConfig;
   readonly configPath: string;
@@ -75,7 +75,7 @@ export interface VarRotateResult {
   readonly warnings: readonly string[];
 }
 
-interface VarFinalizeInput extends VarRotateInput {
+export interface VarFinalizeInput extends VarRotateInput {
   /** The version that held the credential to invalidate (null = the one before the latest). */
   readonly previousVersion: number | null;
 }

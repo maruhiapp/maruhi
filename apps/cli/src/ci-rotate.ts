@@ -72,8 +72,6 @@ import {
 import type { ProcessRunner } from "./run.ts";
 import { callConnector, connectorFailure } from "./var-rotate.ts";
 
-/** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */
-export const MAX_PROPOSAL_DAYS = 30;
 /** AUTH_SPEC §14-5: at most 16 facts of 256 characters each. */
 const MAX_FACTS = 16;
 const MAX_FACT_LENGTH = 256;
