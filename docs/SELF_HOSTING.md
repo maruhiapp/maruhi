@@ -56,13 +56,21 @@ binding's `id` (placeholder `00000000-0000-4000-8000-…`).
 ### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
-bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy
+bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy --no-provision
 ```
 
 The deploy script always applies D1 migrations first (it resolves the database
 ID from `cloudflare.config.ts`, so it still works if you rename the database)
 and then deploys. drizzle's folder layout (`drizzle/<name>/migration.sql`) is
 passed to `cf d1 migrations apply` via its `--dir` / `--pattern` flags.
+
+Deploys run with `--no-provision`: `cf` never creates missing resources itself.
+Every binding this project declares is provisioned deliberately (the D1 you
+created in step 2 and, for the hosted / restore modes only, the ops bucket an
+operator creates by hand — creating it on deploy would also skip its lifecycle
+rules; the default self-host mode binds no bucket), so a deploy against a
+resource that does not exist fails closed instead of pointing the app at a
+surprise database or bucket.
 
 Note the printed `https://maruhi-server.<your-subdomain>.workers.dev`
 (below, `<deploy-url>` means this entire URL, including `https://`).
@@ -102,11 +110,14 @@ bunx wrangler secret put GITHUB_CLIENT_ID
 bunx wrangler secret put GITHUB_CLIENT_SECRET
 ```
 
-(Secret registration stays on `wrangler secret put`, which reads the value on
-stdin — cf's `workers secrets update` only accepts the value inline via
-`--text`, which puts it on the process argv and in shell history. wrangler
-remains an installed devDependency for this path until cf can take secrets
-from stdin.) The update takes effect immediately (no redeploy).
+(`wrangler secret put` prompts for the value with masked input, or reads it
+from a pipe, and finds the Worker from the project config. The cf equivalent
+also keeps the value off the process argv and out of shell history when
+`--text` is left out — it prompts with masked input or reads a piped value —
+but needs the Worker name and the secret type spelled out:
+`bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server`.
+Never pass the value with `--text`, which puts it on the process argv and in
+shell history.) The update takes effect immediately (no redeploy).
 
 ### 6. Smoke-check
 
@@ -115,7 +126,7 @@ curl <deploy-url>/auth/config
 # → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
-#   (list registered secrets with `bunx cf workers secrets list` — values are not shown)
+#   (list registered secrets with `bunx cf workers secrets list --worker maruhi-server` — values are not shown)
 ```
 
 ### 7. Connect from the CLI
@@ -379,14 +390,16 @@ product API and its acceptance rules are untouched.
 
 Run `bun scripts/d1-export.ts --output <file>` on a schedule
 (it blocks other requests to the database while it runs, so pick a quiet
-hour), encrypt the dump with a key you control (e.g. `age`), and keep it
-outside the Workers account. The export contains only what D1 contains: user
+hour). The script calls the D1 export API directly — cf has no `d1 export`
+command — so it reads `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from
+the environment rather than a `cf auth login` profile. Encrypt the dump with
+a key you control (e.g. `age`), and keep it outside the Workers account. The export contains only what D1 contains: user
 rows, session and token **hashes**, and the authentication audit log — no
 secret values, which never reach the server in plaintext. The reference
 workflow used for the hosted service is
 `.github/workflows/ops-backup.yml` (disabled unless the repository variable
 `OPS_BACKUP_ENABLED` is `true`). The API token it needs is **D1: Edit** plus
-**Workers R2 Storage: Edit** (account scope): `d1 export` fails with
+**Workers R2 Storage: Edit** (account scope): the export fails with
 `Authentication error [10000]` under D1: Read, and `r2 object put` returns 403
 under the bucket-scoped "Workers R2 Storage Bucket Item" permission. Prefer an
 *Account* API token over a user token for CI, and allow a few minutes for
@@ -408,8 +421,11 @@ bun scripts/d1-import.ts <new-database-id> --file d1.ordered.sql
 rm d1.sql d1.ordered.sql                                    # the decrypted dump is operator data — do not keep it around
 ```
 
-The script puts every `CREATE TABLE` first, then the `INSERT`s in foreign-key
-order (parents before children), then the indexes, and drops `BEGIN`/`COMMIT`.
+`d1-import.ts` calls the D1 import API directly, so it takes the same
+`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` environment variables as the
+export. The reorder script puts every `CREATE TABLE` first, then the
+`INSERT`s in foreign-key order (parents before children), then the indexes,
+and drops `BEGIN`/`COMMIT`.
 Compare per-table `select count(*)` against the source afterwards (a few tables
 per statement — D1 caps the number of terms in a compound `SELECT`), then point
 the `DB` binding's `id` in `cloudflare.config.ts` at the new database and
@@ -464,7 +480,7 @@ bunx wrangler secret put GITHUB_CLIENT_ID --env hosted
 bunx wrangler secret put GITHUB_CLIENT_SECRET --env hosted
 bunx wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
 bun run db:migrate:hosted
-bunx cf deploy --mode hosted
+bunx cf deploy --mode hosted --no-provision
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,
@@ -481,7 +497,7 @@ live project.
 
 ```sh
 # Deploy the restore worker only for the duration of the operation
-bunx cf deploy --mode restore
+bunx cf deploy --mode restore --no-provision
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
 bunx cf r2 objects put restore/jobs/job-1.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
@@ -549,7 +565,7 @@ chain id is really that person.
 ```sh
 bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
 bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
-bunx cf deploy --mode restore
+bunx cf deploy --mode restore --no-provision
 echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
 bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
 bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
@@ -877,7 +893,7 @@ or newer.
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
   unregistered (a missed `wrangler secret put` — step 5). List registered secrets with
-  `bunx cf workers secrets list` (values are not shown)
+  `bunx cf workers secrets list --worker maruhi-server` (values are not shown)
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
   transit. Run `maruhi login` again for a fresh link
@@ -922,7 +938,7 @@ or newer.
   done — with one re-verification item: whether the button understands
   `cloudflare.config.ts` (it predates cf and was designed around wrangler
   configs).
-  Three points remain unverified and can only be verified against a public
+  Four points remain unverified and can only be verified against a public
   repository, so they will be checked at public release:
   (1) whether the button's monorepo support detects
   `apps/server/cloudflare.config.ts` from the repository-root URL and
@@ -936,6 +952,12 @@ or newer.
   Cloudflare's docs recommend documenting a default and "update the config
   with the ID of the newly created resource", so if the button does not
   replace it the deploy fails with an API error against a UUID that does not
-  exist (in that case the placeholder has to be removed)
+  exist (in that case the placeholder has to be removed). (4) how the
+  button's provisioning interacts with `--no-provision`: the `apps/server`
+  `deploy` script runs `cf deploy --no-provision`, which turns off cf's own
+  auto-provisioning, so the D1 database must already exist before that
+  script runs. If the button relies on cf's deploy-time provisioning rather
+  than creating resources in its own step first, the button needs its own
+  deploy command (one that keeps provisioning on for the first deploy)
 - For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md`; for the
   crypto spec see `docs/CRYPTO_SPEC.md`

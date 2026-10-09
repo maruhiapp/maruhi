@@ -1,5 +1,5 @@
-// Reorders a `cf d1 export` dump into an importable order (operations
-// runbook — docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md
+// Reorders a D1 export dump (scripts/d1-export.ts) into an importable order
+// (operations runbook — docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md
 // "Restoring a D1 export").
 //
 // Behavior on the real service found during a restore drill (hosted-ops.md

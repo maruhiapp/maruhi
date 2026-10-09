@@ -114,7 +114,7 @@ leaks every secret. Therefore:
 | Runtime (dev/CLI) | Bun 1.4.2 (strictly pinned via `.bun-version`. Reached the 1.4 line per ADR-0004) |
 | Server runtime | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | Server HTTP layer | Effect v4 `effect/http-api` HttpApi (no Hono) |
-| App foundation | Effect v4 line (pinned. Current `4.0.0`) |
+| App foundation | Effect v4 line (pinned. Current `4.0.2`) |
 | DB | Drizzle v1 (`drizzle-kit` migrations, confined inside the Effect service boundary). D1 + DO SQLite |
 | Frontend | React + FunStack (funstack-static + funstack-router) + Astryx (StyleX-based. ADR-0013) |
 | CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
