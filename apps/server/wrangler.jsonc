@@ -12,7 +12,10 @@
   // test-harness mirror of the deployment config.
   "name": "maruhi-server",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-01",
+  "compatibility_date": "2026-10-09",
+  // Both Node compat layers off, whatever the date implies (the reason is
+  // at COMPATIBILITY_FLAGS in cloudflare.config.ts)
+  "compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
   // Publish on the workers.dev subdomain (the self-host default
   // URL. Even when routes assigns a custom domain, the OAuth
   // callback URL is derived from the origin)

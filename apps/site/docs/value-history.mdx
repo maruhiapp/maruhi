@@ -3,6 +3,10 @@ title: Value history and rollback
 description: See every version a variable has had without revealing a value, and put a previous value back after a bad push. The rollback verifies the old version against the current one before restoring it, and it tells rotation flags what happened.
 sidebar:
   order: 11
+related:
+  - /docs/rotation
+  - /docs/deploy-targets
+  - /docs/environments
 ---
 
 Every `maruhi push` adds a new version of a variable; the server keeps every version, each one signed by whoever wrote it and linked to the version before it. Two commands work with that history:

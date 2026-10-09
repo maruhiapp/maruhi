@@ -399,6 +399,28 @@ describe('site e2e: docs last-modified dates (blume.config.ts `lastModified: "gi
   });
 });
 
+describe("site e2e: related pages and the footer copyright", () => {
+  it("shows a docs page's related cards and the copyright in Blume's footer", async () => {
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    const related = /<nav[^>]*data-blume-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    // The order and targets of apps/site/docs/getting-started.mdx `related:`
+    expect([...related.matchAll(/href="(\/docs\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([
+      "/docs/deploy-targets",
+      "/docs/devices",
+      "/docs/invite-a-teammate",
+      "/docs/linux-keychain",
+    ]);
+    expect(html).toMatch(/<footer[^>]*data-blume-footer[\s\S]*© 2026 maruhi contributors/);
+  });
+
+  it("prints the copyright once in the landing page's own footer, with no second footer", async () => {
+    const html = await (await fetch(`${BASE}/`)).text();
+    expect(html.match(/<footer\b/g)).toHaveLength(1);
+    expect(html).not.toContain("data-blume-footer");
+    expect(html.match(/© 2026 maruhi contributors/g)).toHaveLength(1);
+  });
+});
+
 function hexToRgb(hex: string): string {
   const n = Number.parseInt(hex.slice(1), 16);
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
