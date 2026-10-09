@@ -5,7 +5,43 @@
     "correctness": "error",
     "suspicious": "error"
   },
-  "rules": {},
+  // Type-aware rules (oxlint-tsgolint). The categories above already pull
+  // in the type-aware correctness / suspicious rules; the ones listed "off"
+  // below had findings when type-aware linting was introduced and are
+  // enabled one by one as their findings are fixed (consistent-return and
+  // the two type-assertion rules flag Effect idioms / tsgolint is not
+  // deterministic on no-unnecessary-type-assertion). The "error" list names
+  // rules outside those categories that the tree already satisfies.
+  // Effect values are not thenables, so dropped Effects are guarded by
+  // scripts/effect-diagnostics.mjs, not by no-floating-promises
+  "options": { "typeAware": true },
+  "rules": {
+    "typescript/await-thenable": "error",
+    "typescript/no-array-delete": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-for-in-array": "error",
+    "typescript/no-implied-eval": "error",
+    "typescript/no-meaningless-void-operator": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-unsafe-enum-comparison": "error",
+    "typescript/no-unsafe-unary-minus": "error",
+    "typescript/restrict-plus-operands": "error",
+    "typescript/consistent-return": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-duplicate-type-constituents": "off",
+    "typescript/no-misused-spread": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/no-unnecessary-boolean-literal-compare": "off",
+    "typescript/no-unnecessary-template-expression": "off",
+    "typescript/no-unnecessary-type-arguments": "off",
+    "typescript/no-unnecessary-type-assertion": "off",
+    "typescript/no-unnecessary-type-conversion": "off",
+    "typescript/no-unnecessary-type-parameters": "off",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/require-array-sort-compare": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/unbound-method": "off"
+  },
   "ignorePatterns": ["fallow-baselines", ".agents", ".claude", ".deepsec"],
   "overrides": [
     {
