@@ -149,8 +149,16 @@ interface WranglerLike {
 }
 
 // The cf side uses cf/config's own type (the worker of any mode), so the
-// view cannot drift from what cloudflare.config.ts actually declares
-type CfWorkerLike = UnwrapConfig<typeof cfConfig>["worker"];
+// view cannot drift from what cloudflare.config.ts actually declares. Each
+// mode's worker is a defineWorker() constant, so that type is a union of
+// literal workers, and a field only some modes declare (limits, domains,
+// observability, assets) cannot be read on a union. The view therefore
+// takes every mode's keys, each optional, with the union of the declared
+// value types (undefined for a mode that leaves the field out)
+type CfWorker = UnwrapConfig<typeof cfConfig>["worker"];
+type KeysOfAny<U> = U extends unknown ? keyof U : never;
+type ValueIn<U, K extends PropertyKey> = U extends Readonly<Record<K, infer V>> ? V : undefined;
+type CfWorkerLike = { readonly [K in KeysOfAny<CfWorker>]?: ValueIn<CfWorker, K> };
 
 interface BundlerLike {
   assetsDirectory?: string;
