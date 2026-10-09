@@ -7,8 +7,9 @@ own, and what is known not to hold. It is a map, not a second specification:
 the normative text is [CRYPTO_SPEC](CRYPTO_SPEC.md) (the single source of truth
 for cryptography), [AUTH_SPEC](AUTH_SPEC.md) and [AUDIT_SPEC](AUDIT_SPEC.md).
 Section references below (`§`) point into those documents. maruhi has not had
-a paid audit; this guide is one part of the free substitute (with a security
-policy file, named requests and formal models — [ROADMAP](../ROADMAP.md) H5).
+a paid audit; this guide is one part of the free substitute (with
+[SECURITY.md](../SECURITY.md), named requests and formal models —
+[ROADMAP](../ROADMAP.md) H5).
 
 ## 1. What maruhi is, and whom it trusts
 
@@ -266,14 +267,11 @@ not new, but a way to widen one is.
   [AUDIT_REVIEW_2026-09-26](AUDIT_REVIEW_2026-09-26.md); an earlier full review
   is [SECURITY_REVIEW_2026-08-14](SECURITY_REVIEW_2026-08-14.md).
 
-The threat-model document planned in ROADMAP H5 will consolidate this list; it
-is not written yet.
+The consolidated list lives in [THREAT_MODEL.md](THREAT_MODEL.md) (ROADMAP
+H5).
 
 ## 8. Reporting
 
-Do not put vulnerability details in a public issue. Until a dedicated security
-policy exists, report through GitHub Private Vulnerability Reporting, as
-[CONTRIBUTING.md](../CONTRIBUTING.md) ("Security") describes.
-
-> **TODO (H5):** there is no security policy file at the repository root yet.
-> Add it with the contact and the disclosure process, then link it here.
+Do not put vulnerability details in a public issue. Report through GitHub
+Private Vulnerability Reporting — the channel, scope and disclosure process
+are in [SECURITY.md](../SECURITY.md).
