@@ -3,6 +3,11 @@ title: Rotating upstream credentials
 description: Replace the credentials maruhi stores at their issuers — AWS IAM access keys, Cloudflare API tokens, PostgreSQL and MySQL passwords with one command, any other issuer with a script of your own, everything else with a runbook — keep the old credential working until the new value is deployed, then invalidate it. What to rotate after someone leaves, how to check on a schedule, how a CI cron rotates with a member's countersignature, and when a credential never needs rotating at all.
 sidebar:
   order: 14
+related:
+  - /docs/value-history
+  - /docs/deploy-targets
+  - /docs/github-actions
+  - /docs/credential-brokering
 ---
 
 Encryption cannot un-read a value. When a member is removed, a device is revoked, or a scope is narrowed, maruhi rotates the environment's key so the person receives nothing new — but every value they could already read is still valid at its **issuer** (the AWS account, the database, the API that minted the token). Rotation means replacing those credentials at the issuer and pushing the new values. maruhi tells you which ones, and for common issuers it does the replacement for you.

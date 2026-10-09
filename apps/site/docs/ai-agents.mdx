@@ -3,6 +3,10 @@ title: AI agents and MCP
 description: Give coding agents the contract of your environments — variable names, declared types, what is required, what is set — over the Model Context Protocol or a shell, without ever handing them a secret value.
 sidebar:
   order: 12
+related:
+  - /docs/credential-brokering
+  - /docs/linux-keychain
+  - /docs/rotation
 ---
 
 An agent that writes or runs your code needs to know which variables the project expects. It does not need their values. maruhi gives agents the **schema** of an environment — names, declared types, whether each variable is required, whether it has a value, and descriptions — and keeps the values out of their reach:
