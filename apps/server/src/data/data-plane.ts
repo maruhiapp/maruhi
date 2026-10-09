@@ -7,6 +7,10 @@
 // onto api-schema's typed errors).
 
 import type {
+  DistributedEnvironmentMetaStatement,
+  DistributedVariableMetaStatement,
+} from "@maruhi/api-schema";
+import type {
   AuditActor,
   AuditEventColumns,
   ChainMirrorEventName,
@@ -110,111 +114,110 @@ export type DekWrapRefInput = DekRecipientPosition & {
 };
 
 /**
+ * The fields every wire request statement carries past the coordinate check
+ * (variable and environment, every lifecycle and layout): api-schema's
+ * self-describing statement form without the coordinates (already matched
+ * against the URL — checkStatementCoordinates) and the distribution-only
+ * author fields. Every request statement form of api-schema is assignable to
+ * it, and the statement types below derive from it, so the RPC-boundary
+ * statement cannot drift from the wire contract. The one converter
+ * (toMetaStatementInput) copies the stored-input fields by explicit name and
+ * regroups the WireSchemaField set under `schema`, so the wire-declared
+ * coordinates the runtime request still carries never reach the DO (§12-5).
+ */
+export type WireMetaStatement = Omit<
+  DistributedVariableMetaStatement,
+  "environmentId" | "variableId" | "authorUserId" | "authorKeyFingerprintHex"
+>;
+
+/**
  * A statement's lifecycle state (CRYPTO_SPEC §4.2). declared is limited
  * to variables on layout v3 (environment meta and the v1 layout stay
  * two-valued — the wire Schema enforces it, and the DO side accepts all
  * three values as the storage / verification type).
  */
-export type MetaStatementStatusInput = "active" | "deleted" | "declared";
+export type MetaStatementStatusInput = WireMetaStatement["status"];
 
 /** The closed set of varType (CRYPTO_SPEC §4.2 — `""` = unspecified). */
-export type MetaVarTypeInput = "" | "string" | "number" | "boolean" | "url";
+export type MetaVarTypeInput = Exclude<WireMetaStatement["varType"], undefined>;
 
 /**
- * The layout-v3 schema fields (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
- * required rides as the wire's boolean (the mapping onto the signed
- * "true" / "false" strings happens in the one place that verifies —
- * verify-meta.ts).
+ * The layout-v3 schema fields (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2), nested
+ * out of the flat wire form. varType / required / description are a set
+ * (present together on v3); required rides as the wire's boolean (the mapping
+ * onto the signed "true" / "false" strings happens in the one place that
+ * verifies — verify-meta.ts). maxAgeDays (PF6 R9 expiring values) stays
+ * optional only as the wire arrives: a v3 statement without it is refused by
+ * verify-meta.ts as 422 payload-mismatch, and every stored row carries it.
  */
-export interface MetaVariableSchemaInput {
-  readonly varType: MetaVarTypeInput;
-  readonly required: boolean;
-  readonly description: string;
-  /**
-   * PF6 R9 expiring values (CRYPTO_SPEC §4.2): days after a value's push
-   * within which it should be replaced (1..3650), null = no declaration.
-   * Optional only as the wire arrives: a v3 statement without it is
-   * refused by verify-meta.ts as 422 payload-mismatch, and every stored
-   * row carries it.
-   */
-  readonly maxAgeDays?: number | null;
-}
+export type MetaVariableSchemaInput = Required<
+  Pick<WireMetaStatement, "varType" | "required" | "description">
+> &
+  Pick<WireMetaStatement, "maxAgeDays">;
+
+/** The flat wire fields that the stored input regroups under `schema`. */
+export type WireSchemaField = keyof MetaVariableSchemaInput;
 
 /**
  * The stored input of a metadata statement (CRYPTO_SPEC §4.2 / AUTH_SPEC
- * §12-5). The coordinates (environment / variable) have already been
+ * §12-5): the wire statement with the layout-v3 schema fields nested under
+ * `schema` (always present when layoutVersion is explicit — the wire
+ * shape). The coordinates (environment / variable) have already been
  * checked by the worker for a match against the URL and the statement's
  * declared values; the DO reconstructs the signed target from the
  * storage coordinates (§12-5 — it is never assembled from the wire's
  * declared values). Since author = the calling principal is the
  * contract, no author ID / FP is carried here (the DO takes it from the
  * chain-derived member at acceptance time).
+ *
+ * Fields (inherited from the wire statement):
+ * - prevMetaSigHashHex: SHA-256 of the previous statement's signed_bytes
+ *   (empty string for metaVersion 1).
+ * - layoutVersion: the wire's layoutVersion (§12-2 — omitted = 1; the wire
+ *   Schema only admits an explicit value of 2 or above). A layout outside
+ *   the supported range ({1, 3} — the retired 2 included) is refused by the
+ *   acceptance check ahead of signature verification with a 422
+ *   `unsupported-layout` (ruling CR).
+ * - chainHeadHashHex / chainHeadSeq: the chain head the author last verified
+ *   at signing time (the §4.2 authorization-time binding).
+ * - signatureHex: the statement signature (Ed25519 — CRYPTO_SPEC §4.2).
  */
-export interface MetaStatementInput {
-  readonly suite: WireSuite;
-  readonly name: string;
-  readonly status: MetaStatementStatusInput;
-  readonly metaVersion: number;
-  /** SHA-256 of the previous statement's signed_bytes (empty string for metaVersion 1). */
-  readonly prevMetaSigHashHex: string;
-  /**
-   * The wire's layoutVersion (§12-2 — omitted = 1). The wire Schema only
-   * lets an explicit value of 2 or above through; a layout outside the
-   * supported range ({1, 3} — the retired 2 included) is refused by the
-   * acceptance check ahead of signature verification with a 422
-   * `unsupported-layout` (ruling CR).
-   */
-  readonly layoutVersion?: number;
-  /** The layout-v3 schema fields (always present when layoutVersion is explicit — the wire shape). */
+export type MetaStatementInput = Omit<WireMetaStatement, WireSchemaField> & {
   readonly schema?: MetaVariableSchemaInput;
-  /** The chain head the author last verified at signing time (the §4.2 authorization-time binding). */
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  /** The statement signature (Ed25519 — CRYPTO_SPEC §4.2). */
-  readonly signatureHex: string;
-}
+};
 
 /**
- * The distributed metadata statement (structurally identical to
- * DistributedVariableMetaStatement /
- * DistributedEnvironmentMetaStatement — the variable one carries a
- * variableId). Returns the stored signature block and the author (the
- * user_id + chain-derived key FP at acceptance time) as-is (verifiability
- * of a past statement by a since-deleted author — §12-2).
+ * The distributed environment metadata statement (an environment statement
+ * is always active — deletion is the chain op delete_environment, §4.2 /
+ * §6.2). Derived from api-schema's DistributedEnvironmentMetaStatement, with
+ * authorKeyFingerprintHex re-typed to crypto's branded KeyFingerprintHex: the
+ * wire carries a plain lowercase-hex string, the server value carries the
+ * chain-derived fingerprint (the user_id + key FP at acceptance time are
+ * returned as-is — verifiability of a past statement by a since-deleted
+ * author, §12-2). name / chainHead* / signatureHex / prevMetaSigHashHex
+ * follow the wire definitions (name NFC-checked by the server, the signature
+ * block Ed25519 — §4.2).
  */
-export interface DistributedMetaStatementValue {
-  readonly suite: WireSuite;
-  readonly environmentId: EnvironmentId;
-  readonly name: string;
-  /** An environment statement is always active (deletion is the chain op delete_environment — §4.2 / §6.2). */
-  readonly status: "active";
-  readonly metaVersion: number;
-  readonly prevMetaSigHashHex: string;
-  readonly chainHeadHashHex: string;
-  readonly chainHeadSeq: number;
-  readonly signatureHex: string;
-  readonly authorUserId: UserId;
+export type DistributedMetaStatementValue = Omit<
+  DistributedEnvironmentMetaStatement,
+  "authorKeyFingerprintHex"
+> & {
   readonly authorKeyFingerprintHex: KeyFingerprintHex;
-}
+};
 
 /**
- * The distributed form of a variable statement (with variableId). The
- * layout-v3 carried fields exist as a complete set of five only on v3
- * stored rows (no new field is added to a v1 distribution — §12-2).
+ * The distributed form of a variable statement (with variableId and the
+ * three-valued status). The layout-v3 carried fields exist as a complete set
+ * only on v3 stored rows (no new field is added to a v1 distribution —
+ * §12-2). Derived from api-schema's DistributedVariableMetaStatement with the
+ * same author-fingerprint re-typing as DistributedMetaStatementValue.
  */
-export interface DistributedVariableMetaStatementValue extends Omit<
-  DistributedMetaStatementValue,
-  "status"
-> {
-  readonly variableId: VariableId;
-  readonly status: MetaStatementStatusInput;
-  readonly layoutVersion?: number;
-  readonly varType?: MetaVarTypeInput;
-  readonly required?: boolean;
-  readonly description?: string;
-  /** Present with the other schema fields (null = no declaration). */
-  readonly maxAgeDays?: number | null;
-}
+export type DistributedVariableMetaStatementValue = Omit<
+  DistributedVariableMetaStatement,
+  "authorKeyFingerprintHex"
+> & {
+  readonly authorKeyFingerprintHex: KeyFingerprintHex;
+};
 
 /**
  * The stored input of an environment manifest (CRYPTO_SPEC §4.3 /
