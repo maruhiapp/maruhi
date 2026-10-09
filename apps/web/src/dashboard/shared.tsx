@@ -41,35 +41,8 @@ import { type ReactNode, useEffect, useRef } from "react";
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
 import { useReportSessionExpired } from "./session-expiry.ts";
-import type { ChainRole, ForbiddenReason, TokenList, TokenSummary } from "./types.ts";
-import type { ResourceState } from "./use-api-resource.ts";
+import type { ChainRole, ForbiddenReason } from "./types.ts";
 import type { RevocationState } from "./use-revocation.ts";
-
-/**
- * Imperative navigation inside the SPA (e.g. the direct-ID-input Open).
- * If the Navigation API exists it is an SPA transition; otherwise it
- * degrades to a full page load (same degradation line as the Router's
- * fallback="static").
- */
-export function navigateTo(path: string): void {
-  const nav = (window as { navigation?: { navigate: (url: string) => void } }).navigation;
-  if (nav) {
-    nav.navigate(path);
-  } else {
-    window.location.assign(path);
-  }
-}
-
-/**
- * The as-recorded display form of a server timestamp (ms): the ISO
- * form, UTC explicit. Human-readable listings use `ServerTime`; this is
- * reserved for the audit's expanded part (Recorded at — the value as
- * recorded).
- */
-export function formatServerTime(ms: number): string {
-  const date = new Date(ms);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
-}
 
 // The hover card's rows: the absolute UTC time and Unix seconds (both
 // copyable). The display is the viewer's timezone + an abbreviation
@@ -615,30 +588,4 @@ export function ServerReportedNote(): ReactNode {
       <Text type="code">maruhi audit verify</Text> on your own machine.
     </Text>
   );
-}
-
-/** The armed token (if still in the list). */
-function armedToken(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): TokenSummary | undefined {
-  return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
-}
-
-/** The object's name for the confirm dialog's heading (its name if in the list, otherwise "this token"). */
-export function armedTokenName(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "this token" : `token "${token.name}"`;
-}
-
-/** The announcement text of a successful revocation (the name at the moment of confirmation — it may not remain in the post-refetch list). */
-export function tokenRevokedMessage(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
 }

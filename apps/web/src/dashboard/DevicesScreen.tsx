@@ -40,11 +40,10 @@ import {
   LoadingRow,
   RevokeButton,
   RevocationOutcome,
-  armedTokenName,
-  tokenRevokedMessage,
   SectionBlock,
   ServerTime,
 } from "./shared.tsx";
+import { armedTokenName, tokenRevokedMessage } from "./token-text.ts";
 import type { DeviceList, DeviceSummary, TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
 import { type RevocationState, useRevocation } from "./use-revocation.ts";
