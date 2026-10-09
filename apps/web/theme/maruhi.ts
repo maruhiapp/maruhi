@@ -54,6 +54,24 @@ export const maruhiTheme = defineTheme({
     accent: [VERMILION_LIGHT, VERMILION_DARK],
     neutralStyle: "warm",
   },
+  components: {
+    // Code-typed Text carries identifiers (64-hex project IDs, chain
+    // hashes, key FPs, row ids, variable names) and the audit payload.
+    // A long run without spaces must wrap instead of widening its flex
+    // parent: `anywhere` lets the break count toward min-content and only
+    // breaks a word that would overflow, and min-width 0 lets a flex item
+    // shrink below its content (ruling H's HexText override, promoted
+    // here once the audit payload needed the same rules)
+    text: {
+      "type:code": { overflowWrap: "anywhere", minWidth: "0" },
+    },
+    // Inline <Code> (a CLI command inside a sentence) takes the size of
+    // the sentence around it rather than the fixed code size, so it reads
+    // as part of small supporting text too
+    code: {
+      base: { fontSize: "inherit" },
+    },
+  },
   tokens: {
     // Replace the derived values (light tone 40 / dark tone 80) with the
     // settled vermilion values.

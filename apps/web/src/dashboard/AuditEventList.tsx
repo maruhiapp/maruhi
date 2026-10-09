@@ -51,14 +51,8 @@ import {
   lineageLabel,
   readSummaryLabel,
 } from "./audit-read.ts";
-import {
-  EmptyNotice,
-  FailureNotice,
-  formatServerTime,
-  HexText,
-  LoadingRow,
-  ServerTime,
-} from "./shared.tsx";
+import { formatServerTime } from "./server-time.ts";
+import { EmptyNotice, FailureNotice, HexText, LoadingRow, ServerTime } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** Fetches one page. `before` is the row_id of the previous page's last row (AUDIT_SPEC §7). */
@@ -183,8 +177,9 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
   );
 }
 
-// Keeps the formatted JSON's newlines and indentation, and wraps long
-// hex at any position (no horizontal scrolling).
+// Keeps the formatted JSON's newlines and indentation; long hex wraps at
+// any position through the theme's code-text rules (no horizontal
+// scrolling).
 // Astryx `CodeBlock` emits an inline `style`
 // (contain-intrinsic-block-size) per line chunk, so it cannot render
 // under the strict CSP (style-src 'self') (DK K5-11 — design record
@@ -194,9 +189,6 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
 const payloadStyles = stylex.create({
   pre: {
     whiteSpace: "pre-wrap",
-    overflowWrap: "anywhere",
-    wordBreak: "break-all",
-    minWidth: 0,
   },
 });
 
@@ -219,11 +211,14 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   if (listed === null) return null;
   // The aggregated var.read (AUDIT_SPEC §3.3): the payload holds the
   // variable enumeration. The enumeration is sorted by variableId with
-  // no duplicates — usable as keys
+  // no duplicates — usable as keys. edgeCompensation cancels the items'
+  // inline inset against the Collapsible panel's padding, so the rows
+  // line up with the heading above (and the Payload heading) instead of
+  // sitting 8px in
   return (
     <VStack gap={2}>
       <Text weight="semibold">{readSummaryLabel(listed)}</Text>
-      <List density="compact">
+      <List density="compact" edgeCompensation="inline">
         {listed.map((variable) => (
           <ListItem
             key={`${variable.variableId}:${variable.version}`}
@@ -391,7 +386,11 @@ export function AuditEventList({
 }): ReactNode {
   const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(false);
+  // The generation of the page request in flight (undefined = idle). A
+  // generation, not a boolean, so a stale request settling cannot clear
+  // the flag of the request that replaced it
+  const [loadingGeneration, setLoadingGeneration] = useState<number | undefined>(undefined);
+  const isLoading = loadingGeneration !== undefined;
   // The generation of the consumed axis (fetchPage). When the axis
   // changes, a stale in-flight response is discarded —
   // a late-arriving old-axis page cannot bleed into the new axis's
@@ -401,11 +400,15 @@ export function AuditEventList({
   const loadMore = useCallback(
     async (current: LoadedState | undefined) => {
       const generation = generationRef.current;
-      setIsLoading(true);
+      setLoadingGeneration(generation);
       setFailure(undefined);
-      const result = await fetchPage(nextCursor(current));
+      let result: Awaited<ReturnType<typeof fetchPage>>;
+      try {
+        result = await fetchPage(nextCursor(current));
+      } finally {
+        setLoadingGeneration((inFlight) => (inFlight === generation ? undefined : inFlight));
+      }
       if (generation !== generationRef.current) return;
-      setIsLoading(false);
       if (result.kind !== "ok") {
         setFailure(result);
         return;

@@ -13,7 +13,7 @@
 //   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
 //      as cloudflare.config.ts configures
 // Requires `bun run build` beforehand.
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
@@ -371,6 +371,53 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     expect(html).not.toMatch(/posthog|_vercel\/insights|plausible|googletagmanager/i);
     // blume.config.ts `feedback: false`: no widget whose only channel is analytics
     expect(html).not.toContain("data-blume-page-feedback");
+  });
+});
+
+describe('site e2e: docs last-modified dates (blume.config.ts `lastModified: "git"`)', () => {
+  it("shows the page's last git commit date and emits it as schema.org dateModified", async () => {
+    // The committer date of the newest commit touching the page, as Blume
+    // reads it. Needs full history (CI's check job uses fetch-depth: 0); a
+    // shallow clone would date every page at the boundary commit
+    const committed = execFileSync(
+      "git",
+      ["log", "-1", "--format=%cI", "--", "docs/getting-started.mdx"],
+      { cwd: `${import.meta.dirname}/..`, encoding: "utf8" },
+    ).trim();
+    expect(committed).not.toBe("");
+    const iso = new Date(committed).toISOString();
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    expect(html).toMatch(new RegExp(`Last updated on <time datetime="${iso}">`));
+    const graphs = [
+      ...html.matchAll(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/gs),
+    ].map((match) => JSON.stringify(JSON.parse(match[1] ?? "null")));
+    expect(graphs.some((graph) => graph.includes(`"dateModified":"${iso}"`))).toBe(true);
+    const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
+    expect(sitemap).toContain(
+      `<loc>https://maruhi.app/docs/getting-started</loc><lastmod>${iso.slice(0, 10)}</lastmod>`,
+    );
+  });
+});
+
+describe("site e2e: related pages and the footer copyright", () => {
+  it("shows a docs page's related cards and the copyright in Blume's footer", async () => {
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    const related = /<nav[^>]*data-blume-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    // The order and targets of apps/site/docs/getting-started.mdx `related:`
+    expect([...related.matchAll(/href="(\/docs\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([
+      "/docs/deploy-targets",
+      "/docs/devices",
+      "/docs/invite-a-teammate",
+      "/docs/linux-keychain",
+    ]);
+    expect(html).toMatch(/<footer[^>]*data-blume-footer[\s\S]*© 2026 maruhi contributors/);
+  });
+
+  it("prints the copyright once in the landing page's own footer, with no second footer", async () => {
+    const html = await (await fetch(`${BASE}/`)).text();
+    expect(html.match(/<footer\b/g)).toHaveLength(1);
+    expect(html).not.toContain("data-blume-footer");
+    expect(html.match(/© 2026 maruhi contributors/g)).toHaveLength(1);
   });
 });
 

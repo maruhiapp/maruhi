@@ -3,14 +3,21 @@
 // worker's D1 binding. `cf d1` subcommands take the database ID — never the
 // binding or database name.
 
+import type { D1Binding } from "cf/config";
+
 import cfConfig from "../cloudflare.config.ts";
+
+/** A D1 binding that names its database ID (what `cf d1` subcommands take). */
+function isD1WithId(binding: { readonly type: string }): binding is D1Binding & { id: string } {
+  return binding.type === "d1" && (binding as D1Binding).id !== undefined;
+}
 
 export function cfD1Binding(mode: string | undefined, caller: string) {
   const worker = cfConfig({ isPreview: false, mode }).worker;
-  const db = Object.values(worker.env ?? {}).find((binding) => binding.type === "d1");
-  if (db === undefined || db.type !== "d1") {
+  const db = Object.values(worker.env ?? {}).find(isD1WithId);
+  if (db === undefined) {
     console.error(
-      `${caller}: no D1 binding in cloudflare.config.ts for mode ${JSON.stringify(mode)}`,
+      `${caller}: no D1 binding with an id in cloudflare.config.ts for mode ${JSON.stringify(mode)}`,
     );
     process.exit(1);
   }

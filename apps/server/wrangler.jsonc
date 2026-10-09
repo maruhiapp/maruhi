@@ -12,7 +12,10 @@
   // test-harness mirror of the deployment config.
   "name": "maruhi-server",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-01",
+  "compatibility_date": "2026-10-09",
+  // Both Node compat layers off, whatever the date implies (the reason is
+  // at COMPATIBILITY_FLAGS in cloudflare.config.ts)
+  "compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
   // Publish on the workers.dev subdomain (the self-host default
   // URL. Even when routes assigns a custom domain, the OAuth
   // callback URL is derived from the origin)
@@ -121,7 +124,7 @@
   ],
   // The GitHub OAuth App's GITHUB_CLIENT_ID and
   // GITHUB_CLIENT_SECRET are both registered as Workers Secrets
-  // (`wrangler secret put` — the procedure is in
+  // (`cf workers secrets update` — the procedure is in
   // docs/SELF_HOSTING.md). client_id is public information, but
   // unifying the registration path under secret makes editing this
   // file (committing it to a fork) and redeploying unnecessary
@@ -149,7 +152,8 @@
   // ratelimits / r2_buckets) must be re-declared per wrangler's
   // rules — drift from the top level is checked by
   // scripts/check-hosted-config.ts (CI 8c). Secrets via
-  // `wrangler secret put <NAME> --env hosted`
+  // `cf workers secrets update <NAME> --type secret_text
+  // --worker maruhi-server-hosted`
   // (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
   // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional).
   "env": {

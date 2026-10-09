@@ -3,6 +3,11 @@ title: Environment scopes
 description: Limit a member to some environments. The limit is enforced by key distribution, not by a server rule — a decryption key for an environment outside a member's scope does not exist anywhere.
 sidebar:
   order: 8
+related:
+  - /docs/invite-a-teammate
+  - /docs/four-eyes
+  - /docs/environments
+  - /docs/github-actions
 ---
 
 Every member of a maruhi project has an environment **scope**: the set of environments whose values they can decrypt. The scope is part of the member's signed entry on the project's membership chain, and the CLI distributes an environment's keys only to the members whose scope includes it. There is no key for the other environments — not on the member's machine, not on the server — so a server that is compromised or misconfigured cannot hand them out either. This is what separates a scope from a role-based rule on a server: nothing has to be trusted to enforce it.

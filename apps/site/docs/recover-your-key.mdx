@@ -3,6 +3,10 @@ title: Recover your key
 description: When every device is lost, the reserve key in the recovery ledger registers a new one. Three ways to open it — a recovery code, a passkey, or approvals from guardians you designated.
 sidebar:
   order: 6
+related:
+  - /docs/devices
+  - /docs/linux-keychain
+  - /docs/four-eyes
 ---
 
 Each of your machines has its own [device key](/docs/devices), and one more key — the **reserve key** — lives only in the recovery ledger on the server, sealed so that the server cannot open it. maruhi is zero-knowledge: what the server holds is ciphertext, and the three paths below are the three ways _you_ can open it. Opening the reserve key does not put it on the new machine to stay: `maruhi key recover` uses it once, to register the machine's own new device key on every project, and then discards it. You keep your place in every project without being re-invited.

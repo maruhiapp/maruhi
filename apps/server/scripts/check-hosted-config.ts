@@ -25,6 +25,7 @@
 
 import { dirname, relative } from "node:path";
 
+import type { UnwrapConfig } from "cf/config";
 import { unstable_readConfig } from "wrangler";
 
 import cfConfig from "../cloudflare.config.ts";
@@ -43,9 +44,14 @@ const cfCtx = { isPreview: false };
 const cfSelf = cfConfig({ ...cfCtx, mode: undefined }).worker;
 const cfHosted = cfConfig({ ...cfCtx, mode: "hosted" }).worker;
 const cfRestore = cfConfig({ ...cfCtx, mode: "restore" }).worker;
-const bundlerSelf = bundlerConfig({ ...cfCtx, mode: undefined });
-const bundlerHosted = bundlerConfig({ ...cfCtx, mode: "hosted" });
-const bundlerRestore = bundlerConfig({ ...cfCtx, mode: "restore" });
+// defineWranglerConfig's export type also admits a plain or promised config;
+// this one is a function of the mode, and the checks below need that shape
+if (typeof bundlerConfig !== "function") {
+  throw new Error("wrangler.config.ts must export a function of the cf mode");
+}
+const bundlerSelf = await bundlerConfig({ ...cfCtx, mode: undefined });
+const bundlerHosted = await bundlerConfig({ ...cfCtx, mode: "hosted" });
+const bundlerRestore = await bundlerConfig({ ...cfCtx, mode: "restore" });
 
 // ---------------------------------------------------------------------------
 // Normalization. Both config formats are folded into one shape so every
@@ -56,37 +62,42 @@ const bundlerRestore = bundlerConfig({ ...cfCtx, mode: "restore" });
 interface NormBinding {
   readonly binding: string;
   readonly name: string;
-  readonly id?: string;
+  readonly id?: string | undefined;
 }
 
 interface Norm {
   readonly name: string;
-  readonly entrypoint?: string;
-  readonly compatibilityDate?: string;
-  readonly workersDev?: boolean;
-  readonly previewUrls?: boolean;
-  readonly cpuMs?: number;
+  readonly entrypoint?: string | undefined;
+  readonly compatibilityDate?: string | undefined;
+  readonly compatibilityFlags: readonly string[];
+  readonly workersDev?: boolean | undefined;
+  readonly previewUrls?: boolean | undefined;
+  readonly cpuMs?: number | undefined;
   /** binding -> { className, scriptName (absent for same-worker bindings) } */
-  readonly doBindings: Record<string, { className: string; scriptName?: string }>;
+  readonly doBindings: Record<string, { className: string; scriptName?: string | undefined }>;
   /** binding -> { namespace, limit, period } */
   readonly rateLimits: Record<string, { namespace: string; limit: number; period: number }>;
-  readonly d1?: NormBinding;
+  readonly d1?: NormBinding | undefined;
   /** binding -> bucket name */
   readonly r2: Record<string, string>;
   readonly crons: readonly string[];
   readonly routes: readonly string[];
-  readonly observability?: {
-    enabled?: boolean;
-    redactQueryString?: boolean;
-    invocationLogs?: boolean;
-    headSamplingRate?: number;
-  };
-  readonly assets?: {
-    directory?: string;
-    htmlHandling?: string;
-    notFoundHandling?: string;
-    runWorkerFirst?: readonly string[];
-  };
+  readonly observability?:
+    | {
+        enabled?: boolean | undefined;
+        redactQueryString?: boolean | undefined;
+        invocationLogs?: boolean | undefined;
+        headSamplingRate?: number | undefined;
+      }
+    | undefined;
+  readonly assets?:
+    | {
+        directory?: string | undefined;
+        htmlHandling?: string | undefined;
+        notFoundHandling?: string | undefined;
+        runWorkerFirst?: readonly string[] | undefined;
+      }
+    | undefined;
   /** DO class names exported with sqlite storage */
   readonly doExports: readonly string[];
 }
@@ -98,6 +109,7 @@ interface WranglerLike {
   name?: string;
   main?: string;
   compatibility_date?: string;
+  compatibility_flags?: readonly string[];
   workers_dev?: boolean;
   preview_urls?: boolean;
   limits?: { cpu_ms?: number };
@@ -136,43 +148,17 @@ interface WranglerLike {
   migrations?: ReadonlyArray<{ new_sqlite_classes?: readonly string[] }>;
 }
 
-interface CfWorkerLike {
-  name?: string;
-  entrypoint?: string;
-  compatibilityDate?: string;
-  workersDev?: boolean;
-  previewUrls?: boolean;
-  limits?: { cpuMs?: number };
-  domains?: readonly string[];
-  triggers?: ReadonlyArray<{ type: string; schedule?: string }>;
-  env?: Record<
-    string,
-    | { type: "d1"; name: string; id: string }
-    | { type: "durable-object"; worker: string; exportName: string }
-    | {
-        type: "rate-limit";
-        namespace: string;
-        simple: { limit: number; period: number };
-      }
-    | { type: "r2"; name: string }
-    | Record<string, never>
-  >;
-  exports?: Record<string, { type: string; storage?: string }>;
-  assets?: {
-    htmlHandling?: string;
-    notFoundHandling?: string;
-    runWorkerFirst?: readonly string[];
-  };
-  observability?: {
-    enabled?: boolean;
-    redactQueryString?: boolean;
-    logs?: {
-      enabled?: boolean;
-      invocationLogs?: boolean;
-      headSamplingRate?: number;
-    };
-  };
-}
+// The cf side uses cf/config's own type (the worker of any mode), so the
+// view cannot drift from what cloudflare.config.ts actually declares. Each
+// mode's worker is a defineWorker() constant, so that type is a union of
+// literal workers, and a field only some modes declare (limits, domains,
+// observability, assets) cannot be read on a union. The view therefore
+// takes every mode's keys, each optional, with the union of the declared
+// value types (undefined for a mode that leaves the field out)
+type CfWorker = UnwrapConfig<typeof cfConfig>["worker"];
+type KeysOfAny<U> = U extends unknown ? keyof U : never;
+type ValueIn<U, K extends PropertyKey> = U extends Readonly<Record<K, infer V>> ? V : undefined;
+type CfWorkerLike = { readonly [K in KeysOfAny<CfWorker>]?: ValueIn<CfWorker, K> };
 
 interface BundlerLike {
   assetsDirectory?: string;
@@ -213,6 +199,7 @@ function normWrangler(config: WranglerLike): Norm {
     // unstable_readConfig absolutizes `main`; the cf side is config-relative
     entrypoint: config.main === undefined ? undefined : relative(configDir, config.main),
     compatibilityDate: config.compatibility_date,
+    compatibilityFlags: [...(config.compatibility_flags ?? [])].toSorted(),
     workersDev: config.workers_dev,
     previewUrls: config.preview_urls,
     cpuMs: config.limits?.cpu_ms,
@@ -265,10 +252,10 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
         };
         break;
       case "d1":
-        d1 = { binding, name: value.name, id: value.id };
+        d1 = { binding, name: value.name ?? "", id: value.id };
         break;
       case "r2":
-        r2[binding] = value.name;
+        r2[binding] = value.name ?? "";
         break;
     }
   }
@@ -280,6 +267,7 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
     name: worker.name ?? "",
     entrypoint: worker.entrypoint,
     compatibilityDate: worker.compatibilityDate,
+    compatibilityFlags: [...(worker.compatibilityFlags ?? [])].toSorted(),
     workersDev: worker.workersDev,
     previewUrls: worker.previewUrls,
     cpuMs: worker.limits?.cpuMs,
@@ -427,6 +415,23 @@ if (cProductionBinding?.scriptName !== cHosted.name) {
   failures.push(
     `cloudflare.config.ts (mode restore): PRODUCTION_PROJECT_CHAIN worker (${String(cProductionBinding?.scriptName)}) must equal the hosted worker name (${cHosted.name})`,
   );
+}
+
+// The runtime contract: every mode runs the same compatibility date with
+// both Node compat layers off (COMPATIBILITY_FLAGS in cloudflare.config.ts
+// — past 2026-08-04 the date alone would turn nodejs_compat on and copy
+// the secrets into process.env). The test runner forces Node compat on,
+// so this is the only place the setting is checked
+for (const [label, worker] of [
+  ["cf self-host", cSelf],
+  ["cf hosted", cHosted],
+  ["cf restore", cRestore],
+] as const) {
+  expectSame(`${label}: compatibilityDate`, worker.compatibilityDate, cSelf.compatibilityDate);
+  expectSame(`${label}: compatibilityFlags`, worker.compatibilityFlags, [
+    "no_nodejs_compat",
+    "no_nodejs_compat_v2",
+  ]);
 }
 
 // The restore worker's own shape: no HTTP handler surface, the per-minute
