@@ -50,6 +50,21 @@ const RATE_LIMIT_BINDINGS = {
   }),
 };
 
+// One runtime contract for every mode. Past 2026-08-04 the date alone
+// would switch nodejs_compat (and its implied flags) on: global `process`
+// and `Buffer`, object timers, and the text bindings — the Workers
+// Secrets among them — copied into `process.env`, readable by any
+// dependency. The server uses no Node APIs, so both Node compat layers
+// stay off explicitly, independent of the date; measured on workerd
+// 1.20261006, these two flags at 2026-10-09 leave `process` / `Buffer`
+// undefined and timers numeric, as at 2026-07-01 (`no_nodejs_compat`
+// alone still exposes `process` and `Buffer`).
+// scripts/check-hosted-config.ts asserts every mode and wrangler.jsonc
+// carry the same date and flags; the vitest plugin forces Node compat
+// on for its runner, so the tests cannot see this setting
+const COMPATIBILITY_DATE = "2026-10-09";
+const COMPATIBILITY_FLAGS = ["no_nodejs_compat", "no_nodejs_compat_v2"];
+
 const PROJECT_CHAIN_EXPORTS = {
   ProjectChainDO: exports.durableObject({
     storage: "sqlite",
@@ -91,7 +106,8 @@ export default defineConfig((ctx) => {
       return {
         worker: {
           name: "maruhi-server-hosted",
-          compatibilityDate: "2026-07-01",
+          compatibilityDate: COMPATIBILITY_DATE,
+          compatibilityFlags: COMPATIBILITY_FLAGS,
           entrypoint: "src/index.ts",
           workersDev: false,
           previewUrls: false,
@@ -138,7 +154,8 @@ export default defineConfig((ctx) => {
       return {
         worker: {
           name: "maruhi-restore",
-          compatibilityDate: "2026-07-01",
+          compatibilityDate: COMPATIBILITY_DATE,
+          compatibilityFlags: COMPATIBILITY_FLAGS,
           entrypoint: "src/restore-worker.ts",
           workersDev: false,
           previewUrls: false,
@@ -189,7 +206,8 @@ export default defineConfig((ctx) => {
       return {
         worker: {
           name: "maruhi-server",
-          compatibilityDate: "2026-07-01",
+          compatibilityDate: COMPATIBILITY_DATE,
+          compatibilityFlags: COMPATIBILITY_FLAGS,
           entrypoint: "src/index.ts",
           workersDev: true,
           previewUrls: false,
