@@ -28,6 +28,7 @@ import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
+import { Code } from "@astryxdesign/core/Code";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
@@ -35,7 +36,6 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
-import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import type { ApiFailure } from "./api.ts";
@@ -380,23 +380,11 @@ export function EmptyNotice({
   );
 }
 
-// The display of identifiers (a 64-hex project ID / a chain hash / a
-// key FP / a row_id). A long string without whitespace does not wrap
-// on Text's wordBreak alone (an inline element's width pushes the
-// parent flex item's min-content wider), so the anywhere wrap is made
-// explicit in xstyle.
-// DP3 needed the same override repeatedly, so one definition lives in
-// this module and screens use HexText (promotion to a variant /
-// ui.package is a human's call — ruling H)
-const hexStyles = stylex.create({
-  breakable: {
-    overflowWrap: "anywhere",
-    wordBreak: "break-all",
-    minWidth: 0,
-  },
-});
-
-/** The display of an identifier (monospace, wraps at any position). `size` matches the surrounding density. */
+/**
+ * The display of an identifier (monospace, wraps at any position — the
+ * theme's code-text rules in apps/web/theme/maruhi.ts). `size` matches
+ * the surrounding density.
+ */
 export function HexText({
   children,
   size = "sm",
@@ -407,7 +395,7 @@ export function HexText({
   testId?: string;
 }): ReactNode {
   return (
-    <Text type="code" size={size} xstyle={hexStyles.breakable} data-testid={testId}>
+    <Text type="code" size={size} data-testid={testId}>
       {children}
     </Text>
   );
@@ -584,8 +572,8 @@ export function ServerReportedNote(): ReactNode {
   return (
     <Text type="supporting" as="p">
       Everything on this page is shown as reported by the server. Integrity verification is the
-      CLI's job: run <Text type="code">maruhi project verify</Text> or{" "}
-      <Text type="code">maruhi audit verify</Text> on your own machine.
+      CLI's job: run <Code>maruhi project verify</Code> or <Code>maruhi audit verify</Code> on your
+      own machine.
     </Text>
   );
 }

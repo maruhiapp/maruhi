@@ -4,6 +4,7 @@
 // four-eyes approvals, and the environments + variable names
 // sections). See ProjectScreen.tsx for the screen's tab framework.
 import { Button } from "@astryxdesign/core/Button";
+import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -380,10 +381,10 @@ function ApprovalsView({
         />
       )}
       <Callout title="Approve from the CLI" headingLevel={3} testId="approvals-note">
-        Owners approve with <Text type="code">maruhi approval approve</Text> and proposers withdraw
-        with <Text type="code">maruhi approval withdraw</Text>. The approval that reaches the quorum
-        applies the operation and runs the follow-up rotation or key distribution. Approving is not
-        available in the dashboard.
+        Owners approve with <Code>maruhi approval approve</Code> and proposers withdraw with{" "}
+        <Code>maruhi approval withdraw</Code>. The approval that reaches the quorum applies the
+        operation and runs the follow-up rotation or key distribution. Approving is not available in
+        the dashboard.
       </Callout>
     </SectionBlock>
   );

@@ -177,8 +177,9 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
   );
 }
 
-// Keeps the formatted JSON's newlines and indentation, and wraps long
-// hex at any position (no horizontal scrolling).
+// Keeps the formatted JSON's newlines and indentation; long hex wraps at
+// any position through the theme's code-text rules (no horizontal
+// scrolling).
 // Astryx `CodeBlock` emits an inline `style`
 // (contain-intrinsic-block-size) per line chunk, so it cannot render
 // under the strict CSP (style-src 'self') (DK K5-11 — design record
@@ -188,9 +189,6 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
 const payloadStyles = stylex.create({
   pre: {
     whiteSpace: "pre-wrap",
-    overflowWrap: "anywhere",
-    wordBreak: "break-all",
-    minWidth: 0,
   },
 });
 

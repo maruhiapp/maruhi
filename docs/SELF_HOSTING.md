@@ -106,18 +106,15 @@ secrets means you never have to edit `cloudflare.config.ts` and redeploy —
 AUTH_SPEC §3-2):
 
 ```sh
-bunx wrangler secret put GITHUB_CLIENT_ID
-bunx wrangler secret put GITHUB_CLIENT_SECRET
+bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server
+bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server
 ```
 
-(`wrangler secret put` prompts for the value with masked input, or reads it
-from a pipe, and finds the Worker from the project config. The cf equivalent
-also keeps the value off the process argv and out of shell history when
-`--text` is left out — it prompts with masked input or reads a piped value —
-but needs the Worker name and the secret type spelled out:
-`bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server`.
-Never pass the value with `--text`, which puts it on the process argv and in
-shell history.) The update takes effect immediately (no redeploy).
+(Without `--text`, the command prompts for the value with masked input, or
+reads it from a pipe, so the value stays off the process argv and out of shell
+history. Never pass the value with `--text`. `--worker` is required: the
+command does not read the Worker name from `cloudflare.config.ts`.) The update
+takes effect immediately (no redeploy).
 
 ### 6. Smoke-check
 
@@ -125,7 +122,7 @@ shell history.) The update takes effect immediately (no redeploy).
 curl <deploy-url>/auth/config
 # → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
-# → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
+# → 503 {"_tag":"SetupIncomplete",...} means a secret registration from step 5 was skipped
 #   (list registered secrets with `bunx cf workers secrets list --worker maruhi-server` — values are not shown)
 ```
 
@@ -152,7 +149,7 @@ Generate 32 bytes of randomness as hex (64 characters) and register it as a
 Workers Secret:
 
 ```sh
-openssl rand -hex 32 | bunx wrangler secret put SERVER_ENC_KEY_IKM
+openssl rand -hex 32 | tr -d '\n' | bunx cf workers secrets update SERVER_ENC_KEY_IKM --type secret_text --worker maruhi-server
 ```
 
 The server derives an X25519 keypair from this IKM deterministically (RFC 9180
@@ -468,7 +465,9 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 # 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see `case "hosted"` in
 #    cloudflare.config.ts; put your D1 database ID there and register the same
-#    secrets with --mode hosted).
+#    secrets on the hosted Worker with --worker maruhi-server-hosted, after
+#    the deploy: the secrets API writes to an existing Worker, and until the
+#    secrets are in place the new Worker answers 503 SetupIncomplete).
 #    Note: the hosted mode publishes a separate Worker, `maruhi-server-hosted`
 #    (named explicitly in cloudflare.config.ts) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
@@ -476,11 +475,11 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 #    and OAuth codes — keep `observability.logs.invocationLogs: false` and
 #    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
-bunx wrangler secret put GITHUB_CLIENT_ID --env hosted
-bunx wrangler secret put GITHUB_CLIENT_SECRET --env hosted
-bunx wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
 bun run db:migrate:hosted
 bunx cf deploy --mode hosted --no-provision
+bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server-hosted
+bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server-hosted
+bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --type secret_text --worker maruhi-server-hosted   # optional
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,
@@ -892,7 +891,7 @@ or newer.
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
-  unregistered (a missed `wrangler secret put` — step 5). List registered secrets with
+  unregistered (a missed secret registration — step 5). List registered secrets with
   `bunx cf workers secrets list --worker maruhi-server` (values are not shown)
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
@@ -918,13 +917,15 @@ or newer.
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
   (a malformed value is treated as unset — this is not a 503).
-  Pass the output of `openssl rand -hex 32` to `wrangler secret put
-  SERVER_ENC_KEY_IKM` (watch for stray newlines or quotes)
+  Pipe the output of `openssl rand -hex 32 | tr -d '\n'` into `bunx cf
+  workers secrets update SERVER_ENC_KEY_IKM --type secret_text --worker
+  maruhi-server` (the server does not trim the value, so a trailing newline
+  or quote makes it malformed)
 
 ## Notes
 
 - **Rotating client_secret**: issue a new secret on the GitHub side →
-  `wrangler secret put GITHUB_CLIENT_SECRET`
+  `bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server`
   (takes effect immediately; no redeploy) → delete the old secret on the
   GitHub side
 - **Custom domain**: you may add `domains` to `cloudflare.config.ts` (the
