@@ -15,6 +15,8 @@
 // - Revocation is an inline two-step confirm (ruling CO). Because
 //   revoking your own token instantly 401s any running CLI / CI, the
 //   consequence note is always shown below the table
+
+import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
@@ -151,9 +153,9 @@ function TokenNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={2} testId="token-notes">
       Issuing tokens is not available in the dashboard — a token is issued when you sign in from the
-      CLI: <Text type="code">maruhi login</Text> (raw token values never appear here). Revoking a
-      token immediately signs out any CLI or CI job still using it; sign in again from the CLI to
-      issue a replacement.
+      CLI: <Code>maruhi login</Code> (raw token values never appear here). Revoking a token
+      immediately signs out any CLI or CI job still using it; sign in again from the CLI to issue a
+      replacement.
     </Callout>
   );
 }

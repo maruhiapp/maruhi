@@ -2,6 +2,8 @@
 
 // The S7 rotation-flags tab. See ProjectScreen.tsx for the
 // screen's tab framework.
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
@@ -161,8 +163,8 @@ export function RotationTab({ projectId }: { projectId: string }): ReactNode {
       {/* Dismissing is not on the web (ADR-0018 amendment 2 — erasing a warning is a governance operation) */}
       <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
         A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
-        flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin). Dismissing is
-        not available in the dashboard.
+        flag from the CLI: <Code>maruhi rotation dismiss</Code> (admin). Dismissing is not available
+        in the dashboard.
       </Callout>
     </VStack>
   );

@@ -436,6 +436,8 @@
       font-family: var(--font-family-code);
       font-size: var(--text-code-size);
       line-height: var(--text-code-leading);
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     .astryx-text[data-type="supporting"] {
@@ -666,6 +668,10 @@
 
     .astryx-section {
       --astryx-section-padding: var(--spacing-3);
+    }
+
+    .astryx-code {
+      font-size: inherit;
     }
 
     .astryx-text[data-color="primary"] {

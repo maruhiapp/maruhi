@@ -23,6 +23,8 @@
 // - The display name / FP / tokenId are rendered only as text nodes,
 //   as server-issued strings. The only thing an href receives is
 //   `apiPaths.tokenRevoke(tokenId)` (encodeURIComponent)
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -189,13 +191,12 @@ function buildDeviceColumns(
 function DeviceNotes(): ReactNode {
   return (
     <Callout title="Lost a device?" headingLevel={2} testId="device-notes">
-      Revoke its key from another device with{" "}
-      <Text type="code">maruhi device revoke &lt;fingerprint&gt;</Text>, then revoke its API token
-      here (or on the <Link href={spaPaths.tokens()}>API tokens</Link> page). Revoking the token
-      stops that device from reaching the API immediately; revoking the key is what removes it from
-      the project chains. Registering, approving and removing devices is done from the CLI (
-      <Text type="code">maruhi device add</Text> / <Text type="code">maruhi device approve</Text>)
-      and is not available in the dashboard.
+      Revoke its key from another device with <Code>maruhi device revoke &lt;fingerprint&gt;</Code>,
+      then revoke its API token here (or on the <Link href={spaPaths.tokens()}>API tokens</Link>{" "}
+      page). Revoking the token stops that device from reaching the API immediately; revoking the
+      key is what removes it from the project chains. Registering, approving and removing devices is
+      done from the CLI (<Code>maruhi device add</Code> / <Code>maruhi device approve</Code>) and is
+      not available in the dashboard.
     </Callout>
   );
 }
@@ -300,7 +301,7 @@ export function DevicesScreen(): ReactNode {
         <Text as="p" type="supporting">
           Your device registry (display names and linked API tokens), as reported by the server. The
           registry is advisory; the project chains are the source of truth —{" "}
-          <Text type="code">maruhi device list</Text> verifies them.
+          <Code>maruhi device list</Code> verifies them.
         </Text>
       }
     >
