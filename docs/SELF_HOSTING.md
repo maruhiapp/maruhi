@@ -149,7 +149,7 @@ Generate 32 bytes of randomness as hex (64 characters) and register it as a
 Workers Secret:
 
 ```sh
-openssl rand -hex 32 | bunx cf workers secrets update SERVER_ENC_KEY_IKM --type secret_text --worker maruhi-server
+openssl rand -hex 32 | tr -d '\n' | bunx cf workers secrets update SERVER_ENC_KEY_IKM --type secret_text --worker maruhi-server
 ```
 
 The server derives an X25519 keypair from this IKM deterministically (RFC 9180
@@ -915,9 +915,10 @@ or newer.
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
   (a malformed value is treated as unset — this is not a 503).
-  Pipe the output of `openssl rand -hex 32` into `bunx cf workers secrets
-  update SERVER_ENC_KEY_IKM --type secret_text --worker maruhi-server` (watch
-  for stray newlines or quotes)
+  Pipe the output of `openssl rand -hex 32 | tr -d '\n'` into `bunx cf
+  workers secrets update SERVER_ENC_KEY_IKM --type secret_text --worker
+  maruhi-server` (the server does not trim the value, so a trailing newline
+  or quote makes it malformed)
 
 ## Notes
 
