@@ -23,6 +23,9 @@ import { type SweepOutcome } from "../rotation-sweep.ts";
 // modules) is imported lazily inside the bodies that use it, so that
 // parsing / help / version never pay its module cost. `import()` inside an
 // `Effect.promise` resolves only when the command handler actually runs.
+// Each load picks its names inside the `.then`
+// (`import("../m.ts").then(({ a }) => ({ a }))`) — the only shape fallow
+// credits per export (pinned by test/lazy-imports.test.ts).
 
 /** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
 const RUN_TERMINATOR_HINT =
@@ -77,7 +80,9 @@ export const ENV_FLAG_SHAPE_MESSAGE =
 export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(function* (
   raw: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
   const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
     fix: "mirror in your config",
   });
@@ -141,8 +146,11 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
     context: Pick<ProjectContext, "client" | "verified" | "session">,
     options: { readonly includeAnchor: boolean },
   ): Effect.fn.Return<void, never, CliServices> {
-    const { ANCHOR_REFRESH_PROPOSAL, checkpointProposal } = yield* Effect.promise(
-      () => import("../checkpoint.ts"),
+    const { ANCHOR_REFRESH_PROPOSAL, checkpointProposal } = yield* Effect.promise(() =>
+      import("../checkpoint.ts").then(({ ANCHOR_REFRESH_PROPOSAL, checkpointProposal }) => ({
+        ANCHOR_REFRESH_PROPOSAL,
+        checkpointProposal,
+      })),
     );
     const proposal = yield* checkpointProposal({
       client: context.client,
@@ -255,7 +263,11 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   }
   if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
     // The anchor-update proposal — emitted as one line across the whole sweep
-    const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() => import("../checkpoint.ts"));
+    const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
+      import("../checkpoint.ts").then(({ ANCHOR_STALE_AFTER_ROTATION }) => ({
+        ANCHOR_STALE_AFTER_ROTATION,
+      })),
+    );
     yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
   }
   return exitCode;

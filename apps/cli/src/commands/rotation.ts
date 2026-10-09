@@ -83,8 +83,12 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "list",
     rotationListConfig,
     Effect.fn("commands-rotation.rotationList")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
-      const { rotationListOp } = yield* Effect.promise(() => import("../rotation.ts"));
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+      );
+      const { rotationListOp } = yield* Effect.promise(() =>
+        import("../rotation.ts").then(({ rotationListOp }) => ({ rotationListOp })),
+      );
 
       const dueWithin = values["due-within"];
       if (
@@ -119,9 +123,19 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "dismiss",
     rotationDismissConfig,
     Effect.fn("commands-rotation.rotationDismiss")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+      );
       const { parseDismissRequest, resolveDismissTargets, rotationDismissOp } =
-        yield* Effect.promise(() => import("../rotation.ts"));
+        yield* Effect.promise(() =>
+          import("../rotation.ts").then(
+            ({ parseDismissRequest, resolveDismissTargets, rotationDismissOp }) => ({
+              parseDismissRequest,
+              resolveDismissTargets,
+              rotationDismissOp,
+            }),
+          ),
+        );
 
       // The targets' format is checked before any network
       const environmentId = values.env;
@@ -175,9 +189,13 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
-      const { rotationProposalsOp } = yield* Effect.promise(
-        () => import("../rotation-proposals.ts"),
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+      );
+      const { rotationProposalsOp } = yield* Effect.promise(() =>
+        import("../rotation-proposals.ts").then(({ rotationProposalsOp }) => ({
+          rotationProposalsOp,
+        })),
       );
 
       const environmentId = values.env;
@@ -203,14 +221,27 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openEnvironment, openMetadataProject } = yield* Effect.promise(
-        () => import("../context.ts"),
+      const { openEnvironment, openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment, openMetadataProject }) => ({
+          openEnvironment,
+          openMetadataProject,
+        })),
       );
-      const { describeAcceptance, findProposal, rotationAcceptOp } = yield* Effect.promise(
-        () => import("../rotation-proposals.ts"),
+      const { describeAcceptance, findProposal, rotationAcceptOp } = yield* Effect.promise(() =>
+        import("../rotation-proposals.ts").then(
+          ({ describeAcceptance, findProposal, rotationAcceptOp }) => ({
+            describeAcceptance,
+            findProposal,
+            rotationAcceptOp,
+          }),
+        ),
       );
-      const { fetchRotationProposals } = yield* Effect.promise(() => import("../rotation.ts"));
-      const { logRotationWarnings } = yield* Effect.promise(() => import("../var-rotate.ts"));
+      const { fetchRotationProposals } = yield* Effect.promise(() =>
+        import("../rotation.ts").then(({ fetchRotationProposals }) => ({ fetchRotationProposals })),
+      );
+      const { logRotationWarnings } = yield* Effect.promise(() =>
+        import("../var-rotate.ts").then(({ logRotationWarnings }) => ({ logRotationWarnings })),
+      );
 
       const io = yield* CliIo;
       // The proposal decides the environment: it is looked up through a
@@ -240,11 +271,18 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
-      const { findProposal, rotationRejectOp } = yield* Effect.promise(
-        () => import("../rotation-proposals.ts"),
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
       );
-      const { fetchRotationProposals } = yield* Effect.promise(() => import("../rotation.ts"));
+      const { findProposal, rotationRejectOp } = yield* Effect.promise(() =>
+        import("../rotation-proposals.ts").then(({ findProposal, rotationRejectOp }) => ({
+          findProposal,
+          rotationRejectOp,
+        })),
+      );
+      const { fetchRotationProposals } = yield* Effect.promise(() =>
+        import("../rotation.ts").then(({ fetchRotationProposals }) => ({ fetchRotationProposals })),
+      );
 
       const context = yield* openMetadataProject(values);
       const proposal = yield* findProposal(yield* fetchRotationProposals(context), values.id);

@@ -44,8 +44,15 @@ const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(f
   readonly source?: string | undefined;
   readonly force?: boolean | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { openSession, resolveProjectId } = yield* Effect.promise(() => import("../context.ts"));
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { openSession, resolveProjectId } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSession, resolveProjectId }) => ({
+      openSession,
+      resolveProjectId,
+    })),
+  );
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   const io = yield* CliIo;
   if (flags.source === undefined) {
@@ -96,8 +103,12 @@ const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(functio
   projectId: ProjectId,
   forced: boolean,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
-  const { openSessionWith } = yield* Effect.promise(() => import("../context.ts"));
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+  );
+  const { openSessionWith } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSessionWith }) => ({ openSessionWith })),
+  );
 
   const here = yield* syncProject(context.client, projectId);
   // Each read stands alone (round 10): a transient failure of the mark's
@@ -277,7 +288,12 @@ const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteComma
     readonly project?: string | undefined;
     readonly force?: boolean | undefined;
   }): Effect.fn.Return<void, CliError, CliServices> {
-    const { openSession, resolveProjectId } = yield* Effect.promise(() => import("../context.ts"));
+    const { openSession, resolveProjectId } = yield* Effect.promise(() =>
+      import("../context.ts").then(({ openSession, resolveProjectId }) => ({
+        openSession,
+        resolveProjectId,
+      })),
+    );
 
     const io = yield* CliIo;
     const context = yield* openSession(flags.server);
@@ -337,7 +353,9 @@ const promotionGuard = Effect.fn("commands-mirror-write.promotionGuard")(functio
   CliError,
   CliServices
 > {
-  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+  );
 
   const source = yield* sourceState(context.config, sourceOrigin, projectId, context.origin);
   const frozenAt =
@@ -517,7 +535,9 @@ const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   projectId: ProjectId,
   thisOrigin: string,
 ): Effect.fn.Return<SourceState, never, CliServices> {
-  const { openSessionWith } = yield* Effect.promise(() => import("../context.ts"));
+  const { openSessionWith } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSessionWith }) => ({ openSessionWith })),
+  );
 
   const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
     Effect.flatMap((source) =>
@@ -569,7 +589,9 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
   projectId: ProjectId,
   prefetched: VerifiedProject | null = null,
 ): Effect.fn.Return<readonly string[], CliError, CliServices> {
-  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+  );
 
   const verified = prefetched ?? (yield* syncProject(client, projectId));
   const own = yield* client.auth.authConfig({}).pipe(
@@ -599,7 +621,9 @@ const keyFollowUps = Effect.fn("commands-mirror-write.keyFollowUps")(function* (
 const sourceAnswers = Effect.fn("commands-mirror-write.sourceAnswers")(function* (
   sourceOrigin: string,
 ): Effect.fn.Return<boolean, never, HttpClient.HttpClient> {
-  const { makeApiClient } = yield* Effect.promise(() => import("../api.ts"));
+  const { makeApiClient } = yield* Effect.promise(() =>
+    import("../api.ts").then(({ makeApiClient }) => ({ makeApiClient })),
+  );
 
   const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(

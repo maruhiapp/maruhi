@@ -47,9 +47,14 @@ export function makePushCommand() {
     "push",
     pushConfig,
     Effect.fn("commands-push.push")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
-      const { normalizeStdinValue, pushVariable } = yield* Effect.promise(
-        () => import("../push.ts"),
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+      );
+      const { normalizeStdinValue, pushVariable } = yield* Effect.promise(() =>
+        import("../push.ts").then(({ normalizeStdinValue, pushVariable }) => ({
+          normalizeStdinValue,
+          pushVariable,
+        })),
       );
 
       const io = yield* CliIo;

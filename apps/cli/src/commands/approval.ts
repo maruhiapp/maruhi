@@ -120,7 +120,9 @@ function readyNote(view: ProposalView): string | null {
 const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { openMetadataProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+  );
 
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
@@ -148,8 +150,12 @@ const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(f
 const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
-  const { loadMasterKeys } = yield* Effect.promise(() => import("../session.ts"));
+  const { openMetadataProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+  );
+  const { loadMasterKeys } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ loadMasterKeys }) => ({ loadMasterKeys })),
+  );
 
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
@@ -334,9 +340,15 @@ function reportFulfilment(
 const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { approveProposalOp } = yield* Effect.promise(() => import("../approval-approve.ts"));
-  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
-  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+  const { approveProposalOp } = yield* Effect.promise(() =>
+    import("../approval-approve.ts").then(({ approveProposalOp }) => ({ approveProposalOp })),
+  );
+  const { openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openProject }) => ({ openProject })),
+  );
+  const { sweepRotateFor } = yield* Effect.promise(() =>
+    import("../sweep-rotate.ts").then(({ sweepRotateFor }) => ({ sweepRotateFor })),
+  );
 
   const io = yield* CliIo;
   // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
@@ -377,8 +389,12 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
 const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { withdrawProposalOp } = yield* Effect.promise(() => import("../approval.ts"));
-  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { withdrawProposalOp } = yield* Effect.promise(() =>
+    import("../approval.ts").then(({ withdrawProposalOp }) => ({ withdrawProposalOp })),
+  );
+  const { openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openProject }) => ({ openProject })),
+  );
 
   const io = yield* CliIo;
   const context = yield* openProject(flags);

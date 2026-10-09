@@ -51,9 +51,13 @@ export function makeGuardianCommands() {
     "add",
     guardianAddConfig,
     Effect.fn("commands-guardian.guardianAdd")(function* (values) {
-      const { guardianAddOp } = yield* Effect.promise(() => import("../guardian.ts"));
-      const { openLedgerReserveForChange } = yield* Effect.promise(
-        () => import("../ledger-open.ts"),
+      const { guardianAddOp } = yield* Effect.promise(() =>
+        import("../guardian.ts").then(({ guardianAddOp }) => ({ guardianAddOp })),
+      );
+      const { openLedgerReserveForChange } = yield* Effect.promise(() =>
+        import("../ledger-open.ts").then(({ openLedgerReserveForChange }) => ({
+          openLedgerReserveForChange,
+        })),
       );
       if (!isGuardianMode(values.mode)) {
         return yield* Effect.fail(usageError(`Specify --mode (${GUARDIAN_MODES.join(" | ")})`));
@@ -81,8 +85,12 @@ export function makeGuardianCommands() {
     "approve",
     guardianApproveConfig,
     Effect.fn("commands-guardian.guardianApprove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { guardianApproveOp } = yield* Effect.promise(() => import("../guardian.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { guardianApproveOp } = yield* Effect.promise(() =>
+        import("../guardian.ts").then(({ guardianApproveOp }) => ({ guardianApproveOp })),
+      );
       const context = yield* openSession(values.server);
       yield* guardianApproveOp({
         session: context.session,
@@ -98,8 +106,10 @@ export function makeGuardianCommands() {
 
   const guardianList = Command.make("list", guardianListConfig, (values) =>
     Effect.flatMap(
-      Effect.promise(() => import("../guardian.ts")),
-      (m) => m.guardianListOp({ flags: values }),
+      Effect.promise(() =>
+        import("../guardian.ts").then(({ guardianListOp }) => ({ guardianListOp })),
+      ),
+      ({ guardianListOp }) => guardianListOp({ flags: values }),
     ),
   ).pipe(
     Command.withDescription(
@@ -111,8 +121,12 @@ export function makeGuardianCommands() {
     "remove",
     guardianRemoveConfig,
     Effect.fn("commands-guardian.guardianRemove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { guardianRemoveOp } = yield* Effect.promise(() => import("../guardian.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { guardianRemoveOp } = yield* Effect.promise(() =>
+        import("../guardian.ts").then(({ guardianRemoveOp }) => ({ guardianRemoveOp })),
+      );
       const context = yield* openSession(values.server);
       yield* guardianRemoveOp({
         session: context.session,
@@ -126,8 +140,12 @@ export function makeGuardianCommands() {
     "wards",
     guardianWardsConfig,
     Effect.fn("commands-guardian.guardianWards")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { guardianWardsOp } = yield* Effect.promise(() => import("../guardian.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { guardianWardsOp } = yield* Effect.promise(() =>
+        import("../guardian.ts").then(({ guardianWardsOp }) => ({ guardianWardsOp })),
+      );
       const context = yield* openSession(values.server);
       yield* guardianWardsOp({ session: context.session, client: context.client });
     }),

@@ -95,7 +95,9 @@ const grantKeySource = Effect.fn("commands-server.grantKeySource")(function* (
   keyOrigin: string | null,
   serverOrigin: string,
 ): Effect.fn.Return<GrantKeySource | null, CliError, CliServices> {
-  const { makeApiClient } = yield* Effect.promise(() => import("../api.ts"));
+  const { makeApiClient } = yield* Effect.promise(() =>
+    import("../api.ts").then(({ makeApiClient }) => ({ makeApiClient })),
+  );
 
   if (keyOrigin === null) {
     return null;
@@ -125,9 +127,15 @@ const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(funct
     readonly keyFrom?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
-  const { serverGrantOp } = yield* Effect.promise(() => import("../server-grant.ts"));
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openProject }) => ({ openProject })),
+  );
+  const { serverGrantOp } = yield* Effect.promise(() =>
+    import("../server-grant.ts").then(({ serverGrantOp }) => ({ serverGrantOp })),
+  );
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   const io = yield* CliIo;
   const environmentIds = yield* parseEnvironmentsFlag(flags.environments);
@@ -185,12 +193,21 @@ const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(fun
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
-  const { reportRotationChecklist } = yield* Effect.promise(() => import("../rotation.ts"));
-  const { REVOKE_ROTATION_REASON, serverRevokeOp } = yield* Effect.promise(
-    () => import("../server-revoke.ts"),
+  const { openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openProject }) => ({ openProject })),
   );
-  const { sweepRotateFor } = yield* Effect.promise(() => import("../sweep-rotate.ts"));
+  const { reportRotationChecklist } = yield* Effect.promise(() =>
+    import("../rotation.ts").then(({ reportRotationChecklist }) => ({ reportRotationChecklist })),
+  );
+  const { REVOKE_ROTATION_REASON, serverRevokeOp } = yield* Effect.promise(() =>
+    import("../server-revoke.ts").then(({ REVOKE_ROTATION_REASON, serverRevokeOp }) => ({
+      REVOKE_ROTATION_REASON,
+      serverRevokeOp,
+    })),
+  );
+  const { sweepRotateFor } = yield* Effect.promise(() =>
+    import("../sweep-rotate.ts").then(({ sweepRotateFor }) => ({ sweepRotateFor })),
+  );
 
   const io = yield* CliIo;
   const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);

@@ -176,8 +176,12 @@ const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   CliError,
   CliIo
 > {
-  const { loadReceipt, receiptVersionWarning, storeReceipt } = yield* Effect.promise(
-    () => import("./sync-receipt.ts"),
+  const { loadReceipt, receiptVersionWarning, storeReceipt } = yield* Effect.promise(() =>
+    import("./sync-receipt.ts").then(({ loadReceipt, receiptVersionWarning, storeReceipt }) => ({
+      loadReceipt,
+      receiptVersionWarning,
+      storeReceipt,
+    })),
   );
   const receiptsEnvironment = input.config.receiptsEnvironment;
   const loaded = yield* loadReceipt({
@@ -243,7 +247,9 @@ const reportTarget = Effect.fn("sync-rotate.reportTarget")(function* (
   receiptsEnvironment: string,
 ): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
-  const { receiptVariableName } = yield* Effect.promise(() => import("./sync-receipt.ts"));
+  const { receiptVariableName } = yield* Effect.promise(() =>
+    import("./sync-receipt.ts").then(({ receiptVariableName }) => ({ receiptVariableName })),
+  );
   switch (outcome.kind) {
     case "no-receipt":
       // No receipt = never synced once. Says nothing
@@ -288,7 +294,9 @@ export const advanceReceiptsAfterRotation = Effect.fn("sync-rotate.advanceReceip
     // is already done, so keep it a warning (failing it outside
     // the envelope would turn the exit code into 1 after a
     // successful report)
-    const { resyncExtended } = yield* Effect.promise(() => import("../chain-sync.ts"));
+    const { resyncExtended } = yield* Effect.promise(() =>
+      import("../chain-sync.ts").then(({ resyncExtended }) => ({ resyncExtended })),
+    );
     const synced = yield* asCleanupOutcome(resyncExtended(input.resync, input.verified));
     if (synced.kind === "failed") {
       yield* logWarning(

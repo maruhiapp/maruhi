@@ -157,7 +157,9 @@ const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(funct
   primary: CiTarget,
   attempt: (target: CiTarget) => Effect.Effect<A, CliError, CliServices>,
 ): Effect.fn.Return<A, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   if (values.mirror === undefined) {
     return yield* attempt(primary);
@@ -193,8 +195,12 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
   readonly anchor?: string | undefined;
   readonly command: readonly string[];
 }): Effect.fn.Return<number, CliError, CliServices> {
-  const { ciRunOp } = yield* Effect.promise(() => import("../ci-run.ts"));
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { ciRunOp } = yield* Effect.promise(() =>
+    import("../ci-run.ts").then(({ ciRunOp }) => ({ ciRunOp })),
+  );
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   // Every format check precedes network / key generation (the same discipline as the existing commands)
   const origin = yield* normalizeHttpOrigin(
@@ -238,7 +244,9 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
   readonly yes: boolean;
   readonly target: string;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   // The format checks and the config read precede network / key
   // generation (the same discipline as ci run). There is no `--env`: the
@@ -284,7 +292,9 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
   },
   CliError
 > {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ normalizeHttpOrigin }) => ({ normalizeHttpOrigin })),
+  );
 
   const origin = yield* normalizeHttpOrigin(
     yield* requireCiFlag(values.server, "--server", "ci rotate"),
@@ -325,8 +335,15 @@ const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (valu
   readonly "expires-in"?: number | undefined;
   readonly name: string;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { ciRotateOp, describeProposal } = yield* Effect.promise(() => import("../ci-rotate.ts"));
-  const { logRotationWarnings } = yield* Effect.promise(() => import("../var-rotate.ts"));
+  const { ciRotateOp, describeProposal } = yield* Effect.promise(() =>
+    import("../ci-rotate.ts").then(({ ciRotateOp, describeProposal }) => ({
+      ciRotateOp,
+      describeProposal,
+    })),
+  );
+  const { logRotationWarnings } = yield* Effect.promise(() =>
+    import("../var-rotate.ts").then(({ logRotationWarnings }) => ({ logRotationWarnings })),
+  );
 
   const io = yield* CliIo;
   const coordinates = yield* ciRotateCoordinates(values);

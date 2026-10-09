@@ -68,7 +68,9 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
   input: CiSyncInput,
 ): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
-  const { leaseEnvironments } = yield* Effect.promise(() => import("../ci-lease.ts"));
+  const { leaseEnvironments } = yield* Effect.promise(() =>
+    import("../ci-lease.ts").then(({ leaseEnvironments }) => ({ leaseEnvironments })),
+  );
   const {
     computePlan,
     failDriver,
@@ -79,7 +81,31 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
     runDriver,
     sourceVariablesOf,
     writesOf,
-  } = yield* Effect.promise(() => import("./sync-plan.ts"));
+  } = yield* Effect.promise(() =>
+    import("./sync-plan.ts").then(
+      ({
+        computePlan,
+        failDriver,
+        integrationTokenOf,
+        prepareWork,
+        requireProductionConsent,
+        reviewPlan,
+        runDriver,
+        sourceVariablesOf,
+        writesOf,
+      }) => ({
+        computePlan,
+        failDriver,
+        integrationTokenOf,
+        prepareWork,
+        requireProductionConsent,
+        reviewPlan,
+        runDriver,
+        sourceVariablesOf,
+        writesOf,
+      }),
+    ),
+  );
   const { target } = input;
   const tokenEnvironment =
     target.driver.kind === "http" && target.driver.token.environment !== target.environment

@@ -73,8 +73,12 @@ export function makeLoginLogoutCommands() {
     "login",
     loginConfig,
     Effect.fn("commands-login-logout.login")(function* (values) {
-      const { loginOp } = yield* Effect.promise(() => import("../login.ts"));
-      const { resolveServerOrigin } = yield* Effect.promise(() => import("../session.ts"));
+      const { loginOp } = yield* Effect.promise(() =>
+        import("../login.ts").then(({ loginOp }) => ({ loginOp })),
+      );
+      const { resolveServerOrigin } = yield* Effect.promise(() =>
+        import("../session.ts").then(({ resolveServerOrigin }) => ({ resolveServerOrigin })),
+      );
 
       // Checked **before any communication**. The bound is shared with
       // api-schema (MAX_TOKEN_NAME_LENGTH). Without it, a too-long name
@@ -117,8 +121,12 @@ export function makeLoginLogoutCommands() {
     "logout",
     logoutConfig,
     Effect.fn("commands-login-logout.logout")(function* (values) {
-      const { logoutOp } = yield* Effect.promise(() => import("../login.ts"));
-      const { resolveServerOrigin } = yield* Effect.promise(() => import("../session.ts"));
+      const { logoutOp } = yield* Effect.promise(() =>
+        import("../login.ts").then(({ logoutOp }) => ({ logoutOp })),
+      );
+      const { resolveServerOrigin } = yield* Effect.promise(() =>
+        import("../session.ts").then(({ resolveServerOrigin }) => ({ resolveServerOrigin })),
+      );
 
       const config = yield* loadCliConfig;
       const origin = yield* resolveServerOrigin(values.server, config);

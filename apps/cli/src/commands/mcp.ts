@@ -22,8 +22,8 @@ export function makeMcpCommand() {
   // command runs — see commands/shared.ts's P-6 note
   const mcp = Command.make("mcp", mcpConfig, (flags) =>
     Effect.flatMap(
-      Effect.promise(() => import("../mcp.ts")),
-      (m) => m.mcpServeOp(flags),
+      Effect.promise(() => import("../mcp.ts").then(({ mcpServeOp }) => ({ mcpServeOp }))),
+      ({ mcpServeOp }) => mcpServeOp(flags),
     ),
   ).pipe(
     Command.withDescription(

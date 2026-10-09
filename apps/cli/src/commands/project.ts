@@ -100,7 +100,12 @@ export const projectPolicySchemaConfig = {
  */
 const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySchemaCommand")(
   function* (flags: CommonFlags & { readonly set?: string | undefined }) {
-    const { openSession, resolveProjectId } = yield* Effect.promise(() => import("../context.ts"));
+    const { openSession, resolveProjectId } = yield* Effect.promise(() =>
+      import("../context.ts").then(({ openSession, resolveProjectId }) => ({
+        openSession,
+        resolveProjectId,
+      })),
+    );
 
     const tier = flags.set;
     if (tier !== undefined && !isSchemaPolicy(tier)) {
@@ -120,9 +125,27 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
   serverFlag: string | undefined,
   projectFlag: string | undefined,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+  );
   const { checkInviteAnchor, loadCheckedFloor, openSession, reconcileGossip, resolveProjectId } =
-    yield* Effect.promise(() => import("../context.ts"));
+    yield* Effect.promise(() =>
+      import("../context.ts").then(
+        ({
+          checkInviteAnchor,
+          loadCheckedFloor,
+          openSession,
+          reconcileGossip,
+          resolveProjectId,
+        }) => ({
+          checkInviteAnchor,
+          loadCheckedFloor,
+          openSession,
+          reconcileGossip,
+          resolveProjectId,
+        }),
+      ),
+    );
 
   const io = yield* CliIo;
   const context = yield* openSession(serverFlag);
@@ -267,9 +290,14 @@ const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyA
       readonly expires?: string | undefined;
     },
   ): Effect.fn.Return<number, CliError, CliServices> {
-    const { setApprovalPolicyOp } = yield* Effect.promise(() => import("../approval.ts"));
-    const { openMetadataProject, openProject } = yield* Effect.promise(
-      () => import("../context.ts"),
+    const { setApprovalPolicyOp } = yield* Effect.promise(() =>
+      import("../approval.ts").then(({ setApprovalPolicyOp }) => ({ setApprovalPolicyOp })),
+    );
+    const { openMetadataProject, openProject } = yield* Effect.promise(() =>
+      import("../context.ts").then(({ openMetadataProject, openProject }) => ({
+        openMetadataProject,
+        openProject,
+      })),
     );
 
     const io = yield* CliIo;
@@ -345,8 +373,12 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "init",
     projectInitConfig,
     Effect.fn("commands-project.projectInit")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { loadMasterKeys } = yield* Effect.promise(() => import("../session.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { loadMasterKeys } = yield* Effect.promise(() =>
+        import("../session.ts").then(({ loadMasterKeys }) => ({ loadMasterKeys })),
+      );
 
       const context = yield* openSession(values.server);
       const masterKeys = yield* loadMasterKeys(context.session);
@@ -363,7 +395,9 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "list",
     projectListConfig,
     Effect.fn("commands-project.projectList")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
 
       const context = yield* openSession(values.server);
       yield* projectListOp({ client: context.client });
@@ -376,9 +410,15 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "export",
     projectExportConfig,
     Effect.fn("commands-project.projectExport")(function* (values) {
-      const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
-      const { loadCheckedFloor, openSession, resolveProjectId } = yield* Effect.promise(
-        () => import("../context.ts"),
+      const { syncProject } = yield* Effect.promise(() =>
+        import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+      );
+      const { loadCheckedFloor, openSession, resolveProjectId } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ loadCheckedFloor, openSession, resolveProjectId }) => ({
+          loadCheckedFloor,
+          openSession,
+          resolveProjectId,
+        })),
       );
 
       const io = yield* CliIo;
@@ -426,7 +466,9 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "anchor",
     projectAnchorConfig,
     Effect.fn("commands-project.projectAnchor")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+      );
 
       const io = yield* CliIo;
       // The prologue is the same keyless class as verify (chain sync +
@@ -493,8 +535,15 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     "checkpoint",
     projectCheckpointConfig,
     Effect.fn("commands-project.projectCheckpoint")(function* (values) {
-      const { issueCheckpoint } = yield* Effect.promise(() => import("../checkpoint.ts"));
-      const { floorHandleFor, openProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { issueCheckpoint } = yield* Effect.promise(() =>
+        import("../checkpoint.ts").then(({ issueCheckpoint }) => ({ issueCheckpoint })),
+      );
+      const { floorHandleFor, openProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ floorHandleFor, openProject }) => ({
+          floorHandleFor,
+          openProject,
+        })),
+      );
 
       const io = yield* CliIo;
       // Issuance accompanies a chain append (an Ed25519 signature), so it

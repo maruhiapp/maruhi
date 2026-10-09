@@ -134,8 +134,14 @@ const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
-  const { describeFinalization, logRotationWarnings, varFinalizeOp } = yield* Effect.promise(
-    () => import("../var-rotate.ts"),
+  const { describeFinalization, logRotationWarnings, varFinalizeOp } = yield* Effect.promise(() =>
+    import("../var-rotate.ts").then(
+      ({ describeFinalization, logRotationWarnings, varFinalizeOp }) => ({
+        describeFinalization,
+        logRotationWarnings,
+        varFinalizeOp,
+      }),
+    ),
   );
   const result = yield* varFinalizeOp(input);
   yield* logRotationWarnings(result.warnings);
@@ -150,8 +156,12 @@ const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
   syncSetup: PushSyncSetup | null,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
-  const { describeRotation, logRotationWarnings, varRotateOp } = yield* Effect.promise(
-    () => import("../var-rotate.ts"),
+  const { describeRotation, logRotationWarnings, varRotateOp } = yield* Effect.promise(() =>
+    import("../var-rotate.ts").then(({ describeRotation, logRotationWarnings, varRotateOp }) => ({
+      describeRotation,
+      logRotationWarnings,
+      varRotateOp,
+    })),
   );
   const { context } = input;
   const syncDecision =
@@ -180,8 +190,12 @@ export function makeVarCommands() {
     varRmConfig,
     Effect.fn("commands-var.varRm")(function* (values) {
       const io = yield* CliIo;
-      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
-      const { varRmOp } = yield* Effect.promise(() => import("../var-rm.ts"));
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+      );
+      const { varRmOp } = yield* Effect.promise(() =>
+        import("../var-rm.ts").then(({ varRmOp }) => ({ varRmOp })),
+      );
       const context = yield* openEnvironment(values);
       const summary = yield* varRmOp({
         client: context.client,
@@ -214,9 +228,17 @@ export function makeVarCommands() {
     varHistoryConfig,
     Effect.fn("commands-var.varHistory")(function* (values) {
       const io = yield* CliIo;
-      const { openMetadataEnvironment } = yield* Effect.promise(() => import("../context.ts"));
-      const { formatVarHistory, varHistoryJson, varHistoryOp } = yield* Effect.promise(
-        () => import("../var-history.ts"),
+      const { openMetadataEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataEnvironment }) => ({
+          openMetadataEnvironment,
+        })),
+      );
+      const { formatVarHistory, varHistoryJson, varHistoryOp } = yield* Effect.promise(() =>
+        import("../var-history.ts").then(({ formatVarHistory, varHistoryJson, varHistoryOp }) => ({
+          formatVarHistory,
+          varHistoryJson,
+          varHistoryOp,
+        })),
       );
       // Metadata only (§12-7): keyless, scope-agnostic, no value is read —
       // the agent gate does not apply (zero values — the permissive side)
@@ -249,8 +271,12 @@ export function makeVarCommands() {
     varRollbackConfig,
     Effect.fn("commands-var.varRollback")(function* (values) {
       const io = yield* CliIo;
-      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
-      const { varRollbackOp } = yield* Effect.promise(() => import("../var-history.ts"));
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+      );
+      const { varRollbackOp } = yield* Effect.promise(() =>
+        import("../var-history.ts").then(({ varRollbackOp }) => ({ varRollbackOp })),
+      );
       const toVersion = values.to;
       if (toVersion === undefined || toVersion < 1) {
         return yield* Effect.fail(
@@ -310,7 +336,9 @@ export function makeVarCommands() {
     "rotate",
     varRotateConfig,
     Effect.fn("commands-var.varRotate")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+      );
       yield* checkPreviousFlag(values);
       // Both configs are read before any network: a broken or absent rotation
       // config is a usage problem, not something to find after a pull

@@ -54,7 +54,9 @@ export const runConfig = {
 const pullForRun = Effect.fn("commands-pull-run.pullForRun")(function* (
   context: EnvironmentContext,
 ): Effect.fn.Return<PulledVariables, CliError, CliServices> {
-  const { pullVariables } = yield* Effect.promise(() => import("../pull.ts"));
+  const { pullVariables } = yield* Effect.promise(() =>
+    import("../pull.ts").then(({ pullVariables }) => ({ pullVariables })),
+  );
 
   const pulled = yield* pullVariables({
     client: context.client,
@@ -92,7 +94,9 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   readonly listen?: string | undefined;
   readonly advertise?: string | undefined;
 }): Effect.fn.Return<number, CliError, CliServices> {
-  const { withMirrorFallback } = yield* Effect.promise(() => import("../context.ts"));
+  const { withMirrorFallback } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+  );
 
   const { config } = input.loaded;
   yield* checkProxyConfigProject(config, input.flags.project);
@@ -114,7 +118,9 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   // The read may be retried against the configured mirror (PF2); the proxy then starts once
   const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
     Effect.gen(function* () {
-      const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
+      const { openEnvironment } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+      );
 
       const opened = yield* openEnvironment({
         ...flags,
@@ -145,7 +151,9 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     "pull",
     pullConfig,
     Effect.fn("commands-pull-run.pull")(function* (values) {
-      const { withMirrorFallback } = yield* Effect.promise(() => import("../context.ts"));
+      const { withMirrorFallback } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+      );
 
       const io = yield* CliIo;
       // The value-display refusal is the command entry = checked **before
@@ -160,8 +168,12 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       // configured mirror when the server is unreachable (PF2)
       const { context, pulled } = yield* withMirrorFallback(values, (flags) =>
         Effect.gen(function* () {
-          const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
-          const { pullVariables } = yield* Effect.promise(() => import("../pull.ts"));
+          const { openEnvironment } = yield* Effect.promise(() =>
+            import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+          );
+          const { pullVariables } = yield* Effect.promise(() =>
+            import("../pull.ts").then(({ pullVariables }) => ({ pullVariables })),
+          );
 
           const opened = yield* openEnvironment(flags);
           const read: PulledVariables = yield* pullVariables({
@@ -224,7 +236,9 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     "run",
     runConfig,
     Effect.fn("commands-pull-run.run")(function* (values) {
-      const { withMirrorFallback } = yield* Effect.promise(() => import("../context.ts"));
+      const { withMirrorFallback } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+      );
 
       const { command: parsed, plain, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
@@ -260,7 +274,9 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       // server is unreachable (PF2); the command then runs once
       const pulled = yield* withMirrorFallback(flags, (read) =>
         Effect.gen(function* () {
-          const { openEnvironment } = yield* Effect.promise(() => import("../context.ts"));
+          const { openEnvironment } = yield* Effect.promise(() =>
+            import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+          );
 
           const context = yield* openEnvironment(read);
           if (proxyConfig === null) {

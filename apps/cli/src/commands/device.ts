@@ -144,8 +144,12 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "add",
     deviceAddConfig,
     Effect.fn("commands-device.deviceAdd")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { deviceAddOp } = yield* Effect.promise(() => import("../device-add.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { deviceAddOp } = yield* Effect.promise(() =>
+        import("../device-add.ts").then(({ deviceAddOp }) => ({ deviceAddOp })),
+      );
 
       const context = yield* openSession(values.server);
       yield* deviceAddOp({
@@ -165,11 +169,22 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "approve",
     deviceApproveConfig,
     Effect.fn("commands-device.deviceApprove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { deviceApproveOp, parseApproveRef, reportApproveOutcomes } = yield* Effect.promise(
-        () => import("../device-approve.ts"),
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
       );
-      const { parseCapRole } = yield* Effect.promise(() => import("../device-revoke.ts"));
+      const { deviceApproveOp, parseApproveRef, reportApproveOutcomes } = yield* Effect.promise(
+        () =>
+          import("../device-approve.ts").then(
+            ({ deviceApproveOp, parseApproveRef, reportApproveOutcomes }) => ({
+              deviceApproveOp,
+              parseApproveRef,
+              reportApproveOutcomes,
+            }),
+          ),
+      );
+      const { parseCapRole } = yield* Effect.promise(() =>
+        import("../device-revoke.ts").then(({ parseCapRole }) => ({ parseCapRole })),
+      );
 
       const ref = yield* parseApproveRef(values.ref);
       const roleCap = yield* parseCapRole(values.cap);
@@ -199,8 +214,12 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "list",
     deviceListConfig,
     Effect.fn("commands-device.deviceList")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { deviceListOp } = yield* Effect.promise(() => import("../device-list.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { deviceListOp } = yield* Effect.promise(() =>
+        import("../device-list.ts").then(({ deviceListOp }) => ({ deviceListOp })),
+      );
 
       const context = yield* openSession(values.server);
       yield* deviceListOp({
@@ -219,8 +238,12 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "revoke",
     deviceRevokeConfig,
     Effect.fn("commands-device.deviceRevoke")(function* (values) {
-      const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-      const { deviceRevokeOp } = yield* Effect.promise(() => import("../device-revoke.ts"));
+      const { openSession } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openSession }) => ({ openSession })),
+      );
+      const { deviceRevokeOp } = yield* Effect.promise(() =>
+        import("../device-revoke.ts").then(({ deviceRevokeOp }) => ({ deviceRevokeOp })),
+      );
 
       const context = yield* openSession(values.server);
       const summary = yield* deviceRevokeOp({

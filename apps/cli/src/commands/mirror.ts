@@ -48,10 +48,16 @@ const openMirrorTarget = Effect.fn("commands-mirror.openMirrorTarget")(function*
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
 }) {
-  const { openSession, resolveMirrorOrigin, resolveProjectId } = yield* Effect.promise(
-    () => import("../context.ts"),
+  const { openSession, resolveMirrorOrigin, resolveProjectId } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSession, resolveMirrorOrigin, resolveProjectId }) => ({
+      openSession,
+      resolveMirrorOrigin,
+      resolveProjectId,
+    })),
   );
-  const { resolveServerOrigin } = yield* Effect.promise(() => import("../session.ts"));
+  const { resolveServerOrigin } = yield* Effect.promise(() =>
+    import("../session.ts").then(({ resolveServerOrigin }) => ({ resolveServerOrigin })),
+  );
 
   const config = yield* loadCliConfig;
   const projectId = yield* resolveProjectId(flags.project, config);
@@ -81,7 +87,9 @@ const verifiedServerView = Effect.fn("commands-mirror.verifiedServerView")(funct
   serverFlag: string | undefined,
   projectId: ProjectId,
 ) {
-  const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+  const { openSession } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSession }) => ({ openSession })),
+  );
 
   const source = yield* openSession(serverFlag);
   const verified = yield* verifiedViewOf(source, projectId);
@@ -99,9 +107,15 @@ const verifiedViewOf = Effect.fn("commands-mirror.verifiedViewOf")(function* (
   source: SessionContext,
   projectId: ProjectId,
 ) {
-  const { syncProject } = yield* Effect.promise(() => import("../chain-sync.ts"));
-  const { checkInviteAnchor, loadCheckedFloor, reconcileGossip } = yield* Effect.promise(
-    () => import("../context.ts"),
+  const { syncProject } = yield* Effect.promise(() =>
+    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+  );
+  const { checkInviteAnchor, loadCheckedFloor, reconcileGossip } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ checkInviteAnchor, loadCheckedFloor, reconcileGossip }) => ({
+      checkInviteAnchor,
+      loadCheckedFloor,
+      reconcileGossip,
+    })),
   );
 
   const synced = yield* syncProject(source.client, projectId);
@@ -129,8 +143,15 @@ const mirrorSyncCommand = Effect.fn("commands-mirror.mirrorSyncCommand")(functio
   readonly mirror?: string | undefined;
   readonly force?: boolean | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { BODY_TIMEOUT, makeApiClient } = yield* Effect.promise(() => import("../api.ts"));
-  const { openSession } = yield* Effect.promise(() => import("../context.ts"));
+  const { BODY_TIMEOUT, makeApiClient } = yield* Effect.promise(() =>
+    import("../api.ts").then(({ BODY_TIMEOUT, makeApiClient }) => ({
+      BODY_TIMEOUT,
+      makeApiClient,
+    })),
+  );
+  const { openSession } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSession }) => ({ openSession })),
+  );
 
   const io = yield* CliIo;
   const target = yield* openMirrorTarget(flags);

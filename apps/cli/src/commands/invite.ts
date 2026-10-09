@@ -84,7 +84,9 @@ const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(fun
     readonly github?: string | undefined;
   },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openProject }) => ({ openProject })),
+  );
 
   if (!isInviteRole(flags.role)) {
     return yield* Effect.fail(
@@ -158,9 +160,15 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
   readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { openSession } = yield* Effect.promise(() => import("../context.ts"));
-  const { inviteAcceptOp } = yield* Effect.promise(() => import("../invite-accept.ts"));
-  const { keyGenerateOp } = yield* Effect.promise(() => import("../keygen.ts"));
+  const { openSession } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openSession }) => ({ openSession })),
+  );
+  const { inviteAcceptOp } = yield* Effect.promise(() =>
+    import("../invite-accept.ts").then(({ inviteAcceptOp }) => ({ inviteAcceptOp })),
+  );
+  const { keyGenerateOp } = yield* Effect.promise(() =>
+    import("../keygen.ts").then(({ keyGenerateOp }) => ({ keyGenerateOp })),
+  );
 
   const link = yield* resolveAcceptLink(flags.target);
   const expectedFromLogin = yield* parseGithubLoginFlag("--from", flags.from);
@@ -190,7 +198,9 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
 const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { openMetadataProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+  );
 
   const context = yield* openMetadataProject(flags);
   const store = yield* PinStore;
@@ -244,7 +254,9 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     "revoke",
     inviteRevokeConfig,
     Effect.fn("commands-invite.inviteRevoke")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() => import("../context.ts"));
+      const { openMetadataProject } = yield* Effect.promise(() =>
+        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+      );
 
       const context = yield* openMetadataProject(values);
       yield* inviteRevokeOp({

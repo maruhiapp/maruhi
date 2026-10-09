@@ -146,7 +146,12 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
   readonly config: string | undefined;
   readonly target: string;
 }) {
-  const { floorHandleFor, openProject } = yield* Effect.promise(() => import("../context.ts"));
+  const { floorHandleFor, openProject } = yield* Effect.promise(() =>
+    import("../context.ts").then(({ floorHandleFor, openProject }) => ({
+      floorHandleFor,
+      openProject,
+    })),
+  );
 
   // The config is read before any network (a broken file's detection is never placed behind a round trip)
   const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
@@ -179,7 +184,9 @@ export function makeSyncCommands() {
     "plan",
     syncPlanConfig,
     Effect.fn("sync-command.syncPlan")(function* (values) {
-      const { syncPlanOp } = yield* Effect.promise(() => import("./sync-plan.ts"));
+      const { syncPlanOp } = yield* Effect.promise(() =>
+        import("./sync-plan.ts").then(({ syncPlanOp }) => ({ syncPlanOp })),
+      );
 
       const opened = yield* openSyncTarget(values);
       yield* syncPlanOp({
@@ -203,7 +210,9 @@ export function makeSyncCommands() {
     "apply",
     syncApplyConfig,
     Effect.fn("sync-command.syncApply")(function* (values) {
-      const { syncApplyOp } = yield* Effect.promise(() => import("./sync-plan.ts"));
+      const { syncApplyOp } = yield* Effect.promise(() =>
+        import("./sync-plan.ts").then(({ syncApplyOp }) => ({ syncApplyOp })),
+      );
 
       const opened = yield* openSyncTarget(values);
       yield* syncApplyOp({
