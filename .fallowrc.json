@@ -180,6 +180,15 @@
   "duplicates": {
     "ignore": ["packages/crypto/test/checks/**"]
   },
+  // Owner ruling 2026-10-06 (CLAUDE.md "No backward compatibility before the
+  // first public release"): nothing may be kept around for older data,
+  // clients or servers. A still-consumed `@deprecated` export is such a
+  // leftover, so it fails the gate (an unconsumed one already fails as an
+  // unused export). Revisit at the first public release, when deprecating
+  // before removal becomes legitimate
+  "rules": {
+    "deprecated-exports-in-use": "error"
+  },
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
