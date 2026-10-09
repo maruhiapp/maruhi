@@ -25,6 +25,7 @@
 
 import { dirname, relative } from "node:path";
 
+import type { UnwrapConfig } from "cf/config";
 import { unstable_readConfig } from "wrangler";
 
 import cfConfig from "../cloudflare.config.ts";
@@ -43,9 +44,14 @@ const cfCtx = { isPreview: false };
 const cfSelf = cfConfig({ ...cfCtx, mode: undefined }).worker;
 const cfHosted = cfConfig({ ...cfCtx, mode: "hosted" }).worker;
 const cfRestore = cfConfig({ ...cfCtx, mode: "restore" }).worker;
-const bundlerSelf = bundlerConfig({ ...cfCtx, mode: undefined });
-const bundlerHosted = bundlerConfig({ ...cfCtx, mode: "hosted" });
-const bundlerRestore = bundlerConfig({ ...cfCtx, mode: "restore" });
+// defineWranglerConfig's export type also admits a plain or promised config;
+// this one is a function of the mode, and the checks below need that shape
+if (typeof bundlerConfig !== "function") {
+  throw new Error("wrangler.config.ts must export a function of the cf mode");
+}
+const bundlerSelf = await bundlerConfig({ ...cfCtx, mode: undefined });
+const bundlerHosted = await bundlerConfig({ ...cfCtx, mode: "hosted" });
+const bundlerRestore = await bundlerConfig({ ...cfCtx, mode: "restore" });
 
 // ---------------------------------------------------------------------------
 // Normalization. Both config formats are folded into one shape so every
@@ -56,37 +62,41 @@ const bundlerRestore = bundlerConfig({ ...cfCtx, mode: "restore" });
 interface NormBinding {
   readonly binding: string;
   readonly name: string;
-  readonly id?: string;
+  readonly id?: string | undefined;
 }
 
 interface Norm {
   readonly name: string;
-  readonly entrypoint?: string;
-  readonly compatibilityDate?: string;
-  readonly workersDev?: boolean;
-  readonly previewUrls?: boolean;
-  readonly cpuMs?: number;
+  readonly entrypoint?: string | undefined;
+  readonly compatibilityDate?: string | undefined;
+  readonly workersDev?: boolean | undefined;
+  readonly previewUrls?: boolean | undefined;
+  readonly cpuMs?: number | undefined;
   /** binding -> { className, scriptName (absent for same-worker bindings) } */
-  readonly doBindings: Record<string, { className: string; scriptName?: string }>;
+  readonly doBindings: Record<string, { className: string; scriptName?: string | undefined }>;
   /** binding -> { namespace, limit, period } */
   readonly rateLimits: Record<string, { namespace: string; limit: number; period: number }>;
-  readonly d1?: NormBinding;
+  readonly d1?: NormBinding | undefined;
   /** binding -> bucket name */
   readonly r2: Record<string, string>;
   readonly crons: readonly string[];
   readonly routes: readonly string[];
-  readonly observability?: {
-    enabled?: boolean;
-    redactQueryString?: boolean;
-    invocationLogs?: boolean;
-    headSamplingRate?: number;
-  };
-  readonly assets?: {
-    directory?: string;
-    htmlHandling?: string;
-    notFoundHandling?: string;
-    runWorkerFirst?: readonly string[];
-  };
+  readonly observability?:
+    | {
+        enabled?: boolean | undefined;
+        redactQueryString?: boolean | undefined;
+        invocationLogs?: boolean | undefined;
+        headSamplingRate?: number | undefined;
+      }
+    | undefined;
+  readonly assets?:
+    | {
+        directory?: string | undefined;
+        htmlHandling?: string | undefined;
+        notFoundHandling?: string | undefined;
+        runWorkerFirst?: readonly string[] | undefined;
+      }
+    | undefined;
   /** DO class names exported with sqlite storage */
   readonly doExports: readonly string[];
 }
@@ -136,43 +146,9 @@ interface WranglerLike {
   migrations?: ReadonlyArray<{ new_sqlite_classes?: readonly string[] }>;
 }
 
-interface CfWorkerLike {
-  name?: string;
-  entrypoint?: string;
-  compatibilityDate?: string;
-  workersDev?: boolean;
-  previewUrls?: boolean;
-  limits?: { cpuMs?: number };
-  domains?: readonly string[];
-  triggers?: ReadonlyArray<{ type: string; schedule?: string }>;
-  env?: Record<
-    string,
-    | { type: "d1"; name: string; id: string }
-    | { type: "durable-object"; worker: string; exportName: string }
-    | {
-        type: "rate-limit";
-        namespace: string;
-        simple: { limit: number; period: number };
-      }
-    | { type: "r2"; name: string }
-    | Record<string, never>
-  >;
-  exports?: Record<string, { type: string; storage?: string }>;
-  assets?: {
-    htmlHandling?: string;
-    notFoundHandling?: string;
-    runWorkerFirst?: readonly string[];
-  };
-  observability?: {
-    enabled?: boolean;
-    redactQueryString?: boolean;
-    logs?: {
-      enabled?: boolean;
-      invocationLogs?: boolean;
-      headSamplingRate?: number;
-    };
-  };
-}
+// The cf side uses cf/config's own type (the worker of any mode), so the
+// view cannot drift from what cloudflare.config.ts actually declares
+type CfWorkerLike = UnwrapConfig<typeof cfConfig>["worker"];
 
 interface BundlerLike {
   assetsDirectory?: string;
@@ -265,10 +241,10 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
         };
         break;
       case "d1":
-        d1 = { binding, name: value.name, id: value.id };
+        d1 = { binding, name: value.name ?? "", id: value.id };
         break;
       case "r2":
-        r2[binding] = value.name;
+        r2[binding] = value.name ?? "";
         break;
     }
   }
