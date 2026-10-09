@@ -3,6 +3,11 @@ title: Invite a teammate
 description: Add someone to a project with an invite link — the link binds the acceptance to your issuance, and GitHub signing keys let you confirm the acceptor's key without a call.
 sidebar:
   order: 7
+related:
+  - /docs/environment-scopes
+  - /docs/four-eyes
+  - /docs/devices
+  - /docs/rotation
 ---
 
 Membership in a maruhi project is a signed entry in the project's membership chain, so adding someone is two steps by two people: the inviter issues a link, the invitee accepts it, and the inviter turns the acceptance into membership. The server relays the invite but cannot forge either side — the link carries a per-invite key that never reaches the server, and the acceptance is signed with it. What the ceremony below is for is the one thing cryptography alone cannot settle: that the key which accepted belongs to the person you meant. Registering your maruhi signing key on GitHub settles it automatically; otherwise a 12-word read-out over a call does.
