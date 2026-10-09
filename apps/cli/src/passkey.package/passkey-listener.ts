@@ -46,6 +46,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 
+import { parseJsonRecord } from "../json-record-pure.ts";
 import {
   CONFIRM_CODE_PATTERN,
   PRF_PAGE_CSS,
@@ -85,10 +86,6 @@ export interface PrfListener {
   readonly close: () => Promise<void>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** The page's POST body: the confirmation code plus the ceremony result. */
 export interface ParsedPrfPost {
   readonly code: string;
@@ -97,13 +94,8 @@ export interface ParsedPrfPost {
 
 /** Parses the page's POST body; null when malformed (the request is then answered 404). */
 export function parsePrfPost(text: string): ParsedPrfPost | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value)) {
+  const value = parseJsonRecord(text);
+  if (typeof value === "string") {
     return null;
   }
   const code = value["code"];

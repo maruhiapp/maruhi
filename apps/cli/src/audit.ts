@@ -54,6 +54,7 @@ import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { isRecord } from "./json-record.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
 
@@ -120,10 +121,6 @@ function describeReadCount(listed: readonly AuditReadVariable[]): string {
 // Mirror reconciliation (§1-5 / §6)
 // ---------------------------------------------------------------------------
 
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function jsonRecordEqual(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
   const keys = Object.keys(left);
   return (
@@ -140,7 +137,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((item, index) => jsonEqual(item, b[index]));
   }
-  return isJsonRecord(a) && isJsonRecord(b) && jsonRecordEqual(a, b);
+  return isRecord(a) && isRecord(b) && jsonRecordEqual(a, b);
 }
 
 function describeValue(value: unknown): string {

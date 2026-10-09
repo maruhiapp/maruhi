@@ -435,8 +435,11 @@ describe("the keychain round trip is not broken by redacted serialization", () =
       expect(classifyUnreadableMasterKey(scalar)).toBe("corrupt");
     }
     // An array stays on the keep side: a future version could use it as a
-    // container holding several keys, so "not an object" alone never grounds deletion
+    // container holding several keys, so "not an object" alone never grounds
+    // deletion. The explicit array branch must win even when the array's
+    // element is itself a complete current-shape record (never unwrap-and-delete)
     expect(classifyUnreadableMasterKey("[]")).toBe("foreign");
+    expect(classifyUnreadableMasterKey(`[${masterRecordJson({})}]`)).toBe("foreign");
   });
 
   it("an unreadable master key record is also never a dead end", () => {

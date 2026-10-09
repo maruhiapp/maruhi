@@ -1,8 +1,9 @@
 // Shared entry point for non-secret JSON documents (repository anchor, sync
 // config, proxy config, sync receipt): does it parse as JSON, and is the top
-// level an object? The reason is returned as a short English string and the
-// caller adds "which file and why" (the content itself is never put in the
-// message).
+// level an object? The pure string/object checks (`parseJsonRecord`,
+// `isRecord`, `unknownKeys`) live in json-record-pure.ts and are re-exported
+// here, so a FileSystem-backed caller imports them alongside the ledger
+// helpers while a lean module can take them dependency-free.
 //
 // The ledger helpers at the bottom describe a stored file as one Schema:
 // `readJsonFile` reads + decodes (only a `PlatformError` whose reason is
@@ -17,30 +18,9 @@ import { MAX_SCOPE_ENVIRONMENTS } from "@maruhi/crypto";
 import { Effect, FileSystem, type PlatformError, Result, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
+import { isRecord, parseJsonRecord, unknownKeys } from "./json-record-pure.ts";
 
-/** Parses `content` as a JSON object; returns the reason when it is not one. */
-export function parseJsonRecord(content: string): Record<string, unknown> | string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return "not valid JSON";
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return "the top level must be an object";
-  }
-  return parsed as Record<string, unknown>;
-}
-
-/** Whether `value` is a plain object (the shape of a config section). */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** The keys of `record` outside `allowed` (a typo is reported, never silently ignored). */
-export function unknownKeys(record: Record<string, unknown>, allowed: readonly string[]): string[] {
-  return Object.keys(record).filter((key) => !allowed.includes(key));
-}
+export { isRecord, parseJsonRecord, unknownKeys };
 
 /**
  * The header every repository config shares (sync-config.ts /
