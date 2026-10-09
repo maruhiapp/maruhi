@@ -13,7 +13,7 @@
 //   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
 //      as cloudflare.config.ts configures
 // Requires `bun run build` beforehand.
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
@@ -371,6 +371,31 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     expect(html).not.toMatch(/posthog|_vercel\/insights|plausible|googletagmanager/i);
     // blume.config.ts `feedback: false`: no widget whose only channel is analytics
     expect(html).not.toContain("data-blume-page-feedback");
+  });
+});
+
+describe('site e2e: docs last-modified dates (blume.config.ts `lastModified: "git"`)', () => {
+  it("shows the page's last git commit date and emits it as schema.org dateModified", async () => {
+    // The committer date of the newest commit touching the page, as Blume
+    // reads it. Needs full history (CI's check job uses fetch-depth: 0); a
+    // shallow clone would date every page at the boundary commit
+    const committed = execFileSync(
+      "git",
+      ["log", "-1", "--format=%cI", "--", "docs/getting-started.mdx"],
+      { cwd: `${import.meta.dirname}/..`, encoding: "utf8" },
+    ).trim();
+    expect(committed).not.toBe("");
+    const iso = new Date(committed).toISOString();
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    expect(html).toMatch(new RegExp(`Last updated on <time datetime="${iso}">`));
+    const graphs = [
+      ...html.matchAll(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/gs),
+    ].map((match) => JSON.stringify(JSON.parse(match[1] ?? "null")));
+    expect(graphs.some((graph) => graph.includes(`"dateModified":"${iso}"`))).toBe(true);
+    const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
+    expect(sitemap).toContain(
+      `<loc>https://maruhi.app/docs/getting-started</loc><lastmod>${iso.slice(0, 10)}</lastmod>`,
+    );
   });
 });
 
