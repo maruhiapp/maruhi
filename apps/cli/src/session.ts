@@ -805,7 +805,7 @@ export const loadMasterKeys = Effect.fn("session.loadMasterKeys")(function* (
 // It carries no breakdown (hex that cannot be interpreted / WebCrypto that
 // cannot read): the caller guides to the same exit either way, so an unread
 // payload is not carried
-class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt")<Record<never, never>> {}
+class MasterKeyCorrupt extends Data.TaggedError("MasterKeyCorrupt") {}
 
 /** The record claims a suite this version does not know (not corruption). */
 class MasterKeyUnknownSuite extends Data.TaggedError("MasterKeyUnknownSuite")<{

@@ -1,0 +1,14 @@
+{
+  // The ops scripts run under Bun (`bun scripts/<name>.ts`), not in the
+  // Worker, so they get Bun's types in their own program; the server's
+  // tsconfig stays Workers-only (no Bun APIs in server code — CLAUDE.md)
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    // The DOM lib (WebCrypto types) for the @maruhi/crypto sources these
+    // scripts reach through the server modules they import
+    "lib": ["ES2023", "DOM"],
+    "resolveJsonModule": true
+  },
+  "include": [".", "../drizzle.config.ts", "../wrangler.config.ts"]
+}

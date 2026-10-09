@@ -51,14 +51,8 @@ import {
   lineageLabel,
   readSummaryLabel,
 } from "./audit-read.ts";
-import {
-  EmptyNotice,
-  FailureNotice,
-  formatServerTime,
-  HexText,
-  LoadingRow,
-  ServerTime,
-} from "./shared.tsx";
+import { formatServerTime } from "./server-time.ts";
+import { EmptyNotice, FailureNotice, HexText, LoadingRow, ServerTime } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** Fetches one page. `before` is the row_id of the previous page's last row (AUDIT_SPEC §7). */
@@ -392,7 +386,11 @@ export function AuditEventList({
 }): ReactNode {
   const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(false);
+  // The generation of the page request in flight (undefined = idle). A
+  // generation, not a boolean, so a stale request settling cannot clear
+  // the flag of the request that replaced it
+  const [loadingGeneration, setLoadingGeneration] = useState<number | undefined>(undefined);
+  const isLoading = loadingGeneration !== undefined;
   // The generation of the consumed axis (fetchPage). When the axis
   // changes, a stale in-flight response is discarded —
   // a late-arriving old-axis page cannot bleed into the new axis's
@@ -402,11 +400,15 @@ export function AuditEventList({
   const loadMore = useCallback(
     async (current: LoadedState | undefined) => {
       const generation = generationRef.current;
-      setIsLoading(true);
+      setLoadingGeneration(generation);
       setFailure(undefined);
-      const result = await fetchPage(nextCursor(current));
+      let result: Awaited<ReturnType<typeof fetchPage>>;
+      try {
+        result = await fetchPage(nextCursor(current));
+      } finally {
+        setLoadingGeneration((inFlight) => (inFlight === generation ? undefined : inFlight));
+      }
       if (generation !== generationRef.current) return;
-      setIsLoading(false);
       if (result.kind !== "ok") {
         setFailure(result);
         return;

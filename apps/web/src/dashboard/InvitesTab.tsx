@@ -22,12 +22,12 @@ import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
 import { apiPaths } from "./endpoints.ts";
+import { formatServerTime } from "./server-time.ts";
 import {
   Callout,
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
-  formatServerTime,
   HexText,
   LoadingRow,
   RevokeButton,
