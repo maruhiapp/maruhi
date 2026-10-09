@@ -18,6 +18,10 @@ import { useEffect } from "react";
  * - With `fallback="static"` (no Navigation API) every navigation is a
  *   full page load, so native focus already does this — the listener is
  *   simply absent.
+ * - Navigations the router did not intercept carry no `transition`
+ *   (fragment links, raw `history.pushState`). They are left alone —
+ *   pulling focus to the h1 would steal it from an anchor or skip-link
+ *   target.
  * - A page with no h1 is left alone (focus stays wherever the transition
  *   put it).
  */
@@ -38,37 +42,25 @@ export function FocusOnNavigation() {
       if (event.navigationType === null) {
         return;
       }
-      // `transition` covers intercepted navigations; the rAF fallback is
-      // for traversals that commit without one (focus after the route
-      // has rendered either way)
       const transition = nav.transition;
       if (transition === null) {
-        const frame = requestAnimationFrame(focusHeading);
-        return () => cancelAnimationFrame(frame);
+        return;
       }
-      let cancelled = false;
-      void transition.finished.then(() => {
-        if (!cancelled) {
-          focusHeading();
-        }
+      // A rejected `finished` means the navigation was superseded or its
+      // intercept handler failed — either way focus must not move. The
+      // rejection callback is also what keeps the rejection from surfacing
+      // as an unhandled promise error (the UA only marks `finished`
+      // itself handled, not the promise `then` returns).
+      void transition.finished.then(focusHeading, () => {
+        // superseded or failed navigation: leave focus where it is
       });
-      return () => {
-        cancelled = true;
-      };
     };
-    const cleanups: (() => void)[] = [];
     const handler = (event: Event) => {
-      const cleanup = onEntryChange(event as NavigationCurrentEntryChangeEvent);
-      if (cleanup !== undefined) {
-        cleanups.push(cleanup);
-      }
+      onEntryChange(event as NavigationCurrentEntryChangeEvent);
     };
     nav.addEventListener("currententrychange", handler);
     return () => {
       nav.removeEventListener("currententrychange", handler);
-      for (const cleanup of cleanups) {
-        cleanup();
-      }
     };
   }, []);
   return null;
