@@ -3,6 +3,11 @@ title: GitHub Actions
 description: Use maruhi from a GitHub Actions job with no secrets stored on GitHub. Lease values with maruhi ci run, sync deploy targets from CI with maruhi ci sync in two standard shapes, and put production behind a second pair of eyes with GitHub Environments.
 sidebar:
   order: 3
+related:
+  - /docs/deploy-targets
+  - /docs/four-eyes
+  - /docs/rotation
+  - /docs/environment-scopes
 ---
 
 A GitHub Actions job can use your secrets without storing a single secret on GitHub. `maruhi ci run` and `maruhi ci sync` authenticate with the job's own OIDC token, verify everything they receive against the project's signed chain, and keep the decrypted values in memory. Your GitHub secrets can be empty: the maruhi API token does not exist in CI, and the platform tokens and the values themselves live in maruhi. The secrets a workflow cannot lease, such as a Dependabot secret, can be [synced into GitHub from maruhi](#github-secrets-as-a-target), with one bootstrap token as the single exception.

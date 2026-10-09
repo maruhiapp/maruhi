@@ -1,10 +1,18 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
+  // failOnParseError needs fallow 3.29 or later; an older binary names the
+  // upgrade instead of failing on an unknown key
+  "minimumVersion": "3.29.0",
+  // A file fallow cannot parse drops out of every detector, the boundaries
+  // below included, so a parse failure fails the run instead of only warning
+  "failOnParseError": true,
   // Tools referenced only from CLI / lint config are never imported, so they
   // are excluded from unused-dependency checks
   // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
-  // via @astryxdesign/build / the oxlint config)
+  // via @astryxdesign/build / the oxlint config; @effect/tsgo is the
+  // effect-tsgo CLI run by scripts/effect-diagnostics.mjs)
   "ignoreDependencies": [
+    "@effect/tsgo",
     "@import-lint/cli",
     "oxlint-plugin-eslint",
     "@stylexjs/unplugin",
@@ -173,6 +181,15 @@
   // only real debt and is shrink-only (scripts/check-dupes-baseline.mjs, CI 5b)
   "duplicates": {
     "ignore": ["packages/crypto/test/checks/**"]
+  },
+  // Owner ruling 2026-10-06 (CLAUDE.md "No backward compatibility before the
+  // first public release"): nothing may be kept around for older data,
+  // clients or servers. A still-consumed `@deprecated` export is such a
+  // leftover, so it fails the gate (an unconsumed one already fails as an
+  // unused export). Revisit at the first public release, when deprecating
+  // before removal becomes legitimate
+  "rules": {
+    "deprecated-exports-in-use": "error"
   },
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
