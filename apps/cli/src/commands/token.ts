@@ -21,7 +21,7 @@ export function makeTokenCommands() {
     tokenListConfig,
     Effect.fn("commands-token.tokenList")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
 
       const context = yield* openSession(values.server);
@@ -34,7 +34,7 @@ export function makeTokenCommands() {
     tokenRevokeConfig,
     Effect.fn("commands-token.tokenRevoke")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
 
       const context = yield* openSession(values.server);

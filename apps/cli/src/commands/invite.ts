@@ -85,7 +85,7 @@ const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(fun
   },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
 
   if (!isInviteRole(flags.role)) {
@@ -161,13 +161,13 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
   readonly inviterFingerprint?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
   const { openSession } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openSession }) => ({ openSession })),
+    import("../context.ts").then((m) => ({ openSession: m.openSession })),
   );
   const { inviteAcceptOp } = yield* Effect.promise(() =>
-    import("../invite-accept.ts").then(({ inviteAcceptOp }) => ({ inviteAcceptOp })),
+    import("../invite-accept.ts").then((m) => ({ inviteAcceptOp: m.inviteAcceptOp })),
   );
   const { keyGenerateOp } = yield* Effect.promise(() =>
-    import("../keygen.ts").then(({ keyGenerateOp }) => ({ keyGenerateOp })),
+    import("../keygen.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
   );
 
   const link = yield* resolveAcceptLink(flags.target);
@@ -199,7 +199,7 @@ const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(functio
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
   );
 
   const context = yield* openMetadataProject(flags);
@@ -255,7 +255,7 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     inviteRevokeConfig,
     Effect.fn("commands-invite.inviteRevoke")(function* (values) {
       const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
       );
 
       const context = yield* openMetadataProject(values);

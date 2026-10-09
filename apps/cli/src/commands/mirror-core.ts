@@ -36,7 +36,7 @@ const deploymentFingerprint = Effect.fn("commands-mirror-core.deploymentFingerpr
   origin: string,
 ): Effect.fn.Return<string | null, never, CliServices> {
   const { makeApiClient } = yield* Effect.promise(() =>
-    import("../api.ts").then(({ makeApiClient }) => ({ makeApiClient })),
+    import("../api.ts").then((m) => ({ makeApiClient: m.makeApiClient })),
   );
   const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(

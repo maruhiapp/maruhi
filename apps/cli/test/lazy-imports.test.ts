@@ -1,11 +1,11 @@
 // The lazy-import shape (P-6 — commands/shared.ts's note). fallow credits
-// an export consumed through `import()` only when the names are picked
+// an export consumed through `import()` only when it is read off the module
 // inside the `.then`: a bare `Effect.promise(() => import("./m.ts"))` hides
 // the edge, and `.then((m) => m)` credits every export of the module. So
 // every `import()` under src/ is written
 //
 //   const { a, b } = yield* Effect.promise(() =>
-//     import("./m.ts").then(({ a, b }) => ({ a, b })),
+//     import("./m.ts").then((m) => ({ a: m.a, b: m.b })),
 //   );
 //
 // (or `Effect.flatMap(<that load>, ({ a }) => ...)`), and the names the
@@ -37,16 +37,37 @@ function normalized(source: string): string {
 
 const IMPORT_CALL = /\bimport\("/g;
 const NAMES = String.raw`\{ ([\w, ]+) \}`;
-const LOAD = String.raw`import\("([^"]+)"\)\.then\(\(${NAMES}\) => \(${NAMES}\)\)`;
-const BOUND_LOAD = new RegExp(String.raw`const ${NAMES} = yield\* Effect\.promise\(\(\) => ${LOAD}\)`, "g");
-const MAPPED_LOAD = new RegExp(String.raw`Effect\.promise\(\(\) => ${LOAD}\), \(${NAMES}\) =>`, "g");
+const PICKS = String.raw`\{ ((?:\w+: m\.\w+(?:, )?)+) \}`;
+const LOAD = String.raw`import\("([^"]+)"\)\.then\(\(m\) => \(${PICKS}\)\)`;
+const BOUND_LOAD = new RegExp(
+  String.raw`const ${NAMES} = yield\* Effect\.promise\(\(\) => ${LOAD}\)`,
+  "g",
+);
+const MAPPED_LOAD = new RegExp(
+  String.raw`Effect\.promise\(\(\) => ${LOAD}\), \(${NAMES}\) =>`,
+  "g",
+);
 
 interface LazyImport {
   readonly file: string;
   readonly specifier: string;
   readonly bound: string;
-  readonly picked: string;
-  readonly returned: string;
+  readonly picks: string;
+}
+
+/** The picks whose key differs from the member it reads (`a: m.b`). */
+function renamedPicks(picks: string): readonly string[] {
+  return picks.split(", ").filter((pick) => {
+    const [key, member] = pick.split(": m.");
+    return key !== member;
+  });
+}
+
+function pickedNames(picks: string): string {
+  return picks
+    .split(", ")
+    .map((pick) => pick.split(":")[0])
+    .join(", ");
 }
 
 async function lazyImports(): Promise<{
@@ -59,12 +80,12 @@ async function lazyImports(): Promise<{
     const source = normalized(await readFile(join(SRC_DIR, file), "utf8"));
     calls += [...source.matchAll(IMPORT_CALL)].length;
     for (const match of source.matchAll(BOUND_LOAD)) {
-      const [, bound = "", specifier = "", picked = "", returned = ""] = match;
-      loads.push({ file, specifier, bound, picked, returned });
+      const [, bound = "", specifier = "", picks = ""] = match;
+      loads.push({ file, specifier, bound, picks });
     }
     for (const match of source.matchAll(MAPPED_LOAD)) {
-      const [, specifier = "", picked = "", returned = "", bound = ""] = match;
-      loads.push({ file, specifier, bound, picked, returned });
+      const [, specifier = "", picks = "", bound = ""] = match;
+      loads.push({ file, specifier, bound, picks });
     }
   }
   return { calls, loads };
@@ -84,7 +105,7 @@ describe("lazy imports (apps/cli/src, P-6)", () => {
 
   it("binds exactly the names each load picks", async () => {
     const mismatched = (await lazyImports()).loads.filter(
-      (load) => load.bound !== load.picked || load.picked !== load.returned,
+      (load) => load.bound !== pickedNames(load.picks) || renamedPicks(load.picks).length > 0,
     );
     expect(mismatched).toEqual([]);
   });

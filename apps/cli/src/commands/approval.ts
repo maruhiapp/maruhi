@@ -121,7 +121,7 @@ const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(f
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
   );
 
   const io = yield* CliIo;
@@ -151,10 +151,10 @@ const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(f
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
   );
   const { loadMasterKeys } = yield* Effect.promise(() =>
-    import("../session.ts").then(({ loadMasterKeys }) => ({ loadMasterKeys })),
+    import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
   );
 
   const io = yield* CliIo;
@@ -341,13 +341,13 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { approveProposalOp } = yield* Effect.promise(() =>
-    import("../approval-approve.ts").then(({ approveProposalOp }) => ({ approveProposalOp })),
+    import("../approval-approve.ts").then((m) => ({ approveProposalOp: m.approveProposalOp })),
   );
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
   const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then(({ sweepRotateFor }) => ({ sweepRotateFor })),
+    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
 
   const io = yield* CliIo;
@@ -390,10 +390,10 @@ const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCom
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { withdrawProposalOp } = yield* Effect.promise(() =>
-    import("../approval.ts").then(({ withdrawProposalOp }) => ({ withdrawProposalOp })),
+    import("../approval.ts").then((m) => ({ withdrawProposalOp: m.withdrawProposalOp })),
   );
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
 
   const io = yield* CliIo;

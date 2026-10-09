@@ -74,10 +74,10 @@ export function makeLoginLogoutCommands() {
     loginConfig,
     Effect.fn("commands-login-logout.login")(function* (values) {
       const { loginOp } = yield* Effect.promise(() =>
-        import("../login.ts").then(({ loginOp }) => ({ loginOp })),
+        import("../login.ts").then((m) => ({ loginOp: m.loginOp })),
       );
       const { resolveServerOrigin } = yield* Effect.promise(() =>
-        import("../session.ts").then(({ resolveServerOrigin }) => ({ resolveServerOrigin })),
+        import("../session.ts").then((m) => ({ resolveServerOrigin: m.resolveServerOrigin })),
       );
 
       // Checked **before any communication**. The bound is shared with
@@ -122,10 +122,10 @@ export function makeLoginLogoutCommands() {
     logoutConfig,
     Effect.fn("commands-login-logout.logout")(function* (values) {
       const { logoutOp } = yield* Effect.promise(() =>
-        import("../login.ts").then(({ logoutOp }) => ({ logoutOp })),
+        import("../login.ts").then((m) => ({ logoutOp: m.logoutOp })),
       );
       const { resolveServerOrigin } = yield* Effect.promise(() =>
-        import("../session.ts").then(({ resolveServerOrigin }) => ({ resolveServerOrigin })),
+        import("../session.ts").then((m) => ({ resolveServerOrigin: m.resolveServerOrigin })),
       );
 
       const config = yield* loadCliConfig;

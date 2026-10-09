@@ -98,13 +98,13 @@ const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { floorHandleFor, openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ floorHandleFor, openProject }) => ({
-      floorHandleFor,
-      openProject,
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openProject: m.openProject,
     })),
   );
   const { envCreateOp } = yield* Effect.promise(() =>
-    import("../env-create.ts").then(({ envCreateOp }) => ({ envCreateOp })),
+    import("../env-create.ts").then((m) => ({ envCreateOp: m.envCreateOp })),
   );
 
   const io = yield* CliIo;
@@ -152,18 +152,18 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   environmentId: EnvironmentId,
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
-    import("../checkpoint.ts").then(({ ANCHOR_STALE_AFTER_ROTATION }) => ({
-      ANCHOR_STALE_AFTER_ROTATION,
+    import("../checkpoint.ts").then((m) => ({
+      ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
     })),
   );
   const { floorHandleFor, openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ floorHandleFor, openEnvironment }) => ({
-      floorHandleFor,
-      openEnvironment,
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openEnvironment: m.openEnvironment,
     })),
   );
   const { envRotateOp } = yield* Effect.promise(() =>
-    import("../env-rotate.ts").then(({ envRotateOp }) => ({ envRotateOp })),
+    import("../env-rotate.ts").then((m) => ({ envRotateOp: m.envRotateOp })),
   );
 
   // The sync config (M1) is read **before any network**: detecting a
@@ -254,10 +254,10 @@ const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
   newName: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
   );
   const { envRenameOp } = yield* Effect.promise(() =>
-    import("../env-rename.ts").then(({ envRenameOp }) => ({ envRenameOp })),
+    import("../env-rename.ts").then((m) => ({ envRenameOp: m.envRenameOp })),
   );
 
   const io = yield* CliIo;
@@ -284,10 +284,10 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
   );
   const { envRmOp } = yield* Effect.promise(() =>
-    import("../env-rm.ts").then(({ envRmOp }) => ({ envRmOp })),
+    import("../env-rm.ts").then((m) => ({ envRmOp: m.envRmOp })),
   );
 
   const io = yield* CliIo;
@@ -321,21 +321,19 @@ const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
   flags: CommonFlags & { readonly all: boolean; readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
   );
   const { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } = yield* Effect.promise(
     () =>
-      import("../env-list.ts").then(
-        ({ envListJson, envListOp, formatEnvListRow, shownEnvironmentRows }) => ({
-          envListJson,
-          envListOp,
-          formatEnvListRow,
-          shownEnvironmentRows,
-        }),
-      ),
+      import("../env-list.ts").then((m) => ({
+        envListJson: m.envListJson,
+        envListOp: m.envListOp,
+        formatEnvListRow: m.formatEnvListRow,
+        shownEnvironmentRows: m.shownEnvironmentRows,
+      })),
   );
   const { loadMasterKeys } = yield* Effect.promise(() =>
-    import("../session.ts").then(({ loadMasterKeys }) => ({ loadMasterKeys })),
+    import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
   );
 
   const io = yield* CliIo;
@@ -384,15 +382,15 @@ const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
   otherEnvironmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { commitVerifiedHead, openMetadataEnvironmentPair } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ commitVerifiedHead, openMetadataEnvironmentPair }) => ({
-      commitVerifiedHead,
-      openMetadataEnvironmentPair,
+    import("../context.ts").then((m) => ({
+      commitVerifiedHead: m.commitVerifiedHead,
+      openMetadataEnvironmentPair: m.openMetadataEnvironmentPair,
     })),
   );
   const { envDiffOp, reportEnvironmentDiff } = yield* Effect.promise(() =>
-    import("../env-diff.ts").then(({ envDiffOp, reportEnvironmentDiff }) => ({
-      envDiffOp,
-      reportEnvironmentDiff,
+    import("../env-diff.ts").then((m) => ({
+      envDiffOp: m.envDiffOp,
+      reportEnvironmentDiff: m.reportEnvironmentDiff,
     })),
   );
 

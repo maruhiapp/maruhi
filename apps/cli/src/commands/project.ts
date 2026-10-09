@@ -101,9 +101,9 @@ export const projectPolicySchemaConfig = {
 const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySchemaCommand")(
   function* (flags: CommonFlags & { readonly set?: string | undefined }) {
     const { openSession, resolveProjectId } = yield* Effect.promise(() =>
-      import("../context.ts").then(({ openSession, resolveProjectId }) => ({
-        openSession,
-        resolveProjectId,
+      import("../context.ts").then((m) => ({
+        openSession: m.openSession,
+        resolveProjectId: m.resolveProjectId,
       })),
     );
 
@@ -126,25 +126,17 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
   projectFlag: string | undefined,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { syncProject } = yield* Effect.promise(() =>
-    import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+    import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
   );
   const { checkInviteAnchor, loadCheckedFloor, openSession, reconcileGossip, resolveProjectId } =
     yield* Effect.promise(() =>
-      import("../context.ts").then(
-        ({
-          checkInviteAnchor,
-          loadCheckedFloor,
-          openSession,
-          reconcileGossip,
-          resolveProjectId,
-        }) => ({
-          checkInviteAnchor,
-          loadCheckedFloor,
-          openSession,
-          reconcileGossip,
-          resolveProjectId,
-        }),
-      ),
+      import("../context.ts").then((m) => ({
+        checkInviteAnchor: m.checkInviteAnchor,
+        loadCheckedFloor: m.loadCheckedFloor,
+        openSession: m.openSession,
+        reconcileGossip: m.reconcileGossip,
+        resolveProjectId: m.resolveProjectId,
+      })),
     );
 
   const io = yield* CliIo;
@@ -291,12 +283,12 @@ const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyA
     },
   ): Effect.fn.Return<number, CliError, CliServices> {
     const { setApprovalPolicyOp } = yield* Effect.promise(() =>
-      import("../approval.ts").then(({ setApprovalPolicyOp }) => ({ setApprovalPolicyOp })),
+      import("../approval.ts").then((m) => ({ setApprovalPolicyOp: m.setApprovalPolicyOp })),
     );
     const { openMetadataProject, openProject } = yield* Effect.promise(() =>
-      import("../context.ts").then(({ openMetadataProject, openProject }) => ({
-        openMetadataProject,
-        openProject,
+      import("../context.ts").then((m) => ({
+        openMetadataProject: m.openMetadataProject,
+        openProject: m.openProject,
       })),
     );
 
@@ -374,10 +366,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectInitConfig,
     Effect.fn("commands-project.projectInit")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { loadMasterKeys } = yield* Effect.promise(() =>
-        import("../session.ts").then(({ loadMasterKeys }) => ({ loadMasterKeys })),
+        import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
       );
 
       const context = yield* openSession(values.server);
@@ -396,7 +388,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectListConfig,
     Effect.fn("commands-project.projectList")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
 
       const context = yield* openSession(values.server);
@@ -411,13 +403,13 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectExportConfig,
     Effect.fn("commands-project.projectExport")(function* (values) {
       const { syncProject } = yield* Effect.promise(() =>
-        import("../chain-sync.ts").then(({ syncProject }) => ({ syncProject })),
+        import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
       );
       const { loadCheckedFloor, openSession, resolveProjectId } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ loadCheckedFloor, openSession, resolveProjectId }) => ({
-          loadCheckedFloor,
-          openSession,
-          resolveProjectId,
+        import("../context.ts").then((m) => ({
+          loadCheckedFloor: m.loadCheckedFloor,
+          openSession: m.openSession,
+          resolveProjectId: m.resolveProjectId,
         })),
       );
 
@@ -467,7 +459,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectAnchorConfig,
     Effect.fn("commands-project.projectAnchor")(function* (values) {
       const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
       );
 
       const io = yield* CliIo;
@@ -536,12 +528,12 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectCheckpointConfig,
     Effect.fn("commands-project.projectCheckpoint")(function* (values) {
       const { issueCheckpoint } = yield* Effect.promise(() =>
-        import("../checkpoint.ts").then(({ issueCheckpoint }) => ({ issueCheckpoint })),
+        import("../checkpoint.ts").then((m) => ({ issueCheckpoint: m.issueCheckpoint })),
       );
       const { floorHandleFor, openProject } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ floorHandleFor, openProject }) => ({
-          floorHandleFor,
-          openProject,
+        import("../context.ts").then((m) => ({
+          floorHandleFor: m.floorHandleFor,
+          openProject: m.openProject,
         })),
       );
 

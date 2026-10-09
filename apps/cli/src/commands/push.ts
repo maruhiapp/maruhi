@@ -48,12 +48,12 @@ export function makePushCommand() {
     pushConfig,
     Effect.fn("commands-push.push")(function* (values) {
       const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
       );
       const { normalizeStdinValue, pushVariable } = yield* Effect.promise(() =>
-        import("../push.ts").then(({ normalizeStdinValue, pushVariable }) => ({
-          normalizeStdinValue,
-          pushVariable,
+        import("../push.ts").then((m) => ({
+          normalizeStdinValue: m.normalizeStdinValue,
+          pushVariable: m.pushVariable,
         })),
       );
 

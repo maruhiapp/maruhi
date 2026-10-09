@@ -177,10 +177,10 @@ const advanceTarget = Effect.fn("sync-rotate.advanceTarget")(function* (
   CliIo
 > {
   const { loadReceipt, receiptVersionWarning, storeReceipt } = yield* Effect.promise(() =>
-    import("./sync-receipt.ts").then(({ loadReceipt, receiptVersionWarning, storeReceipt }) => ({
-      loadReceipt,
-      receiptVersionWarning,
-      storeReceipt,
+    import("./sync-receipt.ts").then((m) => ({
+      loadReceipt: m.loadReceipt,
+      receiptVersionWarning: m.receiptVersionWarning,
+      storeReceipt: m.storeReceipt,
     })),
   );
   const receiptsEnvironment = input.config.receiptsEnvironment;
@@ -248,7 +248,7 @@ const reportTarget = Effect.fn("sync-rotate.reportTarget")(function* (
 ): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
   const { receiptVariableName } = yield* Effect.promise(() =>
-    import("./sync-receipt.ts").then(({ receiptVariableName }) => ({ receiptVariableName })),
+    import("./sync-receipt.ts").then((m) => ({ receiptVariableName: m.receiptVariableName })),
   );
   switch (outcome.kind) {
     case "no-receipt":
@@ -295,7 +295,7 @@ export const advanceReceiptsAfterRotation = Effect.fn("sync-rotate.advanceReceip
     // the envelope would turn the exit code into 1 after a
     // successful report)
     const { resyncExtended } = yield* Effect.promise(() =>
-      import("../chain-sync.ts").then(({ resyncExtended }) => ({ resyncExtended })),
+      import("../chain-sync.ts").then((m) => ({ resyncExtended: m.resyncExtended })),
     );
     const synced = yield* asCleanupOutcome(resyncExtended(input.resync, input.verified));
     if (synced.kind === "failed") {

@@ -289,7 +289,7 @@ function floorLedger(
         return known;
       }
       const { floorHandleFor } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ floorHandleFor }) => ({ floorHandleFor })),
+        import("../context.ts").then((m) => ({ floorHandleFor: m.floorHandleFor })),
       );
       const handle = yield* floorHandleFor(context, environmentId);
       handles.set(environmentId, handle);
@@ -306,7 +306,7 @@ const applyTarget = Effect.fn("sync-push.applyTarget")(function* (
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const { syncApplyOp } = yield* Effect.promise(() =>
-    import("./sync-plan.ts").then(({ syncApplyOp }) => ({ syncApplyOp })),
+    import("./sync-plan.ts").then((m) => ({ syncApplyOp: m.syncApplyOp })),
   );
   yield* io.log(
     `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,

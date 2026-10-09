@@ -55,7 +55,7 @@ const pullForRun = Effect.fn("commands-pull-run.pullForRun")(function* (
   context: EnvironmentContext,
 ): Effect.fn.Return<PulledVariables, CliError, CliServices> {
   const { pullVariables } = yield* Effect.promise(() =>
-    import("../pull.ts").then(({ pullVariables }) => ({ pullVariables })),
+    import("../pull.ts").then((m) => ({ pullVariables: m.pullVariables })),
   );
 
   const pulled = yield* pullVariables({
@@ -95,7 +95,7 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   readonly advertise?: string | undefined;
 }): Effect.fn.Return<number, CliError, CliServices> {
   const { withMirrorFallback } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+    import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
   );
 
   const { config } = input.loaded;
@@ -119,7 +119,7 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
     Effect.gen(function* () {
       const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
       );
 
       const opened = yield* openEnvironment({
@@ -152,7 +152,7 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     pullConfig,
     Effect.fn("commands-pull-run.pull")(function* (values) {
       const { withMirrorFallback } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+        import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
       );
 
       const io = yield* CliIo;
@@ -169,10 +169,10 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       const { context, pulled } = yield* withMirrorFallback(values, (flags) =>
         Effect.gen(function* () {
           const { openEnvironment } = yield* Effect.promise(() =>
-            import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+            import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
           );
           const { pullVariables } = yield* Effect.promise(() =>
-            import("../pull.ts").then(({ pullVariables }) => ({ pullVariables })),
+            import("../pull.ts").then((m) => ({ pullVariables: m.pullVariables })),
           );
 
           const opened = yield* openEnvironment(flags);
@@ -237,7 +237,7 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     runConfig,
     Effect.fn("commands-pull-run.run")(function* (values) {
       const { withMirrorFallback } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ withMirrorFallback }) => ({ withMirrorFallback })),
+        import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
       );
 
       const { command: parsed, plain, ...flags } = values;
@@ -275,7 +275,7 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       const pulled = yield* withMirrorFallback(flags, (read) =>
         Effect.gen(function* () {
           const { openEnvironment } = yield* Effect.promise(() =>
-            import("../context.ts").then(({ openEnvironment }) => ({ openEnvironment })),
+            import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
           );
 
           const context = yield* openEnvironment(read);

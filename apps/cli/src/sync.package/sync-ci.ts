@@ -69,7 +69,7 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
 ): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
   const { leaseEnvironments } = yield* Effect.promise(() =>
-    import("../ci-lease.ts").then(({ leaseEnvironments }) => ({ leaseEnvironments })),
+    import("../ci-lease.ts").then((m) => ({ leaseEnvironments: m.leaseEnvironments })),
   );
   const {
     computePlan,
@@ -82,29 +82,17 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
     sourceVariablesOf,
     writesOf,
   } = yield* Effect.promise(() =>
-    import("./sync-plan.ts").then(
-      ({
-        computePlan,
-        failDriver,
-        integrationTokenOf,
-        prepareWork,
-        requireProductionConsent,
-        reviewPlan,
-        runDriver,
-        sourceVariablesOf,
-        writesOf,
-      }) => ({
-        computePlan,
-        failDriver,
-        integrationTokenOf,
-        prepareWork,
-        requireProductionConsent,
-        reviewPlan,
-        runDriver,
-        sourceVariablesOf,
-        writesOf,
-      }),
-    ),
+    import("./sync-plan.ts").then((m) => ({
+      computePlan: m.computePlan,
+      failDriver: m.failDriver,
+      integrationTokenOf: m.integrationTokenOf,
+      prepareWork: m.prepareWork,
+      requireProductionConsent: m.requireProductionConsent,
+      reviewPlan: m.reviewPlan,
+      runDriver: m.runDriver,
+      sourceVariablesOf: m.sourceVariablesOf,
+      writesOf: m.writesOf,
+    })),
   );
   const { target } = input;
   const tokenEnvironment =

@@ -112,10 +112,10 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
   const { memberAddOp } = yield* Effect.promise(() =>
-    import("../member-add.ts").then(({ memberAddOp }) => ({ memberAddOp })),
+    import("../member-add.ts").then((m) => ({ memberAddOp: m.memberAddOp })),
   );
 
   const io = yield* CliIo;
@@ -186,13 +186,13 @@ const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(fun
   flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
   const { memberRemoveOp } = yield* Effect.promise(() =>
-    import("../member-remove.ts").then(({ memberRemoveOp }) => ({ memberRemoveOp })),
+    import("../member-remove.ts").then((m) => ({ memberRemoveOp: m.memberRemoveOp })),
   );
   const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then(({ sweepRotateFor }) => ({ sweepRotateFor })),
+    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
 
   const io = yield* CliIo;
@@ -218,8 +218,8 @@ const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(fun
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
       const { reportRotationChecklist } = yield* Effect.promise(() =>
-        import("../rotation.ts").then(({ reportRotationChecklist }) => ({
-          reportRotationChecklist,
+        import("../rotation.ts").then((m) => ({
+          reportRotationChecklist: m.reportRotationChecklist,
         })),
       );
 
@@ -281,13 +281,13 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openProject }) => ({ openProject })),
+    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
   const { memberChangeRoleOp } = yield* Effect.promise(() =>
-    import("../member-change-role.ts").then(({ memberChangeRoleOp }) => ({ memberChangeRoleOp })),
+    import("../member-change-role.ts").then((m) => ({ memberChangeRoleOp: m.memberChangeRoleOp })),
   );
   const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then(({ sweepRotateFor }) => ({ sweepRotateFor })),
+    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
 
   const io = yield* CliIo;
@@ -313,8 +313,8 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
       const { reportRotationChecklist } = yield* Effect.promise(() =>
-        import("../rotation.ts").then(({ reportRotationChecklist }) => ({
-          reportRotationChecklist,
+        import("../rotation.ts").then((m) => ({
+          reportRotationChecklist: m.reportRotationChecklist,
         })),
       );
 
@@ -458,7 +458,7 @@ const memberListCommand = Effect.fn("commands-member.memberListCommand")(functio
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ openMetadataProject }) => ({ openMetadataProject })),
+    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
   );
 
   const io = yield* CliIo;

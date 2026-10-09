@@ -92,10 +92,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyGenerateConfig,
     Effect.fn("commands-key.keyGenerate")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyGenerateOp } = yield* Effect.promise(() =>
-        import("../keygen.ts").then(({ keyGenerateOp }) => ({ keyGenerateOp })),
+        import("../keygen.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -117,10 +117,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyShowConfig,
     Effect.fn("commands-key.keyShow")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyShowOp } = yield* Effect.promise(() =>
-        import("../keygen.ts").then(({ keyShowOp }) => ({ keyShowOp })),
+        import("../keygen.ts").then((m) => ({ keyShowOp: m.keyShowOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -137,10 +137,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyPublishConfig,
     Effect.fn("commands-key.keyPublish")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyPublishOp } = yield* Effect.promise(() =>
-        import("../key-publish.ts").then(({ keyPublishOp }) => ({ keyPublishOp })),
+        import("../key-publish.ts").then((m) => ({ keyPublishOp: m.keyPublishOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -157,10 +157,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyRecoverConfig,
     Effect.fn("commands-key.keyRecover")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyRecoverOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then(({ keyRecoverOp }) => ({ keyRecoverOp })),
+        import("../key-recover.ts").then((m) => ({ keyRecoverOp: m.keyRecoverOp })),
       );
 
       // A misspelling drops before the session resolution (network)
@@ -186,11 +186,11 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keySealPasskeyConfig,
     Effect.fn("commands-key.keySealPasskey")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { openLedgerReserveForChange } = yield* Effect.promise(() =>
-        import("../ledger-open.ts").then(({ openLedgerReserveForChange }) => ({
-          openLedgerReserveForChange,
+        import("../ledger-open.ts").then((m) => ({
+          openLedgerReserveForChange: m.openLedgerReserveForChange,
         })),
       );
 
@@ -219,7 +219,7 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keySealListConfig,
     Effect.fn("commands-key.keySealList")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
 
       const context = yield* openSession(values.server);
@@ -232,7 +232,7 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keySealRemoveConfig,
     Effect.fn("commands-key.keySealRemove")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
 
       const context = yield* openSession(values.server);
@@ -250,10 +250,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyReserveRotateConfig,
     Effect.fn("commands-key.keyReserveRotate")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyReserveRotateOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then(({ keyReserveRotateOp }) => ({ keyReserveRotateOp })),
+        import("../key-recover.ts").then((m) => ({ keyReserveRotateOp: m.keyReserveRotateOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -281,10 +281,10 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     keyRecoveryConfig,
     Effect.fn("commands-key.keyRecovery")(function* (values) {
       const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then(({ openSession }) => ({ openSession })),
+        import("../context.ts").then((m) => ({ openSession: m.openSession })),
       );
       const { keyRecoveryOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then(({ keyRecoveryOp }) => ({ keyRecoveryOp })),
+        import("../key-recover.ts").then((m) => ({ keyRecoveryOp: m.keyRecoveryOp })),
       );
 
       const context = yield* openSession(values.server);

@@ -147,9 +147,9 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
   readonly target: string;
 }) {
   const { floorHandleFor, openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then(({ floorHandleFor, openProject }) => ({
-      floorHandleFor,
-      openProject,
+    import("../context.ts").then((m) => ({
+      floorHandleFor: m.floorHandleFor,
+      openProject: m.openProject,
     })),
   );
 
@@ -185,7 +185,7 @@ export function makeSyncCommands() {
     syncPlanConfig,
     Effect.fn("sync-command.syncPlan")(function* (values) {
       const { syncPlanOp } = yield* Effect.promise(() =>
-        import("./sync-plan.ts").then(({ syncPlanOp }) => ({ syncPlanOp })),
+        import("./sync-plan.ts").then((m) => ({ syncPlanOp: m.syncPlanOp })),
       );
 
       const opened = yield* openSyncTarget(values);
@@ -211,7 +211,7 @@ export function makeSyncCommands() {
     syncApplyConfig,
     Effect.fn("sync-command.syncApply")(function* (values) {
       const { syncApplyOp } = yield* Effect.promise(() =>
-        import("./sync-plan.ts").then(({ syncApplyOp }) => ({ syncApplyOp })),
+        import("./sync-plan.ts").then((m) => ({ syncApplyOp: m.syncApplyOp })),
       );
 
       const opened = yield* openSyncTarget(values);
