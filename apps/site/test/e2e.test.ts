@@ -233,14 +233,18 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     expect(footer).toContain("GitHub · Docs · License (FSL-1.1-MIT");
     expect(footer).toContain("Type set in Archivo and Martian Mono (SIL");
     // Every rendered inline element outside the terminal samples is
-    // separated from neighboring words (block and grid children are exempt —
-    // the layout separates them)
+    // separated from the neighboring text or inline element (`</a><a>` counts
+    // as glued). Block and grid children are exempt on either side — the
+    // layout separates them
     const neighbors = await page.evaluate(() => {
+      const isInline = (el: Element): boolean => getComputedStyle(el).display === "inline";
       const textOf = (node: Node | null): string =>
-        node?.nodeType === Node.TEXT_NODE ? (node.textContent ?? "") : "";
+        node?.nodeType === Node.TEXT_NODE || (node instanceof Element && isInline(node))
+          ? (node.textContent ?? "")
+          : "";
       return [...document.querySelectorAll(".lp :is(a, b, code, em, span, strong)")]
         .filter((el) => el.closest("pre, svg") === null)
-        .filter((el) => getComputedStyle(el).display === "inline")
+        .filter(isInline)
         .map((el) => [textOf(el.previousSibling), el.textContent ?? "", textOf(el.nextSibling)]);
     });
     const glued = neighbors.flatMap(([before = "", text = "", after = ""]) => [
