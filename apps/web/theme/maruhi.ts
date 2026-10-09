@@ -7,6 +7,9 @@
 // §3 "rulings recorded while implementing DP1" (A / B).
 // The only raw hex values here are the two "vermilion" values plus the
 // two on-accent values; everything else is left to HCT derivation.
+//
+// Fonts are docs/notes/web-design-pass.md §1-3: the dashboard (the TCB)
+// loads no web fonts and uses the system stack.
 import { defineTheme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral";
 
@@ -30,14 +33,44 @@ const VERMILION_DARK = "#FF693C";
 const ON_VERMILION_LIGHT = "#FFFFFF";
 const ON_VERMILION_DARK = "#241915";
 
+// The system UI stack (the Astryx default). theme-neutral puts "Figtree"
+// in front of it, but nothing loads Figtree on this origin, so every
+// browser fell back to this stack anyway; naming it first keeps the
+// token honest.
+const SYSTEM_SANS = {
+  family: "-apple-system",
+  fallbacks: 'BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+};
+
 export const maruhiTheme = defineTheme({
   name: "maruhi",
   extends: neutralTheme,
+  // heading inherits the family from body (and keeps theme-neutral's
+  // h3/h4 weights)
+  typography: { body: SYSTEM_SANS },
   color: {
     // seed tuple: align the derived palettes — neutral (warm) hue and
     // everything but --color-on-accent — on the vermilion hue
     accent: [VERMILION_LIGHT, VERMILION_DARK],
     neutralStyle: "warm",
+  },
+  components: {
+    // Code-typed Text carries identifiers (64-hex project IDs, chain
+    // hashes, key FPs, row ids, variable names) and the audit payload.
+    // A long run without spaces must wrap instead of widening its flex
+    // parent: `anywhere` lets the break count toward min-content and only
+    // breaks a word that would overflow, and min-width 0 lets a flex item
+    // shrink below its content (ruling H's HexText override, promoted
+    // here once the audit payload needed the same rules)
+    text: {
+      "type:code": { overflowWrap: "anywhere", minWidth: "0" },
+    },
+    // Inline <Code> (a CLI command inside a sentence) takes the size of
+    // the sentence around it rather than the fixed code size, so it reads
+    // as part of small supporting text too
+    code: {
+      base: { fontSize: "inherit" },
+    },
   },
   tokens: {
     // Replace the derived values (light tone 40 / dark tone 80) with the

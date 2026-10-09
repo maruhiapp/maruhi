@@ -3,6 +3,11 @@ title: Devices
 description: Every machine you use has its own device key, and one reserve key lives only in the recovery ledger. Add a laptop or a Codespace without moving a secret, revoke a lost device and rotate what it could open, and keep the reserve key separate.
 sidebar:
   order: 10
+related:
+  - /docs/recover-your-key
+  - /docs/linux-keychain
+  - /docs/rotation
+  - /docs/four-eyes
 ---
 
 In maruhi, **keys belong to devices and access belongs to people**. You are one member of a project — one user ID, one role, one [environment scope](/docs/environment-scopes) — and that membership holds a set of **device keys**, one per machine. Each key is generated on its machine and never leaves it. When a device is lost, its key alone is revoked; you stay a member, your other devices keep working, and nobody has to re-invite you.

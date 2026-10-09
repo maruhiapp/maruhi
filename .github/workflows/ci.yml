@@ -1,6 +1,8 @@
 # Quality gate (same order as the steps in CLAUDE.md) + web integration steps
-# 0. English source check → 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint →
-# 5. fallow → 6. React Doctor → 7. tests → 8. web build (8d/8e = apex site)
+# 0. English source check → 1. oxfmt → 2. oxlint (type-aware) → 3. tsc
+# (3b. Effect diagnostics) → 4. ImportLint →
+# 5. fallow (5a stale baselines, 5b dupes shrink-only) → 6. React Doctor →
+# 7. tests → 8. web build (8d/8e = apex site)
 # → 9. web e2e / 9b. site e2e (cf dev + Playwright) → 10. astryx doctor
 # → 11. crypto 3-environment tests (workerd / browser / Bun — CRYPTO_SPEC §11)
 name: ci
@@ -48,8 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # React Doctor's diff mode and fallow audit need to compare against
-          # the base branch
+          # fallow audit needs to compare against the base branch, and fallow
+          # health / Blume's lastModified read the full history
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -131,11 +133,18 @@ jobs:
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
 
-      - name: 2. Lint (oxlint)
+      # Type-aware (oxlint-tsgolint, `options.typeAware` in .oxlintrc.json)
+      - name: 2. Lint (oxlint, type-aware)
         run: bun run lint
 
       - name: 3. Typecheck (tsc)
         run: bun run typecheck
+
+      # Effect-aware diagnostics (@effect/tsgo) over the programs that use
+      # Effect: a dropped Effect, an unhandled error or requirement, a bare
+      # `yield` in a generator (scripts/effect-diagnostics.mjs)
+      - name: 3b. Effect diagnostics (@effect/tsgo)
+        run: bun run lint:effect
 
       - name: 4. ImportLint
         run: bunx import-lint --format github
@@ -155,15 +164,30 @@ jobs:
           bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
           exit "$audit_status"
 
+      # fallow audit (step 5) analyzes only the changed files, so it never
+      # judges whether a baseline entry is stale. This whole-project run
+      # (dead-code + health + dupes in one combined pass, each against its
+      # committed baseline) fails when a baseline still lists a finding that
+      # no longer exists, so a fix lands together with its baseline shrink
+      - name: 5a. fallow whole-project baselines (stale-baseline gate)
+        run: bun run fallow:baselines
+
       # The duplication baseline is shrink-only: it lists accepted clone debt
       # and may lose entries, never gain them, relative to the merge-base with
-      # the PR's base branch (a push to main compares main with itself)
+      # the PR's base branch (a push to main compares main with itself).
+      # fallow's own --fail-on-baseline-growth does not replace this: in
+      # fallow 3.32 it compares dupes by normalized_clone_fingerprints, which
+      # measured identical for unrelated two-copy clones, so it passed a
+      # baselined clone swapped for a new one and a clone grown in place
+      # (both fail here)
       - name: 5b. fallow dupes baseline (shrink-only)
         env:
           BASE_REF: ${{ github.base_ref }}
         run: bun scripts/check-dupes-baseline.mjs "origin/${BASE_REF:-main}"
 
-      - name: 6. React Doctor (web, diff mode)
+      # Whole web tree, warnings block (no baseline: the tree is clean, so
+      # any new diagnostic fails)
+      - name: 6. React Doctor (web, full scan)
         run: bun run doctor
 
       - name: 7. Test (Vitest)

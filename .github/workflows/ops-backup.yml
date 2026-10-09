@@ -60,11 +60,11 @@ jobs:
       - name: Install age
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
 
-      # cf is the workspace-pinned version (bun scripts inside apps/server).
-      # --mode hosted resolves the operator DB — `cf d1` subcommands take the
-      # database ID (UUID), never the binding name, so scripts/d1-export.ts
-      # resolves it from cloudflare.config.ts and owns the poll + signed-URL
-      # download loop wrangler d1 export used to hide
+      # --mode hosted resolves the operator DB — the D1 API takes the database
+      # ID (UUID), never the binding name, so scripts/d1-export.ts resolves it
+      # from cloudflare.config.ts, calls the export endpoint directly (cf has
+      # no `d1 export` command since 1.0.0-beta.6) and owns the poll +
+      # signed-URL download loop wrangler d1 export used to hide
       - name: Export D1 (hosted)
         working-directory: apps/server
         env:

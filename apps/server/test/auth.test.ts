@@ -1458,7 +1458,7 @@ describe("GET /auth/config (§4 public settings) and unconfigured detection (§3
     expect(response.status).toBe(503);
   });
 
-  it("treats a missing client_secret as unconfigured (a forgotten `wrangler secret put`)", async () => {
+  it("treats a missing client_secret as unconfigured (a forgotten `cf workers secrets update`)", async () => {
     // Even with a real client_id, an unregistered secret is 503: if
     // it passed through, authentication would degrade to an opaque
     // token-exchange failure (GitHub 401 → AuthFlow 400) while

@@ -443,7 +443,7 @@ export const devicesFixture: DeviceList = {
       createdAtMs: 1_756_000_200_000,
     },
     {
-      keyFingerprintHex: "0e".repeat(16),
+      keyFingerprintHex: testKeyFingerprintHex("0e".repeat(16)),
       ...KEYS_R,
       label: "codespace",
       createdAtMs: 1_756_000_300_000,

@@ -3,6 +3,10 @@ title: Environments
 description: List, create, rename, and delete the environments of a project. A rename changes only the display name; a deletion is permanent, destroys every value in the environment, and leaves a signed record on the project's chain.
 sidebar:
   order: 15
+related:
+  - /docs/environment-scopes
+  - /docs/value-history
+  - /docs/github-actions
 ---
 
 An environment (`dev`, `staging`, `prod`, …) holds a set of variables and has its own encryption key. Each one has an **ID**, fixed when it is created and part of how its values are encrypted, and a **display name** that can change.

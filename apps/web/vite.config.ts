@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 import { astryxStylex } from "@astryxdesign/build/vite";
 import funstackStatic from "@funstack/static";
@@ -7,28 +7,72 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 // Protect the publicDir's untransformed copies from layer-split's HTML
-// injection. Kept in step with the targets whose byte equality
+// handling. Kept in step with the targets whose byte equality
 // write-headers.ts checks (pages.css is the self-hosted stylesheet shared
 // by /invite and the server-served ceremony pages).
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
 // FunStack splits Vite environments into rsc / client / ssr. ssr emits
-// JS only and no CSS. @astryxdesign/build 0.6.2's astryx-build-layer-split
+// JS only and no CSS. @astryxdesign/build 0.6.5's astryx-build-layer-split
 // hard-errors when StyleX rules exist but no target CSS does, so it is
-// applied only to environments that emit CSS. In addition, client's
-// writeBundle(linkOrphanStylesheets) injects the SPA CSS as <link> into
-// the publicDir-copied HTML, so the checked assets are written back. The
-// stylexOptions key keeps the legacy mode
-// (prebuilt CSS consumption; no src alias).
+// applied only to environments that emit CSS.
+//
+// In addition, client's writeBundle branches on whether any HTML file is
+// already under the output directory. With none, it rewrites the StyleX
+// block of the SPA CSS in place into the cascade layers (the branch we
+// need). With some, it moves the layers into a separate
+// astryx-stylex-<hash>.css and links that only from the HTML present at
+// that moment (linkStylesheetsForEveryPage). FunStack writes the SPA HTML
+// after every environment has built, so the only HTML present then is the
+// publicDir copy (invite.html): the SPA would never link the layers, and
+// the product layer would be lost while invite.html got a <link>. So the
+// passthrough files are taken out of the output directory while the
+// plugin runs and written back afterwards (also restoring their bytes),
+// and a stray astryx-stylex-*.css fails the build. The stylexOptions key
+// keeps the legacy mode (prebuilt CSS consumption; no src alias).
 //
 // This is a local patch on a vendor plugin (awaiting the upstream fix of
-// ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.2 has neither an
-// environment scope nor a publicDir exclusion (re-verified against
-// 0.5.2). If the target plugin is not found or its shape changed, fail
-// loudly rather than silently passing through: so that the next upgrade
-// cannot silently undo one half of the workaround and bring back the ssr
-// hard error / pollute invite.html.
+// ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.5 has neither an
+// environment scope nor a publicDir exclusion (re-verified at the 0.6.2 →
+// 0.6.5 upgrade). If the target plugin is not found or its shape changed,
+// fail loudly rather than silently passing through: so that the next
+// upgrade cannot silently undo one part of the workaround and bring back
+// the ssr hard error / pollute invite.html / drop the product layer.
 const LAYER_SPLIT_PLUGIN = "astryx-build-layer-split";
+const SPLIT_STYLESHEET = /^astryx-stylex-.*\.css$/;
+
+function outputDir(options: {
+  dir?: string | undefined;
+  file?: string | undefined;
+}): string | undefined {
+  return options.dir ?? (options.file === undefined ? undefined : dirname(options.file));
+}
+
+/** Take the passthrough files out of outDir; the returned function writes them back. */
+function parkPassthrough(outDir: string | undefined): () => void {
+  if (outDir === undefined) return () => {};
+  const parked = PUBLIC_PASSTHROUGH.map((name) => join(outDir, name))
+    .filter((filePath) => existsSync(filePath))
+    .map((filePath) => ({ filePath, content: readFileSync(filePath) }));
+  for (const file of parked) rmSync(file.filePath);
+  return () => {
+    for (const file of parked) writeFileSync(file.filePath, file.content);
+  };
+}
+
+/** Fail the build if the plugin took the separate-stylesheet branch. */
+function assertNoSplitStylesheet(outDir: string | undefined): void {
+  if (outDir === undefined) return;
+  const stray = readdirSync(outDir, { recursive: true, encoding: "utf8" }).filter((path) =>
+    SPLIT_STYLESHEET.test(basename(path)),
+  );
+  if (stray.length > 0) {
+    throw new Error(
+      `${LAYER_SPLIT_PLUGIN} wrote ${stray.join(", ")} instead of rewriting the SPA CSS in place: ` +
+        "the SPA HTML would not link it; re-check adaptAstryxLayerSplit",
+    );
+  }
+}
 
 function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
   const target = plugins.find((plugin) => plugin.name === LAYER_SPLIT_PLUGIN);
@@ -56,19 +100,12 @@ function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
         return environment.name !== "ssr";
       },
       writeBundle(outputOptions, bundle) {
-        const outDir =
-          outputOptions.dir ??
-          (outputOptions.file === undefined ? undefined : dirname(outputOptions.file));
-        const snapshots =
-          outDir === undefined
-            ? []
-            : PUBLIC_PASSTHROUGH.flatMap((name) => {
-                const filePath = join(outDir, name);
-                return existsSync(filePath) ? [{ filePath, content: readFileSync(filePath) }] : [];
-              });
-        return Promise.resolve(write.call(this, outputOptions, bundle)).then(() => {
-          for (const snap of snapshots) writeFileSync(snap.filePath, snap.content);
-        });
+        const outDir = outputDir(outputOptions);
+        const restore = parkPassthrough(outDir);
+        return Promise.resolve()
+          .then(() => write.call(this, outputOptions, bundle))
+          .finally(restore)
+          .then(() => assertNoSplitStylesheet(outDir));
       },
     };
     return adapted;

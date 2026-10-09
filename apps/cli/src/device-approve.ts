@@ -3,7 +3,7 @@
 // registry signal -> request cancel (the group's overview lives in device.ts).
 
 import { DeviceRegistryLimitError, MAX_DEVICE_REGISTRY_ROWS_PER_USER } from "@maruhi/api-schema";
-import { type EnvironmentId, type ProjectId } from "@maruhi/core";
+import { type EnvironmentId, type KeyFingerprintHex, type ProjectId } from "@maruhi/core";
 import type { DeviceCap } from "@maruhi/crypto";
 import { Clock, Effect, Result } from "effect";
 
@@ -51,7 +51,7 @@ export function parseApproveRef(raw: string): Effect.Effect<ApproveRef, CliError
 
 /** One request row (an approval candidate — the FP is recomputed). */
 interface ApprovableRequest {
-  readonly fingerprintHex: string;
+  readonly fingerprintHex: KeyFingerprintHex;
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly label: string;

@@ -1,11 +1,6 @@
 {
-  "clone_groups": [
-    "apps/server/src/programs/programs-variable.ts:657-672|apps/server/src/programs/programs-variable.ts:736-751"
-  ],
-  "clone_fingerprints": [
-    "dup:58a15e2e:2"
-  ],
-  "normalized_clone_fingerprints": [
-    "dup:6f87acd9:2"
-  ]
+  "kind": "dupes",
+  "clone_groups": [],
+  "clone_fingerprints": [],
+  "normalized_clone_fingerprints": []
 }
