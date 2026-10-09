@@ -27,6 +27,10 @@ import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
 const { config } = data;
+// The site-wide copyright line (blume.config.ts `footer.copyright`). The LP
+// draws its own footer, so it prints the line there and leaves Blume's
+// footer row (rendered on docs pages) out through the empty footer slot
+const copyright = typeof config.footer?.copyright === "string" ? config.footer.copyright : null;
 const repo = "https://github.com/maruhiapp/maruhi";
 const productOrigin = "https://my.maruhi.app";
 const cryptoSpec = `${repo}/blob/main/docs/CRYPTO_SPEC.md`;
@@ -334,6 +338,7 @@ STRIPE_KEY    string  true      set</span>
 
     <footer class="footer">
       <p>
+        {copyright === null ? null : <>{copyright} · </>}
         <a href={repo}>GitHub</a> · <a href="/docs">Docs</a> ·
         <a href={`${repo}/blob/main/LICENSE.md`}>License</a> (FSL-1.1-MIT for the server and web,
         MIT for the CLI and crypto)
@@ -346,6 +351,7 @@ STRIPE_KEY    string  true      set</span>
       </p>
     </footer>
   </div>
+  <Fragment slot="footer" />
 </PageLayout>
 
 <style>

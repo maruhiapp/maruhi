@@ -2,6 +2,8 @@
 
 // The S6 audit tab (the project / invites axes). See
 // ProjectScreen.tsx for the screen's tab framework.
+
+import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
@@ -69,8 +71,7 @@ export function AuditTab({ projectId }: { projectId: string }): ReactNode {
       </SectionBlock>
       <Text type="supporting">
         Completeness checks (gap detection, mirror reconciliation) are the CLI's job:{" "}
-        <Text type="code">maruhi audit verify</Text> /{" "}
-        <Text type="code">maruhi audit reconcile</Text>.
+        <Code>maruhi audit verify</Code> / <Code>maruhi audit reconcile</Code>.
       </Text>
     </VStack>
   );

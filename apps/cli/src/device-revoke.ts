@@ -2,7 +2,13 @@
 // the kind-5 sweep -> the local record -> registry row deletion -> the
 // token-revocation proposal (the group's overview lives in device.ts).
 
-import { decodeUserId, type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
+import {
+  decodeUserId,
+  type EnvironmentId,
+  type KeyFingerprintHex,
+  type ProjectId,
+  type UserId,
+} from "@maruhi/core";
 import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -86,7 +92,7 @@ interface ProjectRevokePlan {
 /** The revocation result on one project (reported by commands/device.ts). */
 export interface ProjectRevokeOutcome {
   readonly projectId: ProjectId;
-  readonly revoked: readonly string[];
+  readonly revoked: readonly KeyFingerprintHex[];
   readonly sweep: DeviceSweepOutcome | null;
   readonly skipped: string | null;
   /** The `revoke_device` append failed (nothing was revoked). */
@@ -132,7 +138,7 @@ const printRevokePlans = Effect.fn("device-revoke.printRevokePlans")(function* (
 const finishOwnRevocation = Effect.fn("device-revoke.finishOwnRevocation")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  readonly revoked: readonly string[];
+  readonly revoked: readonly KeyFingerprintHex[];
 }): Effect.fn.Return<void, CliError, OwnDeviceStore> {
   const store = yield* OwnDeviceStore;
   // revoked in the local record (prevents re-registering — K4-3 counterexample 1)
@@ -241,8 +247,8 @@ const executeRevokeAll = Effect.fn("device-revoke.executeRevokeAll")(function* (
   readonly targetUserId: UserId;
   readonly masterKeys: MasterKeys;
   readonly outcomes: ProjectRevokeOutcome[];
-}): Effect.fn.Return<readonly string[], never, CliServices> {
-  const revokedAll = new Set<string>();
+}): Effect.fn.Return<readonly KeyFingerprintHex[], never, CliServices> {
+  const revokedAll = new Set<KeyFingerprintHex>();
   for (const plan of input.plans) {
     const outcome = yield* executeRevoke({
       session: input.session,
@@ -459,7 +465,7 @@ function executeRevoke(input: {
   const { context } = input.plan;
   const base = {
     projectId: context.projectId,
-    revoked: [] as readonly string[],
+    revoked: [] as readonly KeyFingerprintHex[],
     sweep: null,
     skipped: null,
     failed: null,
@@ -498,7 +504,10 @@ function sweepAfterRevoke(input: {
   readonly plan: ProjectRevokePlan;
   readonly targetUserId: UserId;
   readonly masterKeys: MasterKeys;
-  readonly appended: { readonly verified: VerifiedProject; readonly revoked: readonly string[] };
+  readonly appended: {
+    readonly verified: VerifiedProject;
+    readonly revoked: readonly KeyFingerprintHex[];
+  };
 }): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {
   const { context } = input.plan;
   return Effect.gen(function* () {
@@ -539,7 +548,7 @@ function sweepAfterRevoke(input: {
 const proposeTokenRevocation = Effect.fn("device-revoke.proposeTokenRevocation")(function* (input: {
   readonly client: MaruhiClient;
   readonly registry: readonly RegistryRow[] | null;
-  readonly revoked: readonly string[];
+  readonly revoked: readonly KeyFingerprintHex[];
   readonly revokeToken: boolean;
   readonly interactive: boolean;
 }): Effect.fn.Return<readonly string[], CliError, CliIo> {

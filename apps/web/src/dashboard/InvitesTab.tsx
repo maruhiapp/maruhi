@@ -14,19 +14,20 @@
 //   re-fetch after completion. Revoke exists only on rows whose status
 //   is pending | accepted (a copy of the server's acceptance
 //   conditions — which also allow cleaning up an expired pending)
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
-import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
 import { apiPaths } from "./endpoints.ts";
+import { formatServerTime } from "./server-time.ts";
 import {
   Callout,
   EmptyNotice,
   ExpiryCell,
   FailureNotice,
-  formatServerTime,
   HexText,
   LoadingRow,
   RevokeButton,
@@ -160,8 +161,8 @@ function InviteNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={3} testId="invite-notes">
       Issuing invitations is not available in the dashboard — issue one from the CLI:{" "}
-      <Text type="code">maruhi invite create</Text> (admin). Revoking makes the invitation link
-      unusable immediately; issue a new invitation to replace it.
+      <Code>maruhi invite create</Code> (admin). Revoking makes the invitation link unusable
+      immediately; issue a new invitation to replace it.
     </Callout>
   );
 }

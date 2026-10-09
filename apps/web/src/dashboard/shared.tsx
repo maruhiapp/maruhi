@@ -28,6 +28,7 @@ import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
+import { Code } from "@astryxdesign/core/Code";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
@@ -35,41 +36,13 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { Token } from "@astryxdesign/core/Token";
-import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import type { ApiFailure } from "./api.ts";
 import { spaPaths } from "./routes.ts";
 import { useReportSessionExpired } from "./session-expiry.ts";
-import type { ChainRole, ForbiddenReason, TokenList, TokenSummary } from "./types.ts";
-import type { ResourceState } from "./use-api-resource.ts";
+import type { ChainRole, ForbiddenReason } from "./types.ts";
 import type { RevocationState } from "./use-revocation.ts";
-
-/**
- * Imperative navigation inside the SPA (e.g. the direct-ID-input Open).
- * If the Navigation API exists it is an SPA transition; otherwise it
- * degrades to a full page load (same degradation line as the Router's
- * fallback="static").
- */
-export function navigateTo(path: string): void {
-  const nav = (window as { navigation?: { navigate: (url: string) => void } }).navigation;
-  if (nav) {
-    nav.navigate(path);
-  } else {
-    window.location.assign(path);
-  }
-}
-
-/**
- * The as-recorded display form of a server timestamp (ms): the ISO
- * form, UTC explicit. Human-readable listings use `ServerTime`; this is
- * reserved for the audit's expanded part (Recorded at — the value as
- * recorded).
- */
-export function formatServerTime(ms: number): string {
-  const date = new Date(ms);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
-}
 
 // The hover card's rows: the absolute UTC time and Unix seconds (both
 // copyable). The display is the viewer's timezone + an abbreviation
@@ -407,23 +380,11 @@ export function EmptyNotice({
   );
 }
 
-// The display of identifiers (a 64-hex project ID / a chain hash / a
-// key FP / a row_id). A long string without whitespace does not wrap
-// on Text's wordBreak alone (an inline element's width pushes the
-// parent flex item's min-content wider), so the anywhere wrap is made
-// explicit in xstyle.
-// DP3 needed the same override repeatedly, so one definition lives in
-// this module and screens use HexText (promotion to a variant /
-// ui.package is a human's call — ruling H)
-const hexStyles = stylex.create({
-  breakable: {
-    overflowWrap: "anywhere",
-    wordBreak: "break-all",
-    minWidth: 0,
-  },
-});
-
-/** The display of an identifier (monospace, wraps at any position). `size` matches the surrounding density. */
+/**
+ * The display of an identifier (monospace, wraps at any position — the
+ * theme's code-text rules in apps/web/theme/maruhi.ts). `size` matches
+ * the surrounding density.
+ */
 export function HexText({
   children,
   size = "sm",
@@ -434,7 +395,7 @@ export function HexText({
   testId?: string;
 }): ReactNode {
   return (
-    <Text type="code" size={size} xstyle={hexStyles.breakable} data-testid={testId}>
+    <Text type="code" size={size} data-testid={testId}>
       {children}
     </Text>
   );
@@ -611,34 +572,8 @@ export function ServerReportedNote(): ReactNode {
   return (
     <Text type="supporting" as="p">
       Everything on this page is shown as reported by the server. Integrity verification is the
-      CLI's job: run <Text type="code">maruhi project verify</Text> or{" "}
-      <Text type="code">maruhi audit verify</Text> on your own machine.
+      CLI's job: run <Code>maruhi project verify</Code> or <Code>maruhi audit verify</Code> on your
+      own machine.
     </Text>
   );
-}
-
-/** The armed token (if still in the list). */
-function armedToken(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): TokenSummary | undefined {
-  return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
-}
-
-/** The object's name for the confirm dialog's heading (its name if in the list, otherwise "this token"). */
-export function armedTokenName(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "this token" : `token "${token.name}"`;
-}
-
-/** The announcement text of a successful revocation (the name at the moment of confirmation — it may not remain in the post-refetch list). */
-export function tokenRevokedMessage(
-  tokens: ResourceState<TokenList>,
-  armedId: string | undefined,
-): string {
-  const token = armedToken(tokens, armedId);
-  return token === undefined ? "Token revoked." : `Token "${token.name}" revoked.`;
 }

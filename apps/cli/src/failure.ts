@@ -115,9 +115,10 @@ function renderSchemaFailure(error: Schema.SchemaError): string {
 /**
  * Whether the issue is the refusal of a response that omits the
  * environment manifest (required on the wire since AUTH_SPEC
- * 0.28-draft). In effect 4.0.0 the struct decode stops at the first
- * error, so the failure arrives as `AnyOf → Composite → Pointer →
- * MissingKey` (the `AnyOf` is the response union's wrapper) for the
+ * 0.28-draft). The struct decode stops at the first error (effect's
+ * default `errors: "first"` parse option), so the failure arrives as
+ * `AnyOf → Composite → Pointer → MissingKey` (the `AnyOf` is the
+ * response union's wrapper) for the
  * pull, metadata-pull and lease responses alike — one match covers
  * all three (the lease path decodes in ci-lease.ts). The descent
  * walks only the non-`Pointer` nodes and stops at the first

@@ -3,6 +3,10 @@ title: Deploy targets
 description: Copy values from maruhi to Cloudflare Workers, Vercel, Netlify, and GitHub Actions secrets with maruhi sync, through the vendor CLI you already use or the vendor API, locally, from CI, or right after every maruhi push.
 sidebar:
   order: 2
+related:
+  - /docs/github-actions
+  - /docs/rotation
+  - /docs/value-history
 ---
 
 Some platforms do not let you put `maruhi run -- <command>` in front of your application. Cloudflare Workers, Vercel functions, and Netlify builds read their environment variables from the platform's own store, so the values have to be copied there before a deploy. GitHub Actions is the same story for the few secrets a workflow cannot lease with `maruhi ci run`: a prebuilt action's input, a Dependabot secret. `maruhi sync` does that, driven by a small config file committed in your repository, through one of two drivers: the platform's CLI, signed in the way you normally use it (`exec`, the default), or the platform's API with a token you store in maruhi (`http`, for CI and for machines without the vendor CLI). Netlify has only the `http` driver: its CLI takes the value as a command-line argument, which `ps` can see. GitHub Actions has only the `exec` driver: its API takes the value sealed with libsodium, and maruhi leaves that to `gh`. If you would rather not use `maruhi sync`, the [shell recipes](#without-maruhi-sync-shell-recipes) at the end of this page do the same with `maruhi run`.

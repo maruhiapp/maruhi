@@ -4,8 +4,8 @@
 // maruhi-server serves web assets from the same Worker and pins the
 // API path space to the Worker side via `assets.run_worker_first` in
 // wrangler.jsonc. That list is a hand-maintained copy of api-schema's
-// path space, and drift **breaks silently**: under compatibility_date
-// 2026-07-01 navigation requests prefer asset serving
+// path space, and drift **breaks silently**: under the configured
+// compatibility_date navigation requests prefer asset serving
 // (assets_navigation_prefers_asset_serving), so an endpoint missed by
 // the list is swallowed by the SPA shell's 200 without appearing in
 // errors or logs (session-43 §9).

@@ -1,4 +1,5 @@
 {
+  "kind": "dead-code",
   "analysis_identity": {
     "mode": "syntactic",
     "semantic_schema_version": 1,
@@ -7,14 +8,17 @@
     "backend_family": "",
     "completeness": "complete"
   },
+  "identity": "dc1",
   "unused_files": [],
   "unused_exports": [],
   "unused_types": [],
   "private_type_leaks": [],
+  "deprecated_exports_in_use": [],
   "unused_dependencies": [],
   "unused_dev_dependencies": [],
   "circular_dependencies": [],
   "re_export_cycles": [],
+  "package_cycles": [],
   "unused_optional_dependencies": [],
   "unused_enum_members": [],
   "unused_class_members": [],
@@ -22,6 +26,7 @@
   "unprovided_injects": [],
   "unrendered_components": [],
   "unused_component_props": [],
+  "absent_component_props": [],
   "unused_component_emits": [],
   "unused_component_inputs": [],
   "unused_component_outputs": [],
