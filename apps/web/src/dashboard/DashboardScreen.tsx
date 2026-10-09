@@ -22,13 +22,13 @@ import { type ApiFailure, apiGet } from "./api.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { isProjectId } from "./ids.ts";
+import { navigateTo } from "./navigation.ts";
 import { spaPaths } from "./routes.ts";
 import {
   EmptyNotice,
   FailureNotice,
   HexText,
   LoadingRow,
-  navigateTo,
   RoleToken,
   SectionBlock,
   SectionHeader,
@@ -248,8 +248,12 @@ function ProjectListSection(): ReactNode {
   const loadPage = useCallback(async (current: ProjectsState | undefined) => {
     setIsLoading(true);
     setFailure(undefined);
-    const result = await loadNonEmptyPage(current, new Set());
-    setIsLoading(false);
+    let result: Awaited<ReturnType<typeof loadNonEmptyPage>>;
+    try {
+      result = await loadNonEmptyPage(current, new Set());
+    } finally {
+      setIsLoading(false);
+    }
     if (result.kind !== "ok") {
       setFailure(result);
       return;

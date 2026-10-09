@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vite build && bun run scripts/write-headers.ts",
     "dev": "vite dev",
-    "doctor": "react-doctor . --scope changed --no-telemetry",
+    "doctor": "react-doctor . --blocking warning --no-telemetry",
     "doctor:astryx": "astryx doctor",
     "e2e": "vitest run",
     "preview": "cd ../server && bun x cf dev --port 8788",

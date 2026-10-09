@@ -11,9 +11,9 @@ import { type ReactNode, useEffect } from "react";
 
 import { apiGet } from "./api.ts";
 import { apiPaths } from "./endpoints.ts";
+import { navigateTo } from "./navigation.ts";
 import { consumeResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
-import { navigateTo } from "./shared.tsx";
 import type { Me } from "./types.ts";
 
 export function ResumeToDashboard(): ReactNode {

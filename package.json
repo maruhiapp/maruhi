@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "check": "bun run check:english && bun run fmt:check && bun run lint && bun run typecheck && bun run importlint && bun run fallow:audit && bun run fallow:baselines && bun run doctor && bun run test",
+    "check": "bun run check:english && bun run fmt:check && bun run lint && bun run typecheck && bun run lint:effect && bun run importlint && bun run fallow:audit && bun run fallow:baselines && bun run doctor && bun run test",
     "check:english": "bun scripts/check-english.mjs --all",
     "doctor": "bun run --filter @maruhi/web doctor",
     "fallow:audit": "fallow audit",
@@ -17,15 +17,18 @@
     "fmt:check": "oxfmt --check",
     "importlint": "import-lint",
     "lint": "oxlint",
+    "lint:effect": "bun scripts/effect-diagnostics.mjs",
     "test": "vitest run",
     "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.51.1",
     "@import-lint/cli": "0.1.10",
     "fallow": "3.32.0",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
     "oxlint-plugin-eslint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },
