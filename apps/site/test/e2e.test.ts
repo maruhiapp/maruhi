@@ -223,6 +223,34 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     await page.close();
   });
 
+  it("keeps the space between text and the inline elements that follow a line break", async () => {
+    // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
+    // element, so the source writes `{" "}` there (pages/index.astro). A
+    // missing one renders glued words such as "Docs ·License"
+    const page = await browser.newPage();
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    const footer = await page.locator("footer.footer").innerText();
+    expect(footer).toContain("GitHub · Docs · License (FSL-1.1-MIT");
+    expect(footer).toContain("Type set in Archivo and Martian Mono (SIL");
+    // Every rendered inline element outside the terminal samples is
+    // separated from neighboring words (block and grid children are exempt —
+    // the layout separates them)
+    const neighbors = await page.evaluate(() => {
+      const textOf = (node: Node | null): string =>
+        node?.nodeType === Node.TEXT_NODE ? (node.textContent ?? "") : "";
+      return [...document.querySelectorAll(".lp :is(a, b, code, em, span, strong)")]
+        .filter((el) => el.closest("pre, svg") === null)
+        .filter((el) => getComputedStyle(el).display === "inline")
+        .map((el) => [textOf(el.previousSibling), el.textContent ?? "", textOf(el.nextSibling)]);
+    });
+    const glued = neighbors.flatMap(([before = "", text = "", after = ""]) => [
+      ...(/[\w.,;:!?)·]$/.test(before) ? [`${before.slice(-20)}|${text}`] : []),
+      ...(/^[\w(]/.test(after) ? [`${text}|${after.slice(0, 20)}`] : []),
+    ]);
+    expect(glued).toEqual([]);
+    await page.close();
+  });
+
   it("renders in Archivo (headings, body) and Martian Mono (code)", async () => {
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });

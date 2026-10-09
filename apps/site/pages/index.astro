@@ -23,6 +23,10 @@
 // theme tokens (--blume-*); no raw hex. SVGs are colored via classes too
 // (no style attributes — CSP).
 // User-facing text is English (ADR-0017).
+// Whitespace follows Astro 7's default `compressHTML: "jsx"` (JSX rules): a
+// line break between text and an element is dropped, so text that ends a
+// line before an inline element (`·`, `set in`, `and`) ends with an explicit
+// `{" "}`. The landing-page e2e (apps/site/test/e2e.test.ts) pins this.
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
@@ -176,7 +180,7 @@ const tiles = [
             </p>
             <p class="so">
               <strong>So there is exactly one decryptor:</strong>
-              an MIT-licensed CLI you can read. The dashboard never gets a key. A
+              an MIT-licensed CLI you can read. The dashboard never gets a key. A{" "}
               <code>.env</code> writer does not exist.
             </p>
           </div>
@@ -306,7 +310,7 @@ STRIPE_KEY    string  true      set</span>
         </li>
       </ul>
       <p class="fine">
-        The full list, with reasoning, is in the
+        The full list, with reasoning, is in the{" "}
         <a href={`${cryptoSpec}#143-explicit-non-guarantees-v1`}>crypto specification, §14.3</a>.
       </p>
     </section>
@@ -339,13 +343,13 @@ STRIPE_KEY    string  true      set</span>
     <footer class="footer">
       <p>
         {copyright === null ? null : <>{copyright} · </>}
-        <a href={repo}>GitHub</a> · <a href="/docs">Docs</a> ·
+        <a href={repo}>GitHub</a> · <a href="/docs">Docs</a> ·{" "}
         <a href={`${repo}/blob/main/LICENSE.md`}>License</a> (FSL-1.1-MIT for the server and web,
         MIT for the CLI and crypto)
       </p>
       <p class="fine">
-        No analytics, no trackers, no third-party scripts. Type set in
-        <a href="/fonts/OFL-Archivo.txt">Archivo</a> and
+        No analytics, no trackers, no third-party scripts. Type set in{" "}
+        <a href="/fonts/OFL-Archivo.txt">Archivo</a> and{" "}
         <a href="/fonts/OFL-MartianMono.txt">Martian Mono</a> (SIL Open Font License 1.1), served
         from this site. The ㊙ mark derives from Noto Sans CJK JP (SIL OFL 1.1).
       </p>
