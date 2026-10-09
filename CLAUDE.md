@@ -114,13 +114,13 @@ leaks every secret. Therefore:
 | Runtime (dev/CLI) | Bun 1.4.2 (strictly pinned via `.bun-version`. Reached the 1.4 line per ADR-0004) |
 | Server runtime | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | Server HTTP layer | Effect v4 `effect/http-api` HttpApi (no Hono) |
-| App foundation | Effect v4 line (pinned. Current `4.0.0`) |
+| App foundation | Effect v4 line (pinned. Current `4.0.2`) |
 | DB | Drizzle v1 (`drizzle-kit` migrations, confined inside the Effect service boundary). D1 + DO SQLite |
 | Frontend | React + FunStack (funstack-static + funstack-router) + Astryx (StyleX-based. ADR-0013) |
 | CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
 | IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
 | LP / docs | Blume (ADR-0008 revision 1 — the LP is also Blume). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
-| Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
+| Lint/Format | oxlint (type-aware via oxlint-tsgolint) + @effect/tsgo diagnostics + oxfmt + ImportLint + fallow + React Doctor |
 
 ## Monorepo layout
 
@@ -153,8 +153,8 @@ apps/
 
 ## Quality gate (always pass before committing)
 
-1. `check:english` → 2. `oxfmt` → 3. `oxlint` → 4. `tsc --noEmit` →
-   5. ImportLint → 6. fallow (baseline) → 7. React Doctor (web only, diff mode)
+1. `check:english` → 2. `oxfmt` → 3. `oxlint` (type-aware) → 4. `tsc --noEmit`
+   (+ Effect diagnostics, `lint:effect`) → 5. ImportLint → 6. fallow (baseline) → 7. React Doctor (web only, full scan, warnings block)
    → 8. **tests** (Vitest: crypto/core/CLI in the normal environment,
    server/DO via `@cloudflare/vitest-plugin` [formerly vitest-pool-workers])
 

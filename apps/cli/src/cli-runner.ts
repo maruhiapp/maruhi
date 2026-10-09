@@ -163,11 +163,15 @@ export async function runEffectCli(
     const exit = yield* Command.runWith(root, { version: CLI_VERSION })([...argv]).pipe(
       Effect.provideService(Stdio.Stdio, withArgs(stdio, argv)),
       Effect.provideService(Console.Console, collectingConsole(diagnostics)),
-      // Color applies only to stderr's prefixes and help headings (notice.ts — judged via CliIo)
-      Effect.provide(formatterLayer(commandKey, COMMAND_SPECS, helpRequested, io.colorEnabled())),
-      // Built-in global flags are only --help / --version (decision 5)
-      Effect.provide(CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] })),
-      Effect.provide(unusedEnvironment),
+      Effect.provide(
+        Layer.mergeAll(
+          // Color applies only to stderr's prefixes and help headings (notice.ts — judged via CliIo)
+          formatterLayer(commandKey, COMMAND_SPECS, helpRequested, io.colorEnabled()),
+          // Built-in global flags are only --help / --version (decision 5)
+          CliConfig.layer({ builtIns: [GlobalFlag.Help, GlobalFlag.Version] }),
+          unusedEnvironment,
+        ),
+      ),
       Effect.exit,
     );
     for (const line of diagnostics) {

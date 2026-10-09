@@ -29,7 +29,7 @@ import {
   MAX_DEVICE_REGISTRY_ROWS_PER_USER,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { decodeKeyFingerprintHex, RequestAuth, userKeyFingerprintHex } from "@maruhi/core";
+import { type KeyFingerprintHex, RequestAuth, userKeyFingerprintHex } from "@maruhi/core";
 import { decodeHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
@@ -62,7 +62,7 @@ const fingerprintOf = Effect.fn("handlers-devices.fingerprintOf")(function* (
 
 /** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */
 const ensureFingerprintMatches = Effect.fn("handlers-devices.ensureFingerprintMatches")(function* (
-  fp: string,
+  fp: KeyFingerprintHex,
   encPubHex: string,
   sigPubHex: string,
 ) {
@@ -117,7 +117,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const repo = yield* DeviceRepo;
         const admitted = yield* repo.upsert({
           userId: principal.userId,
-          keyFingerprintHex: decodeKeyFingerprintHex(params.fp),
+          keyFingerprintHex: params.fp,
           encPubHex: payload.encPubHex,
           sigPubHex: payload.sigPubHex,
           label: payload.label,
@@ -142,7 +142,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
-        const removed = yield* repo.remove(principal.userId, decodeKeyFingerprintHex(params.fp));
+        const removed = yield* repo.remove(principal.userId, params.fp);
         if (!removed) {
           return yield* Effect.fail(new DeviceNotFoundError());
         }
@@ -215,7 +215,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const repo = yield* DeviceRepo;
         const row = yield* repo.requestFind(
           principal.userId,
-          decodeKeyFingerprintHex(params.fp),
+          params.fp,
           yield* Clock.currentTimeMillis,
         );
         if (row === null) {
@@ -230,10 +230,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
-        const removed = yield* repo.requestCancel(
-          principal.userId,
-          decodeKeyFingerprintHex(params.fp),
-        );
+        const removed = yield* repo.requestCancel(principal.userId, params.fp);
         if (!removed) {
           return yield* Effect.fail(new DeviceNotFoundError());
         }

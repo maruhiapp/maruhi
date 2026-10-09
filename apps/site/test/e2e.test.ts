@@ -13,7 +13,7 @@
 //   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
 //      as cloudflare.config.ts configures
 // Requires `bun run build` beforehand.
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
@@ -149,6 +149,8 @@ describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.conf
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("strict-transport-security")).toContain("max-age=");
+    // blume.config.ts `poweredBy: false`: the build stack is not advertised
+    expect(res.headers.get("x-powered-by")).toBeNull();
     // postbuild.ts keeps the _headers Blume emitted (the top Link header)
     expect(res.headers.get("link")).toContain("llms.txt");
   });
@@ -218,6 +220,38 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     await expect(
       terminals.evaluateAll((els) => els.filter((el) => el.hasAttribute("aria-label")).length),
     ).resolves.toBe(0);
+    await page.close();
+  });
+
+  it("keeps the space between text and the inline elements that follow a line break", async () => {
+    // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
+    // element, so the source writes `{" "}` there (pages/index.astro). A
+    // missing one renders glued words such as "Docs ·License"
+    const page = await browser.newPage();
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    const footer = await page.locator("footer.footer").innerText();
+    expect(footer).toContain("GitHub · Docs · License (FSL-1.1-MIT");
+    expect(footer).toContain("Type set in Archivo and Martian Mono (SIL");
+    // Every rendered inline element outside the terminal samples is
+    // separated from the neighboring text or inline element (`</a><a>` counts
+    // as glued). Block and grid children are exempt on either side — the
+    // layout separates them
+    const neighbors = await page.evaluate(() => {
+      const isInline = (el: Element): boolean => getComputedStyle(el).display === "inline";
+      const textOf = (node: Node | null): string =>
+        node?.nodeType === Node.TEXT_NODE || (node instanceof Element && isInline(node))
+          ? (node.textContent ?? "")
+          : "";
+      return [...document.querySelectorAll(".lp :is(a, b, code, em, span, strong)")]
+        .filter((el) => el.closest("pre, svg") === null)
+        .filter(isInline)
+        .map((el) => [textOf(el.previousSibling), el.textContent ?? "", textOf(el.nextSibling)]);
+    });
+    const glued = neighbors.flatMap(([before = "", text = "", after = ""]) => [
+      ...(/[\w.,;:!?)·]$/.test(before) ? [`${before.slice(-20)}|${text}`] : []),
+      ...(/^[\w(]/.test(after) ? [`${text}|${after.slice(0, 20)}`] : []),
+    ]);
+    expect(glued).toEqual([]);
     await page.close();
   });
 
@@ -326,6 +360,10 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     // A link from the body to the LP (site root) is an absolute URL not
     // rewritten by basePath
     await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
+    // ...and so is the banner's link to the LP's access section
+    await expect(page.locator("[data-blume-banner] a").first().getAttribute("href")).resolves.toBe(
+      "https://maruhi.app/#access",
+    );
     await page.locator("a[data-blume-card][href='/docs/getting-started']").click();
     await page.locator("h1", { hasText: "Getting started" }).waitFor();
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");
@@ -363,6 +401,55 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     expect(sitemap).toContain("<loc>https://maruhi.app/docs</loc>");
     const html = await (await fetch(`${BASE}/docs`)).text();
     expect(html).not.toMatch(/posthog|_vercel\/insights|plausible|googletagmanager/i);
+    // blume.config.ts `feedback: false`: no widget whose only channel is analytics
+    expect(html).not.toContain("data-blume-page-feedback");
+  });
+});
+
+describe('site e2e: docs last-modified dates (blume.config.ts `lastModified: "git"`)', () => {
+  it("shows the page's last git commit date and emits it as schema.org dateModified", async () => {
+    // The committer date of the newest commit touching the page, as Blume
+    // reads it. Needs full history (CI's check job uses fetch-depth: 0); a
+    // shallow clone would date every page at the boundary commit
+    const committed = execFileSync(
+      "git",
+      ["log", "-1", "--format=%cI", "--", "docs/getting-started.mdx"],
+      { cwd: `${import.meta.dirname}/..`, encoding: "utf8" },
+    ).trim();
+    expect(committed).not.toBe("");
+    const iso = new Date(committed).toISOString();
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    expect(html).toMatch(new RegExp(`Last updated on <time datetime="${iso}">`));
+    const graphs = [
+      ...html.matchAll(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/gs),
+    ].map((match) => JSON.stringify(JSON.parse(match[1] ?? "null")));
+    expect(graphs.some((graph) => graph.includes(`"dateModified":"${iso}"`))).toBe(true);
+    const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
+    expect(sitemap).toContain(
+      `<loc>https://maruhi.app/docs/getting-started</loc><lastmod>${iso.slice(0, 10)}</lastmod>`,
+    );
+  });
+});
+
+describe("site e2e: related pages and the footer copyright", () => {
+  it("shows a docs page's related cards and the copyright in Blume's footer", async () => {
+    const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
+    const related = /<nav[^>]*data-blume-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    // The order and targets of apps/site/docs/getting-started.mdx `related:`
+    expect([...related.matchAll(/href="(\/docs\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([
+      "/docs/deploy-targets",
+      "/docs/devices",
+      "/docs/invite-a-teammate",
+      "/docs/linux-keychain",
+    ]);
+    expect(html).toMatch(/<footer[^>]*data-blume-footer[\s\S]*© 2026 maruhi contributors/);
+  });
+
+  it("prints the copyright once in the landing page's own footer, with no second footer", async () => {
+    const html = await (await fetch(`${BASE}/`)).text();
+    expect(html.match(/<footer\b/g)).toHaveLength(1);
+    expect(html).not.toContain("data-blume-footer");
+    expect(html.match(/© 2026 maruhi contributors/g)).toHaveLength(1);
   });
 });
 

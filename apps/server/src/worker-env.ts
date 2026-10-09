@@ -250,9 +250,10 @@ export function ipRateLimitAllowed(
   }
   return Effect.tryPromise({
     try: async () => (await limiter.limit({ key: rateLimitKeyOf(ip) })).success,
-    catch: (error) => error,
+    // Only the kind name is kept (see the log below)
+    catch: (error) => (error instanceof Error ? error.name : "unknown"),
   }).pipe(
-    Effect.catch((error: unknown) =>
+    Effect.catch((errorName) =>
       // The **explicit** fail-open recovery (an availability-side
       // design decision — see the doc above). But it is not swallowed
       // silently (CLAUDE.md): if a binding misconfiguration leaves
@@ -265,7 +266,7 @@ export function ipRateLimitAllowed(
       // kind name is logged, honoring the "no IPs" promise
       Effect.logWarning(
         "rate limiter binding failed; allowing the request (fail-open)",
-        error instanceof Error ? error.name : "unknown",
+        errorName,
       ).pipe(Effect.as(true)),
     ),
   );

@@ -90,7 +90,7 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 | M-5 | Medium | Deferred (partly wrong) | `data-http.ts`'s `toMetaStatementInput` declares the §12-2 statement shape three times in handwritten types. **Report error**: "a different statement silently gets verified" is wrong — a dropped field changes the signed statement, and client-side verification fails closed |
 | M-6 | Low | Needs human review | crypto's byte-length constants (`DEK_BYTES` etc.) are redeclared in several files (`FINGERPRINT_BYTES` is in 3 files, not the report's 2) |
 | M-7 | Low | **Fixed (PR #203 `dcdb9ca`)** (partly wrong) | Duplicated assembly of the manifest issuance material → consolidated into `manifestIssueBaseOf`. **Report error**: the duplication is not CLI↔server (the two ends of the wire) but inside the CLI, `push.ts` ↔ `apps/cli/src/schema.ts`. `apps/server/src/schema.ts` does not exist |
-| M-8 | Low | Deferred | `repos.ts` (2,017 lines) hosts 9 repository factories |
+| M-8 | Low | **Fixed (PR #249 `8d587f4`)** | `repos.ts` (2,017 lines) hosts 9 repository factories → split into per-domain repository files under `db.package/`; `repos.ts` now only assembles `makeDbServices` |
 | M-9 | Low | **Fixed (PR #203 `637dcae`)** | Duplicated short-write retry loop in `floor-log.ts` → consolidated into `appendAll` |
 
 ## Architecture
@@ -152,5 +152,5 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
    checks the 3 implementations on the same inputs"
 3. **Operational policy** (S-2 / C-1–C-3 / C-5 remainder / C-6–C-8 / T-3 / T-4 /
    D-6 / D-7): small individual PRs after owner decisions
-4. **Deferred items** (P-5 / P-6 / A-2 / A-8 / M-3–M-5 / M-8 / T-2 / C-10): no
+4. **Deferred items** (P-5 / P-6 / A-2 / A-8 / M-3–M-5 / T-2 / C-10): no
    spec change needed. Fine to pick up as standalone PRs when time is free

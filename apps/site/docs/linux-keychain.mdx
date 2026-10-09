@@ -3,6 +3,10 @@ title: Keychain on Linux and in containers
 description: maruhi stores its token and this device's key in the OS keychain and never falls back to plaintext files. Set up a Secret Service on headless Linux, WSL, dev containers, and Codespaces.
 sidebar:
   order: 5
+related:
+  - /docs/getting-started
+  - /docs/devices
+  - /docs/ai-agents
 ---
 
 maruhi persists exactly two secrets on a machine: the API token that `maruhi login` obtains, and this machine's [device key](/docs/devices), created by `maruhi key generate`, `maruhi device add` or `maruhi key recover`. Both live in the OS keychain, under the service name `maruhi`, and nowhere else — when no keychain is available, the commands fail instead of writing a plaintext file.

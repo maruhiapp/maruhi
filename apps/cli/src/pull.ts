@@ -283,18 +283,38 @@ export const pullVariables = Effect.fn("pull.pullVariables")(function* (input: {
           describeMissingOwnEpochs(verified.projectId, input.environmentId, missingEpochs),
         ];
 
+  const selected = selectedVariables(pulled.variables, input.select);
+  // Decryptions are independent per variable, so they run in parallel.
+  // The failure contract is unchanged — the first failure **in input
+  // order**: each outcome is collected at its index and the scan below
+  // replays them in order (P-5).
+  const decrypted = yield* Effect.forEach(
+    selected,
+    (variable) =>
+      decryptVerifiedValue({
+        verified,
+        environmentId: input.environmentId,
+        variable,
+        deksByEpoch,
+        chainEpoch: keys.currentEpoch,
+      }).pipe(
+        Effect.match({
+          onSuccess: (plaintext) => ({ ok: true as const, plaintext }),
+          onFailure: (error) => ({ ok: false as const, error }),
+        }),
+      ),
+    { concurrency: "unbounded" },
+  );
   const results: DecryptedVariable[] = [];
-  for (const variable of selectedVariables(pulled.variables, input.select)) {
+  for (const [index, outcome] of decrypted.entries()) {
+    if (!outcome.ok) {
+      return yield* Effect.fail(outcome.error);
+    }
+    const variable = selected[index]!;
+    const plaintext = outcome.plaintext;
     // A duplicate active name was already refused by the statement
     // verification (values-verify.ts) (§4.2 — `maruhi run`'s environment
     // variable injection has no path that silently crushes one side)
-    const plaintext = yield* decryptVerifiedValue({
-      verified,
-      environmentId: input.environmentId,
-      variable,
-      deksByEpoch,
-      chainEpoch: keys.currentEpoch,
-    });
     results.push({
       variableId: variable.variableId,
       name: variable.name,

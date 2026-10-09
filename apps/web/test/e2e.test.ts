@@ -205,22 +205,25 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     const projectId = page.getByTestId("project-id");
     await expect(projectId.textContent()).resolves.toBe(PROJECT_1);
 
-    // xstyle (static CSS via the StyleX compiler) is applied: HexText's
-    // hexStyles.breakable (src/dashboard/shared.tsx). Without the
-    // compiler the override silently renders unstyled
+    // The theme's component override (defineTheme `components.text
+    // ["type:code"]` → astryx theme build → static CSS) is applied: the
+    // ID wraps anywhere instead of widening its flex parent
     const breakable = await projectId.evaluate((el) => {
       const style = getComputedStyle(el);
-      return {
-        wordBreak: style.wordBreak,
-        overflowWrap: style.overflowWrap,
-        minWidth: style.minWidth,
-      };
+      return { overflowWrap: style.overflowWrap, minWidth: style.minWidth };
     });
-    expect(breakable).toEqual({
-      wordBreak: "break-all",
-      overflowWrap: "anywhere",
-      minWidth: "0px",
-    });
+    expect(breakable).toEqual({ overflowWrap: "anywhere", minWidth: "0px" });
+
+    // xstyle (static CSS via the StyleX compiler) is applied: an
+    // unselected tab panel is hidden by panelStyles.hidden
+    // (src/dashboard/ProjectScreen.tsx) — the `hidden` attribute alone
+    // loses to VStack's display:flex. Without the compiler the override
+    // silently renders unstyled and every panel shows
+    const hiddenPanelDisplay = await page
+      .locator("[role=tabpanel][hidden]")
+      .first()
+      .evaluate((el) => getComputedStyle(el).display);
+    expect(hiddenPanelDisplay).toBe("none");
 
     // The maruhi theme's accent color (defineTheme → astryx theme
     // build) is in effect.
