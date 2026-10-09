@@ -1,5 +1,6 @@
 "use client";
 
+import { Code } from "@astryxdesign/core/Code";
 // S9 token management (listing + revocation — design document §3 S9 /
 // AUTH_SPEC §6 W3a).
 //
@@ -151,9 +152,9 @@ function TokenNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={2} testId="token-notes">
       Issuing tokens is not available in the dashboard — a token is issued when you sign in from the
-      CLI: <Text type="code">maruhi login</Text> (raw token values never appear here). Revoking a
-      token immediately signs out any CLI or CI job still using it; sign in again from the CLI to
-      issue a replacement.
+      CLI: <Code>maruhi login</Code> (raw token values never appear here). Revoking a token
+      immediately signs out any CLI or CI job still using it; sign in again from the CLI to issue a
+      replacement.
     </Callout>
   );
 }

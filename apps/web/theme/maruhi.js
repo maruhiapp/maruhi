@@ -296,6 +296,8 @@ export const maruhiTheme = {
         fontFamily: "var(--font-family-code)",
         fontSize: "var(--text-code-size)",
         lineHeight: "var(--text-code-leading)",
+        overflowWrap: "anywhere",
+        minWidth: "0",
       },
       "type:supporting": {
         fontFamily: "var(--font-family-body)",
@@ -501,6 +503,11 @@ export const maruhiTheme = {
     section: {
       base: {
         padding: "var(--spacing-3)",
+      },
+    },
+    code: {
+      base: {
+        fontSize: "inherit",
       },
     },
   },

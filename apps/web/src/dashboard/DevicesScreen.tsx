@@ -1,5 +1,6 @@
 "use client";
 
+import { Code } from "@astryxdesign/core/Code";
 // S11 device registry (read-only — AUTH_SPEC §13-11 / DK K5. Design
 // record dk-design.md §10 K5-7 through K5-10).
 //
@@ -189,13 +190,12 @@ function buildDeviceColumns(
 function DeviceNotes(): ReactNode {
   return (
     <Callout title="Lost a device?" headingLevel={2} testId="device-notes">
-      Revoke its key from another device with{" "}
-      <Text type="code">maruhi device revoke &lt;fingerprint&gt;</Text>, then revoke its API token
-      here (or on the <Link href={spaPaths.tokens()}>API tokens</Link> page). Revoking the token
-      stops that device from reaching the API immediately; revoking the key is what removes it from
-      the project chains. Registering, approving and removing devices is done from the CLI (
-      <Text type="code">maruhi device add</Text> / <Text type="code">maruhi device approve</Text>)
-      and is not available in the dashboard.
+      Revoke its key from another device with <Code>maruhi device revoke &lt;fingerprint&gt;</Code>,
+      then revoke its API token here (or on the <Link href={spaPaths.tokens()}>API tokens</Link>{" "}
+      page). Revoking the token stops that device from reaching the API immediately; revoking the
+      key is what removes it from the project chains. Registering, approving and removing devices is
+      done from the CLI (<Code>maruhi device add</Code> / <Code>maruhi device approve</Code>) and is
+      not available in the dashboard.
     </Callout>
   );
 }
@@ -300,7 +300,7 @@ export function DevicesScreen(): ReactNode {
         <Text as="p" type="supporting">
           Your device registry (display names and linked API tokens), as reported by the server. The
           registry is advisory; the project chains are the source of truth —{" "}
-          <Text type="code">maruhi device list</Text> verifies them.
+          <Code>maruhi device list</Code> verifies them.
         </Text>
       }
     >

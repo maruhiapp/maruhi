@@ -1,5 +1,6 @@
 "use client";
 
+import { Code } from "@astryxdesign/core/Code";
 // The S6 audit tab (the project / invites axes). See
 // ProjectScreen.tsx for the screen's tab framework.
 import { HStack, VStack } from "@astryxdesign/core/Layout";
@@ -69,8 +70,7 @@ export function AuditTab({ projectId }: { projectId: string }): ReactNode {
       </SectionBlock>
       <Text type="supporting">
         Completeness checks (gap detection, mirror reconciliation) are the CLI's job:{" "}
-        <Text type="code">maruhi audit verify</Text> /{" "}
-        <Text type="code">maruhi audit reconcile</Text>.
+        <Code>maruhi audit verify</Code> / <Code>maruhi audit reconcile</Code>.
       </Text>
     </VStack>
   );
