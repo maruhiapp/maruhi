@@ -1,6 +1,5 @@
 "use client";
 
-import { Code } from "@astryxdesign/core/Code";
 // S9 token management (listing + revocation — design document §3 S9 /
 // AUTH_SPEC §6 W3a).
 //
@@ -16,6 +15,8 @@ import { Code } from "@astryxdesign/core/Code";
 // - Revocation is an inline two-step confirm (ruling CO). Because
 //   revoking your own token instantly 401s any running CLI / CI, the
 //   consequence note is always shown below the table
+
+import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";

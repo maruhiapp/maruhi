@@ -1,6 +1,5 @@
 "use client";
 
-import { Code } from "@astryxdesign/core/Code";
 // S8 invite management (listing + revocation — design document §3 S8 /
 // ADR-0018 amendment 2).
 //
@@ -15,6 +14,8 @@ import { Code } from "@astryxdesign/core/Code";
 //   re-fetch after completion. Revoke exists only on rows whose status
 //   is pending | accepted (a copy of the server's acceptance
 //   conditions — which also allow cleaning up an expired pending)
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Token } from "@astryxdesign/core/Token";

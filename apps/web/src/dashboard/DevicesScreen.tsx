@@ -1,6 +1,5 @@
 "use client";
 
-import { Code } from "@astryxdesign/core/Code";
 // S11 device registry (read-only — AUTH_SPEC §13-11 / DK K5. Design
 // record dk-design.md §10 K5-7 through K5-10).
 //
@@ -24,6 +23,8 @@ import { Code } from "@astryxdesign/core/Code";
 // - The display name / FP / tokenId are rendered only as text nodes,
 //   as server-issued strings. The only thing an href receives is
 //   `apiPaths.tokenRevoke(tokenId)` (encodeURIComponent)
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";

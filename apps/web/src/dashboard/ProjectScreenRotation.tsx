@@ -1,8 +1,9 @@
 "use client";
 
-import { Code } from "@astryxdesign/core/Code";
 // The S7 rotation-flags tab. See ProjectScreen.tsx for the
 // screen's tab framework.
+
+import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";

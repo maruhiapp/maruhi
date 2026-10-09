@@ -1,8 +1,9 @@
 "use client";
 
-import { Code } from "@astryxdesign/core/Code";
 // The S6 audit tab (the project / invites axes). See
 // ProjectScreen.tsx for the screen's tab framework.
+
+import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
