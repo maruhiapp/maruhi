@@ -136,3 +136,52 @@ Beyond the §14.3 list (each cites its home section):
 - **Open findings** from earlier reviews are tracked in
   [AUDIT_REVIEW_2026-09-26](AUDIT_REVIEW_2026-09-26.md) and
   [SECURITY_REVIEW_2026-08-14](SECURITY_REVIEW_2026-08-14.md)
+
+## How to verify these claims
+
+None of the above asks to be taken on trust:
+
+- **Read the source** — the CLI, server, dashboard and crypto core all live
+  in this repository. Values are decrypted only client-side, by the
+  MIT-licensed CLI (`apps/cli`) on top of `packages/crypto`; the dashboard
+  never receives a key (trust boundary 3)
+- **Verify a project yourself** — `maruhi project verify` verifies the
+  chain, the local floor and the invite anchor, then prints the project
+  state (the verified member set — unlike the dashboard's view).
+  `maruhi audit verify` checks the audit mirror rows against the chain one
+  to one (missing, forged or altered rows). Every pull verifies the served
+  statements and values before decrypting (CRYPTO_SPEC §6.3)
+- **Re-check the crypto** — `packages/crypto/test-vectors/` pins the
+  primitives and wire formats, with expected values computed mostly by an
+  independent Python implementation; [REVIEWING.md](REVIEWING.md) §4 gives
+  the commands to re-verify them and states what each check proves and what
+  it does not
+- **Hold the code to the spec** — CRYPTO_SPEC §14 is the normative list of
+  guarantees; a mismatch between it and the code is a vulnerability to
+  report through [SECURITY.md](../SECURITY.md)
+
+## Operational boundaries
+
+- **Zero telemetry** — no maruhi client (the CLI, the dashboard) reports
+  anything to the maruhi project or to any third party: no analytics, crash
+  reports, update pings or usage counters. The dashboard and the site load
+  no third-party scripts, fonts or CDNs (a strict CSP; every asset is
+  self-hosted)
+- **Peers you name are not telemetry** — the CLI talks to the maruhi server
+  you configured and, for your own purpose, to peers you named: the
+  destinations you configure for `maruhi sync`, and `api.github.com` under
+  the default `identityBacking = github-signing-keys`, which is sent only the
+  GitHub login named in an invite, to look up that login's public signing
+  keys (CRYPTO_SPEC §6.5). `maruhi config set identityBacking none` turns the
+  lookup off
+- **The operator observing its own deployment is not telemetry** — Workers
+  metrics and logs are the operator's view of its own servers
+  ([hosted-design](notes/hosted-design.md) §5-1). That view has its own
+  discipline: application logs are static messages only, with no
+  request-derived identifiers or user input (AUTH_SPEC §11-5), and plaintext
+  values, key material and tokens never land in logs. A project ID is
+  effectively a capability (AUTH_SPEC §11-2) and appears in URL paths, so
+  the hosted default is aggregated metrics only; per-request platform logs
+  require sampling, short retention and operator-internal access control
+- **On a self-host you are the operator** — the deployment runs in your own
+  Cloudflare account, so the operator-side view above is yours
