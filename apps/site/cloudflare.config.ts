@@ -3,7 +3,7 @@ import { defineConfig } from "cf/config";
 export default defineConfig({
   worker: {
     name: "maruhi-site",
-    compatibilityDate: "2026-07-01",
+    compatibilityDate: "2026-10-09",
     workersDev: false,
     previewUrls: false,
     assets: {

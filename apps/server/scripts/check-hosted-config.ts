@@ -63,6 +63,7 @@ interface Norm {
   readonly name: string;
   readonly entrypoint?: string;
   readonly compatibilityDate?: string;
+  readonly compatibilityFlags: readonly string[];
   readonly workersDev?: boolean;
   readonly previewUrls?: boolean;
   readonly cpuMs?: number;
@@ -98,6 +99,7 @@ interface WranglerLike {
   name?: string;
   main?: string;
   compatibility_date?: string;
+  compatibility_flags?: readonly string[];
   workers_dev?: boolean;
   preview_urls?: boolean;
   limits?: { cpu_ms?: number };
@@ -140,6 +142,7 @@ interface CfWorkerLike {
   name?: string;
   entrypoint?: string;
   compatibilityDate?: string;
+  compatibilityFlags?: readonly string[];
   workersDev?: boolean;
   previewUrls?: boolean;
   limits?: { cpuMs?: number };
@@ -213,6 +216,7 @@ function normWrangler(config: WranglerLike): Norm {
     // unstable_readConfig absolutizes `main`; the cf side is config-relative
     entrypoint: config.main === undefined ? undefined : relative(configDir, config.main),
     compatibilityDate: config.compatibility_date,
+    compatibilityFlags: [...(config.compatibility_flags ?? [])].toSorted(),
     workersDev: config.workers_dev,
     previewUrls: config.preview_urls,
     cpuMs: config.limits?.cpu_ms,
@@ -280,6 +284,7 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
     name: worker.name ?? "",
     entrypoint: worker.entrypoint,
     compatibilityDate: worker.compatibilityDate,
+    compatibilityFlags: [...(worker.compatibilityFlags ?? [])].toSorted(),
     workersDev: worker.workersDev,
     previewUrls: worker.previewUrls,
     cpuMs: worker.limits?.cpuMs,
@@ -427,6 +432,23 @@ if (cProductionBinding?.scriptName !== cHosted.name) {
   failures.push(
     `cloudflare.config.ts (mode restore): PRODUCTION_PROJECT_CHAIN worker (${String(cProductionBinding?.scriptName)}) must equal the hosted worker name (${cHosted.name})`,
   );
+}
+
+// The runtime contract: every mode runs the same compatibility date with
+// both Node compat layers off (COMPATIBILITY_FLAGS in cloudflare.config.ts
+// — past 2026-08-04 the date alone would turn nodejs_compat on and copy
+// the secrets into process.env). The test runner forces Node compat on,
+// so this is the only place the setting is checked
+for (const [label, worker] of [
+  ["cf self-host", cSelf],
+  ["cf hosted", cHosted],
+  ["cf restore", cRestore],
+] as const) {
+  expectSame(`${label}: compatibilityDate`, worker.compatibilityDate, cSelf.compatibilityDate);
+  expectSame(`${label}: compatibilityFlags`, worker.compatibilityFlags, [
+    "no_nodejs_compat",
+    "no_nodejs_compat_v2",
+  ]);
 }
 
 // The restore worker's own shape: no HTTP handler surface, the per-minute
