@@ -2,17 +2,14 @@
 // src/restore-worker.ts) against the bindings cloudflare.config.ts declares.
 // `cf build` writes .cloudflare/types/index.d.ts, whose Cloudflare.Env is
 // `InferEnv<…>` over this same config; calling InferEnv on each mode's
-// worker here checks the same thing with no generation step. The assertions are type-level: `bun run
-// typecheck` (tsc) fails on a mismatch, and the test body only runs them.
+// worker here checks the same thing with no generation step. The assertions
+// are type-level: `bun run typecheck` (tsc) fails on a mismatch, and the
+// test body only runs them.
 // Workers Secrets are not in the config, so they stay hand-written only.
 import type { InferEnv } from "cf/config";
 import { describe, expectTypeOf, it } from "vitest";
 
-import type {
-  HOSTED_WORKER,
-  RESTORE_WORKER,
-  SELF_HOST_WORKER,
-} from "../cloudflare.config.ts";
+import type { HOSTED_WORKER, RESTORE_WORKER, SELF_HOST_WORKER } from "../cloudflare.config.ts";
 import type { Env } from "../src/do/chain-do.ts";
 import type { RestoreEnv } from "../src/restore-worker.ts";
 
