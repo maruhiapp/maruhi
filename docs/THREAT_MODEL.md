@@ -61,7 +61,7 @@ the specs. Where the wording differs, the specs govern:
 
 ## Declared non-guarantees (CRYPTO_SPEC §14.3)
 
-The spec's explicit list, all ten items — a finding that only restates one
+The spec's explicit list, every item — a finding that only restates one
 is not a new vulnerability (a way to widen one is):
 
 1. **Availability** — a malicious server can refuse responses, delete data,
@@ -94,7 +94,11 @@ is not a new vulnerability (a way to widen one is):
    guardian is the only defense.
 9. **Invite-link interception** — anyone who can read the channel the link
    is passed over can accept under their own key before the legitimate
-   counterpart; the backing source and out-of-band confirmation close it.
+   counterpart. The backing source (`github-signing-keys`) closes it
+   beforehand, except when the attacker can place their key on the
+   counterpart's GitHub account (account takeover) or the inviter misnames
+   the login; under backing source `none`, out-of-band mutual confirmation
+   closes it.
    **An invite link is passed over a trusted person-to-person channel**
    (normative — AUTH_SPEC §15-3).
 10. **Reserve-key exposure** — during a restore from total device loss the
@@ -167,13 +171,21 @@ None of the above asks to be taken on trust:
   reports, update pings or usage counters. The dashboard and the site load
   no third-party scripts, fonts or CDNs (a strict CSP; every asset is
   self-hosted)
-- **Peers you name are not telemetry** — the CLI talks to the maruhi server
-  you configured and, for your own purpose, to peers you named: the
-  destinations you configure for `maruhi sync`, and `api.github.com` under
-  the default `identityBacking = github-signing-keys`, which is sent only the
-  GitHub login named in an invite, to look up that login's public signing
-  keys (CRYPTO_SPEC §6.5). `maruhi config set identityBacking none` turns the
-  lookup off
+- **Peers you name are not telemetry** — besides the maruhi server you
+  configured, the CLI talks only to peers you named, for your own purpose:
+  - **delivery targets** — the platforms you sync or push values to (the
+    destinations of `maruhi sync`; `gh` when `maruhi push` triggers a
+    workflow)
+  - **services whose credentials you have maruhi manage** — for example
+    the connectors of `maruhi var rotate` (AWS IAM / STS, the Cloudflare
+    API, your own Postgres or MySQL) and the `github-app` connector of
+    `maruhi proxy` (`api.github.com`)
+  - **GitHub for identity** — under the default
+    `identityBacking = github-signing-keys`, `api.github.com` is sent only
+    the GitHub login named in an invite, to look up that login's public
+    signing keys (CRYPTO_SPEC §6.5; `maruhi config set identityBacking none`
+    turns the lookup off), and `maruhi key publish --gh` registers your
+    public signing key through your own `gh`
 - **The operator observing its own deployment is not telemetry** — Workers
   metrics and logs are the operator's view of its own servers
   ([hosted-design](notes/hosted-design.md) §5-1). That view has its own

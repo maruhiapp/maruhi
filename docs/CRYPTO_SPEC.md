@@ -678,7 +678,7 @@ Resolved items are removed; the open ones keep their numbers (other text cites t
 
 ## 14. Guarantees and non-guarantees of data authenticity (drafted 2026-08-03 session 12)
 
-The normative summary of "what each mechanism of §4.1 / §4.2 / §5.1 / §5.2 / §6 proves and what it doesn't". The detailed threat analysis, design comparison, and rejected options are docs/notes/session-12.md. `docs/THREAT_MODEL.md` restates this section for readers (§14.3's ten items in full); where the wording differs, this section governs.
+The normative summary of "what each mechanism of §4.1 / §4.2 / §5.1 / §5.2 / §6 proves and what it doesn't". The detailed threat analysis, design comparison, and rejected options are docs/notes/session-12.md. `docs/THREAT_MODEL.md` is a condensed reader-facing restatement of this section (it lists every §14.3 item); where the wording differs, this section governs.
 
 ### 14.1 Decomposing the security goals
 
