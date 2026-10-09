@@ -539,7 +539,9 @@ STRIPE_KEY    string  true      set</span>
     font-weight: 600;
   }
 
-  /* The chain of Whys: number → question → fact → So (left rule) + figure. Even steps put the figure on the left */
+  /* The chain of Whys: number → question → fact → So (left rule) + figure. Every step keeps the figure
+     after the text on screen, as in the DOM — alternating sides would make the visual order disagree with
+     the reading order (pinned by the landing-page e2e) */
   .chain {
     margin: calc(var(--lp-gap) * 2) 0 0;
     padding: 0;
@@ -555,18 +557,10 @@ STRIPE_KEY    string  true      set</span>
     align-items: center;
   }
 
-  .step:nth-child(even) .figure {
-    order: -1;
-  }
-
   @media (max-width: 46rem) {
     .step {
       grid-template-columns: minmax(0, 1fr);
       gap: calc(var(--lp-gap) * 1.5);
-    }
-
-    .step:nth-child(even) .figure {
-      order: 0;
     }
   }
 

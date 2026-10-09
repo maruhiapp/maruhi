@@ -223,6 +223,42 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     await page.close();
   });
 
+  it.each([
+    ["two-column", 1280],
+    ["stacked", 390],
+  ] as const)(
+    "shows each step's text before its figure, matching the DOM order (%s)",
+    async (_layout, width) => {
+      // Screen readers and keyboard users follow the DOM (text, then figure);
+      // a sighted reader must meet the same order: the figure sits right of
+      // the text or below it, never left of or above it
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      const steps = await page.locator("ol.chain > li.step").evaluateAll((items) =>
+        items.map((li) => {
+          const [first, second] = [...li.children].map((el) => ({
+            className: el.className,
+            box: el.getBoundingClientRect(),
+          }));
+          return {
+            id: li.id,
+            order: [first?.className.split(" ")[0], second?.className.split(" ")[0]],
+            figureFollows:
+              first !== undefined &&
+              second !== undefined &&
+              (second.box.left >= first.box.right || second.box.top >= first.box.bottom),
+          };
+        }),
+      );
+      expect(steps).toHaveLength(5);
+      for (const step of steps) {
+        expect(step.order, step.id).toEqual(["text", "figure"]);
+        expect(step.figureFollows, step.id).toBe(true);
+      }
+      await page.close();
+    },
+  );
+
   it("keeps the space between text and the inline elements that follow a line break", async () => {
     // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
     // element, so the source writes `{" "}` there (pages/index.astro). A
