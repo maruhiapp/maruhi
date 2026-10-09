@@ -64,6 +64,13 @@ export default defineConfig({
   // docs are served under `/docs/*`; the site root is owned by the LP
   // (pages/index.astro)
   basePath: "/docs",
+  // "Last updated on <date>" under each docs page, plus schema.org
+  // `dateModified` and the sitemap's <lastmod>, from the committer date of
+  // the newest commit touching the page (a local `git log`, no network).
+  // Needs full history: in a shallow clone every page gets the boundary
+  // commit's date, so build and deploy from a full clone (CI's check job
+  // uses fetch-depth: 0)
+  lastModified: "git",
   github: { owner: "maruhiapp", repo: "maruhi", dir: "apps/site" },
   integrations: [noInlineStylesheets()],
   theme: {
