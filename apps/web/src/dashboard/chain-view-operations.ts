@@ -2,7 +2,6 @@
 
 import {
   hasStrings,
-  isRecord,
   isStringArray,
   ownProp,
   reportedScope,
@@ -12,6 +11,7 @@ import {
   type OperationFolder,
   type ProposableEntry,
 } from "./chain-view-state.ts";
+import { isRecord } from "./json-record.ts";
 
 function applyChangeRole(
   state: FoldState,

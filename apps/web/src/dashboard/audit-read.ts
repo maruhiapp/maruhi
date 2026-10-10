@@ -10,6 +10,7 @@
 // an element's acceptance condition is identical to core's (variableId
 // is a string and epoch / version are integers), and anything else is
 // dropped (so the two never diverge in count or display).
+import { isRecord } from "./json-record.ts";
 import type { AuditEvent } from "./types.ts";
 
 /**
@@ -22,17 +23,13 @@ export interface ListedReadVariable {
   readonly version: number;
 }
 
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Shapes one element of the enumeration. Dropped unless it satisfies
  * the same acceptance condition as @maruhi/core's auditReadVariablesOf
  * (variableId is a string and epoch / version are integers).
  */
 function listedReadVariableOf(entry: unknown): ListedReadVariable | null {
-  return isJsonRecord(entry) && isListedReadVariable(entry)
+  return isRecord(entry) && isListedReadVariable(entry)
     ? { variableId: entry.variableId, epoch: entry.epoch, version: entry.version }
     : null;
 }

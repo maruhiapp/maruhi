@@ -1,6 +1,7 @@
 // See chain-view.ts for the display-only contract.
 
 import type { ReportedPolicy, ReportedServer } from "./chain-view-reported.ts";
+import { isRecord } from "./json-record.ts";
 import type { ChainEntry } from "./types.ts";
 
 /** The record of a vote (the user_id and the signing key's FP — an element of principle 2's S). */
@@ -102,11 +103,6 @@ export interface FoldState {
 }
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
-
-/** Whether a value is a record (null and arrays excluded). A report is never trusted by type — only its shape is read. */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Whether all the named fields are strings. */
 export function hasStrings(value: unknown, fields: ReadonlyArray<string>): boolean {
