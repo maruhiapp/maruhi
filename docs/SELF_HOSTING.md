@@ -324,8 +324,8 @@ explicitly): all reads (`maruhi pull` / `maruhi run`, older versions' values,
 chain fetch, audit log, the owner's `maruhi project export` — members can take
 their values out), all deletions (environments, variables, DEK wraps), member
 removal, server-access revocation, role changes, epoch rotation, workload
-leases, head attestations, periodic checkpoints, and accepting, rejecting or
-listing the sealed proposals already stored. The 1 GB between the rejection threshold
+leases, head attestations, periodic checkpoints, and rejecting or listing the
+sealed proposals already stored (accepting one needs a push, which is refused). The 1 GB between the rejection threshold
 and the platform floor absorbs the bookkeeping those operations still write.
 One read is guarded as if it were a write: fetching the **audit head**
 (`GET /projects/:id/audit-head`, and checkpoints that notarize it) lazily
