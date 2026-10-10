@@ -381,7 +381,7 @@ const renderers: readonly Renderer[] = [
   // never-pruned audit log usually dominates, so deleting frees little)
   when(isInstanceOf(DataLimitExceededError), (e) =>
     e.resource === "project-storage-bytes"
-      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and rotating still work. Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`
+      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and a rotation's key change still work (re-encrypted values cannot be pushed). Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`
       : `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
   ),
   when(

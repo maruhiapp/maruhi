@@ -1018,6 +1018,17 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
       ]),
     );
     expectNoSecretLeak(fixture);
+    // The storage guard can be crossed between the pre-flight and the mint
+    const full = await startCi();
+    full.minted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "storage-limit" },
+    };
+    expect(await ciRotate(full)).toBe(1);
+    const errors = full.env.errors.join("\n");
+    expect(errors).toContain("the project's stored data has reached the server's storage guard");
+    expect(errors).toContain("Recovery for the credential that now exists at the issuer");
+    expectNoSecretLeak(full);
   });
 
   it("surfaces the crypto layer's InvalidInput verbatim when the new value exceeds the sealed-value bound", async () => {
