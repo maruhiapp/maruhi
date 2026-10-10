@@ -71,7 +71,6 @@ import {
   bindFingerprint,
   FingerprintTable,
   hasStrings,
-  isRecord,
   ownProp,
   scopeIdsWithout,
   startTenure,
@@ -81,6 +80,7 @@ import {
   type MutableMember,
   type ProposableEntry,
 } from "./chain-view-state.ts";
+import { isRecord } from "./json-record.ts";
 import type { ChainEntry } from "./types.ts";
 
 function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {

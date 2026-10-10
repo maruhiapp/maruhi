@@ -3,7 +3,6 @@
 import { applyOperation, type OperationOf } from "./chain-view-operations.ts";
 import {
   hasStrings,
-  isRecord,
   ownProp,
   unboundDevicesOf,
   type EntryOf,
@@ -14,6 +13,7 @@ import {
   type ProposableEntry,
   type Vote,
 } from "./chain-view-state.ts";
+import { isRecord } from "./json-record.ts";
 
 /** Principle 2's S = {the proposer who proposed as an owner} ∪ approvals. */
 export function signersOf(pending: PendingFold): Vote[] {
