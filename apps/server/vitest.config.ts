@@ -116,5 +116,16 @@ export default defineConfig({
     // transfer/rendering cost. Output from failing tests is still
     // shown in full as before
     silent: "passed-only",
+    sequence: {
+      // isolate: false shares D1 / DO / R2 storage across files on the
+      // same worker, so order independence has to be a property of the
+      // fixtures, not an accident of the on-disk file order. Shuffle the
+      // file order (the seed is random per run and printed as "Running
+      // tests with seed N", so any failure reproduces via
+      // --sequence.seed=N) to keep that discipline honest (audit T-2).
+      // File-level only: whether tests inside one file may be reordered
+      // is a separate property this suite does not yet claim.
+      shuffle: { files: true },
+    },
   },
 });
