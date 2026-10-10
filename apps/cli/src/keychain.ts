@@ -24,6 +24,7 @@ import { Context, type Effect, Redacted } from "effect";
 
 import { escapeText } from "./display.ts";
 import type { CliError } from "./errors.ts";
+import { isRecord } from "./json-record.ts";
 
 /**
  * Where the records live: the OS keychain, or the memory of a running
@@ -106,10 +107,6 @@ export interface StoredMasterKey {
    * Carried inside the sealed ledger blob only; a keychain never holds such a record.
    */
   readonly kind?: "reserve";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -299,8 +296,9 @@ function hasCurrentMasterKeyShape(value: Record<string, unknown>): boolean {
  * user with no recovery code unable to restore anything.
  *
  * The judgment **leans toward not recommending deletion**: only "not even
- * JSON", "not even a JSON object", or "claims the current suite yet cannot be
- * read" count as corrupt; everything else (a different suite, no suite,
+ * JSON", "a JSON scalar (not an object or array)", or "claims the current
+ * suite yet cannot be read" count as corrupt; everything else (an array, a
+ * different suite, no suite,
  * nested, etc.) is treated as possibly another format. Where a future shape
  * puts the suite is unknowable from this implementation, so no bet is placed
  * on a specific field name. Conversely, that the record is an object is the
@@ -316,13 +314,16 @@ export function classifyUnreadableMasterKey(json: string): "corrupt" | "foreign"
     // Not even JSON = a shape no version of maruhi writes. Safe to delete
     return "corrupt";
   }
+  // Arrays stay on the keep side — a future version could plausibly use one
+  // as a container holding multiple keys
+  if (Array.isArray(value)) {
+    return "foreign";
+  }
   // A JSON scalar (null, number, string, boolean) = a shape no version of
   // maruhi writes as a key record. Leaning toward "maybe another format" here
   // would mean telling a record that should be deletable to "keep it and
   // update", which updates never fix — permanently blocking generate /
-  // recover / show alike (no way out). Arrays stay on the object side = the
-  // keep side — a future version could plausibly use one as a container
-  // holding multiple keys
+  // recover / show alike (no way out)
   if (!isRecord(value)) {
     return "corrupt";
   }

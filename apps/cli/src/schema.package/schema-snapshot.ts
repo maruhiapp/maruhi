@@ -61,6 +61,7 @@ import { displayText, logWarnings } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "../floor-check.ts";
 import { CliIo } from "../io.ts";
+import { isRecord } from "../json-record.ts";
 import { pullVerifiedEnvironmentMetadata } from "../values.ts";
 
 /**
@@ -192,9 +193,7 @@ export const schemaExportOp = Effect.fn("schema-snapshot.schemaExportOp")(functi
 
 /** Naive object-reading of JSON (any other shape collapses to an empty object). */
 function recordOf(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return isRecord(value) ? value : {};
 }
 
 /** The variable-set difference (names only on the file side / only on the store side). */
