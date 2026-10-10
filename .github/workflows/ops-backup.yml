@@ -53,6 +53,12 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+          # This job carries the operator's Cloudflare Account API token
+          # (D1 + R2 edit), so do not restore the bun executable from Actions
+          # cache: setup-bun verifies a hit by a revision string only, under a
+          # key writable from the default-branch scope (full reasoning at
+          # release.yml's verify job). A cold download is seconds on a daily job
+          no-cache: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

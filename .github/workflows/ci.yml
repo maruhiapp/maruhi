@@ -15,6 +15,15 @@ on:
   # (duplicating it would leave the release side on a stale copy when ci.yml
   # changes)
   workflow_call:
+    inputs:
+      # release.yml passes true to make the whole release path restore no
+      # Actions cache (the reasoning is at release.yml's verify job): it gates
+      # setup-bun's bun-binary cache and the Playwright browser cache below.
+      # Push / PR runs are not workflow_call, so inputs is empty and this
+      # reads as null (see the `== true` note on setup-bun's no-cache)
+      skip-caches:
+        type: boolean
+        default: false
 
 # Cancel stale runs on consecutive pushes to the same PR (don't spend a runner
 # on runs that will never be looked at). Non-PR runs (pushes to main,
@@ -61,6 +70,15 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+          # setup-bun caches the bun executable itself in actions/cache under
+          # a URL-derived key, restoring it with only a `bun --revision` string
+          # check — so on the release path (skip-caches: true) it is a poisoning
+          # vector into a privileged job (release.yml's verify reasoning). Off
+          # there, on for push / PR. `== true` is required: on push / PR runs
+          # inputs is empty, so `inputs.skip-caches` is null and a bare
+          # reference may render "" — which setup-bun's getBooleanInput
+          # rejects. `== true` renders a clean "false" / "true" instead
+          no-cache: ${{ inputs.skip-caches == true }}
 
       # ADR-0019: no tracked file may contain CJK text (exemptions:
       # scripts/english-exemptions.txt + inline `english-exempt` markers).
@@ -323,6 +341,9 @@ jobs:
       # does not depend on later outcomes
       - name: Restore Playwright Chromium cache (headless shell)
         id: playwright-cache
+        # Skipped on the release path (same reasoning as setup-bun's no-cache):
+        # a restored browser binary executes in the gate job
+        if: ${{ !inputs.skip-caches }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
@@ -344,7 +365,7 @@ jobs:
         run: bunx playwright install --only-shell chromium
 
       - name: Save Playwright Chromium cache (cache miss only)
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        if: ${{ !inputs.skip-caches && steps.playwright-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
