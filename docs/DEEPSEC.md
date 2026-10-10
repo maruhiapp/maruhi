@@ -47,21 +47,21 @@ The version-matched documentation is `.deepsec/node_modules/deepsec/SKILL.md` an
 
 ## Daily operations
 
-`.deepsec/pnpm-workspace.yaml` sets `managePackageManagerVersions: false`, so a plain `pnpm` here never switches itself to the `packageManager` version (that download skips the pinned sha512). Run through `corepack pnpm` to get exactly that version, verified.
+`.deepsec/pnpm-workspace.yaml` sets `managePackageManagerVersions: false`, so a plain `pnpm` here never switches itself to the `packageManager` version (that download skips the pinned sha512). Run every command through `corepack pnpm`: it gets exactly that version, verified, and works without `corepack enable` (a `pnpm` on PATH may be an unpinned one).
 
 ```sh
 cd .deepsec
 corepack pnpm install --frozen-lockfile
-pnpm deepsec scan --project-id maruhi          # regex only. Free
+corepack pnpm deepsec scan --project-id maruhi          # regex only. Free
 # after preparing credentials:
-pnpm deepsec process --project-id maruhi       # AI investigation. Paid
-pnpm deepsec revalidate --project-id maruhi    # reduces false positives
-pnpm deepsec export --format md-dir --out ./findings
+corepack pnpm deepsec process --project-id maruhi       # AI investigation. Paid
+corepack pnpm deepsec revalidate --project-id maruhi    # reduces false positives
+corepack pnpm deepsec export --format md-dir --out ./findings
 ```
 
 Credentials are one of the following (values go in the environment or `.deepsec/.env.local`; only the names stay in config):
 
-- the machine's `claude` / `codex` login — `pnpm deepsec setup --model-auth local`
+- the machine's `claude` / `codex` login — `corepack pnpm deepsec setup --model-auth local`
 - a local API key — `--model-auth direct --ai-provider anthropic|openai --ai-api-key-env <ENV>`
 - Vercel AI Gateway — per the official docs. Only Sandbox parallel execution needs a Gateway-side token
 
