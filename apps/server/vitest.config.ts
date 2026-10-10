@@ -92,9 +92,23 @@ export default defineConfig({
     // isolation even between tests within a file, and beforeEach
     // wipes all of D1's auth tables (support/auth.ts resetAuthDb)
     // and resets the target project DO (support/project-do.ts), so
-    // the same discipline holds across file boundaries. Confirmed
-    // all 50 files pass when run serially on 1 worker in shuffled
-    // order. If a flake suggesting cross-file state dependence
+    // the same discipline holds across file boundaries.
+    //
+    // That cross-file order independence is enforced continuously by
+    // shuffling the file order (audit T-2). The seed is random per
+    // run and printed as "Running tests with seed N". CI runs this
+    // suite as a project under the repo-root vitest.config.ts, and
+    // Vitest 4.1.x derives file order from the root sequencer alone —
+    // a project's own `sequence.shuffle` is ignored in that path — so
+    // the enforcing setting lives at the root. The `sequence` block
+    // below re-declares it for a direct `cd apps/server && vitest`
+    // run, where this file is the root config. To reproduce a
+    // failure, re-run with the printed seed: `bun run test --
+    // --sequence.seed=N` (the whole-repo permutation, so
+    // `--project server` alone gives a different order). If it still
+    // does not reproduce, add `--maxWorkers=1`: the seed fixes the
+    // queue order, not which files share a worker (hence a storage
+    // namespace). If a flake suggesting cross-file state dependence
     // appears, first check whether that file's fixture upholds the
     // "build your own precondition state yourself" discipline
     // (restoring isolate is the last resort). R2
@@ -103,6 +117,13 @@ export default defineConfig({
     // (ops-backup.test.ts's `oversize-test/<doId>/`) or, when it
     // must scan the product's key layout, empties that prefix
     // itself in beforeEach (ops-restore.test.ts's `restore/`).
+    //
+    // Cost: shuffling discards the default sequencer's longest-first
+    // scheduling (which packs the slow vector-replay files early),
+    // so the suite runs longer. Measured locally: ~201s unshuffled
+    // vs 255-309s shuffled (+27-54%). CI's uncached order is
+    // file-size-based rather than duration-based, so the CI delta is
+    // expected to be smaller; real CI numbers are recorded on the PR.
     //
     // Prerequisite: @cloudflare/vitest-plugin 1.1.2 or later.
     // Earlier harnesses have a bug where SELF.fetch's per-request
@@ -117,14 +138,11 @@ export default defineConfig({
     // shown in full as before
     silent: "passed-only",
     sequence: {
-      // isolate: false shares D1 / DO / R2 storage across files on the
-      // same worker, so order independence has to be a property of the
-      // fixtures, not an accident of the on-disk file order. Shuffle the
-      // file order (the seed is random per run and printed as "Running
-      // tests with seed N", so any failure reproduces via
-      // --sequence.seed=N) to keep that discipline honest (audit T-2).
-      // File-level only: whether tests inside one file may be reordered
-      // is a separate property this suite does not yet claim.
+      // File-order shuffle for the direct `cd apps/server && vitest`
+      // path (audit T-2 — see the isolate: false note above for the
+      // rationale and the CI caveat). File-level only: whether tests
+      // inside one file may be reordered is a separate property this
+      // suite does not yet claim.
       shuffle: { files: true },
     },
   },
