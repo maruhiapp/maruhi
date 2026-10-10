@@ -50,9 +50,9 @@ env:
 
 jobs:
   # The full quality gate (bun audit + 11 steps). Calls ci.yml via workflow_call.
-  # skip-caches: true turns off the Playwright browser cache, so no job of the
-  # release run restores an Actions cache (Bun never comes from one: the
-  # install-bun action verifies a pinned SHA-256). An Actions cache entry in
+  # No job of the release run restores an Actions cache (ci.yml has none: Bun
+  # and the gate's browser are downloaded and checked against pinned
+  # SHA-256s). An Actions cache entry in
   # the default branch's scope is writable by code in any run there (a push
   # to main and its dependencies, the Pullfrog agent's workflow_dispatch) —
   # GITHUB_TOKEN permissions do not limit cache writes — and tag runs read
@@ -62,14 +62,12 @@ jobs:
   # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
   # added; the other is that it measured slower than a cold install.)
-  # apps/cli/test/privileged-workflows.test.ts keeps every privileged workflow
-  # free of Actions caches
+  # apps/cli/test/workflows-supply-chain.test.ts keeps every workflow free of
+  # Actions caches
   verify:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
-    with:
-      skip-caches: true
 
   # The single source of truth for the version is apps/cli/package.json
   # (imported by cli.ts). If it does not match the tag, stop here (do not
@@ -189,7 +187,7 @@ jobs:
       # publish jobs recompute this digest — every file's path and SHA-256 —
       # over what they downloaded and refuse a mismatch, and a compromised
       # verify / smoke job cannot swap what ships. The same digest function
-      # runs there (pinned identical by apps/cli/test/privileged-workflows.test.ts)
+      # runs there (pinned identical by apps/cli/test/workflows-supply-chain.test.ts)
       - name: Digest the artifacts (bound to this job's outputs)
         id: digests
         run: |
@@ -472,7 +470,7 @@ jobs:
       #   rm -f shasums.txt
       #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
       #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
-      # Pinned by apps/cli/test/privileged-workflows.test.ts
+      # Pinned by apps/cli/test/workflows-supply-chain.test.ts
       - name: Install Node.js (pinned SHA-256, no cache)
         env:
           NODE_VERSION: "24.21.0"

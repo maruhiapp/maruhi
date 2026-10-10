@@ -5,7 +5,7 @@
 //
 // Bumping Bun changes BUN_RUNTIME_VERSION and every sha256 here together with
 // `.bun-version` and scripts/install-bun.sh (whose linux-x64 pin is the same
-// zip; apps/cli/test/privileged-workflows.test.ts fails until all of them
+// zip; apps/cli/test/workflows-supply-chain.test.ts fails until all of them
 // agree). Each sha256 is the line for `zip` in the release's clearsigned
 // SHASUMS256.txt.asc, checked by the gpgv procedure in that script's header,
 // then picked with:

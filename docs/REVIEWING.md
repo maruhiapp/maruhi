@@ -196,14 +196,15 @@ What exists today:
   `apps/cli/scripts/build-binaries.ts`): binaries for five targets plus
   `checksums.txt`, smoke-tested on real runners. Third-party actions are
   pinned by commit SHA, Bun by `.bun-version` (CI installs the official zip
-  verified against a SHA-256 pinned in `scripts/install-bun.sh`, never from
-  an Actions cache; the dev-environment setup uses the same script; the npm
-  publish job's Node.js is pinned the
-  same way in `release.yml`), dependencies by
-  `bun install --frozen-lockfile`. The Bun runtime embedded in each of the
-  five binaries is the official release zip for that target, verified
-  against a SHA-256 pinned in `apps/cli/scripts/bun-runtimes.ts` and passed
-  to `bun build --compile-executable-path`.
+  verified against a SHA-256 pinned in `scripts/install-bun.sh`; the
+  dev-environment setup uses the same script; the npm publish job's Node.js
+  is pinned the same way in `release.yml`, and so is the Chrome Headless
+  Shell the gate's browser tests run, in `ci.yml`), dependencies by
+  `bun install --frozen-lockfile`. No workflow restores an Actions cache.
+  The Bun runtime embedded in each of the five binaries is the official
+  release zip for that target, verified against a SHA-256 pinned in
+  `apps/cli/scripts/bun-runtimes.ts` and passed to
+  `bun build --compile-executable-path`.
 - The publish jobs refuse an artifact unless its digest (every file's path
   and SHA-256) matches the one the build job set as a job output. Any job of
   the release run can overwrite an artifact, but only the build job can set

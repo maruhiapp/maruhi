@@ -52,7 +52,7 @@ jobs:
 
       # This job carries the operator's Cloudflare Account API token (D1 + R2
       # edit), so it restores no Actions cache (pinned by
-      # apps/cli/test/privileged-workflows.test.ts): Bun comes from the
+      # apps/cli/test/workflows-supply-chain.test.ts): Bun comes from the
       # SHA-256-pinned zip
       - uses: ./.github/actions/install-bun
 

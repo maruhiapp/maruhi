@@ -14,7 +14,7 @@
 # Bumping Bun changes `.bun-version`, the three values below, and the release
 # runtimes in apps/cli/scripts/bun-runtimes.ts together (the script fails
 # closed on a mismatch, and apps/cli/test/dev-setup.test.ts and
-# privileged-workflows.test.ts fail first in `bun run check`). The SHA-256
+# workflows-supply-chain.test.ts fail first in `bun run check`). The SHA-256
 # lines come from the release's clearsigned SHASUMS256.txt.asc, signed by the
 # Robobun key F3DCC08A8572C0749B3E18888EAB4D40A7B22B59. Check it with gpgv
 # against a keyring holding that key only, and require that fingerprint in

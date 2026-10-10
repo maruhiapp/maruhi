@@ -1,25 +1,31 @@
-// Pins the privileged workflows' supply-chain invariants mechanically, so a
-// later edit cannot undo one unnoticed. The rule behind them: an executable
-// that runs in a privileged run comes either from the commit being run or
-// from a fetch verified against a digest pinned in that commit, and a
-// release publishes only what its build job produced.
+// Pins the workflows' supply-chain invariants mechanically, so a later edit
+// cannot undo one unnoticed. The rule behind them: an executable that runs in
+// a workflow comes either from the commit being run or from a fetch verified
+// against a digest pinned in that commit, no run reads a store another run
+// can write, and a release publishes only what its build job produced.
 //
 // An Actions cache entry in the default branch's scope is writable by code
 // in any run there (a push to main and its dependencies, the Pullfrog
 // agent's workflow_dispatch) — GITHUB_TOKEN permissions do not limit cache
-// writes — and tag-triggered release runs read that scope. An executable
-// restored from it would run with the release run's artifact-overwrite token
-// or ops-backup's Cloudflare token. What is pinned:
+// writes — and PR, push and tag-triggered release runs all read that scope.
+// actions/cache restores by untarring the entry with absolute paths allowed
+// (`tar -P`) and no member filter, so whatever its key and path, one entry
+// can rewrite the checkout, node_modules, build output or $HOME before they
+// run: falsified gate results on PR / push runs, and the release run's
+// artifact-overwrite token or ops-backup's Cloudflare token on privileged
+// ones. Checking the file a step meant to restore does not help. What is
+// pinned:
 //   1. every workflow is classified, and the unprivileged ones hold no secret
 //      and no write permission (a new privileged workflow cannot slip in as
 //      unprivileged)
-//   2. privileged workflows use only allowlisted actions (default-deny: an
-//      action with an implicit cache — setup-go, setup-python's `cache`,
-//      setup-node v5's package-manager cache — fails here first), no cache
-//      input, no cross-run artifact download, and no job or service
-//      container
-//   3. ci.yml, which release.yml runs as its gate, gates each cache step on
-//      `skip-caches`, and release.yml passes `skip-caches: true`
+//   2. every workflow uses only allowlisted, SHA-pinned or local actions and
+//      no reusable workflow but ci.yml (called with no inputs) — default-deny:
+//      actions/cache, and any action with an implicit cache (setup-go,
+//      setup-python's `cache`, setup-node v5's package-manager cache), fails
+//      here first — with no cache input, and the local actions run shell
+//      steps only
+//   3. privileged workflows download artifacts from their own run only, and
+//      run no job or service container
 //   4. Bun comes only from .github/actions/install-bun, whose pinned version
 //      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
 //      runs only a pinned Node.js; both check the pinned SHA-256 before
@@ -42,13 +48,21 @@
 //      their steps, no `defaults` or extra `env` (BASH_ENV, GH_HOST) above
 //      them, smoke's soft-fail limited to the keychain probe, and artifacts
 //      kept as long as a re-run can wait for its approval
+//   9. ci.yml's browser is the Chrome Headless Shell version the pinned
+//      Playwright expects (bun.lock resolves one Playwright), downloaded and
+//      checked against a pinned SHA-256 before it is unpacked. Any other
+//      Playwright browser download fails: ci.yml points PLAYWRIGHT_DOWNLOAD_HOST
+//      at an unresolvable host and nothing else sets a PLAYWRIGHT_ variable,
+//      and no workflow, local action or package.json script (`pre`/`post`
+//      hooks included) runs `playwright install` in any spelling
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -112,10 +126,14 @@ const loadWorkflow = (file: string) => {
 
 /** Hold a secret, a write permission, or produce what gets published. */
 const PRIVILEGED = ["ops-backup.yml", "pullfrog.yml", "release.yml"];
-/** Read-only runs with no secret. ci.yml is also release.yml's gate (see 3). */
+/** Read-only runs with no secret. ci.yml is also release.yml's gate. */
 const UNPRIVILEGED = ["ci.yml", "english-pr.yml", "installer.yml"];
 
 const INSTALL_BUN = "./.github/actions/install-bun";
+/** Actions in this repository, allowed when they run shell steps only (checked below). */
+const LOCAL_ACTIONS = [INSTALL_BUN, "./actions/setup-maruhi"];
+const loadLocalAction = (uses: string) =>
+  parseYaml(read(`${uses.slice(2)}/action.yml`)) as { runs: { using: string; steps: Step[] } };
 
 /** Actions with no cache feature at all: any commit, pinned by its 40-hex SHA. */
 const NO_CACHE_ACTIONS = [
@@ -129,13 +147,12 @@ const NO_CACHE_ACTIONS = [
  * package-manager cache on by default, and it downloads Node unverified on a tool-cache miss.
  */
 const REVIEWED_ACTIONS = ["pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90"];
-const CACHE_ACTIONS = /^actions\/cache(\/restore|\/save)?@/;
 
 /** Why a `uses:` step could restore an Actions cache, or undefined when it cannot. */
 function cacheRisk(step: Step): string | undefined {
   const uses = step.uses ?? "";
   const allowed =
-    uses === INSTALL_BUN ||
+    LOCAL_ACTIONS.includes(uses) ||
     REVIEWED_ACTIONS.includes(uses) ||
     NO_CACHE_ACTIONS.some((action) => new RegExp(`^${action}@[0-9a-f]{40}$`).test(uses));
   if (!allowed) return `${uses} is not an allowlisted, SHA-pinned action`;
@@ -157,6 +174,29 @@ function expectVerifiedBeforeRun(run: string, unpack: string, firstRun: string):
 const stepsOf = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs).flatMap((job) => [...(job.steps ?? [])]);
 
+/** Every PLAYWRIGHT_ variable a workflow sets in an env block or names in a step's script. */
+function playwrightSettings(file: string): string[] {
+  const { env, jobs } = loadWorkflow(file).workflow;
+  const keys = (block: Readonly<Record<string, unknown>> | undefined, where: string) =>
+    Object.keys(block ?? {})
+      .filter((key) => key.startsWith("PLAYWRIGHT_"))
+      .map((key) => `${file} ${where}: ${key}`);
+  return [
+    ...keys(env, "env"),
+    ...Object.entries(jobs).flatMap(([name, job]) => [
+      ...keys(job.env, `${name} env`),
+      ...(job.steps ?? []).flatMap((step) => {
+        const where = `${name} ${step.name ?? step.uses}`;
+        const named = step.run?.match(/PLAYWRIGHT_\w+/g) ?? [];
+        return [
+          ...keys(step.env, `${where} env`),
+          ...named.map((key) => `${file} ${where} run: ${key}`),
+        ];
+      }),
+    ]),
+  ];
+}
+
 /** Every `permissions:` value granting write, at the workflow or a job level. */
 function writeGrants(workflow: Workflow): string[] {
   const grants: string[] = [];
@@ -174,7 +214,7 @@ function writeGrants(workflow: Workflow): string[] {
   return grants;
 }
 
-describe("Actions caches stay out of privileged workflows", () => {
+describe("No workflow restores an Actions cache or runs an unpinned download", () => {
   it("classifies every workflow, and the unprivileged ones hold no secret and no write permission", () => {
     const files = readdirSync(join(repoRoot, WORKFLOWS_DIR)).filter((f) => /\.ya?ml$/.test(f));
     expect(files.toSorted()).toEqual([...PRIVILEGED, ...UNPRIVILEGED].toSorted());
@@ -187,15 +227,36 @@ describe("Actions caches stay out of privileged workflows", () => {
     }
   });
 
-  describe.each(PRIVILEGED)("%s", (file) => {
-    const { workflow } = loadWorkflow(file);
-
-    it("uses only actions that restore no Actions cache", () => {
-      const risks = stepsOf(workflow)
+  it.each([...PRIVILEGED, ...UNPRIVILEGED])(
+    "%s uses only actions that restore no Actions cache",
+    (file) => {
+      const risks = stepsOf(loadWorkflow(file).workflow)
         .filter((step) => step.uses !== undefined)
         .map(cacheRisk);
       expect(risks.filter((risk) => risk !== undefined)).toEqual([]);
-    });
+    },
+  );
+
+  it.each([...PRIVILEGED, ...UNPRIVILEGED])(
+    "%s calls no reusable workflow except ci.yml, with no inputs",
+    (file) => {
+      // A reusable workflow elsewhere would bring its own steps, caches included
+      for (const job of Object.values(loadWorkflow(file).workflow.jobs)) {
+        if (job.uses === undefined) continue;
+        expect(job.uses).toBe("./.github/workflows/ci.yml");
+        expect(job.with).toBeUndefined();
+      }
+    },
+  );
+
+  it.each(LOCAL_ACTIONS)("%s runs shell steps only", (uses) => {
+    const action = loadLocalAction(uses);
+    expect(action.runs.using).toBe("composite");
+    expect(action.runs.steps.filter((s) => s.uses !== undefined)).toEqual([]);
+  });
+
+  describe.each(PRIVILEGED)("%s", (file) => {
+    const { workflow } = loadWorkflow(file);
 
     it("runs no job in a container and starts no service container", () => {
       // An image pulled by tag is another unverified executable; none is needed today
@@ -213,36 +274,6 @@ describe("Actions caches stay out of privileged workflows", () => {
         expect(Object.keys(step.with ?? {})).not.toContain("run-id");
         expect(Object.keys(step.with ?? {})).not.toContain("github-token");
       }
-    });
-
-    it("calls no reusable workflow except ci.yml with skip-caches: true", () => {
-      for (const job of Object.values(workflow.jobs)) {
-        if (job.uses === undefined) continue;
-        expect(job.uses).toBe("./.github/workflows/ci.yml");
-        expect(job.with).toEqual({ "skip-caches": true });
-      }
-    });
-  });
-
-  describe("ci.yml (also release.yml's gate)", () => {
-    const { workflow } = loadWorkflow("ci.yml");
-
-    it("declares skip-caches as a boolean input defaulting to false", () => {
-      const call = workflow.on["workflow_call"] as { inputs: Record<string, unknown> };
-      expect(call.inputs["skip-caches"]).toEqual({ type: "boolean", default: false });
-    });
-
-    it("gates every cache step on skip-caches and uses no other action with a cache", () => {
-      const cacheSteps = stepsOf(workflow).filter((s) => CACHE_ACTIONS.test(s.uses ?? ""));
-      expect(cacheSteps.length).toBeGreaterThan(0);
-      // The gate is the whole condition or its first conjunct (no top-level `||`)
-      for (const step of cacheSteps) {
-        expect(step.if, step.name).toMatch(/^\$\{\{ !inputs\.skip-caches( && [^|]+)? \}\}$/);
-      }
-      const risks = stepsOf(workflow)
-        .filter((step) => step.uses !== undefined && !CACHE_ACTIONS.test(step.uses))
-        .map(cacheRisk);
-      expect(risks.filter((risk) => risk !== undefined)).toEqual([]);
     });
   });
 
@@ -321,6 +352,122 @@ describe("Actions caches stay out of privileged workflows", () => {
       );
       expect(install).toBeGreaterThan(-1);
       expect(firstUse).toBeGreaterThan(install);
+    });
+  });
+  describe("ci.yml runs only the pinned, verified Chrome Headless Shell", () => {
+    const steps = loadWorkflow("ci.yml").workflow.jobs["check"]?.steps ?? [];
+    const install = steps.findIndex(
+      (s) => s.name === "Install Chrome Headless Shell (pinned SHA-256, no cache)",
+    );
+    const step = steps[install];
+    const run = step?.run ?? "";
+    const webPin = (
+      JSON.parse(read("apps/web/package.json")) as { devDependencies: Record<string, string> }
+    ).devDependencies["playwright"];
+
+    it("pins the headless-shell version the pinned Playwright expects, with a SHA-256", () => {
+      const sitePin = (
+        JSON.parse(read("apps/site/package.json")) as { devDependencies: Record<string, string> }
+      ).devDependencies["playwright"];
+      // Steps 9 / 9b / 11 share the one browser
+      expect(sitePin, "apps/site and apps/web pin the same playwright").toBe(webPin);
+      const fromWeb = createRequire(join(repoRoot, "apps/web/package.json"));
+      const corePackage = createRequire(fromWeb.resolve("playwright/package.json")).resolve(
+        "playwright-core/package.json",
+      );
+      const core = JSON.parse(readFileSync(corePackage, "utf8")) as { version: string };
+      expect(core.version).toBe(webPin);
+      const { browsers } = JSON.parse(
+        readFileSync(join(dirname(corePackage), "browsers.json"), "utf8"),
+      ) as { browsers: { name: string; browserVersion?: string }[] };
+      const expected = browsers.find((b) => b.name === "chromium-headless-shell")?.browserVersion;
+      expect(expected).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+      expect(
+        step?.env?.["CHROME_HEADLESS_SHELL_VERSION"],
+        `playwright ${core.version} expects headless shell ${expected}: update the version and SHA-256 together (procedure at the install step)`,
+      ).toBe(expected);
+      expect(step?.env?.["CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("resolves one Playwright everywhere, so @vitest/browser-playwright drives the same one", () => {
+      const lock = read("bun.lock");
+      for (const name of ["playwright", "playwright-core"]) {
+        const versions = new Set(
+          [...lock.matchAll(new RegExp(`"${name}@([^"]+)"`, "g"))].map((m) => m[1]),
+        );
+        expect([...versions], name).toEqual([webPin]);
+      }
+    });
+
+    it("downloads the archive and checks it against the pin before unpacking it", () => {
+      expect(install).toBeGreaterThan(-1);
+      expect(run).toContain(
+        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip",
+      );
+      expectVerifiedBeforeRun(run, "unzip ", "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=");
+      // Unconditional, at the top level of the script, and exits on its own (not through `set -e`)
+      const lines = run.split("\n");
+      const check = lines.indexOf(
+        'if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then',
+      );
+      expect(check).toBeGreaterThan(-1);
+      expect(lines.slice(check + 1, check + 3)).toEqual(["  exit 1", "fi"]);
+      // No enclosing block (if / case / loop / group / subshell) opened before it
+      let depth = 0;
+      for (const line of lines.slice(0, check)) {
+        if (/^\s*(if|case|for|while|until)\b|[{(]\s*$/.test(line)) depth += 1;
+        if (/^\s*(fi|esac|done|\}|\))(\s|;|$)/.test(line)) depth -= 1;
+      }
+      expect(depth, "the check is not nested in a block").toBe(0);
+    });
+
+    it("sends every other Playwright browser download to an unresolvable host", () => {
+      // playwright-core 1.64 replaces all its mirrors (Chrome for Testing's included) with this
+      // host, so `playwright install` fails before unpacking, whoever runs it and however
+      const { workflow } = loadWorkflow("ci.yml");
+      expect(workflow.env?.["PLAYWRIGHT_DOWNLOAD_HOST"]).toBe(
+        "https://playwright-download.invalid",
+      );
+      // ... and nothing overrides it (a PLAYWRIGHT_<browser>_DOWNLOAD_HOST would win over it): the
+      // only other PLAYWRIGHT_ variable is the verified executable path the install step exports
+      expect([...PRIVILEGED, ...UNPRIVILEGED].flatMap(playwrightSettings)).toEqual([
+        "ci.yml env: PLAYWRIGHT_DOWNLOAD_HOST",
+        `ci.yml check ${step?.name} run: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`,
+      ]);
+    });
+
+    it("installs the browser before every browser step", () => {
+      const browserSteps = steps.flatMap((s, i) =>
+        /\be2e\b|test:browser/.test(s.run ?? "") ? [i] : [],
+      );
+      expect(browserSteps.length).toBeGreaterThan(0);
+      for (const i of browserSteps) expect(i, steps[i]?.name).toBeGreaterThan(install);
+    });
+
+    it("has no workflow, local action or package.json script run playwright install", () => {
+      const installs = (commands: readonly string[]) =>
+        commands.filter((c) => /playwright(-core)?(@\S+)?\s+install|cli\.js\s+install/.test(c));
+      for (const file of [...PRIVILEGED, ...UNPRIVILEGED]) {
+        const runs = stepsOf(loadWorkflow(file).workflow).map((s) => s.run ?? "");
+        expect(installs(runs), file).toEqual([]);
+      }
+      for (const uses of LOCAL_ACTIONS) {
+        expect(installs(loadLocalAction(uses).runs.steps.map((s) => s.run ?? "")), uses).toEqual(
+          [],
+        );
+      }
+      // bun runs `pre<name>` / `post<name>` around every script, so every script counts
+      const manifests = spawnSync("git", ["ls-files", "--", "*package.json"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      })
+        .stdout.split("\n")
+        .filter((f) => f !== "");
+      expect(manifests).toContain("apps/web/package.json");
+      for (const manifest of manifests) {
+        const { scripts = {} } = JSON.parse(read(manifest)) as { scripts?: Record<string, string> };
+        expect(installs(Object.values(scripts)), manifest).toEqual([]);
+      }
     });
   });
 });

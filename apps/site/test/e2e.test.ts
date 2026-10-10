@@ -105,9 +105,9 @@ beforeAll(async () => {
       cause,
     });
   }
-  // In environments that cannot download a browser (Claude Code on the web
-  // etc.), the preinstalled Chromium's path arrives via
-  // PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+  // CI (the SHA-256-verified headless shell, ci.yml) and environments that
+  // cannot download a browser (Claude Code on the web etc.) pass the
+  // browser's path via PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
   const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
   browser = await chromium.launch(executablePath ? { executablePath } : {});
 });
