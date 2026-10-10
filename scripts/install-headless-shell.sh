@@ -4,9 +4,10 @@
 # path of its executable (the value for PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH)
 # as its only line on stdout. The single browser installer for every
 # environment this repository sets up that downloads one: CI (ci.yml, before
-# the Playwright steps) and the Cursor Cloud startup install script. Claude
-# Code on the web downloads none: its SessionStart hook points the tests at
-# that environment's preinstalled build. It does not edit shell profiles:
+# the Playwright steps) and the Cursor Cloud setup
+# (scripts/dev-setup-cursor.sh). Claude Code on the web downloads none: its
+# SessionStart hook points the tests at that environment's preinstalled
+# build. It does not edit shell profiles:
 # each caller sets PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH its own way
 # (GITHUB_ENV, ~/.bashrc).
 #
@@ -63,7 +64,12 @@ fi
 install_root="${HOME}/.cache/chrome-headless-shell"
 tree="chrome-headless-shell-linux64"
 mkdir -p "${install_root}"
-# Next to the install, so the verified tree is moved in by a rename
+# One install at a time: the swap below is two renames, which another run
+# must not interleave with. Held until the script exits
+exec 9>"${install_root}/.lock"
+flock 9 || die "could not lock ${install_root}/.lock"
+# Next to the install (the same filesystem), so the verified tree is moved in
+# by a rename, never copied
 work="$(mktemp -d "${install_root}/.partial.XXXXXX")"
 trap 'rm -rf "${work}"' EXIT
 zip="${work}/${tree}.zip"
@@ -81,9 +87,10 @@ if [ ! -x "${work}/new/${tree}/chrome-headless-shell" ]; then
   die "${tree}.zip has no ${tree}/chrome-headless-shell; nothing was installed"
 fi
 
-# Replace an older install only with a complete new one (the trap removes it)
+# Replace an older install only with a complete new one (the trap removes
+# it). -T: never move the tree into an existing directory
 if [ -e "${install_root}/${tree}" ]; then
-  mv "${install_root}/${tree}" "${work}/old"
+  mv -T "${install_root}/${tree}" "${work}/old"
 fi
-mv "${work}/new/${tree}" "${install_root}/${tree}"
+mv -T "${work}/new/${tree}" "${install_root}/${tree}"
 echo "${install_root}/${tree}/chrome-headless-shell"

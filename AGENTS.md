@@ -20,9 +20,10 @@ talking with the owner directly, and in the files listed in
 - The hook writes `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` into the session
   environment, and `apps/web/test/e2e.test.ts`, `apps/web/test/screenshots.ts`,
   `apps/site/test/e2e.test.ts`, and `packages/crypto/vitest.browser.config.ts`
-  pass it as Chromium's `executablePath` (when unset they fall back to the
-  Playwright-managed browser; CI and Cursor Cloud set it to the SHA-256-verified
-  headless shell `scripts/install-headless-shell.sh` installs)
+  pass it as Chromium's `executablePath`. CI and Cursor Cloud set it to the
+  SHA-256-verified headless shell `scripts/install-headless-shell.sh` installs.
+  Unset, they fall back to Playwright's own browser directory, which those two
+  environments keep empty, so a shell without the variable fails to launch
 - Do not run `bunx playwright install` (it conflicts with the preinstalled build
   and consumes the disk quota). The hook also sets `PLAYWRIGHT_DOWNLOAD_HOST`
   to an unresolvable host, so any Playwright browser download fails
@@ -31,24 +32,23 @@ talking with the owner directly, and in the files listed in
 
 ## Cursor Cloud specific instructions
 
-- Bun is installed to `~/.bun/bin` per `.bun-version` (strict pin; PATH comes
-  via `~/.bashrc`). The startup install script syncs the version, runs
-  `bun install`, and installs the browser. It must install Bun with
-  `bash scripts/install-bun.sh`, which checks the release zip against the
-  SHA-256 pinned there (the pin CI uses) before running it — never
-  `curl https://bun.sh/install | bash`, which runs an unverified script. The
-  script edits no shell profile, so the startup script also adds
-  `export PATH="$HOME/.bun/bin:$PATH"` to `~/.bashrc` when it is missing
-- The browser is the Chrome Headless Shell from
-  `bash scripts/install-headless-shell.sh` (the archive checked against the
-  SHA-256 pinned there, the pin CI uses), installed into
-  `~/.cache/chrome-headless-shell` — never `bunx playwright install`, which
-  runs an unverified download. The startup script adds
-  `export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$HOME/.cache/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell"`
-  and `export PLAYWRIGHT_DOWNLOAD_HOST="https://playwright-download.invalid"`
-  (any Playwright browser download fails, as in CI) to `~/.bashrc` when they
-  are missing. The headless shell cannot open a window: a headful session
-  (screen recordings) launches the image's Chrome with
+- The environment's install command is only `bash scripts/dev-setup-cursor.sh`,
+  so setup changes ship in a reviewed pull request, not a dashboard edit. The
+  script installs Bun with `scripts/install-bun.sh` and the tests' browser (the
+  Chrome Headless Shell) with `scripts/install-headless-shell.sh` — each
+  checks its download against the SHA-256 pinned there, the pins CI uses —
+  runs `bun install --frozen-lockfile`, and removes Playwright's own browser
+  directory `~/.cache/ms-playwright`. Never install with
+  `curl https://bun.sh/install | bash` or `bunx playwright install`: both run
+  unverified downloads
+- Agent shells get `~/.bun/bin` on PATH, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
+  (the headless shell under `~/.cache/chrome-headless-shell`), and a
+  `PLAYWRIGHT_DOWNLOAD_HOST` that makes any Playwright browser download fail,
+  as in CI, through lines the script adds to `~/.bashrc`. A shell that does
+  not read `~/.bashrc` (a plain `bash -c`) has none of them: browser tests
+  there fail to launch instead of finding an unverified browser
+- The headless shell cannot open a window: a headful session (screen
+  recordings) launches the image's Chrome with
   `chromium.launch({ channel: "chrome", headless: false })` instead of
   `executablePath`
 - The quality gate is `bun run check` (see root `package.json`), the same order
