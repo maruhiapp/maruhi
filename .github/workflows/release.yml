@@ -58,7 +58,7 @@ jobs:
   # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
   # added; the other is that it measured slower than a cold install.)
-  # apps/cli/test/workflow-caches.test.ts keeps every privileged workflow
+  # apps/cli/test/privileged-workflows.test.ts keeps every privileged workflow
   # free of Actions caches
   verify:
     permissions:
@@ -344,7 +344,7 @@ jobs:
       #   rm -f shasums.txt
       #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
       #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
-      # Pinned by apps/cli/test/workflow-caches.test.ts
+      # Pinned by apps/cli/test/privileged-workflows.test.ts
       - name: Install Node.js (pinned SHA-256, no cache)
         env:
           NODE_VERSION: "24.21.0"
