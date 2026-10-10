@@ -244,6 +244,9 @@ files carry no project ID either.
 Verification: the restore RPC returns `{ chainHeadSeq, chainHeadHashHex, auditMaxSeq,
 auditHeadHashHex, rowCounts }`, which is copied to the result file. The operator cross-checks it
 against the backup's trailer (an automated test pins the same cross-check against a real DO — §6).
+At or above the AUTH_SPEC §12-8 rejection threshold the restore stores no further audit heads
+(it still hashes and checks every row), and the reported `auditHeadHashHex` is the head it
+computed in memory (2026-10-10 Sc-6).
 
 ### 2-F. Making bindings optional (without breaking the self-host path)
 

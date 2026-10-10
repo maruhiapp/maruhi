@@ -331,8 +331,10 @@ One read is guarded as if it were a write: fetching the **audit head**
 (`GET /projects/:id/audit-head`, and checkpoints that notarize it) lazily
 materializes a hash column proportional to the audit log, so it is refused above
 9 GB only while that column lags behind the log; once current, it reads freely.
-An export brings the same column current and is not refused for it: it is
-the way out with the history.
+An export is never refused for it: it brings the column current only below
+9 GB (checked before each step of about 2 MB) and otherwise leaves it as it
+is, with `null` as the audit head in its trailer — the destination derives
+it.
 
 The band between 9 GB and the 10 GB floor is a **grace period for moving
 out**, not a permanent read-only state. At the floor every read that appends an
@@ -529,6 +531,9 @@ The trailer's `auditHeadHashHex` is `null` when the snapshot was taken before
 the audit-head column had been materialized; in that case compare the restored
 value with the live project's `GET /projects/:id/audit-head` (or recompute it
 from the audit rows — `maruhi audit reconcile` does the same computation).
+A restore stores the derived audit heads only while the project is below the
+9 GB storage guard; past it, every row is still checked and the result still
+reports the audit head, but no further heads are stored (AUTH_SPEC §11-7).
 The snapshot's schema version must match the deployed server —
 deploy the matching version first if it does not.
 
@@ -694,6 +699,10 @@ maruhi mirror mark --server https://mirror.example.com --project <project-id> --
 
 From this point the project on your deployment refuses writes
 (`Forbidden (mirror-read-only)`) and shows the mark in `maruhi mirror status`.
+
+A replica is staged beside the mirror's live copy until it commits, so the
+mirror needs about twice the project's size: under the 9 GB storage guard
+("Tenant quotas"), a project above about 4.5 GB cannot be mirrored.
 
 **2. Keep it current** — any admin runs, by hand or from a cron (always
 from the primary: mirrors form a star, since a mirror that itself syncs
