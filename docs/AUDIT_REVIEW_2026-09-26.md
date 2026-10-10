@@ -22,6 +22,7 @@
 | **Owner decision** | True, but requires a decision on operational policy, public contract, dependency additions, etc. |
 | **Deferred** | True, but the change's impact is large relative to the effect (fine to start if the judgment changes) |
 | **Wrong** | The claim does not hold after cross-checking (reason noted) |
+| **Won't fix** | True, but measured to bring no benefit, so it is closed without a change (measurement noted) |
 
 ## Overall assessment
 
@@ -76,7 +77,7 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 | A-5 | Low | **Fixed (PR #203 `e68b75b`)** | The sign-in, loading, and failure screens had no main landmark |
 | A-6 | Low | **Fixed (PR #203 `03b8b02`)** | Every row's Revoke button had the same spoken name |
 | A-7 | Low | **Fixed (PR #203 `f10aeec`)** | The Variable names toggle had no `aria-expanded` / `aria-controls` |
-| A-8 | Low | Deferred | On the LP's even steps the visual order and DOM order are reversed. Each step's body is self-contained, so the impact is minor. The report's "make all the figures aria-hidden" is unacceptable because it would hide step 3's entity list |
+| A-8 | Low | **Fixed (PR #380 `3482898`)** | On the LP's even steps the visual order and DOM order are reversed. Each step's body is self-contained, so the impact is minor. The report's "make all the figures aria-hidden" is unacceptable because it would hide step 3's entity list → the alternating layout is removed: every step shows its text before its figure, so the DOM order is the visual order. The site e2e pins it at 1280 px (two columns) and 390 px (stacked) |
 | A-9 | Low | **Fixed (PR #203 `d4c38fa`)** | The two terminal examples on the LP handled labels inconsistently |
 
 ## Maintainability
@@ -85,9 +86,9 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 |---|---|---|---|
 | M-1 | High | **Fixed (PR #203 `2085907`)** | `known-fingerprints.ts` folded non-ENOENT read failures (EACCES / EISDIR / EIO) into "none", so `record` overwrote the ledger with an empty one, losing verified fingerprints, and `lookup` silenced the change warning → only ENOENT is "none". With a regression test |
 | M-2 | Medium | Needs human review | §6.2's voting/quorum logic is triple-implemented across crypto / CLI (`approval-rules.ts`) / web (`chain-view.ts`). Consolidating requires exporting it from `packages/crypto`. The alternative — "verify the 3 implementations on the same inputs with shared golden vectors" — is also a design decision (the same story as A-F1) |
-| M-3 | Medium | Deferred | `isRecord` is duplicated in 11 files with 2 meanings (whether it accepts arrays), and `parseJsonRecord` is used in only 3 places. Unifying inside the CLI is possible, but the crypto and web copies cross package and review boundaries |
+| M-3 | Medium | Partially fixed (PR #378 `55e4956`) / the rest needs human review (crypto) or a standalone PR (web) | `isRecord` is duplicated in 11 files with 2 meanings (whether it accepts arrays), and `parseJsonRecord` is used in only 3 places. Unifying inside the CLI is possible, but the crypto and web copies cross package and review boundaries → **Fixed in `apps/cli`**: the dependency-free `json-record-pure.ts` (re-exported by `json-record.ts`) holds the one array-rejecting `isRecord` and `parseJsonRecord`. `keychain.ts`'s array-accepting copy and `audit.ts`'s `isJsonRecord` use `isRecord` (`keychain.ts`'s single array-sensitive case is an explicit `Array.isArray` branch), `passkey-listener.ts` uses `parseJsonRecord`, and `schema-snapshot.ts`'s inline `recordOf` guard uses `isRecord`. **Remaining**: `packages/crypto`'s `chain-verify.ts` keeps an array-accepting copy in the chain shape checks — the second meaning this finding names — so whether arrays should pass there is a crypto question (work unit 2). `apps/web` keeps two identical array-rejecting copies (`chain-view-state.ts`'s `isRecord`, `audit-read.ts`'s `isJsonRecord`) that can merge inside the app (work unit 4). A single helper shared across packages is not the goal: crypto imports no workspace package, and the web bundle cannot take `@maruhi/core` values (Effect fence) |
 | M-4 | Medium | **Fixed (PR #251 `0f0ea59`)** | `makeRootCommand` is a single ~1,500-line function (`effect-cli.ts` is 5,037 lines) → `effect-cli.ts` was dismantled into `commands/` + `cli-runner.ts`; each group's `make*Commands` lives with its domain and `makeRootCommand` in `commands/index.ts` only composes them |
-| M-5 | Medium | Deferred (partly wrong) | `data-http.ts`'s `toMetaStatementInput` declares the §12-2 statement shape three times in handwritten types. **Report error**: "a different statement silently gets verified" is wrong — a dropped field changes the signed statement, and client-side verification fails closed |
+| M-5 | Medium | **Fixed (PR #379 `42f2601`)** (partly wrong) | `data-http.ts`'s `toMetaStatementInput` declares the §12-2 statement shape three times in handwritten types. **Report error**: "a different statement silently gets verified" is wrong — a dropped field changes the signed statement, and client-side verification fails closed → all three shapes (`MetaStatementInput`, `WireMetaStatement`, and the distributed statement value types) now derive from api-schema. `toMetaStatementInput` still copies the stored fields by explicit name, so the wire-declared coordinates of the request are never forwarded (AUTH_SPEC §12-5); `apps/server/test/data-http-converters.test.ts` pins it |
 | M-6 | Low | Needs human review | crypto's byte-length constants (`DEK_BYTES` etc.) are redeclared in several files (`FINGERPRINT_BYTES` is in 3 files, not the report's 2) |
 | M-7 | Low | **Fixed (PR #203 `dcdb9ca`)** (partly wrong) | Duplicated assembly of the manifest issuance material → consolidated into `manifestIssueBaseOf`. **Report error**: the duplication is not CLI↔server (the two ends of the wire) but inside the CLI, `push.ts` ↔ `apps/cli/src/schema.ts`. `apps/server/src/schema.ts` does not exist |
 | M-8 | Low | **Fixed (PR #249 `8d587f4`)** | `repos.ts` (2,017 lines) hosts 9 repository factories → split into per-domain repository files under `db.package/`; `repos.ts` now only assembles `makeDbServices` |
@@ -118,7 +119,7 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 | ID | Severity | Status | Summary |
 |---|---|---|---|
 | T-1 | Medium | **Fixed (PR #203 `83b6055` / `b06e044`)** | `maruhi token list / revoke` had no tests, and `device revoke --revoke-token` only exercised the 403 path |
-| T-2 | Low | Deferred | The server tests use `isolate: false` with shared state and do not enforce order independence (the file count is 63, not the report's 56). `sequence.shuffle` (per file) could enforce it, but first confirm a shuffled run passes |
+| T-2 | Low | **Fixed (PR #382 `eda5b1e`)** | The server tests use `isolate: false` with shared state and do not enforce order independence (the file count is 63, not the report's 56). `sequence.shuffle` (per file) could enforce it, but first confirm a shuffled run passes → the root `vitest.config.ts` sets `sequence.shuffle.files` (Vitest 4.1.x takes file order from the root sequencer only), so root and server runs use a random file order. The seed is printed; `bun run test -- --sequence.seed=N` replays the order (add `--maxWorkers=1` if a failure still does not reproduce — the seed fixes the queue order, not which files share a worker). Cost: the CI test step took 389 s (PR) / ~440 s (first `main` run) against a noisy 195–334 s baseline |
 | T-3 | Low | Owner decision | No test drives the real CLI against a real server (harness design needed) |
 | T-4 | Low | Owner decision | No coverage measurement (requires adding a `@vitest/coverage-*` dependency; the workerd pool needs istanbul) |
 
@@ -135,22 +136,28 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 | C-7 | Low | Owner decision | No Dependabot and no scheduled CI run (tension with the "updates happen as deliberate standalone PRs" policy) |
 | C-8 | Low | Owner decision | No CODEOWNERS and no PR template, so "crypto changes require human review" is not mechanically enforced (needs assignee handles) |
 | C-9 | Low | **Fixed (PR #203 `a7b6dfc`)** | The Playwright cache key depended only on the apps/web pin → if the apps/web and apps/site pins diverge, stop at the resolve step (the actual danger was that the install step only gets the web version, not the cache key) |
-| C-10 | Low | Deferred | No caching of `bun install` (efficiency only) |
+| C-10 | Low | **Won't fix (measured — PR #381 `9abd6e3`)** | No caching of `bun install` (efficiency only) → measured, no benefit: a cold install takes ~3–4 s, while the cache archive measured locally (gzip -1; `actions/cache` itself uses zstd) is ~640 MB, ~12 s to extract and ~21–23 s to compress, and would use ~6% of the 10 GB Actions cache quota. The review of this item found a related problem, fixed in the same PR: `setup-bun` restored its cached bun binary on the privileged workflows (`release.yml`, `ops-backup.yml`) after checking only a revision string, so those paths now restore no Actions cache |
 
 ---
 
 ## Proposed work units for the unfixed findings
 
-1. **Spec revision for chain economics** (P-1 / P-2 / P-4 / Sc-3 / Sc-5 / Sc-7 /
-   Sc-8): the report's recommended order = ① incremental verification on append
-   against a cached VerifiedChainView → ② materializing member→role → ③ delta
-   sync (afterSeq) + cursor-paginated pull → ④ materializing bounded
-   rotation-flag state on append. In every case: revision proposal for
-   CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC → owner approval → test vectors first
-2. **crypto cleanup** (P-1's CryptoKey memoization / M-2 / M-6 / F-1b): assumes
-   human review. M-2 and F-1b can be handled together via "a golden vector that
-   checks the 3 implementations on the same inputs"
+1. **Spec revision for chain economics** (P-1 / P-2 / P-3 remainder / P-4 /
+   Sc-3 / Sc-5 / Sc-6 / Sc-7 / Sc-8): the report's recommended order =
+   ① incremental verification on append against a cached VerifiedChainView →
+   ② materializing member→role → ③ delta sync (afterSeq) + cursor-paginated
+   pull → ④ materializing bounded rotation-flag state on append. In every case:
+   revision proposal for CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC → owner approval →
+   test vectors first. The P-3 remainder (`variableLifecycles` cannot be bounded
+   below without materialized flag state — AUDIT_SPEC §4.1) goes with ④; Sc-6
+   (the storage guard's exception paths, AUTH_SPEC §12-8) rides the same
+   revision cycle
+2. **crypto cleanup** (P-1's CryptoKey memoization / M-2 / M-3's crypto copy /
+   M-6 / F-1b): assumes human review. M-2 and F-1b can be handled together via
+   "a golden vector that checks the 3 implementations on the same inputs"
 3. **Operational policy** (S-2 / C-1–C-3 / C-5 remainder / C-6–C-8 / T-3 / T-4 /
    D-6 / D-7): small individual PRs after owner decisions
-4. **Deferred items** (A-8 / M-3 / M-5 / T-2 / C-10): no
-   spec change needed. Fine to pick up as standalone PRs when time is free
+4. **Standalone items** (no spec change): M-3's web remainder — fold
+   `audit-read.ts`'s `isJsonRecord` into `chain-view-state.ts`'s `isRecord`. The
+   previously deferred items are closed: P-5 / P-6 / A-2 / A-8 / M-4 / M-5 / M-8
+   / T-2 are fixed (M-3 in `apps/cli`), and C-10 is won't-fix
