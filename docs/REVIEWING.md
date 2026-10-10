@@ -204,6 +204,10 @@ What exists today:
   five binaries is the official release zip for that target, verified
   against a SHA-256 pinned in `apps/cli/scripts/bun-runtimes.ts` and passed
   to `bun build --compile-executable-path`.
+- The publish jobs refuse an artifact unless its digest (every file's path
+  and SHA-256) matches the one the build job set as a job output. Any job of
+  the release run can overwrite an artifact, but only the build job can set
+  its own outputs.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token).
 - `packaging/install.sh` refuses to install without a SHA-256 match against

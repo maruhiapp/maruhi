@@ -1,5 +1,8 @@
-// Pins "a privileged workflow restores no Actions cache" mechanically, so a
-// later edit cannot bring one back unnoticed.
+// Pins the privileged workflows' supply-chain invariants mechanically, so a
+// later edit cannot undo one unnoticed. The rule behind them: an executable
+// that runs in a privileged run comes either from the commit being run or
+// from a fetch verified against a digest pinned in that commit, and a
+// release publishes only what its build job produced.
 //
 // An Actions cache entry in the default branch's scope is writable by code
 // in any run there (a push to main and its dependencies, the Pullfrog
@@ -25,6 +28,10 @@
 //      pinned in apps/cli/scripts/bun-runtimes.ts at that same version (the
 //      linux-x64 pin is install-bun's), and the build cannot fall back to an
 //      unpinned download
+//   6. release.yml's build job digests each artifact into its job outputs,
+//      and every job that can publish (a write permission or the OIDC token)
+//      checks each artifact it downloads against that digest before anything
+//      else, then publishes from the checked directory only
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -53,8 +60,10 @@ function parseYaml(text: string): unknown {
 }
 
 interface Step {
+  readonly id?: string;
   readonly name?: string;
   readonly uses?: string;
+  readonly "working-directory"?: string;
   readonly with?: Readonly<Record<string, unknown>>;
   readonly env?: Readonly<Record<string, unknown>>;
   readonly if?: string;
@@ -62,6 +71,8 @@ interface Step {
 }
 interface Job {
   readonly uses?: string;
+  readonly needs?: string | readonly string[];
+  readonly outputs?: Readonly<Record<string, string>>;
   readonly container?: unknown;
   readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
@@ -292,5 +303,81 @@ describe("Actions caches stay out of privileged workflows", () => {
       expect(install).toBeGreaterThan(-1);
       expect(firstUse).toBeGreaterThan(install);
     });
+  });
+});
+
+describe("release.yml publishes only what its build job produced", () => {
+  const { workflow } = loadWorkflow("release.yml");
+  const jobs = Object.entries(workflow.jobs);
+  const build = workflow.jobs["build"];
+  const buildSteps = build?.steps ?? [];
+  /** The one digest function, byte-identical in build and in every publishing job. */
+  const DIGEST =
+    "digest() { (cd \"$1\" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }";
+  /** Defines the digest function exactly once, as DIGEST. */
+  const expectDigestFunction = (run: string, where: string) => {
+    expect(run, where).toContain(DIGEST);
+    expect(run.split("digest()"), where).toHaveLength(2);
+  };
+  const isDownload = (step: Step) => step.uses?.startsWith("actions/download-artifact@") === true;
+  const needsOf = (job: Job) => (typeof job.needs === "string" ? [job.needs] : (job.needs ?? []));
+  /** Jobs that can publish: any write permission or the OIDC token. */
+  const publishers = jobs.filter(([, { permissions }]) =>
+    typeof permissions === "string"
+      ? permissions === "write-all"
+      : Object.values((permissions ?? {}) as Record<string, unknown>).includes("write"),
+  );
+
+  it("digests each uploaded artifact after it is built and before it is uploaded", () => {
+    const digests = buildSteps.findIndex((s) => s.id === "digests");
+    const run = buildSteps[digests]?.run ?? "";
+    expectDigestFunction(run, "build");
+    const lastBuild = buildSteps.findLastIndex((s) => /\bbuild:(binaries|npm)\b/.test(s.run ?? ""));
+    expect(digests).toBeGreaterThan(lastBuild);
+    expect(lastBuild).toBeGreaterThan(-1);
+    const uploads = buildSteps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.map((s) => s.with?.["name"]).toSorted()).toEqual(["binaries", "npm-package"]);
+    for (const upload of uploads) {
+      expect(buildSteps.indexOf(upload)).toBeGreaterThan(digests);
+      const name = String(upload.with?.["name"]);
+      const path = String(upload.with?.["path"]).replace(/\/$/, "");
+      const variable = name.replaceAll("-", "_");
+      expect(run).toContain(`${variable}=$(digest ${path})`);
+      expect(run).toContain(`echo "${name}=\${${variable}}" >> "$GITHUB_OUTPUT"`);
+      expect(build?.outputs?.[`${name}-digest`]).toBe(`\${{ steps.digests.outputs.${name} }}`);
+    }
+  });
+
+  it("verifies every artifact a publishing job downloads, right after the download", () => {
+    expect(publishers.map(([name]) => name).toSorted()).toEqual(["publish-github", "publish-npm"]);
+    for (const [name, job] of publishers) {
+      const steps = job.steps ?? [];
+      const downloads = steps.filter(isDownload);
+      expect(downloads.length, name).toBeGreaterThan(0);
+      expect(needsOf(job), name).toContain("build");
+      for (const download of downloads) {
+        const verify = steps[steps.indexOf(download) + 1];
+        const artifact = String(download.with?.["name"]);
+        expect(verify?.["working-directory"], name).toBe(download.with?.["path"]);
+        expect(verify?.env?.["EXPECTED_DIGEST"], name).toBe(
+          `\${{ needs.build.outputs.${artifact}-digest }}`,
+        );
+        const run = verify?.run ?? "";
+        expectDigestFunction(run, name);
+        expect(run, name).toContain("actual=$(digest .)");
+        expect(run, name).toContain(
+          'if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then',
+        );
+      }
+    }
+  });
+
+  it("publishes from the verified directories only", () => {
+    const steps = (job: string) => workflow.jobs[job]?.steps ?? [];
+    const release = steps("publish-github").filter((s) => s.run?.includes("gh release create"));
+    expect(release.map((s) => s["working-directory"])).toEqual(["binaries"]);
+    const publish = steps("publish-npm").filter((s) => /\bnpm publish\b/.test(s.run ?? ""));
+    expect(publish.length).toBeGreaterThan(0);
+    for (const step of publish) expect(step.run).toMatch(/npm publish \.\/dist-npm /);
   });
 });

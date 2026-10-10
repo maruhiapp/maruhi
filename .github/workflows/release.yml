@@ -15,6 +15,9 @@
 # - Tags are only valid on commits in the main ancestry (version-check
 #   enforces this — it closes the path where tagging an unreviewed branch
 #   commit with a v tag reaches publish)
+# - The publish jobs ship only artifacts whose digest matches the build
+#   job's outputs (any job of the run can overwrite an artifact, but only
+#   build can set its outputs)
 # - External actions are pinned by commit SHA (this is a privileged path with
 #   contents: write / id-token: write, so upstream compromise via a mutable
 #   tag is ruled out. Same discipline as ADR-0011's strict pinning — updates
@@ -139,6 +142,8 @@ jobs:
       contents: read
     outputs:
       smoke-matrix: ${{ steps.smoke-matrix.outputs.matrix }}
+      binaries-digest: ${{ steps.digests.outputs.binaries }}
+      npm-package-digest: ${{ steps.digests.outputs.npm-package }}
     steps:
       # Leave no token on jobs that run dependency code (bun install / build)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -176,6 +181,23 @@ jobs:
       # (id-token isolation) is preserved
       - name: Stage npm package (bundle)
         run: bun run --filter @maruhi/cli build:npm
+
+      # Bind what gets published to this job. Every job of this run holds a
+      # token that can overwrite the artifacts below (upload-artifact needs
+      # no permission), but only this job's steps can set its outputs. So the
+      # publish jobs recompute this digest — every file's path and SHA-256 —
+      # over what they downloaded and refuse a mismatch, and a compromised
+      # verify / smoke job cannot swap what ships. The same digest function
+      # runs there (pinned identical by apps/cli/test/privileged-workflows.test.ts)
+      - name: Digest the artifacts (bound to this job's outputs)
+        id: digests
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          binaries=$(digest apps/cli/dist)
+          npm_package=$(digest apps/cli/dist-npm)
+          echo "binaries=${binaries}" >> "$GITHUB_OUTPUT"
+          echo "npm-package=${npm_package}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -277,7 +299,7 @@ jobs:
     # npm staging lives inside the build job (a precondition via smoke). If it
     # is broken, build fails and the irreversible Release creation is never
     # reached
-    needs: [verify, version-check, smoke]
+    needs: [verify, version-check, build, smoke]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -286,13 +308,30 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries
+          path: binaries
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: binaries
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.binaries-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
 
       # Verify against an implementation (coreutils) independent of the
       # generator (node:crypto) before publishing
       - name: Verify checksums
+        working-directory: binaries
         run: sha256sum -c checksums.txt
 
       - name: Create GitHub Release
+        working-directory: binaries
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.version-check.outputs.prerelease }}
@@ -331,6 +370,20 @@ jobs:
         with:
           name: npm-package
           path: dist-npm
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: dist-npm
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.npm-package-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
 
       # Node + npm come from the official tarball verified against a pinned
       # SHA-256 before anything in it runs, not from actions/setup-node: on
