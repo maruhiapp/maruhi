@@ -1,9 +1,11 @@
 #!/bin/bash
 # SessionStart hook for Claude Code on the web.
 # Syncs Bun to .bun-version (strict pin) and installs workspace dependencies.
-# Does not download Playwright's Chromium — uses the environment's
-# preinstalled build (the apps/web / apps/site e2e suites and the
-# packages/crypto browser tests read PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH).
+# Bun comes from scripts/install-bun.sh, which checks the release zip against
+# the SHA-256 pinned there (the same pin CI uses) before running it. Does not
+# download Playwright's Chromium — uses the environment's preinstalled build
+# (the apps/web / apps/site e2e suites and the packages/crypto browser tests
+# read PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH).
 set -euo pipefail
 
 # No-op outside the remote environment (Claude Code on the web)
@@ -15,7 +17,7 @@ cd "$CLAUDE_PROJECT_DIR"
 
 BUN_VERSION="$(cat .bun-version)"
 if [ "$("$HOME/.bun/bin/bun" --version 2>/dev/null)" != "$BUN_VERSION" ]; then
-  curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_VERSION"
+  bash scripts/install-bun.sh
 fi
 export PATH="$HOME/.bun/bin:$PATH"
 
