@@ -292,6 +292,48 @@ jobs:
             *) echo "::warning::failed with output other than the keychain typed error"; exit 1 ;;
           esac
 
+  # publish-npm runs in the npm-publish environment, which must require a
+  # reviewer and admit only v* tags (docs/RELEASING.md, first time). When a
+  # job references an environment that does not exist, GitHub creates it
+  # with no protection at all and runs the job, so this job reads the
+  # configuration and fails closed. It runs before publish-github, so a
+  # missing or weakened environment stops the release before anything
+  # irreversible, and it runs on dry runs too. The environment API needs
+  # actions: read; this job runs no checkout and no action
+  npm-environment:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require a reviewer and a v* tag policy on npm-publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: npm-publish
+          TAG_PATTERN: "v[0-9]*"
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}"
+          if ! config=$(gh api "${api}"); then
+            echo "::error::cannot read the ${ENVIRONMENT} environment; create it as docs/RELEASING.md describes"
+            exit 1
+          fi
+          reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<< "${config}")
+          if [ "${reviewers}" -lt 1 ]; then
+            echo "::error::the ${ENVIRONMENT} environment has no required reviewer (docs/RELEASING.md)"
+            exit 1
+          fi
+          if [ "$(jq '.deployment_branch_policy.custom_branch_policies' <<< "${config}")" != "true" ]; then
+            echo "::error::the ${ENVIRONMENT} environment must admit selected tags only (docs/RELEASING.md)"
+            exit 1
+          fi
+          policies=$(gh api --paginate "${api}/deployment-branch-policies" --jq '.branch_policies[] | "\(.type) \(.name)"')
+          if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then
+            echo "::error::the ${ENVIRONMENT} environment must admit exactly the tag pattern ${TAG_PATTERN} (got: ${policies//$'\n'/, })"
+            exit 1
+          fi
+          echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"
+
   # Create the GitHub Release (with checksums.txt). Release notes are
   # auto-generated (ADR-0015: no CHANGELOG until 1.0)
   publish-github:
@@ -299,7 +341,7 @@ jobs:
     # npm staging lives inside the build job (a precondition via smoke). If it
     # is broken, build fails and the irreversible Release creation is never
     # reached
-    needs: [verify, version-check, build, smoke]
+    needs: [verify, version-check, build, smoke, npm-environment]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -351,7 +393,10 @@ jobs:
   # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
   # to this job alone, and only the pinned download-artifact action and the
   # SHA-256-pinned Node.js / npm run here (no checkout, no repository
-  # dependency code)
+  # dependency code). The job waits in the npm-publish environment until a
+  # required reviewer approves it (checked by npm-environment), and npm's
+  # trusted-publisher entry names that environment, so a run outside it
+  # cannot publish
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # build is the producer of the npm-package artifact (execution order is
@@ -360,6 +405,7 @@ jobs:
     # publish-github's needs would fail at download after the irreversible
     # Release creation)
     needs: [version-check, build, publish-github]
+    environment: npm-publish
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:

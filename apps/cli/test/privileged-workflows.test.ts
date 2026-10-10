@@ -32,6 +32,10 @@
 //      and every job that can publish (a write permission or the OIDC token)
 //      checks each artifact it downloads against that digest before anything
 //      else, then publishes from the checked directory only
+//   7. the OIDC publish (publish-npm) is the only job in an environment, and
+//      a job with no condition fails the run before publish-github unless
+//      that environment requires a reviewer and admits exactly the release
+//      tag pattern (GitHub creates a missing environment unprotected)
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -73,6 +77,8 @@ interface Job {
   readonly uses?: string;
   readonly needs?: string | readonly string[];
   readonly outputs?: Readonly<Record<string, string>>;
+  readonly if?: string;
+  readonly environment?: string | { readonly name: string };
   readonly container?: unknown;
   readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
@@ -379,5 +385,50 @@ describe("release.yml publishes only what its build job produced", () => {
     const publish = steps("publish-npm").filter((s) => /\bnpm publish\b/.test(s.run ?? ""));
     expect(publish.length).toBeGreaterThan(0);
     for (const step of publish) expect(step.run).toMatch(/npm publish \.\/dist-npm /);
+  });
+});
+
+describe("release.yml publishes to npm only after a reviewer approves", () => {
+  const { workflow } = loadWorkflow("release.yml");
+  const check = workflow.jobs["npm-environment"];
+  const step = check?.steps?.[0];
+  const environmentOf = (job: Job | undefined) =>
+    typeof job?.environment === "string" ? job.environment : job?.environment?.name;
+
+  it("runs the OIDC publish in the checked environment, and nothing else in any environment", () => {
+    const withEnvironment = Object.entries(workflow.jobs).filter(([, job]) => job.environment);
+    expect(withEnvironment.map(([name]) => name)).toEqual(["publish-npm"]);
+    const oidc = Object.entries(workflow.jobs).filter(
+      ([, job]) =>
+        (job.permissions as Record<string, unknown> | undefined)?.["id-token"] === "write",
+    );
+    expect(oidc.map(([name]) => name)).toEqual(["publish-npm"]);
+    expect(environmentOf(workflow.jobs["publish-npm"])).toBe(step?.env?.["ENVIRONMENT"]);
+  });
+
+  it("checks that environment before anything irreversible, on dry runs too", () => {
+    expect(check?.if).toBeUndefined();
+    expect(check?.permissions).toEqual({ actions: "read" });
+    expect(check?.steps?.map((s) => s.uses)).toEqual([undefined]);
+    // publish-npm runs after publish-github, so the check gates both
+    expect(workflow.jobs["publish-github"]?.needs).toContain("npm-environment");
+    expect(workflow.jobs["publish-npm"]?.needs).toContain("publish-github");
+  });
+
+  it("requires a reviewer and exactly the release tag pattern, failing closed", () => {
+    const push = workflow.on["push"] as { tags: readonly string[] };
+    expect(push.tags).toEqual([step?.env?.["TAG_PATTERN"]]);
+    const run = step?.run ?? "";
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain('if ! config=$(gh api "${api}"); then');
+    expect(run).toContain(
+      `reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<< "\${config}")`,
+    );
+    expect(run).toContain('if [ "${reviewers}" -lt 1 ]; then');
+    expect(run).toContain(
+      `if [ "$(jq '.deployment_branch_policy.custom_branch_policies' <<< "\${config}")" != "true" ]; then`,
+    );
+    expect(run).toContain('if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then');
+    expect(run.match(/\bexit 1\b/g)).toHaveLength(4);
   });
 });
