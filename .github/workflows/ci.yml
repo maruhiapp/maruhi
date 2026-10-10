@@ -38,6 +38,12 @@ env:
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
   CF_SEND_TELEMETRY: "false"
+  # Every Playwright browser download (any `playwright install`, however it
+  # is invoked) goes to this unresolvable host and fails before anything is
+  # unpacked: playwright-core replaces all its mirrors, Chrome for Testing's
+  # included, with this one. The only browser is the verified headless shell
+  # installed before step 9, which curl fetches directly
+  PLAYWRIGHT_DOWNLOAD_HOST: "https://playwright-download.invalid"
 
 jobs:
   check:
@@ -328,7 +334,9 @@ jobs:
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
             --retry 3 --retry-all-errors --output "${zip}" \
             "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip"
-          echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict
+          if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then
+            exit 1
+          fi
           dir="${RUNNER_TEMP}/chrome-headless-shell"
           unzip -q "${zip}" -d "${dir}"
           rm -f "${zip}"
