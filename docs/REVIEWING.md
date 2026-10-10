@@ -197,7 +197,8 @@ What exists today:
   `checksums.txt`, smoke-tested on real runners. Third-party actions are
   pinned by commit SHA, Bun by `.bun-version` (CI installs the official zip
   verified against a SHA-256 pinned in `.github/actions/install-bun/action.yml`,
-  never from an Actions cache), dependencies by
+  never from an Actions cache; the npm publish job's Node.js is pinned the
+  same way in `release.yml`), dependencies by
   `bun install --frozen-lockfile`.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token).

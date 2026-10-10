@@ -11,10 +11,15 @@
 #
 # Bumping Bun changes `.bun-version` and both values below together (the step
 # fails closed on a mismatch, and apps/cli/test/workflow-caches.test.ts fails
-# first in `bun run check`). BUN_LINUX_X64_ZIP_SHA256 is the
-# `bun-linux-x64.zip` line of the release's SHASUMS256.txt; check that file
-# against SHASUMS256.txt.asc, signed by the Robobun key
-# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59.
+# first in `bun run check`). BUN_LINUX_X64_ZIP_SHA256 comes from the
+# release's clearsigned SHASUMS256.txt.asc, signed by the Robobun key
+# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59 (from keys.openpgp.org:
+# `gpg --recv-keys` or /vks/v1/by-fingerprint/<fingerprint>):
+#   gpg --output shasums.txt --decrypt SHASUMS256.txt.asc &&
+#     grep ' bun-linux-x64.zip$' shasums.txt
+# Gate on gpg's exit status (`&&`, not a pipe): `gpg --decrypt` still prints
+# the text after a BAD signature, and `gpg --verify` on the clearsigned file
+# says nothing about a separately downloaded SHASUMS256.txt.
 #
 # Only linux-x64 runners with AVX2 (GitHub-hosted ubuntu) are supported. No
 # job here installs Bun on another platform, so the step refuses rather than
@@ -49,7 +54,7 @@ runs:
           exit 1
         fi
         zip="${RUNNER_TEMP}/bun-linux-x64.zip"
-        curl --fail --silent --show-error --location --proto '=https' --retry 3 \
+        curl --fail --silent --show-error --location --proto '=https' --retry 3 --retry-all-errors \
           --output "${zip}" \
           "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
         echo "${BUN_LINUX_X64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict

@@ -16,8 +16,10 @@
 //      input, and no cross-run artifact download
 //   3. ci.yml, which release.yml runs as its gate, gates each cache step on
 //      `skip-caches`, and release.yml passes `skip-caches: true`
-//   4. Bun comes only from .github/actions/install-bun (a pinned SHA-256, no
-//      cache), whose pinned version is `.bun-version`
+//   4. Bun comes only from .github/actions/install-bun, whose pinned version
+//      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
+//      runs only a pinned Node.js; both check the pinned SHA-256 before
+//      unpacking, and unpack before first running anything
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -74,27 +76,42 @@ const UNPRIVILEGED = ["ci.yml", "english-pr.yml", "installer.yml"];
 
 const INSTALL_BUN = "./.github/actions/install-bun";
 
-/** Actions with no cache feature at all: any pinned commit is fine. */
+/** Actions with no cache feature at all: any commit, pinned by its 40-hex SHA. */
 const NO_CACHE_ACTIONS = [
   "actions/checkout",
   "actions/upload-artifact",
   "actions/download-artifact",
 ];
 /**
- * Actions that have (setup-node) or could grow (pullfrog's agent runtime) a cache, allowed at the
- * reviewed commit only, so a bump re-checks them here. setup-node v5+ turns its package-manager
- * cache on by default (`package-manager-cache: false` disables it).
+ * Actions that could grow a cache (pullfrog's agent runtime), allowed at the reviewed commit only,
+ * so a bump re-checks them here. actions/setup-node is deliberately absent: v5+ turns a
+ * package-manager cache on by default, and it downloads Node unverified on a tool-cache miss.
  */
-const REVIEWED_ACTIONS = [
-  "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
-  "pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90",
-];
+const REVIEWED_ACTIONS = ["pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90"];
 const CACHE_ACTIONS = /^actions\/cache(\/restore|\/save)?@/;
 
-const allowedInPrivileged = (uses: string): boolean =>
-  uses === INSTALL_BUN ||
-  REVIEWED_ACTIONS.includes(uses) ||
-  NO_CACHE_ACTIONS.some((action) => uses.startsWith(`${action}@`));
+/** Why a `uses:` step could restore an Actions cache, or undefined when it cannot. */
+function cacheRisk(step: Step): string | undefined {
+  const uses = step.uses ?? "";
+  const allowed =
+    uses === INSTALL_BUN ||
+    REVIEWED_ACTIONS.includes(uses) ||
+    NO_CACHE_ACTIONS.some((action) => new RegExp(`^${action}@[0-9a-f]{40}$`).test(uses));
+  if (!allowed) return `${uses} is not an allowlisted, SHA-pinned action`;
+  const cacheInputs = Object.keys(step.with ?? {}).filter((key) => key.includes("cache"));
+  return cacheInputs.length > 0 ? `${uses} sets ${cacheInputs.join(", ")}` : undefined;
+}
+
+/**
+ * A pinned install script checks the digest, then unpacks, then runs the unpacked binary — in that
+ * order, so nothing downloaded runs unverified.
+ */
+function expectVerifiedBeforeRun(run: string, unpack: string, firstRun: string): void {
+  const verify = run.indexOf("sha256sum --check --strict");
+  expect(verify, "checks the SHA-256").toBeGreaterThan(-1);
+  expect(run.indexOf(unpack), `${unpack} after the check`).toBeGreaterThan(verify);
+  expect(run.indexOf(firstRun), `${firstRun} after ${unpack}`).toBeGreaterThan(run.indexOf(unpack));
+}
 
 const stepsOf = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs).flatMap((job) => [...(job.steps ?? [])]);
@@ -133,11 +150,10 @@ describe("Actions caches stay out of privileged workflows", () => {
     const { workflow } = loadWorkflow(file);
 
     it("uses only actions that restore no Actions cache", () => {
-      for (const step of stepsOf(workflow)) {
-        if (step.uses === undefined) continue;
-        expect(allowedInPrivileged(step.uses), `${file}: ${step.uses}`).toBe(true);
-        expect(Object.keys(step.with ?? {}), `${file}: ${step.uses}`).not.toContain("cache");
-      }
+      const risks = stepsOf(workflow)
+        .filter((step) => step.uses !== undefined)
+        .map(cacheRisk);
+      expect(risks.filter((risk) => risk !== undefined)).toEqual([]);
     });
 
     it("downloads artifacts from its own run only", () => {
@@ -170,13 +186,14 @@ describe("Actions caches stay out of privileged workflows", () => {
     it("gates every cache step on skip-caches and uses no other action with a cache", () => {
       const cacheSteps = stepsOf(workflow).filter((s) => CACHE_ACTIONS.test(s.uses ?? ""));
       expect(cacheSteps.length).toBeGreaterThan(0);
+      // The gate is the whole condition or its first conjunct (no top-level `||`)
       for (const step of cacheSteps) {
-        expect(step.if, step.name).toMatch(/!inputs\.skip-caches\b/);
+        expect(step.if, step.name).toMatch(/^\$\{\{ !inputs\.skip-caches( && [^|]+)? \}\}$/);
       }
-      for (const step of stepsOf(workflow)) {
-        if (step.uses === undefined || CACHE_ACTIONS.test(step.uses)) continue;
-        expect(allowedInPrivileged(step.uses), step.uses).toBe(true);
-      }
+      const risks = stepsOf(workflow)
+        .filter((step) => step.uses !== undefined && !CACHE_ACTIONS.test(step.uses))
+        .map(cacheRisk);
+      expect(risks.filter((risk) => risk !== undefined)).toEqual([]);
     });
   });
 
@@ -198,7 +215,31 @@ describe("Actions caches stay out of privileged workflows", () => {
       const env = action.runs.steps[0]?.env ?? {};
       expect(env["BUN_VERSION"]).toBe(read(".bun-version").trim());
       expect(env["BUN_LINUX_X64_ZIP_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
-      expect(action.runs.steps[0]?.run).toMatch(/sha256sum --check --strict/);
+      expectVerifiedBeforeRun(action.runs.steps[0]?.run ?? "", "unzip ", '"${bin_dir}/bun"');
+    });
+  });
+
+  describe("release.yml publish-npm runs only a pinned Node.js", () => {
+    const steps = loadWorkflow("release.yml").workflow.jobs["publish-npm"]?.steps ?? [];
+    const install = steps.findIndex((s) => s.name === "Install Node.js (pinned SHA-256, no cache)");
+    const step = steps[install];
+
+    it("pins an exact version and its SHA-256, and checks it before unpacking and running", () => {
+      expect(step?.env?.["NODE_VERSION"]).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(step?.env?.["NODE_LINUX_X64_TARGZ_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+      const run = step?.run ?? "";
+      expect(run).toContain(
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz",
+      );
+      expectVerifiedBeforeRun(run, "tar -xzf ", '"${node_dir}/bin/node"');
+    });
+
+    it("installs Node before any step runs node or npm", () => {
+      const firstUse = steps.findIndex(
+        (s, i) => i !== install && /\b(node|npm)\b/.test(s.run ?? ""),
+      );
+      expect(install).toBeGreaterThan(-1);
+      expect(firstUse).toBeGreaterThan(install);
     });
   });
 });
