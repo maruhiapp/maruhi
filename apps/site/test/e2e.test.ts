@@ -229,20 +229,20 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
   ] as const)(
     "shows each step's text before its figure, matching the DOM order (%s)",
     async (_layout, width) => {
-      // Screen readers and keyboard users follow the DOM (text, then figure);
-      // a sighted reader must meet the same order: the figure sits right of
-      // the text or below it, never left of or above it
+      // A screen reader reads the DOM (text, then figure); a sighted reader
+      // must meet the same order: the figure sits right of the text or below
+      // it, never left of or above it
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       await page.goto(BASE, { waitUntil: "networkidle" });
       const steps = await page.locator("ol.chain > li.step").evaluateAll((items) =>
         items.map((li) => {
           const [first, second] = [...li.children].map((el) => ({
-            className: el.className,
+            kind: el.classList[0],
             box: el.getBoundingClientRect(),
           }));
           return {
             id: li.id,
-            order: [first?.className.split(" ")[0], second?.className.split(" ")[0]],
+            order: [first?.kind, second?.kind],
             figureFollows:
               first !== undefined &&
               second !== undefined &&
