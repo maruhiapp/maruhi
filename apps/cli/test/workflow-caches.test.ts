@@ -209,24 +209,13 @@ describe("Actions caches stay out of privileged workflows", () => {
   });
 
   describe("Bun comes only from the pinned install-bun action", () => {
-    const action = parseYaml(read(".github/actions/install-bun/action.yml")) as {
-      runs: { using: string; steps: Step[] };
-    };
-
+    // The action runs scripts/install-bun.sh, which holds the pin; both are pinned in
+    // dev-setup.test.ts
     it("is the only Bun installer in any workflow", () => {
       for (const file of [...PRIVILEGED, ...UNPRIVILEGED]) {
         const { source } = loadWorkflow(file);
         expect(source, file).not.toMatch(/setup-bun@|bun\.sh\/install/);
       }
-    });
-
-    it("runs shell steps only and pins the version .bun-version names, with a SHA-256", () => {
-      expect(action.runs.using).toBe("composite");
-      expect(action.runs.steps.map((s) => s.uses)).toEqual([undefined]);
-      const env = action.runs.steps[0]?.env ?? {};
-      expect(env["BUN_VERSION"]).toBe(read(".bun-version").trim());
-      expect(env["BUN_LINUX_X64_ZIP_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
-      expectVerifiedBeforeRun(action.runs.steps[0]?.run ?? "", "unzip ", '"${bin_dir}/bun"');
     });
   });
 

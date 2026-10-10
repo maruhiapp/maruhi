@@ -29,7 +29,7 @@ Follow this runbook when the user invokes `/deepsec` or asks for a scan.
 repository is already onboarded. Never run `npx deepsec init` (including
 `--through coverage` / `--yes`). Repair a missing
 `.deepsec/node_modules/deepsec` with
-`cd .deepsec && pnpm install --frozen-lockfile`.
+`cd .deepsec && corepack pnpm install --frozen-lockfile`.
 `npx skills update deepsec` overwrites this overlay; re-apply it
 (see `docs/DEEPSEC.md`).
 
@@ -54,8 +54,13 @@ From the repository root:
 - **No `.deepsec/deepsec.config.ts`** → not onboarded. Do step 3 in full.
 - **`.deepsec/deepsec.config.ts` exists** → onboarded, even if
   `.deepsec/node_modules/deepsec` is missing. Repair the install with
-  `cd .deepsec && pnpm install --frozen-lockfile` (or
-  `bunx pnpm install --frozen-lockfile` if `pnpm` is not on PATH).
+  `cd .deepsec && corepack pnpm install --frozen-lockfile` (corepack checks
+  the pnpm hash pinned in `packageManager` when it downloads pnpm; a pnpm
+  already in its cache is not re-checked). Without corepack, add
+  `--config.manage-package-manager-versions=false` to a plain
+  `pnpm install --frozen-lockfile`: pnpm's own switch to the
+  `packageManager` version skips the hash. Never `bunx pnpm`: it fetches an
+  unpinned pnpm.
   Never re-run `npx deepsec init` / `init --through coverage`: this repo
   is scaffold-only, `INFO.md` is hand-curated, and the CLI is pinned in
   `.deepsec/package.json`. Then skip to step 4.

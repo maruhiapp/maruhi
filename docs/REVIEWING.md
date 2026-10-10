@@ -196,8 +196,9 @@ What exists today:
   `apps/cli/scripts/build-binaries.ts`): binaries for five targets plus
   `checksums.txt`, smoke-tested on real runners. Third-party actions are
   pinned by commit SHA, Bun by `.bun-version` (CI installs the official zip
-  verified against a SHA-256 pinned in `.github/actions/install-bun/action.yml`,
-  never from an Actions cache; the npm publish job's Node.js is pinned the
+  verified against a SHA-256 pinned in `scripts/install-bun.sh`, never from
+  an Actions cache; the dev-environment setup uses the same script; the npm
+  publish job's Node.js is pinned the
   same way in `release.yml`), dependencies by
   `bun install --frozen-lockfile`.
 - The npm package is published with `npm publish --provenance` through
