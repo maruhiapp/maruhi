@@ -11,19 +11,20 @@ The distribution design is [ADR-0015](./adr/0015-cli-distribution.md); the imple
    - Provider: GitHub Actions
    - Organization/User: `maruhiapp` / Repository: `maruhi`
    - Workflow filename: `release.yml`
-   - Environment name: `npm-publish` (a token from any other environment, or from none, is refused)
+   - Environment name: `release` (a token from any other environment, or from none, is refused)
    - New configurations since 2026-05-20 require an explicit allowed action — pick "publish"
 3. Registering an npm token in GitHub Secrets is **not needed** (OIDC only. No long-lived tokens)
-4. **Create the `npm-publish` environment** (GitHub → repository Settings → Environments →
-   New environment → `npm-publish`). The `publish-npm` job waits there for an approval:
-   - **Required reviewers**: add the people who approve npm publishes (one approval suffices).
+4. **Create the `release` environment** (GitHub → repository Settings → Environments →
+   New environment → `release`). Both publish jobs (`publish-github`, then `publish-npm`)
+   wait there for an approval, so nothing irreversible happens before a reviewer approves:
+   - **Required reviewers**: add the people who approve releases (one approval per job suffices).
      Leave "Prevent self-review" off while the person who pushes the tag is the only
      reviewer, or the release can never be approved
    - **Deployment branches and tags**: "Selected branches and tags" → add one rule,
      type **Tag**, pattern `v[0-9]*` (the workflow's tag trigger), and no branch rule
    - No secrets or variables
 
-   The release workflow's `npm-environment` job reads this configuration and fails the run
+   The release workflow's `release-environment` job reads this configuration and fails the run
    (dry runs included) unless the environment has at least one required reviewer and
    exactly that one tag rule. A job that names a missing environment would otherwise make
    GitHub create it with no protection and run unapproved
@@ -45,9 +46,11 @@ The distribution design is [ADR-0015](./adr/0015-cli-distribution.md); the imple
 3. The release workflow automatically: runs the quality gate (all ci.yml steps) → checks version
    match → builds binaries for 5 targets + checksums.txt → smokes them on 5 real OS runners →
    creates the GitHub Release (notes auto-generated. `-rc.N` marked prerelease) → npm publish
-   once approved (with provenance. `-rc.N` goes to dist-tag `next`, stable to `latest`)
-4. **Approve the npm publish**: once the Release exists, the `publish-npm` job waits for a
-   required reviewer (the run page shows "Review deployments" → `npm-publish` → Approve)
+   (with provenance. `-rc.N` goes to dist-tag `next`, stable to `latest`), each after an approval
+4. **Approve twice**: once smoke is green, `publish-github` waits for a required reviewer
+   (the run page shows "Review deployments" → `release` → Approve). After the Release exists,
+   `publish-npm` waits for its own approval the same way. Rejecting the first leaves nothing
+   published; rejecting the second leaves a Release without npm (recover as in "Retrying")
 5. **Verify**: the Release carries tar.gz × 5 + checksums.txt,
    `npm view maruhi dist-tags` looks as expected, and the npm page shows the
    provenance badge
@@ -110,7 +113,7 @@ cadence rises.
 ## Dry run (pipeline verification before tagging)
 
 The release workflow can run everything except publish (build + 5-OS smoke +
-checksums + npm staging + the `npm-publish` environment check) via `workflow_dispatch`.
+checksums + npm staging + the `release` environment check) via `workflow_dispatch`.
 On PRs that touch the workflow, run it once against the branch before merging. The
 environment check fails until first-time item 4 is done.
 
@@ -139,7 +142,7 @@ order Release-first → npm-later exists to make this recovery possible (in reve
 published npm version cannot be retried).
 Note also that **the OIDC (trusted publishing) path cannot be exercised by a dry run**
 (authentication only happens when publish actually runs). Before the first tag,
-re-confirm the first-time setup (items 1–4 above). A re-run of `publish-npm`
+re-confirm the first-time setup (items 1–4 above). A re-run of a publish job
 waits for an approval again.
 
 ## Notes

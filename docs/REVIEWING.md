@@ -209,11 +209,12 @@ What exists today:
   the release run can overwrite an artifact, but only the build job can set
   its own outputs.
 - The npm package is published with `npm publish --provenance` through
-  trusted publishing (OIDC, no long-lived token), from a job that waits in
-  the `npm-publish` environment for a required reviewer's approval. The
-  trusted-publisher entry names that environment, and the release fails
-  before the GitHub Release is created unless the environment requires a
-  reviewer and admits only `v*` tags.
+  trusted publishing (OIDC, no long-lived token), with lifecycle scripts
+  off. Both publish jobs wait in the `release` environment for a required
+  reviewer's approval, so the GitHub Release is not created before one; the
+  npm trusted-publisher entry names that environment, and the run fails
+  before either publish job unless the environment requires a reviewer and
+  admits only `v*` tags.
 - `packaging/install.sh` refuses to install without a SHA-256 match against
   `checksums.txt`. That file is unsigned: integrity rests on TLS to
   github.com, and the script says so rather than claim signature verification.

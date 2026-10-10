@@ -29,13 +29,16 @@
 //      linux-x64 pin is install-bun's), and the build cannot fall back to an
 //      unpinned download
 //   6. release.yml's build job digests each artifact into its job outputs,
-//      and every job that can publish (a write permission or the OIDC token)
-//      checks each artifact it downloads against that digest before anything
-//      else, then publishes from the checked directory only
-//   7. the OIDC publish (publish-npm) is the only job in an environment, and
-//      a job with no condition fails the run before publish-github unless
+//      publish-github checks both artifacts against them before creating the
+//      Release, and publish-npm checks the npm package again before anything
+//      else, each publishing from the checked directory only
+//   7. both publish jobs, and only they, run in the `release` environment,
+//      and an unconditional job fails the run before either of them unless
 //      that environment requires a reviewer and admits exactly the release
 //      tag pattern (GitHub creates a missing environment unprotected)
+//   8. the publish path cannot be skipped or soft-fail: the publish jobs'
+//      `if:`, step sequences, and every check and publish command are pinned
+//      byte for byte, with no `if:` or continue-on-error on their steps
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -71,6 +74,7 @@ interface Step {
   readonly with?: Readonly<Record<string, unknown>>;
   readonly env?: Readonly<Record<string, unknown>>;
   readonly if?: string;
+  readonly "continue-on-error"?: unknown;
   readonly run?: string;
 }
 interface Job {
@@ -78,6 +82,7 @@ interface Job {
   readonly needs?: string | readonly string[];
   readonly outputs?: Readonly<Record<string, string>>;
   readonly if?: string;
+  readonly "continue-on-error"?: unknown;
   readonly environment?: string | { readonly name: string };
   readonly container?: unknown;
   readonly services?: unknown;
@@ -312,126 +317,249 @@ describe("Actions caches stay out of privileged workflows", () => {
   });
 });
 
+/** The one digest function: every non-directory entry's path and SHA-256, C-sorted. */
+const DIGEST =
+  "digest() { (cd \"$1\" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }";
+
+/** The build job's digest step, byte for byte. */
+const DIGEST_RUN = [
+  "set -euo pipefail",
+  DIGEST,
+  "binaries=$(digest apps/cli/dist)",
+  "npm_package=$(digest apps/cli/dist-npm)",
+  'echo "binaries=${binaries}" >> "$GITHUB_OUTPUT"',
+  'echo "npm-package=${npm_package}" >> "$GITHUB_OUTPUT"',
+  "",
+].join("\n");
+
+/** Every publish job's check of a downloaded artifact, byte for byte. */
+const VERIFY_RUN = [
+  "set -euo pipefail",
+  DIGEST,
+  "actual=$(digest .)",
+  'if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then',
+  '  echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"',
+  "  exit 1",
+  "fi",
+  "",
+].join("\n");
+
+/** The Release upload: exactly the five archives and checksums.txt. */
+const RELEASE_RUN = [
+  "FLAGS=(--generate-notes --verify-tag)",
+  'if [ "${PRERELEASE}" = "true" ]; then',
+  "  FLAGS+=(--prerelease)",
+  "fi",
+  'gh release create "${GITHUB_REF_NAME}" \\',
+  '  --repo "${GITHUB_REPOSITORY}" \\',
+  '  "${FLAGS[@]}" \\',
+  "  maruhi-*.tar.gz checksums.txt",
+  "",
+].join("\n");
+
+/** release-environment's fail-closed read of the environment's protection. */
+const ENVIRONMENT_CHECK_RUN = [
+  "set -euo pipefail",
+  'api="repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}"',
+  'if ! config=$(gh api "${api}"); then',
+  '  echo "::error::cannot read the ${ENVIRONMENT} environment; create it as docs/RELEASING.md describes"',
+  "  exit 1",
+  "fi",
+  'reviewers=$(jq \'[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length\' <<< "${config}")',
+  'if [ "${reviewers}" -lt 1 ]; then',
+  '  echo "::error::the ${ENVIRONMENT} environment has no required reviewer (docs/RELEASING.md)"',
+  "  exit 1",
+  "fi",
+  'if [ "$(jq \'.deployment_branch_policy.custom_branch_policies\' <<< "${config}")" != "true" ]; then',
+  '  echo "::error::the ${ENVIRONMENT} environment must admit selected tags only (docs/RELEASING.md)"',
+  "  exit 1",
+  "fi",
+  'policies=$(gh api --paginate "${api}/deployment-branch-policies" --jq \'.branch_policies[] | "\\(.type) \\(.name)"\')',
+  'if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then',
+  "  echo \"::error::the ${ENVIRONMENT} environment must admit exactly the tag pattern ${TAG_PATTERN} (got: ${policies//$'\\n'/, })\"",
+  "  exit 1",
+  "fi",
+  'echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"',
+  "",
+].join("\n");
+
+/** publish-npm's dry run, lifecycle scripts off. */
+const DRY_RUN_RUN = [
+  "set +e",
+  'OUT=$(npm publish ./dist-npm --dry-run --ignore-scripts --tag "${DIST_TAG}" 2>&1)',
+  "CODE=$?",
+  "set -e",
+  'echo "${OUT}"',
+  'if [ "${CODE}" != "0" ]; then',
+  '  echo "::error::npm publish --dry-run itself failed (exit ${CODE})"',
+  "  exit 1",
+  "fi",
+  'if echo "${OUT}" | grep -q "auto-corrected"; then',
+  '  echo "::error::npm auto-corrected the manifest at publish time (bin etc. may be stripped; check the npm pkg fix diff)"',
+  "  exit 1",
+  "fi",
+  "",
+].join("\n");
+
+const PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
+const RELEASE_TAGS = "v[0-9]*";
+const RELEASE_ENVIRONMENT = "release";
+
+/** No condition and no continue-on-error: a failure here stops what depends on it. */
+function expectUnconditional(item: Step | Job | undefined, where: string): void {
+  expect(item, where).toBeDefined();
+  expect(item?.if, `${where} has an if:`).toBeUndefined();
+  expect(item?.["continue-on-error"], `${where} has continue-on-error`).toBeUndefined();
+}
+
+const needsOf = (job: Job | undefined) =>
+  typeof job?.needs === "string" ? [job.needs] : [...(job?.needs ?? [])];
+const environmentOf = (job: Job | undefined) =>
+  typeof job?.environment === "string" ? job.environment : job?.environment?.name;
+/** Jobs that can publish: any write permission or the OIDC token. */
+const canPublish = ({ permissions }: Job) =>
+  typeof permissions === "string"
+    ? permissions === "write-all"
+    : Object.values((permissions ?? {}) as Record<string, unknown>).includes("write");
+const stepKey = (step: Step) => step.name ?? step.uses?.replace(/@.*/, "");
+
 describe("release.yml publishes only what its build job produced", () => {
   const { workflow } = loadWorkflow("release.yml");
-  const jobs = Object.entries(workflow.jobs);
   const build = workflow.jobs["build"];
   const buildSteps = build?.steps ?? [];
-  /** The one digest function, byte-identical in build and in every publishing job. */
-  const DIGEST =
-    "digest() { (cd \"$1\" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }";
-  /** Defines the digest function exactly once, as DIGEST. */
-  const expectDigestFunction = (run: string, where: string) => {
-    expect(run, where).toContain(DIGEST);
-    expect(run.split("digest()"), where).toHaveLength(2);
-  };
-  const isDownload = (step: Step) => step.uses?.startsWith("actions/download-artifact@") === true;
-  const needsOf = (job: Job) => (typeof job.needs === "string" ? [job.needs] : (job.needs ?? []));
-  /** Jobs that can publish: any write permission or the OIDC token. */
-  const publishers = jobs.filter(([, { permissions }]) =>
-    typeof permissions === "string"
-      ? permissions === "write-all"
-      : Object.values((permissions ?? {}) as Record<string, unknown>).includes("write"),
-  );
+  const github = workflow.jobs["publish-github"]?.steps ?? [];
+  const npm = workflow.jobs["publish-npm"]?.steps ?? [];
+
+  /** `steps[at]` downloads `artifact` into `path`, and the next step checks it there. */
+  function expectVerifiedDownload(
+    steps: readonly Step[],
+    at: number,
+    artifact: string,
+    path: string,
+  ) {
+    const [download, verify] = [steps[at], steps[at + 1]];
+    expect(download?.uses).toMatch(/^actions\/download-artifact@/);
+    expect(download?.with).toEqual({ name: artifact, path });
+    expect(verify?.name).toBe("Verify the artifact is the build job's");
+    expect(verify?.["working-directory"]).toBe(path);
+    expect(verify?.env).toEqual({
+      EXPECTED_DIGEST: `\${{ needs.build.outputs.${artifact}-digest }}`,
+    });
+    expect(verify?.run).toBe(VERIFY_RUN);
+  }
 
   it("digests each uploaded artifact after it is built and before it is uploaded", () => {
     const digests = buildSteps.findIndex((s) => s.id === "digests");
-    const run = buildSteps[digests]?.run ?? "";
-    expectDigestFunction(run, "build");
+    expect(buildSteps[digests]?.run).toBe(DIGEST_RUN);
+    expectUnconditional(buildSteps[digests], "the digest step");
     const lastBuild = buildSteps.findLastIndex((s) => /\bbuild:(binaries|npm)\b/.test(s.run ?? ""));
-    expect(digests).toBeGreaterThan(lastBuild);
     expect(lastBuild).toBeGreaterThan(-1);
-    const uploads = buildSteps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
-    expect(uploads.map((s) => s.with?.["name"]).toSorted()).toEqual(["binaries", "npm-package"]);
-    for (const upload of uploads) {
-      expect(buildSteps.indexOf(upload)).toBeGreaterThan(digests);
-      const name = String(upload.with?.["name"]);
-      const path = String(upload.with?.["path"]).replace(/\/$/, "");
-      const variable = name.replaceAll("-", "_");
-      expect(run).toContain(`${variable}=$(digest ${path})`);
-      expect(run).toContain(`echo "${name}=\${${variable}}" >> "$GITHUB_OUTPUT"`);
-      expect(build?.outputs?.[`${name}-digest`]).toBe(`\${{ steps.digests.outputs.${name} }}`);
-    }
+    expect(digests).toBe(lastBuild + 1);
+    const uploads = buildSteps.slice(digests + 1);
+    expect(
+      uploads.map((s) => [s.uses?.replace(/@.*/, ""), s.with?.["name"], s.with?.["path"]]),
+    ).toEqual([
+      ["actions/upload-artifact", "binaries", "apps/cli/dist/"],
+      ["actions/upload-artifact", "npm-package", "apps/cli/dist-npm/"],
+    ]);
+    expect(build?.outputs).toMatchObject({
+      "binaries-digest": "${{ steps.digests.outputs.binaries }}",
+      "npm-package-digest": "${{ steps.digests.outputs.npm-package }}",
+    });
   });
 
-  /** The step right after `download` checks that artifact against the build job's digest. */
-  function expectVerified(steps: readonly Step[], download: Step, job: string): void {
-    const verify = steps[steps.indexOf(download) + 1];
-    const artifact = String(download.with?.["name"]);
-    expect(verify?.["working-directory"], job).toBe(download.with?.["path"]);
-    expect(verify?.env?.["EXPECTED_DIGEST"], job).toBe(
-      `\${{ needs.build.outputs.${artifact}-digest }}`,
-    );
-    const run = verify?.run ?? "";
-    expectDigestFunction(run, job);
-    expect(run, job).toContain("actual=$(digest .)");
-    expect(run, job).toContain(
-      'if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then',
-    );
-  }
-
-  it("verifies every artifact a publishing job downloads, right after the download", () => {
-    expect(publishers.map(([name]) => name).toSorted()).toEqual(["publish-github", "publish-npm"]);
-    for (const [name, job] of publishers) {
-      const steps = job.steps ?? [];
-      const downloads = steps.filter(isDownload);
-      expect(downloads.length, name).toBeGreaterThan(0);
-      expect(needsOf(job), name).toContain("build");
-      for (const download of downloads) expectVerified(steps, download, name);
-    }
+  it("checks both artifacts in publish-github, then releases exactly the checked files", () => {
+    expect(github.map(stepKey)).toEqual([
+      "actions/download-artifact",
+      "Verify the artifact is the build job's",
+      "actions/download-artifact",
+      "Verify the artifact is the build job's",
+      "Verify checksums",
+      "Create GitHub Release",
+    ]);
+    expectVerifiedDownload(github, 0, "binaries", "binaries");
+    expectVerifiedDownload(github, 2, "npm-package", "npm-package");
+    expect(github[4]?.["working-directory"]).toBe("binaries");
+    expect(github[4]?.run).toBe("sha256sum -c checksums.txt");
+    expect(github[5]?.["working-directory"]).toBe("binaries");
+    expect(github[5]?.run).toBe(RELEASE_RUN);
   });
 
-  it("publishes from the verified directories only", () => {
-    const steps = (job: string) => workflow.jobs[job]?.steps ?? [];
-    const release = steps("publish-github").filter((s) => s.run?.includes("gh release create"));
-    expect(release.map((s) => s["working-directory"])).toEqual(["binaries"]);
-    const publish = steps("publish-npm").filter((s) => /\bnpm publish\b/.test(s.run ?? ""));
-    expect(publish.length).toBeGreaterThan(0);
-    for (const step of publish) expect(step.run).toMatch(/npm publish \.\/dist-npm /);
+  it("checks the npm package in publish-npm, and only pinned steps touch it afterwards", () => {
+    expect(npm.map(stepKey)).toEqual([
+      "actions/download-artifact",
+      "Verify the artifact is the build job's",
+      "Install Node.js (pinned SHA-256, no cache)",
+      "Ensure npm >= 11.5.1",
+      "Restore executable bit (lost in artifact roundtrip)",
+      "Reject npm-side manifest auto-correction (dry-run)",
+      "Publish to npm (provenance)",
+    ]);
+    expectVerifiedDownload(npm, 0, "npm-package", "dist-npm");
+    expect(npm.slice(2, 4).filter((s) => /dist-npm/.test(JSON.stringify(s)))).toEqual([]);
+    expect(npm[4]?.run).toBe("chmod +x ./dist-npm/bin.js");
+    expect(npm[5]?.run).toBe(DRY_RUN_RUN);
+    expect(npm[6]?.run).toBe(
+      'npm publish ./dist-npm --ignore-scripts --provenance --tag "${DIST_TAG}"',
+    );
+  });
+
+  it("lets no step or gating job of the publish path be skipped or soft-fail", () => {
+    for (const name of ["publish-github", "publish-npm"]) {
+      const job = workflow.jobs[name];
+      expect(job?.if, name).toBe(PUBLISH_IF);
+      expect(job?.["continue-on-error"], name).toBeUndefined();
+      for (const step of job?.steps ?? []) expectUnconditional(step, `${name}: ${stepKey(step)}`);
+    }
+    expect(needsOf(workflow.jobs["publish-github"]).toSorted()).toEqual([
+      "build",
+      "release-environment",
+      "smoke",
+      "verify",
+      "version-check",
+    ]);
+    expect(needsOf(workflow.jobs["publish-npm"])).toContain("publish-github");
+    for (const name of ["version-check", "build", "smoke", "release-environment"]) {
+      expect(workflow.jobs[name]?.["continue-on-error"], name).toBeUndefined();
+    }
   });
 });
 
-describe("release.yml publishes to npm only after a reviewer approves", () => {
+describe("release.yml publishes nothing before a reviewer approves", () => {
   const { workflow } = loadWorkflow("release.yml");
-  const check = workflow.jobs["npm-environment"];
-  const step = check?.steps?.[0];
-  const environmentOf = (job: Job | undefined) =>
-    typeof job?.environment === "string" ? job.environment : job?.environment?.name;
+  const jobs = Object.entries(workflow.jobs);
+  const check = workflow.jobs["release-environment"];
 
-  it("runs the OIDC publish in the checked environment, and nothing else in any environment", () => {
-    const withEnvironment = Object.entries(workflow.jobs).filter(([, job]) => job.environment);
-    expect(withEnvironment.map(([name]) => name)).toEqual(["publish-npm"]);
-    const oidc = Object.entries(workflow.jobs).filter(
+  it("runs every job that can publish, and only those, in the release environment", () => {
+    const publishers = jobs.filter(([, job]) => canPublish(job)).map(([name]) => name);
+    expect(publishers.toSorted()).toEqual(["publish-github", "publish-npm"]);
+    const gated = jobs.filter(([, job]) => job.environment !== undefined);
+    expect(gated.map(([name]) => name).toSorted()).toEqual(publishers.toSorted());
+    for (const name of publishers)
+      expect(environmentOf(workflow.jobs[name])).toBe(RELEASE_ENVIRONMENT);
+    const oidc = jobs.filter(
       ([, job]) =>
         (job.permissions as Record<string, unknown> | undefined)?.["id-token"] === "write",
     );
     expect(oidc.map(([name]) => name)).toEqual(["publish-npm"]);
-    expect(environmentOf(workflow.jobs["publish-npm"])).toBe(step?.env?.["ENVIRONMENT"]);
   });
 
-  it("checks that environment before anything irreversible, on dry runs too", () => {
-    expect(check?.if).toBeUndefined();
+  it("checks that environment's protection, failing closed, before either publish job", () => {
+    expectUnconditional(check, "release-environment");
     expect(check?.permissions).toEqual({ actions: "read" });
-    expect(check?.steps?.map((s) => s.uses)).toEqual([undefined]);
-    // publish-npm runs after publish-github, so the check gates both
-    expect(workflow.jobs["publish-github"]?.needs).toContain("npm-environment");
-    expect(workflow.jobs["publish-npm"]?.needs).toContain("publish-github");
+    expect(check?.steps).toHaveLength(1);
+    const step = check?.steps?.[0];
+    expectUnconditional(step, "the environment check");
+    expect(step?.uses).toBeUndefined();
+    expect(step?.env).toEqual({
+      GH_TOKEN: "${{ github.token }}",
+      ENVIRONMENT: RELEASE_ENVIRONMENT,
+      TAG_PATTERN: RELEASE_TAGS,
+    });
+    expect(step?.run).toBe(ENVIRONMENT_CHECK_RUN);
   });
 
-  it("requires a reviewer and exactly the release tag pattern, failing closed", () => {
-    const push = workflow.on["push"] as { tags: readonly string[] };
-    expect(push.tags).toEqual([step?.env?.["TAG_PATTERN"]]);
-    const run = step?.run ?? "";
-    expect(run).toContain("set -euo pipefail");
-    expect(run).toContain('if ! config=$(gh api "${api}"); then');
-    expect(run).toContain(
-      `reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<< "\${config}")`,
-    );
-    expect(run).toContain('if [ "${reviewers}" -lt 1 ]; then');
-    expect(run).toContain(
-      `if [ "$(jq '.deployment_branch_policy.custom_branch_policies' <<< "\${config}")" != "true" ]; then`,
-    );
-    expect(run).toContain('if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then');
-    expect(run.match(/\bexit 1\b/g)).toHaveLength(4);
+  it("triggers on exactly the tag pattern the environment admits", () => {
+    expect((workflow.on["push"] as { tags: readonly string[] }).tags).toEqual([RELEASE_TAGS]);
   });
 });

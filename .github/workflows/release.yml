@@ -3,7 +3,8 @@
 # On push of a `v*` tag: quality gate (reuses ci.yml wholesale) → tag ↔
 # apps/cli version match check → bun compile binaries for 5 targets →
 # real-machine smoke (5 OS runners) → GitHub Release (with checksums.txt) →
-# npm publish (trusted publishing + provenance).
+# npm publish (trusted publishing + provenance). Each publish job waits for
+# a reviewer's approval in the `release` environment.
 # workflow_dispatch is a dry run: everything except publish runs (for
 # verifying the plumbing before tagging).
 #
@@ -292,24 +293,25 @@ jobs:
             *) echo "::warning::failed with output other than the keychain typed error"; exit 1 ;;
           esac
 
-  # publish-npm runs in the npm-publish environment, which must require a
-  # reviewer and admit only v* tags (docs/RELEASING.md, first time). When a
-  # job references an environment that does not exist, GitHub creates it
-  # with no protection at all and runs the job, so this job reads the
-  # configuration and fails closed. It runs before publish-github, so a
-  # missing or weakened environment stops the release before anything
-  # irreversible, and it runs on dry runs too. The environment API needs
-  # actions: read; this job runs no checkout and no action
-  npm-environment:
+  # Both publish jobs run in the `release` environment, which must require a
+  # reviewer and admit only v* tags (docs/RELEASING.md, first time): nothing
+  # irreversible happens before a reviewer approves, and npm's
+  # trusted-publisher entry names the environment. When a job references an
+  # environment that does not exist, GitHub creates it with no protection at
+  # all and runs the job, so this job reads the configuration and fails
+  # closed before either publish job starts, on dry runs too. The
+  # environment API needs actions: read; this job runs no checkout and no
+  # action
+  release-environment:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: Require a reviewer and a v* tag policy on npm-publish
+      - name: Require a reviewer and a v* tag policy on the release environment
         env:
           GH_TOKEN: ${{ github.token }}
-          ENVIRONMENT: npm-publish
+          ENVIRONMENT: release
           TAG_PATTERN: "v[0-9]*"
         run: |
           set -euo pipefail
@@ -335,13 +337,17 @@ jobs:
           echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"
 
   # Create the GitHub Release (with checksums.txt). Release notes are
-  # auto-generated (ADR-0015: no CHANGELOG until 1.0)
+  # auto-generated (ADR-0015: no CHANGELOG until 1.0). The job waits in the
+  # release environment for a reviewer's approval, and it also checks the
+  # npm-package artifact, so a swapped or roundtrip-damaged npm package
+  # stops the release before the Release exists
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # npm staging lives inside the build job (a precondition via smoke). If it
     # is broken, build fails and the irreversible Release creation is never
     # reached
-    needs: [verify, version-check, build, smoke, npm-environment]
+    needs: [verify, version-check, build, smoke, release-environment]
+    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -357,6 +363,25 @@ jobs:
         working-directory: binaries
         env:
           EXPECTED_DIGEST: ${{ needs.build.outputs.binaries-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: npm-package
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: npm-package
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.npm-package-digest }}
         run: |
           set -euo pipefail
           digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
@@ -393,10 +418,11 @@ jobs:
   # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
   # to this job alone, and only the pinned download-artifact action and the
   # SHA-256-pinned Node.js / npm run here (no checkout, no repository
-  # dependency code). The job waits in the npm-publish environment until a
-  # required reviewer approves it (checked by npm-environment), and npm's
-  # trusted-publisher entry names that environment, so a run outside it
-  # cannot publish
+  # dependency code). The job waits in the release environment for a
+  # reviewer's approval of its own (checked by release-environment), and
+  # npm's trusted-publisher entry names that environment, so no job outside
+  # it, approved or not, can publish. Lifecycle scripts never run
+  # (--ignore-scripts)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # build is the producer of the npm-package artifact (execution order is
@@ -405,7 +431,7 @@ jobs:
     # publish-github's needs would fail at download after the irreversible
     # Release creation)
     needs: [version-check, build, publish-github]
-    environment: npm-publish
+    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -497,7 +523,7 @@ jobs:
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
         run: |
           set +e
-          OUT=$(npm publish ./dist-npm --dry-run --tag "${DIST_TAG}" 2>&1)
+          OUT=$(npm publish ./dist-npm --dry-run --ignore-scripts --tag "${DIST_TAG}" 2>&1)
           CODE=$?
           set -e
           echo "${OUT}"
@@ -517,4 +543,4 @@ jobs:
         # Always pass the path with ./: a bare `dist-npm` is interpreted by
         # npm as a registry package name and fails with ENOVERSIONS / E404
         # (verified with --dry-run)
-        run: npm publish ./dist-npm --provenance --tag "${DIST_TAG}"
+        run: npm publish ./dist-npm --ignore-scripts --provenance --tag "${DIST_TAG}"
