@@ -88,7 +88,7 @@ export const variableHistoryProgram = Effect.fn("programs-history.variableHistor
     const stored = yield* store.versionHistory(environmentId, variableId);
     const audit = yield* AuditStore;
     const rows = yield* Effect.sync(() =>
-      audit.readRotationSync.rotationFlagEventsFor(environmentId, variableId),
+      audit.readRotationSync.rotationFlagEventsFor([{ environmentId, variableId }]),
     );
     const flagCounts = flagsIfCurrentByVersion(
       rows,
