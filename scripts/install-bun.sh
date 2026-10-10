@@ -11,12 +11,14 @@
 # (it runs an unverified script that fetches an unverified zip) or to
 # oven-sh/setup-bun (see .github/actions/install-bun).
 #
-# Bumping Bun changes `.bun-version` and the three values below together (the
-# script fails closed on a mismatch, and apps/cli/test/dev-setup.test.ts
-# fails first in `bun run check`). The SHA-256 lines come from the release's
-# clearsigned SHASUMS256.txt.asc, signed by the Robobun key
-# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59. Check it with gpgv against a
-# keyring holding that key only, and require that fingerprint in VALIDSIG:
+# Bumping Bun changes `.bun-version`, the three values below, and the release
+# runtimes in apps/cli/scripts/bun-runtimes.ts together (the script fails
+# closed on a mismatch, and apps/cli/test/dev-setup.test.ts and
+# privileged-workflows.test.ts fail first in `bun run check`). The SHA-256
+# lines come from the release's clearsigned SHASUMS256.txt.asc, signed by the
+# Robobun key F3DCC08A8572C0749B3E18888EAB4D40A7B22B59. Check it with gpgv
+# against a keyring holding that key only, and require that fingerprint in
+# VALIDSIG:
 #   curl -fsSL https://keys.openpgp.org/vks/v1/by-fingerprint/F3DCC08A8572C0749B3E18888EAB4D40A7B22B59 |
 #     gpg --dearmor > robobun.gpg
 #   rm -f shasums.txt
@@ -29,7 +31,8 @@
 #
 # Only linux-x64 is supported (CI runners, Claude Code on the web, Cursor
 # Cloud). A CPU without AVX2 gets the baseline build unless `--require-avx2`
-# is passed (CI passes it: the release embeds the running bun). Another
+# is passed (CI passes it, so every job runs the build the linux-x64 release
+# runtime pin names). Another
 # platform is refused rather than guessed: add its line from the verified
 # SHASUMS256.txt if one is ever needed.
 #

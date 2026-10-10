@@ -200,9 +200,21 @@ What exists today:
   an Actions cache; the dev-environment setup uses the same script; the npm
   publish job's Node.js is pinned the
   same way in `release.yml`), dependencies by
-  `bun install --frozen-lockfile`.
+  `bun install --frozen-lockfile`. The Bun runtime embedded in each of the
+  five binaries is the official release zip for that target, verified
+  against a SHA-256 pinned in `apps/cli/scripts/bun-runtimes.ts` and passed
+  to `bun build --compile-executable-path`.
+- The publish jobs refuse an artifact unless its digest (every file's path
+  and SHA-256) matches the one the build job set as a job output. Any job of
+  the release run can overwrite an artifact, but only the build job can set
+  its own outputs.
 - The npm package is published with `npm publish --provenance` through
-  trusted publishing (OIDC, no long-lived token).
+  trusted publishing (OIDC, no long-lived token), with lifecycle scripts
+  off. Both publish jobs wait in the `release` environment for a required
+  reviewer's approval, so the GitHub Release is not created before one; the
+  npm trusted-publisher entry names that environment, and the run fails
+  before either publish job unless the environment requires a reviewer and
+  admits only `v*` tags.
 - `packaging/install.sh` refuses to install without a SHA-256 match against
   `checksums.txt`. That file is unsigned: integrity rests on TLS to
   github.com, and the script says so rather than claim signature verification.

@@ -3,7 +3,8 @@
 # On push of a `v*` tag: quality gate (reuses ci.yml wholesale) → tag ↔
 # apps/cli version match check → bun compile binaries for 5 targets →
 # real-machine smoke (5 OS runners) → GitHub Release (with checksums.txt) →
-# npm publish (trusted publishing + provenance).
+# npm publish (trusted publishing + provenance). Each publish job waits for
+# a reviewer's approval in the `release` environment.
 # workflow_dispatch is a dry run: everything except publish runs (for
 # verifying the plumbing before tagging).
 #
@@ -15,6 +16,9 @@
 # - Tags are only valid on commits in the main ancestry (version-check
 #   enforces this — it closes the path where tagging an unreviewed branch
 #   commit with a v tag reaches publish)
+# - The publish jobs ship only artifacts whose digest matches the build
+#   job's outputs (any job of the run can overwrite an artifact, but only
+#   build can set its outputs)
 # - External actions are pinned by commit SHA (this is a privileged path with
 #   contents: write / id-token: write, so upstream compromise via a mutable
 #   tag is ruled out. Same discipline as ADR-0011's strict pinning — updates
@@ -58,7 +62,7 @@ jobs:
   # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
   # added; the other is that it measured slower than a cold install.)
-  # apps/cli/test/workflow-caches.test.ts keeps every privileged workflow
+  # apps/cli/test/privileged-workflows.test.ts keeps every privileged workflow
   # free of Actions caches
   verify:
     permissions:
@@ -139,14 +143,18 @@ jobs:
       contents: read
     outputs:
       smoke-matrix: ${{ steps.smoke-matrix.outputs.matrix }}
+      binaries-digest: ${{ steps.digests.outputs.binaries }}
+      npm-package-digest: ${{ steps.digests.outputs.npm-package }}
     steps:
       # Leave no token on jobs that run dependency code (bun install / build)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      # The running Bun becomes the runtime inside the published linux-x64
-      # binary, so it comes from the SHA-256-pinned zip, never a cache
+      # The running Bun bundles the published code and writes every artifact,
+      # so it comes from the SHA-256-pinned zip, never a cache. The runtimes
+      # embedded in the binaries are pinned separately, per target, in
+      # apps/cli/scripts/bun-runtimes.ts
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
@@ -175,15 +183,33 @@ jobs:
       - name: Stage npm package (bundle)
         run: bun run --filter @maruhi/cli build:npm
 
+      # Bind what gets published to this job. Every job of this run holds a
+      # token that can overwrite the artifacts below (upload-artifact needs
+      # no permission), but only this job's steps can set its outputs. So the
+      # publish jobs recompute this digest — every file's path and SHA-256 —
+      # over what they downloaded and refuse a mismatch, and a compromised
+      # verify / smoke job cannot swap what ships. The same digest function
+      # runs there (pinned identical by apps/cli/test/privileged-workflows.test.ts)
+      - name: Digest the artifacts (bound to this job's outputs)
+        id: digests
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          binaries=$(digest apps/cli/dist)
+          npm_package=$(digest apps/cli/dist-npm)
+          echo "binaries=${binaries}" >> "$GITHUB_OUTPUT"
+          echo "npm-package=${npm_package}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries
           path: apps/cli/dist/
           if-no-files-found: error
-          # Recovery from a publish-npm-only failure (re-running the failed
-          # job — docs/RELEASING.md) presumes the artifact survives. At 7 days,
-          # merely noticing late closes recovery on the same version
-          retention-days: 30
+          # The publish jobs download this after their approvals, and recovery
+          # from a publish-npm-only failure re-runs the job (docs/RELEASING.md).
+          # A re-run can start up to 30 days after the run and then wait up to
+          # 30 days for its approval, so keep the artifacts 60 days
+          retention-days: 60
           # A new "Re-run all jobs" attempt makes the same-named artifact 409;
           # with tag re-cutting banned, this closes the trap of having to burn
           # an rc
@@ -194,7 +220,7 @@ jobs:
           name: npm-package
           path: apps/cli/dist-npm/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 60
           overwrite: true
 
   # Real-machine smoke: cross-compiling only guarantees "it builds", so every
@@ -268,14 +294,61 @@ jobs:
             *) echo "::warning::failed with output other than the keychain typed error"; exit 1 ;;
           esac
 
+  # Both publish jobs run in the `release` environment, which must require a
+  # reviewer and admit only v* tags (docs/RELEASING.md, first time): nothing
+  # irreversible happens before a reviewer approves, and npm's
+  # trusted-publisher entry names the environment. When a job references an
+  # environment that does not exist, GitHub creates it with no protection at
+  # all and runs the job, so this job reads the configuration and fails
+  # closed before either publish job starts, on dry runs too. The
+  # environment API needs actions: read; this job runs no checkout and no
+  # action
+  release-environment:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require a reviewer and a v* tag policy on the release environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: release
+          TAG_PATTERN: "v[0-9]*"
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}"
+          if ! config=$(gh api "${api}"); then
+            echo "::error::cannot read the ${ENVIRONMENT} environment; create it as docs/RELEASING.md describes"
+            exit 1
+          fi
+          reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<< "${config}")
+          if [ "${reviewers}" -lt 1 ]; then
+            echo "::error::the ${ENVIRONMENT} environment has no required reviewer (docs/RELEASING.md)"
+            exit 1
+          fi
+          if [ "$(jq '.deployment_branch_policy.custom_branch_policies' <<< "${config}")" != "true" ]; then
+            echo "::error::the ${ENVIRONMENT} environment must admit selected tags only (docs/RELEASING.md)"
+            exit 1
+          fi
+          policies=$(gh api --paginate "${api}/deployment-branch-policies" --jq '.branch_policies[] | "\(.type) \(.name)"')
+          if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then
+            echo "::error::the ${ENVIRONMENT} environment must admit exactly the tag pattern ${TAG_PATTERN} (got: ${policies//$'\n'/, })"
+            exit 1
+          fi
+          echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"
+
   # Create the GitHub Release (with checksums.txt). Release notes are
-  # auto-generated (ADR-0015: no CHANGELOG until 1.0)
+  # auto-generated (ADR-0015: no CHANGELOG until 1.0). The job waits in the
+  # release environment for a reviewer's approval, and it also checks the
+  # npm-package artifact, so a swapped or roundtrip-damaged npm package
+  # stops the release before the Release exists
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # npm staging lives inside the build job (a precondition via smoke). If it
     # is broken, build fails and the irreversible Release creation is never
     # reached
-    needs: [verify, version-check, smoke]
+    needs: [verify, version-check, build, smoke, release-environment]
+    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -284,13 +357,49 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries
+          path: binaries
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: binaries
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.binaries-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: npm-package
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: npm-package
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.npm-package-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
 
       # Verify against an implementation (coreutils) independent of the
       # generator (node:crypto) before publishing
       - name: Verify checksums
+        working-directory: binaries
         run: sha256sum -c checksums.txt
 
       - name: Create GitHub Release
+        working-directory: binaries
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.version-check.outputs.prerelease }}
@@ -310,7 +419,11 @@ jobs:
   # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
   # to this job alone, and only the pinned download-artifact action and the
   # SHA-256-pinned Node.js / npm run here (no checkout, no repository
-  # dependency code)
+  # dependency code). The job waits in the release environment for a
+  # reviewer's approval of its own (checked by release-environment), and
+  # npm's trusted-publisher entry names that environment, so no job outside
+  # it, approved or not, can publish. Lifecycle scripts never run
+  # (--ignore-scripts)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # build is the producer of the npm-package artifact (execution order is
@@ -319,6 +432,7 @@ jobs:
     # publish-github's needs would fail at download after the irreversible
     # Release creation)
     needs: [version-check, build, publish-github]
+    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -329,6 +443,20 @@ jobs:
         with:
           name: npm-package
           path: dist-npm
+
+      # Refuse anything the build job did not produce (see its digest step)
+      - name: Verify the artifact is the build job's
+        working-directory: dist-npm
+        env:
+          EXPECTED_DIGEST: ${{ needs.build.outputs.npm-package-digest }}
+        run: |
+          set -euo pipefail
+          digest() { (cd "$1" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }
+          actual=$(digest .)
+          if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then
+            echo "::error::the downloaded artifact (digest ${actual}) is not the one the build job produced (${EXPECTED_DIGEST:-no digest})"
+            exit 1
+          fi
 
       # Node + npm come from the official tarball verified against a pinned
       # SHA-256 before anything in it runs, not from actions/setup-node: on
@@ -344,7 +472,7 @@ jobs:
       #   rm -f shasums.txt
       #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
       #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
-      # Pinned by apps/cli/test/workflow-caches.test.ts
+      # Pinned by apps/cli/test/privileged-workflows.test.ts
       - name: Install Node.js (pinned SHA-256, no cache)
         env:
           NODE_VERSION: "24.21.0"
@@ -396,7 +524,7 @@ jobs:
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
         run: |
           set +e
-          OUT=$(npm publish ./dist-npm --dry-run --tag "${DIST_TAG}" 2>&1)
+          OUT=$(npm publish ./dist-npm --dry-run --ignore-scripts --tag "${DIST_TAG}" 2>&1)
           CODE=$?
           set -e
           echo "${OUT}"
@@ -416,4 +544,4 @@ jobs:
         # Always pass the path with ./: a bare `dist-npm` is interpreted by
         # npm as a registry package name and fails with ENOVERSIONS / E404
         # (verified with --dry-run)
-        run: npm publish ./dist-npm --provenance --tag "${DIST_TAG}"
+        run: npm publish ./dist-npm --ignore-scripts --provenance --tag "${DIST_TAG}"
