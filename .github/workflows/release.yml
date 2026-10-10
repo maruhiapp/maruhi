@@ -46,19 +46,20 @@ env:
 
 jobs:
   # The full quality gate (bun audit + 11 steps). Calls ci.yml via workflow_call.
-  # skip-caches: true makes every job of the release run restore no Actions
-  # cache — not the bun binary (setup-bun's own cache) and not the Playwright
-  # browser. An Actions cache entry is writable by any run in the default
-  # branch's scope (including the Pullfrog agent's workflow_dispatch), and
-  # setup-bun restores the bun executable verifying only a `bun --revision`
-  # string — under a key an attacker can pre-seed (e.g. via a public
-  # .bun-version bump PR). Every job of this run, verify and build included,
-  # holds a token that can overwrite the `binaries` / `npm-package` artifacts
-  # publish downloads, so one poisoned entry could reach a published release.
-  # (A dependency cache would be worse still — bun would install a cached hit
+  # skip-caches: true turns off the Playwright browser cache, so no job of the
+  # release run restores an Actions cache (Bun never comes from one: the
+  # install-bun action verifies a pinned SHA-256). An Actions cache entry in
+  # the default branch's scope is writable by code in any run there (a push
+  # to main and its dependencies, the Pullfrog agent's workflow_dispatch) —
+  # GITHUB_TOKEN permissions do not limit cache writes — and tag runs read
+  # that scope. Every job of this run, verify and build included, holds a
+  # token that can overwrite the `binaries` / `npm-package` artifacts publish
+  # downloads, so one poisoned entry could reach a published release. (A
+  # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
-  # added; the other is that it measured slower than a cold install.) A cold
-  # download + install costs seconds on this infrequent, privileged path
+  # added; the other is that it measured slower than a cold install.)
+  # apps/cli/test/workflow-caches.test.ts keeps every privileged workflow
+  # free of Actions caches
   verify:
     permissions:
       contents: read
@@ -144,15 +145,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-          # Do not restore the bun executable from Actions cache on this
-          # privileged build job (it produces the published binaries / npm
-          # artifacts). setup-bun verifies a cache hit by a revision string
-          # only, and the key is attacker-pre-seedable from the default-branch
-          # scope (full reasoning at the verify job). A cold download is seconds
-          no-cache: true
+      # The running Bun becomes the runtime inside the published linux-x64
+      # binary, so it comes from the SHA-256-pinned zip, never a cache
+      - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -313,8 +308,9 @@ jobs:
   # no long-lived token in GitHub Secrets. provenance is forced via an
   # explicit flag (bun publish does not support provenance —
   # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
-  # to this job alone, and only the pinned official action and npm CLI run
-  # here (no checkout, no repository dependency code)
+  # to this job alone, and only the pinned download-artifact action and the
+  # SHA-256-pinned Node.js / npm run here (no checkout, no repository
+  # dependency code)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # build is the producer of the npm-package artifact (execution order is
@@ -334,9 +330,42 @@ jobs:
           name: npm-package
           path: dist-npm
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
+      # Node + npm come from the official tarball verified against a pinned
+      # SHA-256 before anything in it runs, not from actions/setup-node: on
+      # a tool-cache miss setup-node downloads Node without a digest check
+      # and runs `node --version` / `npm --version` inside its own step,
+      # where this job's OIDC request token is in the environment. Inline
+      # (not a local action) because this job has no checkout. A Node bump
+      # changes both values: the SHA-256 is the
+      # node-v<version>-linux-x64.tar.gz line of the release's clearsigned
+      # SHASUMS256.txt.asc, checked by gpgv against the active release keys
+      # only (not a personal keyring, where any key would pass):
+      #   curl -fsSLO https://raw.githubusercontent.com/nodejs/release-keys/main/gpg-only-active-keys/pubring.kbx
+      #   rm -f shasums.txt
+      #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
+      #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
+      # Pinned by apps/cli/test/workflow-caches.test.ts
+      - name: Install Node.js (pinned SHA-256, no cache)
+        env:
+          NODE_VERSION: "24.21.0"
+          NODE_LINUX_X64_TARGZ_SHA256: "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff"
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" != "Linux" ] || [ "${RUNNER_ARCH}" != "X64" ]; then
+            echo "::error::the pinned Node.js tarball is linux-x64 (got ${RUNNER_OS}/${RUNNER_ARCH})"
+            exit 1
+          fi
+          archive="${RUNNER_TEMP}/node-linux-x64.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --retry 3 --retry-all-errors \
+            --output "${archive}" \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+          echo "${NODE_LINUX_X64_TARGZ_SHA256}  ${archive}" | sha256sum --check --strict
+          node_dir="${RUNNER_TEMP}/node"
+          mkdir -p "${node_dir}"
+          tar -xzf "${archive}" -C "${node_dir}" --strip-components=1
+          rm -f "${archive}"
+          echo "${node_dir}/bin" >> "${GITHUB_PATH}"
+          "${node_dir}/bin/node" --version
 
       # Trusted publishing requires npm >= 11.5.1. If unmet, stop earlier with
       # a clearer message than publish's authentication error

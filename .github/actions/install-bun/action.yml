@@ -1,0 +1,71 @@
+# install-bun — installs the Bun that `.bun-version` pins, for this
+# repository's own workflows (ci / installer / release / ops-backup).
+#
+# The official release zip is verified against the SHA-256 pinned below
+# before anything in it runs, and no Actions cache is read or written. Do not
+# go back to oven-sh/setup-bun: it caches the executable under a key any run
+# in the default-branch scope can seed, and its only check runs the restored
+# binary (`bun --revision`). On the release path this binary also becomes the
+# runtime inside the published linux-x64 binary (`bun build --compile` for
+# the host target copies the running executable).
+#
+# Bumping Bun changes `.bun-version` and both values below together (the step
+# fails closed on a mismatch, and apps/cli/test/workflow-caches.test.ts fails
+# first in `bun run check`). BUN_LINUX_X64_ZIP_SHA256 comes from the
+# release's clearsigned SHASUMS256.txt.asc, signed by the Robobun key
+# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59. Check it with gpgv against a
+# keyring holding that key only, and require that fingerprint in VALIDSIG:
+#   curl -fsSL https://keys.openpgp.org/vks/v1/by-fingerprint/F3DCC08A8572C0749B3E18888EAB4D40A7B22B59 |
+#     gpg --dearmor > robobun.gpg
+#   rm -f shasums.txt
+#   gpgv --status-fd 1 --keyring ./robobun.gpg --output shasums.txt SHASUMS256.txt.asc |
+#     grep -q '^\[GNUPG:\] VALIDSIG .* F3DCC08A8572C0749B3E18888EAB4D40A7B22B59$' &&
+#     grep ' bun-linux-x64.zip$' shasums.txt
+# Not `gpg --decrypt … | grep`: it still prints the text after a BAD
+# signature, and a plain gpg accepts a good signature from any key in the
+# user's keyring.
+#
+# Only linux-x64 runners with AVX2 (GitHub-hosted ubuntu) are supported. No
+# job here installs Bun on another platform, so the step refuses rather than
+# guesses.
+
+name: "install-bun"
+description: >-
+  Install the Bun version pinned by .bun-version from the official release
+  zip, verified against a pinned SHA-256, with no Actions cache.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Bun (pinned SHA-256, no cache)
+      shell: bash
+      env:
+        BUN_VERSION: "1.4.2"
+        BUN_LINUX_X64_ZIP_SHA256: "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913"
+      run: |
+        set -euo pipefail
+        wanted="$(cat "${GITHUB_WORKSPACE}/.bun-version")"
+        if [ "${wanted}" != "${BUN_VERSION}" ]; then
+          echo "::error::.bun-version is ${wanted} but .github/actions/install-bun pins ${BUN_VERSION} (update the version and SHA-256 together)"
+          exit 1
+        fi
+        if [ "${RUNNER_OS}" != "Linux" ] || [ "${RUNNER_ARCH}" != "X64" ]; then
+          echo "::error::install-bun supports linux-x64 runners only (got ${RUNNER_OS}/${RUNNER_ARCH})"
+          exit 1
+        fi
+        if ! grep -qw avx2 /proc/cpuinfo; then
+          echo "::error::this runner has no AVX2; the pinned bun-linux-x64 build needs it"
+          exit 1
+        fi
+        zip="${RUNNER_TEMP}/bun-linux-x64.zip"
+        curl --fail --silent --show-error --location --proto '=https' --retry 3 --retry-all-errors \
+          --output "${zip}" \
+          "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+        echo "${BUN_LINUX_X64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict
+        bin_dir="${HOME}/.bun/bin"
+        mkdir -p "${bin_dir}"
+        unzip -o -q -j "${zip}" bun-linux-x64/bun -d "${bin_dir}"
+        rm -f "${zip}"
+        ln -sf bun "${bin_dir}/bunx"
+        echo "${bin_dir}" >> "${GITHUB_PATH}"
+        "${bin_dir}/bun" --revision
