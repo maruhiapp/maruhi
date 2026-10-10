@@ -3,9 +3,10 @@
 # Syncs Bun to .bun-version (strict pin) and installs workspace dependencies.
 # Bun comes from scripts/install-bun.sh, which checks the release zip against
 # the SHA-256 pinned there (the same pin CI uses) before running it. Does not
-# download Playwright's Chromium — uses the environment's preinstalled build
-# (the apps/web / apps/site e2e suites and the packages/crypto browser tests
-# read PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH).
+# download a browser (CI and Cursor Cloud get scripts/install-headless-shell.sh's
+# verified one) — uses the environment's preinstalled build (the apps/web /
+# apps/site e2e suites and the packages/crypto browser tests read
+# PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH).
 set -euo pipefail
 
 # No-op outside the remote environment (Claude Code on the web)
@@ -28,6 +29,9 @@ export PATH="$HOME/.bun/bin:$PATH"
 # ~/.bun/bin from here.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo 'export PATH="$HOME/.bun/bin:$PATH"' >>"$CLAUDE_ENV_FILE"
+  # Any `playwright install` fails before it downloads, as in ci.yml: the
+  # preinstalled build is the only browser
+  echo 'export PLAYWRIGHT_DOWNLOAD_HOST="https://playwright-download.invalid"' >>"$CLAUDE_ENV_FILE"
   if [ -x /opt/pw-browsers/chromium ]; then
     echo 'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/opt/pw-browsers/chromium' >>"$CLAUDE_ENV_FILE"
   fi

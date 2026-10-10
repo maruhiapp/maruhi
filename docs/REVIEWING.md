@@ -199,7 +199,8 @@ What exists today:
   verified against a SHA-256 pinned in `scripts/install-bun.sh`; the
   dev-environment setup uses the same script; the npm publish job's Node.js
   is pinned the same way in `release.yml`, and so is the Chrome Headless
-  Shell the gate's browser tests run, in `ci.yml`), dependencies by
+  Shell the gate's browser tests run, in `scripts/install-headless-shell.sh`,
+  which the dev-environment setup uses too), dependencies by
   `bun install --frozen-lockfile`. No workflow restores an Actions cache.
   The Bun runtime embedded in each of the five binaries is the official
   release zip for that target, verified against a SHA-256 pinned in
