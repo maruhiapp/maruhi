@@ -205,10 +205,11 @@ jobs:
           name: binaries
           path: apps/cli/dist/
           if-no-files-found: error
-          # Recovery from a publish-npm-only failure (re-running the failed
-          # job — docs/RELEASING.md) presumes the artifact survives. At 7 days,
-          # merely noticing late closes recovery on the same version
-          retention-days: 30
+          # The publish jobs download this after their approvals, and recovery
+          # from a publish-npm-only failure re-runs the job (docs/RELEASING.md).
+          # A re-run can start up to 30 days after the run and then wait up to
+          # 30 days for its approval, so keep the artifacts 60 days
+          retention-days: 60
           # A new "Re-run all jobs" attempt makes the same-named artifact 409;
           # with tag re-cutting banned, this closes the trap of having to burn
           # an rc
@@ -219,7 +220,7 @@ jobs:
           name: npm-package
           path: apps/cli/dist-npm/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 60
           overwrite: true
 
   # Real-machine smoke: cross-compiling only guarantees "it builds", so every

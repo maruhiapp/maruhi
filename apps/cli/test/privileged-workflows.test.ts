@@ -38,7 +38,10 @@
 //      tag pattern (GitHub creates a missing environment unprotected)
 //   8. the publish path cannot be skipped or soft-fail: the publish jobs'
 //      `if:`, step sequences, and every check and publish command are pinned
-//      byte for byte, with no `if:` or continue-on-error on their steps
+//      byte for byte, with no `if:`, continue-on-error or custom shell on
+//      their steps, no `defaults` or extra `env` (BASH_ENV, GH_HOST) above
+//      them, smoke's soft-fail limited to the keychain probe, and artifacts
+//      kept as long as a re-run can wait for its approval
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -75,6 +78,7 @@ interface Step {
   readonly env?: Readonly<Record<string, unknown>>;
   readonly if?: string;
   readonly "continue-on-error"?: unknown;
+  readonly shell?: string;
   readonly run?: string;
 }
 interface Job {
@@ -84,6 +88,8 @@ interface Job {
   readonly if?: string;
   readonly "continue-on-error"?: unknown;
   readonly environment?: string | { readonly name: string };
+  readonly defaults?: unknown;
+  readonly env?: Readonly<Record<string, unknown>>;
   readonly container?: unknown;
   readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
@@ -93,6 +99,8 @@ interface Job {
 interface Workflow {
   readonly on: Readonly<Record<string, unknown>>;
   readonly permissions?: unknown;
+  readonly defaults?: unknown;
+  readonly env?: Readonly<Record<string, unknown>>;
   readonly jobs: Readonly<Record<string, Job>>;
 }
 
@@ -410,6 +418,8 @@ function expectUnconditional(item: Step | Job | undefined, where: string): void 
   expect(item, where).toBeDefined();
   expect(item?.if, `${where} has an if:`).toBeUndefined();
   expect(item?.["continue-on-error"], `${where} has continue-on-error`).toBeUndefined();
+  // A custom shell (`shell: "true {0}"`) would skip the script and still pass
+  expect((item as Step | undefined)?.shell, `${where} sets a shell`).toBeUndefined();
 }
 
 const needsOf = (job: Job | undefined) =>
@@ -522,6 +532,57 @@ describe("release.yml publishes only what its build job produced", () => {
     for (const name of ["version-check", "build", "smoke", "release-environment"]) {
       expect(workflow.jobs[name]?.["continue-on-error"], name).toBeUndefined();
     }
+  });
+
+  it("lets nothing reshape the shell those steps run in", () => {
+    // defaults.run.shell or BASH_ENV (sourced before every bash step) at any level would run
+    // before or instead of the pinned scripts, and GH_HOST would point the environment check
+    // at another server
+    expect(workflow.defaults).toBeUndefined();
+    expect(workflow.env).toEqual({
+      DO_NOT_TRACK: "1",
+      WRANGLER_SEND_METRICS: "false",
+      CF_SEND_TELEMETRY: "false",
+    });
+    for (const name of ["build", "release-environment", "publish-github", "publish-npm"]) {
+      expect(workflow.jobs[name]?.defaults, name).toBeUndefined();
+      expect(workflow.jobs[name]?.env, name).toBeUndefined();
+    }
+    expect(buildSteps.find((s) => s.id === "digests")?.env).toBeUndefined();
+    const dist = { DIST_TAG: expect.stringMatching(/^\$\{\{ .* \}\}$/) };
+    expect(github.slice(4).map((s) => s.env)).toEqual([
+      undefined,
+      {
+        GH_TOKEN: "${{ github.token }}",
+        PRERELEASE: "${{ needs.version-check.outputs.prerelease }}",
+      },
+    ]);
+    expect(npm.slice(2).map((s) => Object.keys(s.env ?? {}))).toEqual([
+      ["NODE_VERSION", "NODE_LINUX_X64_TARGZ_SHA256"],
+      [],
+      [],
+      ["DIST_TAG"],
+      ["DIST_TAG"],
+    ]);
+    expect(npm[5]?.env).toEqual(dist);
+    expect(npm[6]?.env).toEqual(dist);
+  });
+
+  it("smokes every target with only the keychain probe allowed to soft-fail", () => {
+    const smoke = workflow.jobs["smoke"]?.steps ?? [];
+    expect(smoke.map(stepKey)).toEqual([
+      "actions/download-artifact",
+      "Launch check (--version / --help)",
+      "Keychain probe (typed failure expected)",
+    ]);
+    expect(smoke.map((s) => s["continue-on-error"])).toEqual([undefined, undefined, true]);
+    expect(smoke.map((s) => s.if)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("keeps the artifacts as long as a re-run can still wait for its approval", () => {
+    // A re-run may start 30 days after the run and then wait 30 days for an approval
+    const uploads = buildSteps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.map((s) => s.with?.["retention-days"])).toEqual([60, 60]);
   });
 });
 

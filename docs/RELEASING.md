@@ -132,9 +132,11 @@ revoked (no unpublish. npm also rejects re-publishing over it).
 **Exception — when only publish-npm failed** (the Release exists but npm did not get it):
 no need to bump the rc. npm has not consumed that version, so fix the cause (the first
 time it is usually the trusted publisher config — workflow name, org, allowed action)
-and **re-run the failed job** on the same run to recover on the same version (re-run
-works within the artifact retention window = **30 days**. Past that, bumping the rc is
-the only way).
+and **re-run the failed job** on the same run to recover on the same version (GitHub
+allows a re-run up to **30 days** after the run. Past that, bumping the rc is the only
+way). The artifacts are kept 60 days, so a re-run started on day 30 still finds them
+after waiting the full 30 days GitHub allows for its approval; keep the repository's
+artifact retention setting (Settings → Actions → General) at 60 days or more.
 However, **re-run only fixes config/environment causes**. A failure that needs a code
 fix cannot be re-run away (the run uses the workflow and artifacts from tag time), so
 fix it and bump the rc (the v0.1.0-rc.1 bin-normalization bug is a real example). The
