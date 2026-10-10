@@ -49,8 +49,10 @@
 //      them, smoke's soft-fail limited to the keychain probe, and artifacts
 //      kept as long as a re-run can wait for its approval
 //   9. ci.yml's browser is the Chrome Headless Shell version the pinned
-//      Playwright expects (bun.lock resolves one Playwright), downloaded and
-//      checked against a pinned SHA-256 before it is unpacked. Any other
+//      Playwright expects (bun.lock resolves one Playwright), installed only
+//      by scripts/install-headless-shell.sh (the one pin, shared with the
+//      Cursor Cloud setup), which checks it against the pinned SHA-256 before
+//      it is unpacked. Any other
 //      Playwright browser download fails: ci.yml points PLAYWRIGHT_DOWNLOAD_HOST
 //      at an unresolvable host and nothing else sets a PLAYWRIGHT_ variable,
 //      and no workflow, local action or package.json script (`pre`/`post`
@@ -360,7 +362,10 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       (s) => s.name === "Install Chrome Headless Shell (pinned SHA-256, no cache)",
     );
     const step = steps[install];
-    const run = step?.run ?? "";
+    // The step runs scripts/install-headless-shell.sh, which holds the pin; the script's
+    // failure paths are run in dev-setup.test.ts
+    const script = read("scripts/install-headless-shell.sh");
+    const scriptPin = (name: string) => new RegExp(`^${name}="([^"]*)"$`, "m").exec(script)?.[1];
     const webPin = (
       JSON.parse(read("apps/web/package.json")) as { devDependencies: Record<string, string> }
     ).devDependencies["playwright"];
@@ -383,10 +388,27 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       const expected = browsers.find((b) => b.name === "chromium-headless-shell")?.browserVersion;
       expect(expected).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
       expect(
-        step?.env?.["CHROME_HEADLESS_SHELL_VERSION"],
-        `playwright ${core.version} expects headless shell ${expected}: update the version and SHA-256 together (procedure at the install step)`,
+        scriptPin("CHROME_HEADLESS_SHELL_VERSION"),
+        `playwright ${core.version} expects headless shell ${expected}: update the version and SHA-256 in scripts/install-headless-shell.sh together (procedure in the script)`,
       ).toBe(expected);
-      expect(step?.env?.["CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+      expect(scriptPin("CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256")).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("installs only through the script, which holds the one pin, and exports what it printed", () => {
+      expect(install).toBeGreaterThan(-1);
+      // Byte for byte, so nothing (`|| true`, a second download, a fallback path) rides along
+      expect(step?.run).toBe(
+        [
+          "set -euo pipefail",
+          'if ! executable="$(bash scripts/install-headless-shell.sh)"; then',
+          "  exit 1",
+          "fi",
+          'echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${executable}" >> "${GITHUB_ENV}"',
+          "",
+        ].join("\n"),
+      );
+      expect(step?.env).toBeUndefined();
+      expect(read(`${WORKFLOWS_DIR}/ci.yml`)).not.toMatch(/[0-9a-f]{64}|CHROME_HEADLESS_SHELL_/);
     });
 
     it("resolves one Playwright everywhere, so @vitest/browser-playwright drives the same one", () => {
@@ -400,18 +422,26 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
     });
 
     it("downloads the archive and checks it against the pin before unpacking it", () => {
-      expect(install).toBeGreaterThan(-1);
-      expect(run).toContain(
-        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip",
+      expect(script).toContain(
+        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/${tree}.zip",
       );
-      expectVerifiedBeforeRun(run, "unzip ", "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=");
+      expect(script).toContain("--proto '=https' --proto-redir '=https'");
+      expectVerifiedBeforeRun(
+        script,
+        "unzip ",
+        'echo "${install_root}/${tree}/chrome-headless-shell"',
+      );
       // Unconditional, at the top level of the script, and exits on its own (not through `set -e`)
-      const lines = run.split("\n");
+      const lines = script.split("\n");
       const check = lines.indexOf(
-        'if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then',
+        'if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict >&2; then',
       );
       expect(check).toBeGreaterThan(-1);
-      expect(lines.slice(check + 1, check + 3)).toEqual(["  exit 1", "fi"]);
+      expect(lines.slice(check + 1, check + 3)).toEqual([
+        '  die "${tree}.zip does not match the pinned SHA-256; nothing was installed"',
+        "fi",
+      ]);
+      expect(script).toMatch(/^die\(\) \{\n(?:  .*\n)*  exit 1\n\}$/m);
       // No enclosing block (if / case / loop / group / subshell) opened before it
       let depth = 0;
       for (const line of lines.slice(0, check)) {

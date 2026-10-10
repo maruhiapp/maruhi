@@ -1,22 +1,27 @@
-// Pins "Bun and pnpm reach a machine only through a fetch checked against a
-// digest pinned in this repository", for every setup path: CI
-// (.github/actions/install-bun), the Claude Code on the web SessionStart hook
-// (.claude/hooks/session-start.sh) and the Cursor Cloud startup script all
-// install Bun through scripts/install-bun.sh, and the hook gets pnpm only
-// through corepack's check of the sha512 in .deepsec/package.json.
+// Pins "Bun, pnpm and the test browser reach a machine only through a fetch
+// checked against a digest pinned in this repository", for every setup path:
+// CI (.github/actions/install-bun), the Claude Code on the web SessionStart
+// hook (.claude/hooks/session-start.sh) and the Cursor Cloud startup script
+// all install Bun through scripts/install-bun.sh, CI and the Cursor Cloud
+// startup script install the Chrome Headless Shell through
+// scripts/install-headless-shell.sh (its pin is checked against Playwright in
+// workflows-supply-chain.test.ts), the hook downloads no browser, and it gets
+// pnpm only through corepack's check of the sha512 in .deepsec/package.json.
 //
-// The script and the hook are run here, offline, against stubs: the script
-// against a curl serving a real zip whose `bun` would leave a marker if it ever
-// ran, the hook against stub bun / corepack / pnpm / fetchers that log every
-// call.
+// The scripts and the hook are run here, offline, against stubs: the scripts
+// against a curl serving a real zip whose executable would leave a marker if
+// it ever ran, the hook against stub bun / corepack / pnpm / fetchers that log
+// every call.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -259,8 +264,167 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
   },
 );
 
+describe.runIf(process.platform === "linux" && process.arch === "x64")(
+  "scripts/install-headless-shell.sh",
+  () => {
+    const script = read("scripts/install-headless-shell.sh");
+    const version = /^CHROME_HEADLESS_SHELL_VERSION="([^"]*)"$/m.exec(script)?.[1];
+    const pinLine = /^CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256="[0-9a-f]{64}"$/m;
+    const tree = "chrome-headless-shell-linux64";
+
+    interface Run {
+      /** Pin the served zip's own SHA-256 in the copy, so the check passes. */
+      readonly repin?: boolean;
+      /** The served zip's entry name. */
+      readonly entry?: string;
+      readonly curlExit?: number;
+      readonly platform?: string;
+      readonly args?: readonly string[];
+      readonly env?: Readonly<Record<string, string>>;
+    }
+
+    /**
+     * Runs a copy of the script with a HOME holding an older install. curl serves a real zip whose
+     * executable creates a marker if it is ever run.
+     */
+    function run({
+      repin = false,
+      entry = `${tree}/chrome-headless-shell`,
+      curlExit = 0,
+      platform,
+      args = [],
+      env = {},
+    }: Run) {
+      const root = scratch();
+      const [repo, home, bin] = ["repo", "home", "bin"].map((dir) => join(root, dir)) as [
+        string,
+        string,
+        string,
+      ];
+      for (const dir of [join(repo, "scripts"), bin]) mkdirSync(dir, { recursive: true });
+      const marker = join(root, "browser-ran");
+      const served = zipOf([{ name: entry, mode: 0o100755, data: `#!/bin/sh\n: > '${marker}'\n` }]);
+      const zip = join(root, "served.zip");
+      writeFileSync(zip, served);
+      const digest = createHash("sha256").update(served).digest("hex");
+      expect(script).toMatch(pinLine);
+      writeFileSync(
+        join(repo, "scripts/install-headless-shell.sh"),
+        repin
+          ? script.replace(pinLine, `CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256="${digest}"`)
+          : script,
+      );
+      const installRoot = join(home, ".cache/chrome-headless-shell");
+      mkdirSync(join(installRoot, tree), { recursive: true });
+      writeFileSync(join(installRoot, tree, "older-install"), "");
+      const curlLog = join(root, "curl.log");
+      writeExecutable(join(bin, "curl"), [
+        "#!/bin/sh",
+        `echo "$*" >> '${curlLog}'`,
+        `[ ${curlExit} -eq 0 ] || exit ${curlExit}`,
+        `while [ $# -gt 0 ]; do [ "$1" = --output ] && cp '${zip}' "$2"; shift; done`,
+      ]);
+      if (platform !== undefined) {
+        const [kernel, machine] = platform.split("/");
+        writeExecutable(join(bin, "uname"), [
+          "#!/bin/sh",
+          `[ "$1" = -s ] && echo ${kernel} || echo ${machine}`,
+        ]);
+      }
+      const result = spawnSync("bash", [join(repo, "scripts/install-headless-shell.sh"), ...args], {
+        encoding: "utf8",
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          GITHUB_ACTIONS: "",
+          ...env,
+          HOME: home,
+          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+        },
+      });
+      return {
+        result,
+        installRoot,
+        curlCalls: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "",
+        browserRan: existsSync(marker),
+        /** What the install directory holds: the tree's entries, and any leftover partial dir. */
+        installed: existsSync(installRoot)
+          ? [
+              ...readdirSync(installRoot).filter((e) => e !== tree),
+              ...(existsSync(join(installRoot, tree)) ? readdirSync(join(installRoot, tree)) : []),
+            ].toSorted()
+          : [],
+      };
+    }
+    const url = `https://storage.googleapis.com/chrome-for-testing-public/${version}/linux64/${tree}.zip`;
+
+    it("refuses an archive that does not match the pinned SHA-256: the older install kept, nothing run", () => {
+      const { result, curlCalls, browserRan, installed } = run({});
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`${tree}.zip does not match the pinned SHA-256`);
+      expect(result.stdout).toBe("");
+      expect(curlCalls).toContain("--proto =https --proto-redir =https");
+      expect(curlCalls).toContain(url);
+      expect(browserRan).toBe(false);
+      expect(installed).toEqual(["older-install"]);
+    });
+
+    it("replaces the older install with a matching archive, printing only the executable's path", () => {
+      const { result, installRoot, browserRan, installed } = run({ repin: true });
+      expect(result.status, result.stderr).toBe(0);
+      const executable = join(installRoot, tree, "chrome-headless-shell");
+      expect(result.stdout).toBe(`${executable}\n`);
+      expect(installed).toEqual(["chrome-headless-shell"]);
+      expect(spawnSync("test", ["-x", executable]).status).toBe(0);
+      expect(browserRan).toBe(false);
+      // The ~/.bashrc line the Cursor Cloud startup script writes (AGENTS.md) names that path
+      const home = installRoot.slice(0, -"/.cache/chrome-headless-shell".length);
+      expect(read("AGENTS.md")).toContain(
+        `\`export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="${executable.replace(home, "$HOME")}"\``,
+      );
+    });
+
+    it("refuses a matching archive without the executable, keeping the older install", () => {
+      const { result, installed } = run({ repin: true, entry: `${tree}/other` });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`has no ${tree}/chrome-headless-shell`);
+      expect(result.stdout).toBe("");
+      expect(installed).toEqual(["older-install"]);
+    });
+
+    it("keeps the older install when the download fails", () => {
+      const { result, installed } = run({ repin: true, curlExit: 22 });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`downloading ${tree}.zip failed`);
+      expect(installed).toEqual(["older-install"]);
+    });
+
+    it("refuses another platform and any argument before downloading", () => {
+      for (const options of [{ platform: "Darwin/arm64" }, { args: ["--force"] }]) {
+        const { result, curlCalls, installed } = run({ ...options, repin: true });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toMatch(/linux64 only \(got Darwin\/arm64\)|takes no arguments/);
+        expect(curlCalls).toBe("");
+        expect(installed).toEqual(["older-install"]);
+      }
+    });
+
+    it("annotates its failures on GitHub Actions", () => {
+      const { result } = run({ env: { GITHUB_ACTIONS: "true" } });
+      expect(result.stderr).toMatch(
+        new RegExp(`^::error::install-headless-shell: ${tree}\\.zip does not match`, "m"),
+      );
+    });
+  },
+);
+
 describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   const ENV_PATH_LINE = 'export PATH="$HOME/.bun/bin:$PATH"';
+  // The value ci.yml points every Playwright browser download at
+  const ciDownloadHost = /^ {2}PLAYWRIGHT_DOWNLOAD_HOST: "([^"]+)"$/m.exec(
+    read(".github/workflows/ci.yml"),
+  )?.[1];
+  const ENV_DOWNLOAD_HOST_LINE = `export PLAYWRIGHT_DOWNLOAD_HOST="${ciDownloadHost}"`;
 
   interface Hook {
     /** The version ~/.bun/bin/bun reports, or undefined when it is not installed. */
@@ -349,6 +513,23 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(calls).toEqual([`bun --version ${project}`, `bun install ${project}`, corepackInstall]);
     expect(env).toContain(ENV_PATH_LINE);
+  });
+
+  it("downloads no browser, and sends any Playwright browser download where ci.yml does", () => {
+    expect(ciDownloadHost).toBe("https://playwright-download.invalid");
+    // ... and so does the ~/.bashrc line the Cursor Cloud startup script writes (AGENTS.md)
+    expect(read("AGENTS.md")).toContain(`\`${ENV_DOWNLOAD_HOST_LINE}\``);
+    const { calls, env } = runHook({ bun: pinned, bunInstallExit: 1 });
+    expect(env.split("\n")).toContain(ENV_DOWNLOAD_HOST_LINE);
+    expect(calls.filter((call) => /playwright|install-headless-shell/.test(call))).toEqual([]);
+    const commands = read(".claude/hooks/session-start.sh")
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line));
+    expect(
+      commands.filter((line) =>
+        /install-headless-shell|playwright(-core)?(@\S+)?\s+install/.test(line),
+      ),
+    ).toEqual([]);
   });
 
   it("installs Bun only through scripts/install-bun.sh, when it is missing or another version", () => {
