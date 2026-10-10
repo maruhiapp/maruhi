@@ -12,7 +12,9 @@ talking with the owner directly, and in the files listed in
 ## Claude Code on the web specific instructions
 
 - Setup is handled by the SessionStart hook (`.claude/hooks/session-start.sh`):
-  syncing Bun to `.bun-version` and running `bun install`. Do NOT download
+  syncing Bun to `.bun-version` through `scripts/install-bun.sh` (the release
+  zip checked against a pinned SHA-256), putting `~/.bun/bin` on the session's
+  PATH (through `CLAUDE_ENV_FILE`), and running `bun install`. Do NOT download
   Playwright's Chromium — use the environment's preinstalled build
   (`/opt/pw-browsers/chromium`)
 - The hook writes `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` into the session
@@ -30,7 +32,12 @@ talking with the owner directly, and in the files listed in
 
 - Bun is installed to `~/.bun/bin` per `.bun-version` (strict pin; PATH comes
   via `~/.bashrc`). The startup install script syncs the version, runs
-  `bun install`, and fetches the Playwright Chromium
+  `bun install`, and fetches the Playwright Chromium. It must install Bun with
+  `bash scripts/install-bun.sh`, which checks the release zip against the
+  SHA-256 pinned there (the pin CI uses) before running it — never
+  `curl https://bun.sh/install | bash`, which runs an unverified script. The
+  script edits no shell profile, so the startup script also adds
+  `export PATH="$HOME/.bun/bin:$PATH"` to `~/.bashrc` when it is missing
 - The quality gate is `bun run check` (see root `package.json`), the same order
   as CI (`.github/workflows/ci.yml`)
 - Root `bun run test` intentionally does not include the `apps/web` e2e. Run it
@@ -46,5 +53,8 @@ talking with the owner directly, and in the files listed in
 - Some entries under `.agents/skills` are symlinks into node_modules, so they
   look broken until `bun install` has run
 - To use the deepsec skill (`/deepsec`, `.agents/skills/deepsec`), run
-  `cd .deepsec && pnpm install --frozen-lockfile`. Do not run
+  `cd .deepsec && corepack pnpm install --frozen-lockfile` (corepack checks
+  the sha512 pinned in `packageManager` when it downloads pnpm; without
+  corepack, add `--config.manage-package-manager-versions=false` to a plain
+  `pnpm install --frozen-lockfile`). Do not run
   `npx deepsec init` (the SKILL.md maruhi overlay; `docs/DEEPSEC.md`)
