@@ -46,7 +46,12 @@ import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it, vi } from "vitest";
 
 import { putHeadAttestationProgram } from "../src/attestation-accept.ts";
-import { AuditStore, auditStoreLayer, makeAuditStore } from "../src/audit-store.ts";
+import {
+  AuditStore,
+  auditStoreLayer,
+  deriveAuditHeads,
+  makeAuditStore,
+} from "../src/audit-store.ts";
 import {
   toManifestInput,
   toMetaStatementInput,
@@ -1109,7 +1114,8 @@ describe("no audit-head materialization at or above the rejection threshold (§1
   it("a restore at the line hashes and checks every row but stores no further head, and reports the same head as one below it", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    await seedReads(3);
+    // More rows than one derivation chunk (50), so the line is asked several times
+    await seedReads(120);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       // A snapshot whose column lags the log (exported at the line)
@@ -1121,7 +1127,7 @@ describe("no audit-head materialization at or above the rejection threshold (§1
         }),
       );
       const text = `${lines.join("\n")}\n`;
-      const restoreAt = async (size: number) => {
+      const restoreAt = async (size: number | (() => number)) => {
         await resetProjectDo(projectId);
         const outcome = await runInProject(size, async (run, state) => {
           const exit = await run(
@@ -1134,9 +1140,16 @@ describe("no audit-head materialization at or above the rejection threshold (§1
           if (!Exit.isSuccess(exit) || exit.value.kind !== "restored") {
             throw new Error("restore failed");
           }
+          const column = state.storage.sql
+            .exec(
+              "SELECT COUNT(*) AS n, COALESCE(MIN(seq), 1) AS mn, COALESCE(MAX(seq), 0) AS mx FROM audit_head_hashes",
+            )
+            .one();
           return {
             head: exit.value.auditHeadHashHex,
-            heads: count(state, "audit_head_hashes"),
+            heads: Number(column["n"]),
+            // The column stays a contiguous prefix from seq 1
+            prefix: Number(column["mn"]) === 1 && Number(column["n"]) === Number(column["mx"]),
             rows: count(state, "audit_events"),
           };
         });
@@ -1145,14 +1158,73 @@ describe("no audit-head materialization at or above the rejection threshold (§1
       };
       const atLine = await restoreAt(DO_STORAGE_REJECT_BYTES);
       const below = await restoreAt(0);
+      // At the line for the first chunk, below it afterwards: storing never
+      // resumes mid-derivation (a gap), and the convergence afterwards
+      // extends the column from its tail
+      let measured = 0;
+      const flipping = await restoreAt(() => (measured++ === 0 ? DO_STORAGE_REJECT_BYTES : 0));
       expect(below.heads).toBe(below.rows);
       expect(below.head).toMatch(/^[0-9a-f]{64}$/u);
       expect(atLine.heads).toBe(carried);
       expect(atLine.heads).toBeLessThan(atLine.rows);
       expect(atLine.head).toBe(below.head);
+      for (const restored of [atLine, below, flipping]) {
+        expect(restored.prefix).toBe(true);
+      }
+      expect(flipping.heads).toBe(flipping.rows);
+      expect(flipping.head).toBe(below.head);
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe("deriveAuditHeads past the store line (§11-7 — every row is still checked)", () => {
+  it("refuses a gap or a row the canonical form refuses in a chunk it does not store, and stores only the prefix before the line", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await runInProject(0, async (run, state) => {
+      for (let i = 0; i < 120; i += 1) {
+        await run(
+          pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), {
+            current: null,
+            chain: null,
+          }),
+        );
+      }
+      const sql = state.storage.sql;
+      const derive = async (tamper: string | null) => {
+        sql.exec("DROP TABLE IF EXISTS derive_source");
+        sql.exec("DROP TABLE IF EXISTS derive_heads");
+        sql.exec("CREATE TABLE derive_source AS SELECT * FROM audit_events");
+        sql.exec("CREATE TABLE derive_heads (seq INTEGER, head_hash_hex TEXT)");
+        if (tamper !== null) {
+          sql.exec(tamper);
+        }
+        // Stores the first chunk (50 rows), then the line is reached; a
+        // predicate that says yes again must not resume storing
+        let asked = 0;
+        const head = await deriveAuditHeads(sql, "derive_source", "derive_heads", 0, "", () => {
+          asked += 1;
+          return asked !== 2;
+        });
+        const stored = sql
+          .exec("SELECT COUNT(*) AS n, COALESCE(MAX(seq), 0) AS mx FROM derive_heads")
+          .one();
+        return { head, stored: Number(stored["n"]), max: Number(stored["mx"]) };
+      };
+      const clean = await derive(null);
+      expect(clean.head).toMatch(/^[0-9a-f]{64}$/u);
+      expect(clean).toMatchObject({ stored: 50, max: 50 });
+      expect(await derive("DELETE FROM derive_source WHERE seq = 100")).toMatchObject({
+        head: null,
+      });
+      expect(await derive("UPDATE derive_source SET server_ts = -1 WHERE seq = 100")).toMatchObject(
+        { head: null },
+      );
+      sql.exec("DROP TABLE derive_source");
+      sql.exec("DROP TABLE derive_heads");
+    });
   });
 });
 
