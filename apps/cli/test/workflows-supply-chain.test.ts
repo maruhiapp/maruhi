@@ -407,7 +407,8 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
           "",
         ].join("\n"),
       );
-      expect(step?.env).toBeUndefined();
+      // No `if:`, continue-on-error, shell or env can make it skip or soft-fail
+      expect(Object.keys(step ?? {}).toSorted()).toEqual(["name", "run", "timeout-minutes"]);
       expect(read(`${WORKFLOWS_DIR}/ci.yml`)).not.toMatch(/[0-9a-f]{64}|CHROME_HEADLESS_SHELL_/);
     });
 

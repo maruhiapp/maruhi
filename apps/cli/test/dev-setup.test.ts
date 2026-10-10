@@ -1,17 +1,18 @@
 // Pins "Bun, pnpm and the test browser reach a machine only through a fetch
 // checked against a digest pinned in this repository", for every setup path:
 // CI (.github/actions/install-bun), the Claude Code on the web SessionStart
-// hook (.claude/hooks/session-start.sh) and the Cursor Cloud startup script
-// all install Bun through scripts/install-bun.sh, CI and the Cursor Cloud
-// startup script install the Chrome Headless Shell through
-// scripts/install-headless-shell.sh (its pin is checked against Playwright in
-// workflows-supply-chain.test.ts), the hook downloads no browser, and it gets
-// pnpm only through corepack's check of the sha512 in .deepsec/package.json.
+// hook (.claude/hooks/session-start.sh) and the Cursor Cloud setup
+// (scripts/dev-setup-cursor.sh, the environment's whole install command) all
+// install Bun through scripts/install-bun.sh, CI and the Cursor Cloud setup
+// install the Chrome Headless Shell through scripts/install-headless-shell.sh
+// (its pin is checked against Playwright in workflows-supply-chain.test.ts),
+// the hook downloads no browser, and it gets pnpm only through corepack's
+// check of the sha512 in .deepsec/package.json.
 //
-// The scripts and the hook are run here, offline, against stubs: the scripts
-// against a curl serving a real zip whose executable would leave a marker if
-// it ever ran, the hook against stub bun / corepack / pnpm / fetchers that log
-// every call.
+// The scripts and the hook are run here, offline, against stubs: the
+// installers against a curl serving a real zip whose executable would leave a
+// marker if it ever ran, the hook and the Cursor Cloud setup against stub
+// installers / bun / corepack / pnpm / fetchers that log every call.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -28,7 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -278,9 +279,41 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       /** The served zip's entry name. */
       readonly entry?: string;
       readonly curlExit?: number;
+      /** How many copies run at once, each with curl taking a moment to answer. */
+      readonly parallel?: number;
       readonly platform?: string;
       readonly args?: readonly string[];
       readonly env?: Readonly<Record<string, string>>;
+    }
+
+    /** A uname reporting `kernel/machine`. */
+    function stubUname(bin: string, platform: string): void {
+      const [kernel, machine] = platform.split("/");
+      writeExecutable(join(bin, "uname"), [
+        "#!/bin/sh",
+        `[ "$1" = -s ] && echo ${kernel} || echo ${machine}`,
+      ]);
+    }
+
+    /** bash arguments running `command` that many times at once, printing each exit status. */
+    function concurrently(command: readonly string[], parallel: number): string[] {
+      if (parallel === 1) return [...command];
+      return [
+        "-c",
+        `for i in $(seq ${parallel}); do bash "$@" > /dev/null & pids="$pids $!"; done; ` +
+          'for pid in $pids; do wait "$pid"; printf "%s " "$?"; done',
+        "runner",
+        ...command,
+      ];
+    }
+
+    /** What the install directory holds: the tree's entries, and any leftover partial dir. */
+    function contents(installRoot: string): string[] {
+      const entries = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []);
+      return [
+        ...entries(installRoot).filter((e) => e !== tree && e !== ".lock"),
+        ...entries(join(installRoot, tree)),
+      ].toSorted();
     }
 
     /**
@@ -291,6 +324,7 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       repin = false,
       entry = `${tree}/chrome-headless-shell`,
       curlExit = 0,
+      parallel = 1,
       platform,
       args = [],
       env = {},
@@ -322,16 +356,12 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
         "#!/bin/sh",
         `echo "$*" >> '${curlLog}'`,
         `[ ${curlExit} -eq 0 ] || exit ${curlExit}`,
+        ...(parallel > 1 ? ["sleep 0.3"] : []),
         `while [ $# -gt 0 ]; do [ "$1" = --output ] && cp '${zip}' "$2"; shift; done`,
       ]);
-      if (platform !== undefined) {
-        const [kernel, machine] = platform.split("/");
-        writeExecutable(join(bin, "uname"), [
-          "#!/bin/sh",
-          `[ "$1" = -s ] && echo ${kernel} || echo ${machine}`,
-        ]);
-      }
-      const result = spawnSync("bash", [join(repo, "scripts/install-headless-shell.sh"), ...args], {
+      if (platform !== undefined) stubUname(bin, platform);
+      const command = [join(repo, "scripts/install-headless-shell.sh"), ...args];
+      const result = spawnSync("bash", concurrently(command, parallel), {
         encoding: "utf8",
         timeout: 30_000,
         env: {
@@ -347,13 +377,7 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
         installRoot,
         curlCalls: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "",
         browserRan: existsSync(marker),
-        /** What the install directory holds: the tree's entries, and any leftover partial dir. */
-        installed: existsSync(installRoot)
-          ? [
-              ...readdirSync(installRoot).filter((e) => e !== tree),
-              ...(existsSync(join(installRoot, tree)) ? readdirSync(join(installRoot, tree)) : []),
-            ].toSorted()
-          : [],
+        installed: contents(installRoot),
       };
     }
     const url = `https://storage.googleapis.com/chrome-for-testing-public/${version}/linux64/${tree}.zip`;
@@ -377,11 +401,29 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       expect(installed).toEqual(["chrome-headless-shell"]);
       expect(spawnSync("test", ["-x", executable]).status).toBe(0);
       expect(browserRan).toBe(false);
-      // The ~/.bashrc line the Cursor Cloud startup script writes (AGENTS.md) names that path
-      const home = installRoot.slice(0, -"/.cache/chrome-headless-shell".length);
-      expect(read("AGENTS.md")).toContain(
-        `\`export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="${executable.replace(home, "$HOME")}"\``,
-      );
+    });
+
+    it("lets concurrent runs install one after the other, never one tree inside another", () => {
+      const { result, installRoot, installed } = run({ repin: true, parallel: 3 });
+      expect(result.stdout).toBe("0 0 0 ");
+      expect(installed).toEqual(["chrome-headless-shell"]);
+      expect(readdirSync(join(installRoot, tree))).toEqual(["chrome-headless-shell"]);
+    });
+
+    it("fails on any error, locks the install, stages next to it and moves trees by rename only", () => {
+      expect(script).toMatch(/^set -euo pipefail$/m);
+      const lines = script.split("\n");
+      const lock = lines.indexOf('exec 9>"${install_root}/.lock"');
+      expect(lock).toBeGreaterThan(-1);
+      expect(lines[lock + 1]).toBe('flock 9 || die "could not lock ${install_root}/.lock"');
+      // Same filesystem as the install, so the tree is renamed into place, never copied
+      expect(
+        lines.indexOf('work="$(mktemp -d "${install_root}/.partial.XXXXXX")"'),
+      ).toBeGreaterThan(lock);
+      expect(script.match(/^\s*mv\b.*$/gm)).toEqual([
+        '  mv -T "${install_root}/${tree}" "${work}/old"',
+        'mv -T "${work}/new/${tree}" "${install_root}/${tree}"',
+      ]);
     });
 
     it("refuses a matching archive without the executable, keeping the older install", () => {
@@ -418,12 +460,14 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
   },
 );
 
+/** The host ci.yml points every Playwright browser download at. */
+function ciHost(): string | undefined {
+  return /^ {2}PLAYWRIGHT_DOWNLOAD_HOST: "([^"]+)"$/m.exec(read(".github/workflows/ci.yml"))?.[1];
+}
+
 describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   const ENV_PATH_LINE = 'export PATH="$HOME/.bun/bin:$PATH"';
-  // The value ci.yml points every Playwright browser download at
-  const ciDownloadHost = /^ {2}PLAYWRIGHT_DOWNLOAD_HOST: "([^"]+)"$/m.exec(
-    read(".github/workflows/ci.yml"),
-  )?.[1];
+  const ciDownloadHost = ciHost();
   const ENV_DOWNLOAD_HOST_LINE = `export PLAYWRIGHT_DOWNLOAD_HOST="${ciDownloadHost}"`;
 
   interface Hook {
@@ -517,8 +561,6 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
 
   it("downloads no browser, and sends any Playwright browser download where ci.yml does", () => {
     expect(ciDownloadHost).toBe("https://playwright-download.invalid");
-    // ... and so does the ~/.bashrc line the Cursor Cloud startup script writes (AGENTS.md)
-    expect(read("AGENTS.md")).toContain(`\`${ENV_DOWNLOAD_HOST_LINE}\``);
     const { calls, env } = runHook({ bun: pinned, bunInstallExit: 1 });
     expect(env.split("\n")).toContain(ENV_DOWNLOAD_HOST_LINE);
     expect(calls.filter((call) => /playwright|install-headless-shell/.test(call))).toEqual([]);
@@ -580,6 +622,171 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
     expect(result.status).toBe(0);
     expect(calls).toEqual([`bun --version ${project}`, `bun install ${project}`]);
     expect(result.stderr).toContain(".deepsec install failed");
+  });
+});
+
+describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
+  const LINES = {
+    path: 'export PATH="$HOME/.bun/bin:$PATH"',
+    host: `export PLAYWRIGHT_DOWNLOAD_HOST="${ciHost()}"`,
+    browser:
+      'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$HOME/.cache/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell"',
+  };
+  const BASHRC = "# the image's own lines\n";
+
+  interface Setup {
+    readonly installBunExit?: number;
+    readonly bunInstallExit?: number;
+    readonly headlessExit?: number;
+    /** Where the stub installer says it installed the browser, relative to HOME. */
+    readonly headlessAt?: string;
+  }
+
+  /**
+   * Runs the real script from a scratch project whose two installers are logging stubs, with a
+   * HOME holding an image ~/.bashrc and an unverified ~/.cache/ms-playwright, on a PATH of
+   * logging stubs for every fetcher plus the few tools it needs. Calling it again on the same
+   * root reruns it on that prepared disk.
+   */
+  function runSetup(
+    {
+      installBunExit = 0,
+      bunInstallExit = 0,
+      headlessExit = 0,
+      headlessAt = ".cache/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell",
+    }: Setup,
+    root = scratch(),
+  ) {
+    const [project, home, stubs, tools] = ["project", "home", "stubs", "tools"].map((dir) =>
+      join(root, dir),
+    ) as [string, string, string, string];
+    const log = join(root, "calls.log");
+    const unverified = join(home, ".cache/ms-playwright/chromium-1248/chrome-linux64/chrome");
+    if (!existsSync(project)) {
+      for (const dir of [join(project, "scripts"), stubs, tools, dirname(unverified)]) {
+        mkdirSync(dir, { recursive: true });
+      }
+      writeFileSync(unverified, "");
+      writeFileSync(join(home, ".bashrc"), BASHRC);
+      copyFileSync(
+        join(repoRoot, "scripts/dev-setup-cursor.sh"),
+        join(project, "scripts/dev-setup-cursor.sh"),
+      );
+      for (const tool of ["bash", "cat", "mkdir", "cp", "chmod", "dirname", "touch", "grep", "rm"])
+        symlinkSync(systemTool(tool), join(tools, tool));
+    }
+    writeFileSync(log, "");
+    const logged = (name: string, behavior: readonly string[]) => [
+      "#!/bin/sh",
+      `echo "${name} $* @\${PWD##*/}" >> '${log}'`,
+      ...behavior,
+    ];
+    const bunStub = join(root, "bun-stub");
+    writeExecutable(
+      bunStub,
+      logged("bun", [`[ "$1" = install ] && exit ${bunInstallExit}`, "exit 0"]),
+    );
+    writeExecutable(
+      join(project, "scripts/install-bun.sh"),
+      logged("install-bun.sh", [
+        `[ ${installBunExit} -eq 0 ] || exit ${installBunExit}`,
+        `mkdir -p "$HOME/.bun/bin" && cp '${bunStub}' "$HOME/.bun/bin/bun"`,
+      ]),
+    );
+    writeExecutable(
+      join(project, "scripts/install-headless-shell.sh"),
+      logged("install-headless-shell.sh", [
+        `[ ${headlessExit} -eq 0 ] || exit ${headlessExit}`,
+        `mkdir -p "$(dirname "$HOME/${headlessAt}")" && : > "$HOME/${headlessAt}"`,
+        `echo "$HOME/${headlessAt}"`,
+      ]),
+    );
+    for (const fetcher of ["curl", "wget", "npm", "npx", "node", "bunx", "git", "playwright"]) {
+      writeExecutable(join(stubs, fetcher), logged(fetcher, ["exit 0"]));
+    }
+    const result = spawnSync(systemTool("bash"), [join(project, "scripts/dev-setup-cursor.sh")], {
+      encoding: "utf8",
+      timeout: 30_000,
+      cwd: root,
+      env: { HOME: home, PATH: `${stubs}:${tools}` },
+    });
+    return {
+      root,
+      home,
+      result,
+      calls: readFileSync(log, "utf8").trim().split("\n").filter(Boolean),
+      bashrc: readFileSync(join(home, ".bashrc"), "utf8"),
+      unverifiedKept: existsSync(join(home, ".cache/ms-playwright")),
+    };
+  }
+
+  const installs = [
+    "install-bun.sh  @project",
+    "bun install --frozen-lockfile @project",
+    "install-headless-shell.sh  @project",
+  ];
+
+  it("installs through the two pinned installers only, from the project root, and removes Playwright's own browsers", () => {
+    const { result, calls, unverifiedKept } = runSetup({});
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toEqual(installs);
+    expect(unverifiedKept).toBe(false);
+  });
+
+  it("adds each ~/.bashrc line once, and a shell reading it gets Bun, the browser and ci.yml's download host", () => {
+    const first = runSetup({});
+    const again = runSetup({}, first.root);
+    expect(again.result.status, again.result.stderr).toBe(0);
+    expect(again.calls).toEqual(installs);
+    expect(first.bashrc).toBe(`${BASHRC}${LINES.path}\n${LINES.host}\n${LINES.browser}\n`);
+    expect(again.bashrc).toBe(first.bashrc);
+    const shell = spawnSync(
+      systemTool("bash"),
+      [
+        "-c",
+        '. "$HOME/.bashrc"; printf "%s\\n" "$PATH" "$PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH" "$PLAYWRIGHT_DOWNLOAD_HOST"',
+      ],
+      { encoding: "utf8", env: { HOME: first.home, PATH: "/usr/bin:/bin" } },
+    );
+    const [path, browser, host] = shell.stdout.split("\n");
+    expect(path?.split(":")[0]).toBe(join(first.home, ".bun/bin"));
+    expect(existsSync(browser ?? "")).toBe(true);
+    expect(host).toBe(ciHost());
+  });
+
+  it("stops when install-bun.sh fails, before bun install, any ~/.bashrc line or the browser", () => {
+    const { result, calls, bashrc, unverifiedKept } = runSetup({ installBunExit: 3 });
+    expect(result.status).toBe(3);
+    expect(calls).toEqual(installs.slice(0, 1));
+    expect(bashrc).toBe(BASHRC);
+    expect(unverifiedKept).toBe(true);
+  });
+
+  it("stops when bun install fails, before the browser", () => {
+    const { result, calls, bashrc } = runSetup({ bunInstallExit: 5 });
+    expect(result.status).toBe(5);
+    expect(calls).toEqual(installs.slice(0, 2));
+    expect(bashrc).not.toContain(LINES.browser);
+  });
+
+  it("fails without the browser line when the browser install fails, Playwright's own browsers already gone", () => {
+    // Its own status: the setup stops on the installer's failure itself
+    const { result, calls, bashrc, unverifiedKept } = runSetup({ headlessExit: 7 });
+    expect(result.status).toBe(7);
+    expect(calls).toEqual(installs);
+    expect(bashrc).not.toContain(LINES.browser);
+    expect(unverifiedKept).toBe(false);
+  });
+
+  it("fails when the browser is not where the ~/.bashrc line points", () => {
+    const { result, bashrc } = runSetup({ headlessAt: ".cache/elsewhere/chrome-headless-shell" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("not the path the ~/.bashrc line names");
+    expect(bashrc).not.toContain(LINES.browser);
+  });
+
+  it("fails on any error", () => {
+    expect(read("scripts/dev-setup-cursor.sh")).toMatch(/^set -euo pipefail$/m);
   });
 });
 
