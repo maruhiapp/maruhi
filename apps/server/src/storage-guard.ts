@@ -224,7 +224,9 @@ export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, S
  * passes even under rejection (§12-8's enumeration (a) exception
  * note). The same line stops the export's materialization (null
  * trailer head — programs-export.ts) and a restore's head storage
- * (chain-do.ts): no path extends the column at or above it.
+ * (chain-do.ts): no path extends the column at or above it, except a
+ * mirror's replica, whose derivation and convergence only its per-page
+ * guard bounds (AUTH_SPEC §11-7 — ledger Sc-6d).
  */
 export const ensureStorageAdmitsAuditHeadExtension: Effect.Effect<
   void,
