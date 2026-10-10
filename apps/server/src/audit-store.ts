@@ -1398,14 +1398,25 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         epoch: Number(row["epoch"]),
       })),
+  // Q5: the pairs that carry a rotation.recommended row (ae_event), then
+  // each such pair's rows (ae_var). Valid only while the lineage fold
+  // (rotation-detect.ts) stays per pair and a pair without a recommended
+  // row yields nothing: the other pairs' pushes are never read. CROSS JOIN
+  // fixes the join order (SQLite never reorders it): without statistics the
+  // planner could drive the join from ae_event's var.version_pushed range —
+  // every push in the project. IS lets a NULL id (a corrupt row) still
+  // match its own pair (test/audit-index.test.ts pins the plan via EXPLAIN)
   rotationFlagEvents: () =>
     sql
       .exec(
-        `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
-                target_user_id, target_key_fingerprint, payload
-         FROM audit_events
-         WHERE event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
-         ORDER BY seq`,
+        `SELECT a.seq, a.server_ts, a.event, a.environment_id, a.variable_id, a.version,
+                a.epoch, a.target_user_id, a.target_key_fingerprint, a.payload
+         FROM (SELECT DISTINCT variable_id, environment_id FROM audit_events
+               WHERE event = 'rotation.recommended') AS flagged
+         CROSS JOIN audit_events AS a
+         WHERE a.variable_id IS flagged.variable_id AND a.environment_id IS flagged.environment_id
+           AND a.event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
+         ORDER BY a.seq`,
       )
       .toArray()
       .map(rotationFlagSourceRow),
