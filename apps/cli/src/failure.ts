@@ -377,11 +377,11 @@ const renderers: readonly Renderer[] = [
   // The DO total-storage guard (AUTH_SPEC §12-8) is told apart by
   // resource: unlike the other count caps it is a measured-amount
   // threshold, not "the amount this request adds", so the guidance names
-  // the next step (free space by deleting — deletes and reads still pass
-  // under the rejection)
+  // the next step (free space, or move out while reads still pass — the
+  // never-pruned audit log usually dominates, so deleting frees little)
   when(isInstanceOf(DataLimitExceededError), (e) =>
     e.resource === "project-storage-bytes"
-      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and rotating still work. Delete what you no longer need, then retry`
+      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and rotating still work. Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`
       : `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
   ),
   when(
