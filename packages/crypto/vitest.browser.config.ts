@@ -5,8 +5,9 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
 // Allows swapping the Chromium executable via the same env var as the apps/web e2e
-// (CI's SHA-256-verified headless shell, or an environment's pre-installed
-// browser; default resolution when unset)
+// (the SHA-256-verified headless shell from scripts/install-headless-shell.sh in
+// CI and Cursor Cloud, or an environment's pre-installed browser; default
+// resolution when unset)
 const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
 
 export default defineConfig({

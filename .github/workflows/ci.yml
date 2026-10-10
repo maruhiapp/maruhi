@@ -42,7 +42,8 @@ env:
   # is invoked) goes to this unresolvable host and fails before anything is
   # unpacked: playwright-core replaces all its mirrors, Chrome for Testing's
   # included, with this one. The only browser is the verified headless shell
-  # installed before step 9, which curl fetches directly
+  # installed before step 9, which scripts/install-headless-shell.sh fetches
+  # with curl directly
   PLAYWRIGHT_DOWNLOAD_HOST: "https://playwright-download.invalid"
 
 jobs:
@@ -281,17 +282,12 @@ jobs:
         working-directory: apps/site
 
       # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
-      # headless shell that the pinned Playwright expects (the
-      # chromium-headless-shell browserVersion in playwright-core's
-      # browsers.json), downloaded on every run and checked against the
-      # SHA-256 pinned below before it is unpacked. `playwright install` is
-      # not used: it downloads, unpacks and runs `ldd` on the binaries in one
-      # process with no digest check, so a tampered CDN object would execute
-      # in this job, which on the release path holds a token that can
-      # overwrite the artifacts publish downloads. The tests take the binary
-      # through PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH (Playwright's own browser
-      # directory stays empty, so a test that ignores the variable fails
-      # instead of fetching a browser).
+      # headless shell that the pinned Playwright expects, downloaded on every
+      # run by scripts/install-headless-shell.sh, which holds the version and
+      # SHA-256 pin (the same one the Cursor Cloud setup installs) and checks
+      # the archive before it is unpacked (why not `playwright install`, and
+      # the bump procedure, are in the script). The tests take the binary
+      # through PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH.
       # No Actions cache, in this or any workflow: actions/cache restores by
       # untarring the entry with absolute paths allowed (`tar -P`) and no
       # member filter, so an entry seeded by any default-branch run can
@@ -307,40 +303,14 @@ jobs:
       # the launch fails loudly naming it — revisit then).
       # The headless shell alone is enough for chromium.launch and the vitest
       # browser provider (both headless), and is about half of full Chromium.
-      #
-      # The archive comes from the Chrome for Testing bucket, where
-      # cdn.playwright.dev redirects Playwright's own download (the same
-      # bytes: measured identical SHA-256 through both URLs). Google publishes
-      # no digest or signature for it, so the pin is trust on first use at
-      # bump time. On a Playwright bump: take browserVersion of
-      # chromium-headless-shell from playwright-core's browsers.json (the
-      # guard test prints it), download
-      # https://cdn.playwright.dev/builds/cft/<version>/linux64/chrome-headless-shell-linux64.zip
-      # and the storage.googleapis.com URL below, check that both give the
-      # same SHA-256 and that it matches the bucket's `x-goog-hash: md5=`
-      # header, then pin both values here. A stale SHA-256 fails this step
       - name: Install Chrome Headless Shell (pinned SHA-256, no cache)
         timeout-minutes: 5
-        env:
-          CHROME_HEADLESS_SHELL_VERSION: "156.0.8078.4"
-          CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256: "c3e50596aef52c58f8fda3c6b3411c33d34c88b177b3ed1c2243359fd3b8ba20"
         run: |
           set -euo pipefail
-          if [ "${RUNNER_OS}" != "Linux" ] || [ "${RUNNER_ARCH}" != "X64" ]; then
-            echo "::error::the pinned headless shell is linux64 only (got ${RUNNER_OS}/${RUNNER_ARCH})"
+          if ! executable="$(bash scripts/install-headless-shell.sh)"; then
             exit 1
           fi
-          zip="${RUNNER_TEMP}/chrome-headless-shell-linux64.zip"
-          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            --retry 3 --retry-all-errors --output "${zip}" \
-            "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip"
-          if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then
-            exit 1
-          fi
-          dir="${RUNNER_TEMP}/chrome-headless-shell"
-          unzip -q "${zip}" -d "${dir}"
-          rm -f "${zip}"
-          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${dir}/chrome-headless-shell-linux64/chrome-headless-shell" >> "${GITHUB_ENV}"
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${executable}" >> "${GITHUB_ENV}"
 
       # Per-step timeout: on a hang (actual incident on 2026-08-19, run
       # 32217317312), fail fast on the step limit rather than the 30-minute job

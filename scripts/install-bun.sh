@@ -3,8 +3,9 @@
 # The single Bun installer for every environment this repository sets up: CI
 # (through .github/actions/install-bun), the Claude Code on the web
 # SessionStart hook (.claude/hooks/session-start.sh), and the Cursor Cloud
-# startup install script. It does not edit shell profiles: each caller puts
-# ~/.bun/bin on PATH its own way (GITHUB_PATH, CLAUDE_ENV_FILE, ~/.bashrc).
+# setup (scripts/dev-setup-cursor.sh). It does not edit shell profiles: each
+# caller puts ~/.bun/bin on PATH its own way (GITHUB_PATH, CLAUDE_ENV_FILE,
+# ~/.bashrc).
 #
 # The official release zip is verified against the SHA-256 pinned below
 # before anything in it runs. Do not go back to `curl bun.sh/install | bash`

@@ -11,12 +11,16 @@ description: How to run and interactively drive the maruhi web dashboard e2e/UI 
   `bun x <pkg>` / `bun run <script>` yourself, BUT `apps/web/test/e2e.test.ts` spawns the
   literal string `bunx` to start cf. If `bunx` is missing, create it once:
   `ln -sf ~/.bun-pinned/bun ~/.bun-pinned/bunx` (bun dispatches on argv[0]).
-- Playwright chromium: `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` may point at
-  `/opt/pw-browsers/chromium`, which does not exist on every image. If unset, Playwright
-  uses its managed browser at `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`
-  — both e2e and ad-hoc scripts work without the env var. Do NOT run `playwright install`.
-- `DISPLAY=:0` works: `chromium.launch({ headless: false, args: ["--start-maximized"] })`
-  renders a real window for screen recordings. Maximize with
+- Playwright chromium: `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` points at the browser the
+  environment set up — the SHA-256-verified headless shell from
+  `scripts/install-headless-shell.sh` (CI, Cursor Cloud) or `/opt/pw-browsers/chromium`
+  (Claude Code on the web). e2e and ad-hoc headless scripts pass it as `executablePath`.
+  Do NOT run `playwright install` (it fetches an unverified browser; the environments
+  point `PLAYWRIGHT_DOWNLOAD_HOST` at an unresolvable host so it fails).
+- Headful sessions for screen recordings: the headless shell cannot open a window, so
+  launch the image's Chrome instead —
+  `chromium.launch({ channel: "chrome", headless: false, args: ["--start-maximized"] })`
+  on the desktop's `DISPLAY` (`:0` or `:1` depending on the image). Maximize with
   `wmctrl -r "<title>" -b add,maximized_vert,maximized_horz`.
 
 ## Commands

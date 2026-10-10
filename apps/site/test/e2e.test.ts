@@ -105,9 +105,10 @@ beforeAll(async () => {
       cause,
     });
   }
-  // CI (the SHA-256-verified headless shell, ci.yml) and environments that
-  // cannot download a browser (Claude Code on the web etc.) pass the
-  // browser's path via PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+  // CI and Cursor Cloud (the SHA-256-verified headless shell from
+  // scripts/install-headless-shell.sh) and Claude Code on the web (its
+  // preinstalled build) pass the browser's path via
+  // PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
   const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
   browser = await chromium.launch(executablePath ? { executablePath } : {});
 });
