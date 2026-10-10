@@ -15,15 +15,6 @@ on:
   # (duplicating it would leave the release side on a stale copy when ci.yml
   # changes)
   workflow_call:
-    inputs:
-      # release.yml passes true to make the whole release path restore no
-      # Actions cache (the reasoning is at release.yml's verify job). The
-      # headless-shell archive cache below is the only cache this file uses
-      # (Bun comes from the pinned install-bun action, which has none). Push /
-      # PR runs are not workflow_call, so inputs is empty and this reads as null
-      skip-caches:
-        type: boolean
-        default: false
 
 # Cancel stale runs on consecutive pushes to the same PR (don't spend a runner
 # on runs that will never be looked at). Non-PR runs (pushes to main,
@@ -56,13 +47,6 @@ jobs:
     # Measured at 10–15 min + headroom. The 360-min default would let a hang
     # block a release for 6 hours)
     timeout-minutes: 30
-    # The browser the Playwright steps run (9 / 9b / 11). Job-level because
-    # the archive cache key needs them as well as the install step. A
-    # Playwright bump changes both values together (see the install step;
-    # apps/cli/test/workflow-caches.test.ts fails first in `bun run check`)
-    env:
-      CHROME_HEADLESS_SHELL_VERSION: "156.0.8078.4"
-      CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256: "c3e50596aef52c58f8fda3c6b3411c33d34c88b177b3ed1c2243359fd3b8ba20"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -293,15 +277,21 @@ jobs:
       # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
       # headless shell that the pinned Playwright expects (the
       # chromium-headless-shell browserVersion in playwright-core's
-      # browsers.json), verified against a SHA-256 pinned above before it is
-      # unpacked. `playwright install` is not used: it downloads, unpacks and
-      # runs `ldd` on the binaries in one process with no digest check, so a
-      # tampered CDN object or a cached ~/.cache/ms-playwright would execute
+      # browsers.json), downloaded on every run and checked against the
+      # SHA-256 pinned below before it is unpacked. `playwright install` is
+      # not used: it downloads, unpacks and runs `ldd` on the binaries in one
+      # process with no digest check, so a tampered CDN object would execute
       # in this job, which on the release path holds a token that can
-      # overwrite the artifacts publish downloads. The tests take the binary through
-      # PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH (Playwright's own browser
+      # overwrite the artifacts publish downloads. The tests take the binary
+      # through PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH (Playwright's own browser
       # directory stays empty, so a test that ignores the variable fails
       # instead of fetching a browser).
+      # No Actions cache, in this or any workflow: actions/cache restores by
+      # untarring the entry with absolute paths allowed (`tar -P`) and no
+      # member filter, so an entry seeded by any default-branch run can
+      # rewrite node_modules, tests or build output before they run, whatever
+      # the restored file itself is checked against. The miss path this
+      # replaces measured 2.7–3.2 s.
       # No --with-deps / apt fonts: the old layout (playwright install
       # --with-deps inside step 9 every run) accounted for the measured
       # 35s–6m42s variance of step 9, all of it the apt fetch of 9 fonts
@@ -312,23 +302,6 @@ jobs:
       # The headless shell alone is enough for chromium.launch and the vitest
       # browser provider (both headless), and is about half of full Chromium.
       #
-      # Push / PR runs cache the archive (not the unpacked tree), and the
-      # check runs on a hit too, so a cache entry seeded by another run can
-      # fail the job but never runs. The cache is kept deliberately: it moves
-      # CDN variance and stalls off the normal path (the 35s–6m42s lesson).
-      # restore / save are split so a miss is saved right after the verified
-      # install, whatever steps 9–11 do (the combined actions/cache saves only
-      # in its post step on success, so a red branch would re-fetch every run)
-      - name: Restore Chrome Headless Shell archive cache
-        id: headless-shell-cache
-        # Skipped on the release path (release.yml's verify reasoning): no
-        # release job reads an Actions cache
-        if: ${{ !inputs.skip-caches }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/chrome-headless-shell/chrome-headless-shell-linux64.zip
-          key: chrome-headless-shell-${{ runner.os }}-${{ env.CHROME_HEADLESS_SHELL_VERSION }}-${{ env.CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256 }}
-
       # The archive comes from the Chrome for Testing bucket, where
       # cdn.playwright.dev redirects Playwright's own download (the same
       # bytes: measured identical SHA-256 through both URLs). Google publishes
@@ -339,36 +312,27 @@ jobs:
       # https://cdn.playwright.dev/builds/cft/<version>/linux64/chrome-headless-shell-linux64.zip
       # and the storage.googleapis.com URL below, check that both give the
       # same SHA-256 and that it matches the bucket's `x-goog-hash: md5=`
-      # header, then pin both values in this job's env
-      - name: Install Chrome Headless Shell (pinned SHA-256)
+      # header, then pin both values here. A stale SHA-256 fails this step
+      - name: Install Chrome Headless Shell (pinned SHA-256, no cache)
         timeout-minutes: 5
+        env:
+          CHROME_HEADLESS_SHELL_VERSION: "156.0.8078.4"
+          CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256: "c3e50596aef52c58f8fda3c6b3411c33d34c88b177b3ed1c2243359fd3b8ba20"
         run: |
           set -euo pipefail
           if [ "${RUNNER_OS}" != "Linux" ] || [ "${RUNNER_ARCH}" != "X64" ]; then
             echo "::error::the pinned headless shell is linux64 only (got ${RUNNER_OS}/${RUNNER_ARCH})"
             exit 1
           fi
-          zip="${HOME}/.cache/chrome-headless-shell/chrome-headless-shell-linux64.zip"
-          if [ ! -f "${zip}" ]; then
-            mkdir -p "$(dirname "${zip}")"
-            curl --fail --silent --show-error --location --proto '=https' --retry 3 --retry-all-errors \
-              --output "${zip}" \
-              "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip"
-          fi
-          if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then
-            echo "::error::the headless-shell archive does not match the pinned SHA-256. If it came from the Actions cache, that entry was written by another run: delete it and find out who wrote it"
-            exit 1
-          fi
+          zip="${RUNNER_TEMP}/chrome-headless-shell-linux64.zip"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --retry-all-errors --output "${zip}" \
+            "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip"
+          echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict
           dir="${RUNNER_TEMP}/chrome-headless-shell"
           unzip -q "${zip}" -d "${dir}"
+          rm -f "${zip}"
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${dir}/chrome-headless-shell-linux64/chrome-headless-shell" >> "${GITHUB_ENV}"
-
-      - name: Save Chrome Headless Shell archive cache (cache miss only)
-        if: ${{ !inputs.skip-caches && steps.headless-shell-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/chrome-headless-shell/chrome-headless-shell-linux64.zip
-          key: ${{ steps.headless-shell-cache.outputs.cache-primary-key }}
 
       # Per-step timeout: on a hang (actual incident on 2026-08-19, run
       # 32217317312), fail fast on the step limit rather than the 30-minute job

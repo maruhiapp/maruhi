@@ -196,11 +196,11 @@ What exists today:
   `apps/cli/scripts/build-binaries.ts`): binaries for five targets plus
   `checksums.txt`, smoke-tested on real runners. Third-party actions are
   pinned by commit SHA, Bun by `.bun-version` (CI installs the official zip
-  verified against a SHA-256 pinned in `.github/actions/install-bun/action.yml`,
-  never from an Actions cache; the npm publish job's Node.js is pinned the
-  same way in `release.yml`, and so is the Chrome Headless Shell the gate's
-  browser tests run, in `ci.yml`), dependencies by
-  `bun install --frozen-lockfile`.
+  verified against a SHA-256 pinned in `.github/actions/install-bun/action.yml`;
+  the npm publish job's Node.js is pinned the same way in `release.yml`, and
+  so is the Chrome Headless Shell the gate's browser tests run, in `ci.yml`),
+  dependencies by `bun install --frozen-lockfile`. No workflow restores an
+  Actions cache.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token).
 - `packaging/install.sh` refuses to install without a SHA-256 match against
