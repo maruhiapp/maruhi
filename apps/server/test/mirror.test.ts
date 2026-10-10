@@ -116,6 +116,7 @@ async function restoreLines(lines: readonly string[]): Promise<void> {
         tables: PROJECT_DO_TABLES,
         schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
         body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+        storesAuditHeads: () => true,
       }),
     );
   });
@@ -134,6 +135,7 @@ async function restoreLinesRefusal(lines: readonly string[]): Promise<RestoreFai
         tables: PROJECT_DO_TABLES,
         schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
         body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+        storesAuditHeads: () => true,
       }).pipe(
         Effect.map((): RestoreFailureCode | null => null),
         Effect.catchTag("RestoreRefused", (error) => Effect.succeed(error.code)),

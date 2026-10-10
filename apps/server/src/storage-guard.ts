@@ -222,7 +222,9 @@ export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, S
  * So it is judged as a growth surface **only when materialization
  * is needed** — with the column up to date it is a pure read and
  * passes even under rejection (§12-8's enumeration (a) exception
- * note).
+ * note). The same line stops the export's materialization (null
+ * trailer head — programs-export.ts) and a restore's head storage
+ * (chain-do.ts): no path extends the column at or above it.
  */
 export const ensureStorageAdmitsAuditHeadExtension: Effect.Effect<
   void,

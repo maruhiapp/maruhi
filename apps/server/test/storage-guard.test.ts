@@ -21,6 +21,10 @@
 // 3. the 10 GB floor: the reads that append an audit row run under an
 //    audit store whose appends fail like SQLITE_FULL, and pin that they
 //    fail rather than being served unrecorded
+// 4. no audit-head materialization at or above the rejection threshold:
+//    the export stops (null trailer head, at most one bounded call of
+//    overshoot) and a restore hashes and checks every row but stores no
+//    further head, reporting the head it computed
 //
 // The warning (8 GB) operations log is a static message, once per DO
 // instance (= per meter).
@@ -52,7 +56,7 @@ import {
 import type { DataActor, DataRejection } from "../src/data/data-plane.ts";
 import type { DataStore } from "../src/data/data-store.ts";
 import { dataStoreLayer } from "../src/data/data-store.ts";
-import { appendProgram, snapshotProgram } from "../src/do/chain-do.ts";
+import { appendProgram, restoreProgram, snapshotProgram } from "../src/do/chain-do.ts";
 import type { ChainStore, StateCache } from "../src/do/chain-store.ts";
 import { chainStoreLayer } from "../src/do/chain-store.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "../src/policy.ts";
@@ -130,7 +134,7 @@ import {
 } from "./support/lease-scenario.ts";
 import { LEASE_AUDIENCE, LEASE_SUBJECT } from "./support/lease.ts";
 import { OIDC_ISSUER } from "./support/oidc-issuer.ts";
-import { readAuditEvents } from "./support/project-do.ts";
+import { evictProjectDo, readAuditEvents, resetProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -150,20 +154,25 @@ type Runner = <A, E>(program: DoProgram<A, E>) => Promise<Exit.Exit<A, E>>;
  * chain-do.ts's constructor, with the meter swapped). StateCache is
  * empty per call = a full load from the stored rows. `atFloor` swaps the
  * audit store's appends for the 10 GB floor's SQLITE_FULL (the platform
- * limit cannot be reached for real either).
+ * limit cannot be reached for real either); `headChunks` shrinks the
+ * bounded head extension (50 rows per chunk) so a small log needs several
+ * calls; a function size answers per measurement.
  */
 async function runInProject<A>(
-  databaseSizeBytes: number,
+  databaseSizeBytes: number | (() => number),
   body: (run: Runner, state: DurableObjectState) => Promise<A>,
-  options: { readonly atFloor?: boolean } = {},
+  options: { readonly atFloor?: boolean; readonly headChunks?: number } = {},
 ): Promise<A> {
-  const meter = makeStorageMeter(() => databaseSizeBytes);
+  const meter = makeStorageMeter(
+    typeof databaseSizeBytes === "number" ? () => databaseSizeBytes : databaseSizeBytes,
+  );
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   return await runInDurableObject(stub, async (_instance, state) => {
     const cache: StateCache = { current: null, chain: null };
     const full = () => {
       throw new Error(SQLITE_FULL);
     };
+    const { headChunks } = options;
     const layers = Layer.mergeAll(
       chainStoreLayer(state.storage.sql, cache),
       dataStoreLayer(state.storage.sql),
@@ -173,7 +182,11 @@ async function runInProject<A>(
             appendSync: full,
             appendManySync: full,
           }))
-        : auditStoreLayer(state.storage.sql),
+        : headChunks === undefined
+          ? auditStoreLayer(state.storage.sql)
+          : Layer.sync(AuditStore, () =>
+              makeAuditStore(state.storage.sql, { maxHeadExtensionChunks: headChunks }),
+            ),
       Layer.succeed(StorageMeter, meter),
       // The deployment key the DO derives (the workload paths authorize against its grant)
       Layer.sync(ServerKey, () => makeServerKey(Redacted.make(env.SERVER_ENC_KEY_IKM ?? ""))),
@@ -1005,6 +1018,138 @@ describe("materializing the audit-head derived column (the §12-8 (a) exception 
           STORAGE_REJECTION,
         );
       });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("no audit-head materialization at or above the rejection threshold (§12-8 — the export §11-6, the restore §11-7)", () => {
+  const count = (state: DurableObjectState, table: string) =>
+    Number(state.storage.sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).one()["n"]);
+  const trailerOf = (lines: readonly string[]) =>
+    JSON.parse(lines.at(-1) ?? "{}") as {
+      readonly kind: string;
+      readonly auditMaxSeq: number;
+      readonly auditHeadHashHex: string | null;
+    };
+  /** Appends `n` var.read rows (pulls below the line materialize nothing). */
+  const seedReads = (n: number) =>
+    runInProject(0, async (run) => {
+      for (let i = 0; i < n; i += 1) {
+        await run(
+          pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), {
+            current: null,
+            chain: null,
+          }),
+        );
+      }
+    });
+  /** The export's single page (a small project: the first page carries the trailer). */
+  const exportLines = async (run: Runner, state: DurableObjectState) => {
+    const exit = await run(
+      exportPageProgram(actor(OWNER), null, state.storage.sql, state.id.toString(), {
+        current: null,
+        chain: null,
+      }),
+    );
+    if (!Exit.isSuccess(exit)) throw new Error("export failed");
+    expect(exit.value.next).toBeNull();
+    return exit.value.lines;
+  };
+
+  it("the export's first page materializes nothing at the line and serves a null trailer head; below it, it converges", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await seedReads(3);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run, state) => {
+        const before = count(state, "audit_head_hashes");
+        const trailer = trailerOf(await exportLines(run, state));
+        expect(trailer.kind).toBe("trailer");
+        expect(trailer.auditHeadHashHex).toBeNull();
+        expect(count(state, "audit_head_hashes")).toBe(before);
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    await runInProject(0, async (run, state) => {
+      const trailer = trailerOf(await exportLines(run, state));
+      expect(trailer.auditHeadHashHex).toMatch(/^[0-9a-f]{64}$/u);
+      expect(count(state, "audit_head_hashes")).toBe(trailer.auditMaxSeq);
+    });
+  });
+
+  it("the export overshoots the line by at most one bounded extension call", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await seedReads(120);
+    // Below the line at the first measurement, at it from the second
+    let measured = 0;
+    const crossing = () => (measured++ === 0 ? 0 : DO_STORAGE_REJECT_BYTES);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInProject(
+        crossing,
+        async (run, state) => {
+          const before = count(state, "audit_head_hashes");
+          const trailer = trailerOf(await exportLines(run, state));
+          // One call of one 50-row chunk, then the line stops it
+          expect(count(state, "audit_head_hashes") - before).toBe(50);
+          expect(trailer.auditHeadHashHex).toBeNull();
+        },
+        { headChunks: 1 },
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("a restore at the line hashes and checks every row but stores no further head, and reports the same head as one below it", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await seedReads(3);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // A snapshot whose column lags the log (exported at the line)
+      const { lines, carried } = await runInProject(
+        DO_STORAGE_REJECT_BYTES,
+        async (run, state) => ({
+          lines: await exportLines(run, state),
+          carried: count(state, "audit_head_hashes"),
+        }),
+      );
+      const text = `${lines.join("\n")}\n`;
+      const restoreAt = async (size: number) => {
+        await resetProjectDo(projectId);
+        const outcome = await runInProject(size, async (run, state) => {
+          const exit = await run(
+            restoreProgram(
+              state.storage,
+              Effect.succeed(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))),
+              { current: null, chain: null },
+            ),
+          );
+          if (!Exit.isSuccess(exit) || exit.value.kind !== "restored") {
+            throw new Error("restore failed");
+          }
+          return {
+            head: exit.value.auditHeadHashHex,
+            heads: count(state, "audit_head_hashes"),
+            rows: count(state, "audit_events"),
+          };
+        });
+        await evictProjectDo(projectId);
+        return outcome;
+      };
+      const atLine = await restoreAt(DO_STORAGE_REJECT_BYTES);
+      const below = await restoreAt(0);
+      expect(below.heads).toBe(below.rows);
+      expect(below.head).toMatch(/^[0-9a-f]{64}$/u);
+      expect(atLine.heads).toBe(carried);
+      expect(atLine.heads).toBeLessThan(atLine.rows);
+      expect(atLine.head).toBe(below.head);
     } finally {
       errorSpy.mockRestore();
     }

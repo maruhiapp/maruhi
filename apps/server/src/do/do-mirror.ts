@@ -687,7 +687,7 @@ export const verifyStagedAuditHeads = Effect.fn("do-mirror.verifyStagedAuditHead
   const derived = yield* Effect.promise(() =>
     deriveAuditHeads(sql, stagedLog, stagedHeads, from, from === 0 ? "" : String(start)),
   );
-  if (!derived) {
+  if (derived === null) {
     return yield* malformed();
   }
 });

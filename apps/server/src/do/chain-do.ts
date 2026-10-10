@@ -138,6 +138,7 @@ import { ServerLoggerLive } from "../server-logger.ts";
 import type { StorageGuardDecision } from "../storage-guard.ts";
 import {
   ensureStorageAdmitsGrowth,
+  observeStorageLevel,
   StorageMeter,
   storageGuardDecision,
   storageMeterLayer,
@@ -306,7 +307,7 @@ export type OpsRestoreOutcome =
       readonly chainHeadSeq: number;
       readonly chainHeadHashHex: string | null;
       readonly auditMaxSeq: number;
-      /** The value read after extending the cumulative hash row to MAX(seq) post-restore (empty string when no audit rows). */
+      /** The audit head at the restored log's end, as the derivation computed it — stored or not past the storage guard's line (empty string when no audit rows). */
       readonly auditHeadHashHex: string;
     }
   | { readonly kind: "refused"; readonly code: RestoreFailureCode }
@@ -1416,8 +1417,9 @@ export class ProjectChainDO extends DurableObject<Env> {
    * Restore from an evacuation (under the permit). Writes **only into an
    * empty DO** (do-snapshot.ts — no overwrite path exists). After the
    * restore, instance memory (the derived state, the audit sequence) is
-   * discarded, the cumulative hash row is extended to MAX(seq), and the
-   * audit head is returned (for cross-checking).
+   * discarded, the cumulative hash row is extended to MAX(seq) below the
+   * storage guard's line, and the audit head is returned (for
+   * cross-checking — restoreProgram).
    */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
   opsRestore(objectKey: string, etag?: string): Promise<OpsRestoreOutcome> {
@@ -1425,75 +1427,94 @@ export class ProjectChainDO extends DurableObject<Env> {
     if (bucket === undefined) {
       return Promise.resolve({ kind: "no-bucket" });
     }
-    const storage = this.ctx.storage;
-    const sql = storage.sql;
-    const cache = this.#stateCache;
+    // An import restores the body its pre-check verified, by its etag
+    // (ruling H revision, round 4): a re-put between the two reads is
+    // refused, never restored unchecked
+    const body = Effect.gen(function* () {
+      const object = yield* Effect.promise(() =>
+        etag === undefined
+          ? bucket.get(objectKey)
+          : bucket.get(objectKey, { onlyIf: { etagMatches: etag } }),
+      );
+      if (object === null) {
+        return yield* new RestoreRefusedError({ code: "object-missing" });
+      }
+      // A precondition failure answers the object without a body
+      const verified = "body" in object ? (object as R2ObjectBody) : null;
+      if (verified === null) {
+        return yield* new RestoreRefusedError({ code: "object-changed" });
+      }
+      return verified.body;
+    });
     return this.#runtime.runPromise(
-      this.#opLock.withPermit(
-        Effect.gen(function* () {
-          const audit = yield* AuditStore;
-          const restored = yield* Effect.gen(function* () {
-            // An import restores the body its pre-check verified, by its
-            // etag (ruling H revision, round 4): a re-put between the two
-            // reads is refused, never restored unchecked
-            const object = yield* Effect.promise(() =>
-              etag === undefined
-                ? bucket.get(objectKey)
-                : bucket.get(objectKey, { onlyIf: { etagMatches: etag } }),
-            );
-            if (object === null) {
-              return yield* new RestoreRefusedError({ code: "object-missing" });
-            }
-            // A precondition failure answers the object without a body
-            const verified = "body" in object ? (object as R2ObjectBody) : null;
-            if (verified === null) {
-              return yield* new RestoreRefusedError({ code: "object-changed" });
-            }
-            return yield* restoreSnapshot({
-              storage,
-              tables: PROJECT_DO_TABLES,
-              schemaVersion: readProjectDoSchemaVersion(sql),
-              body: verified.body,
-            }).pipe(
-              // Discard the memory regardless of success or failure (no
-              // residue of a partial restore is handed out either)
-              Effect.ensuring(
-                Effect.sync(() => {
-                  cache.chain = null;
-                  cache.current = null;
-                  audit.resetSeqCacheSync();
-                }),
-              ),
-            );
-          }).pipe(
-            // A refusal is answered, never thrown past the permit
-            Effect.catchTag("RestoreRefused", (error) =>
-              Effect.succeed({
-                kind: "refused",
-                code: error.code,
-              } satisfies OpsRestoreOutcome),
-            ),
-          );
-          if ("code" in restored) {
-            return restored;
-          }
-          // Extend the audit-head row to the end (bounded extension — a
-          // one-time operation at restore, so run it to convergence)
-          while ((yield* audit.ensureHeadCurrent) === "more-remains") {
-            // Always terminates because each call makes progress (the
-            // bounded contract of audit-store.ts)
-          }
-          const marks = readWatermarks(sql);
-          return {
-            kind: "restored",
-            rows: restored.rows,
-            chainHeadSeq: marks.chainHeadSeq,
-            chainHeadHashHex: marks.chainHeadHashHex,
-            auditMaxSeq: marks.auditMaxSeq,
-            auditHeadHashHex: audit.currentHeadHexSync(),
-          } satisfies OpsRestoreOutcome;
-        }),
-      ),
+      this.#opLock.withPermit(restoreProgram(this.ctx.storage, body, this.#stateCache)),
     );
   }
 }
+
+/**
+ * The restore of one evacuation body into this (empty) DO, under the
+ * caller's permit (opsRestore; storage-guard.test.ts runs it under a
+ * fixed-size meter). The derivation stores heads, and the convergence
+ * after it extends the column, only below the storage guard's rejection
+ * threshold (AUTH_SPEC §11-7 / §12-8); the head reported is the one the
+ * derivation computed, stored or not.
+ */
+export const restoreProgram = Effect.fn("chain-do.restoreProgram")(function* (
+  storage: DurableObjectStorage,
+  body: Effect.Effect<ReadableStream, RestoreRefusedError>,
+  cache: StateCache,
+): Effect.fn.Return<OpsRestoreOutcome, never, AuditStore | StorageMeter> {
+  const sql = storage.sql;
+  const audit = yield* AuditStore;
+  const meter = yield* StorageMeter;
+  const restored = yield* body.pipe(
+    Effect.flatMap((stream) =>
+      restoreSnapshot({
+        storage,
+        tables: PROJECT_DO_TABLES,
+        schemaVersion: readProjectDoSchemaVersion(sql),
+        body: stream,
+        storesAuditHeads: () => storageGuardDecision(meter.databaseSizeBytes()) !== "reject",
+      }).pipe(
+        // Discard the memory regardless of success or failure (no
+        // residue of a partial restore is handed out either)
+        Effect.ensuring(
+          Effect.sync(() => {
+            cache.chain = null;
+            cache.current = null;
+            audit.resetSeqCacheSync();
+          }),
+        ),
+      ),
+    ),
+    // A refusal is answered, never thrown past the permit
+    Effect.catchTag("RestoreRefused", (error) =>
+      Effect.succeed({
+        kind: "refused",
+        code: error.code,
+      } satisfies OpsRestoreOutcome),
+    ),
+  );
+  if ("code" in restored) {
+    return restored;
+  }
+  // Extend the audit-head row to the end (bounded extension — a one-time
+  // operation at restore, so run it to convergence) below the same line
+  while (
+    (yield* observeStorageLevel) !== "reject" &&
+    (yield* audit.ensureHeadCurrent) === "more-remains"
+  ) {
+    // Always terminates because each call makes progress (the bounded
+    // contract of audit-store.ts)
+  }
+  const marks = readWatermarks(sql);
+  return {
+    kind: "restored",
+    rows: restored.rows,
+    chainHeadSeq: marks.chainHeadSeq,
+    chainHeadHashHex: marks.chainHeadHashHex,
+    auditMaxSeq: marks.auditMaxSeq,
+    auditHeadHashHex: restored.auditHeadHashHex,
+  } satisfies OpsRestoreOutcome;
+});

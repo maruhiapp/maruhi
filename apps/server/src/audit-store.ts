@@ -717,7 +717,7 @@ const hashNextChunk = (
   sql: SqlStorage,
   state: { hashedUpTo: number; head: string },
 ): Effect.Effect<boolean> =>
-  deriveChunk(sql, "audit_events", "audit_head_hashes", state).pipe(
+  deriveChunk(sql, "audit_events", "audit_head_hashes", state, true).pipe(
     Effect.map((outcome) => outcome === "done"),
     // A structural invalidity on input derived from a stored row is an
     // implementation bug (the error value carries no secrets): the staged
@@ -746,13 +746,16 @@ class AuditHeadChunkInvalidError extends Data.TaggedError("AuditHeadChunkInvalid
  * `target` in one INSERT — the one loop body of the lazy extension (the
  * live log into the live column) and of the derivation over a staged or
  * restored log (ruling J revision, rounds 10 and 11): memory stays at one
- * chunk whatever the log's size.
+ * chunk whatever the log's size. `persist` false hashes and checks the
+ * chunk without writing it (a restore past the storage guard's line —
+ * AUTH_SPEC §11-7).
  */
 const deriveChunk = Effect.fnUntraced(function* (
   sql: SqlStorage,
   source: string,
   target: string,
   state: { hashedUpTo: number; head: string },
+  persist: boolean,
 ): Effect.fn.Return<"done" | "more", AuditHeadChunkInvalidError> {
   const rows = sql
     .exec(
@@ -797,10 +800,12 @@ const deriveChunk = Effect.fnUntraced(function* (
     state.hashedUpTo = row.seq;
     inserts.push(row.seq, state.head);
   }
-  sql.exec(
-    `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
-    ...inserts,
-  );
+  if (persist) {
+    sql.exec(
+      `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
+      ...inserts,
+    );
+  }
   // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
   return rows.length < HEAD_CHUNK_ROWS ? "done" : "more";
 });
@@ -814,12 +819,15 @@ export function isAuditHeadHex(value: unknown): value is string {
  * Derives the audit-head column over `source`'s rows past `fromSeq`, from
  * `prevHead` (the empty string before seq 1), into `target`, chunk by
  * chunk (one chunk of memory — round 11): the rows must be exactly
- * `fromSeq + 1 …` and every one must pass the canonical form. false = a
- * gap, or a row the canonical form refuses — what a replica or a snapshot
- * must never install (ruling J revision, round 10: such a log committed,
- * and the extension afterwards threw the append-only defect on every
- * later read). The target's rows written before a failure are the
- * caller's to discard (a staging, or a restore that is wiped).
+ * `fromSeq + 1 …` and every one must pass the canonical form. Returns the
+ * head at the log's end; null = a gap, or a row the canonical form refuses
+ * — what a replica or a snapshot must never install (ruling J revision,
+ * round 10: such a log committed, and the extension afterwards threw the
+ * append-only defect on every later read). The target's rows written
+ * before a failure are the caller's to discard (a staging, or a restore
+ * that is wiped). `stores` is asked before each chunk: once it says no,
+ * the rest is hashed and checked but not written, so the target stays a
+ * contiguous prefix.
  */
 export async function deriveAuditHeads(
   sql: SqlStorage,
@@ -827,12 +835,15 @@ export async function deriveAuditHeads(
   target: string,
   fromSeq: number,
   prevHead: string,
-): Promise<boolean> {
+  stores: () => boolean = () => true,
+): Promise<string | null> {
   const state = { hashedUpTo: fromSeq, head: prevHead };
+  let persist = true;
   for (;;) {
+    persist = persist && stores();
     const outcome = await Effect.runPromise(
-      deriveChunk(sql, source, target, state).pipe(
-        // A log that fails the canonical form is refused (false) — the
+      deriveChunk(sql, source, target, state, persist).pipe(
+        // A log that fails the canonical form is refused (null) — the
         // staging / restore paths treat it as untrusted input, not as a
         // defect (a storage fault inside the fiber still rejects the
         // promise, same as a throw did)
@@ -841,7 +852,7 @@ export async function deriveAuditHeads(
       ),
     );
     if (outcome !== "more") {
-      return outcome === "done";
+      return outcome === "done" ? state.head : null;
     }
   }
 }
