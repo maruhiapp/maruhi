@@ -123,7 +123,7 @@ export default defineConfig({
     // so the suite runs longer. Measured locally: ~201s unshuffled
     // vs 255-309s shuffled (+27-54%). CI's uncached order is
     // file-size-based rather than duration-based, so the CI delta is
-    // expected to be smaller; real CI numbers are recorded on the PR.
+    // expected to be smaller.
     //
     // Prerequisite: @cloudflare/vitest-plugin 1.1.2 or later.
     // Earlier harnesses have a bug where SELF.fetch's per-request
