@@ -235,25 +235,25 @@ STRIPE_KEY    string  true      set</span>
               <title id="ill-agents">
                 An agent sees variable names and types, while the values are blacked out
               </title>
-              <rect class="line" x="20" y="34" width="196" height="132" rx="8"></rect>
-              <path class="line open soft thin" d="M20 68 H216 M20 100 H216 M20 132 H216"></path>
-              <text class="label" x="30" y="56">NAME</text>
-              <text class="label" x="132" y="56">TYPE</text>
-              <text class="label" x="180" y="56">VALUE</text>
-              <text class="label strong" x="30" y="88">DATABASE_URL</text>
-              <text class="label strong" x="30" y="120">STRIPE_KEY</text>
-              <text class="label strong" x="30" y="152">SENTRY_DSN</text>
-              <text class="label" x="132" y="88">url</text>
-              <text class="label" x="132" y="120">string</text>
-              <text class="label" x="132" y="152">string</text>
-              <rect class="key" x="180" y="79" width="26" height="10" rx="3"></rect>
-              <rect class="key" x="180" y="111" width="26" height="10" rx="3"></rect>
-              <rect class="key" x="180" y="143" width="26" height="10" rx="3"></rect>
-              <line class="line open" x1="270" y1="74" x2="270" y2="62"></line>
-              <circle class="line" cx="270" cy="58" r="4"></circle>
-              <rect class="line" x="240" y="74" width="60" height="54" rx="12"></rect>
-              <circle class="dot" cx="258" cy="99" r="5"></circle>
-              <circle class="dot" cx="282" cy="99" r="5"></circle>
+              <rect class="line" x="12" y="34" width="220" height="132" rx="8"></rect>
+              <path class="line open soft thin" d="M12 68 H232 M12 100 H232 M12 132 H232"></path>
+              <text class="label" x="22" y="56">NAME</text>
+              <text class="label" x="126" y="56">TYPE</text>
+              <text class="label" x="182" y="56">VALUE</text>
+              <text class="label strong" x="22" y="88">DATABASE_URL</text>
+              <text class="label strong" x="22" y="120">STRIPE_KEY</text>
+              <text class="label strong" x="22" y="152">SENTRY_DSN</text>
+              <text class="label" x="126" y="88">url</text>
+              <text class="label" x="126" y="120">string</text>
+              <text class="label" x="126" y="152">string</text>
+              <rect class="key" x="182" y="79" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="182" y="111" width="26" height="10" rx="3"></rect>
+              <rect class="key" x="182" y="143" width="26" height="10" rx="3"></rect>
+              <line class="line open" x1="278" y1="74" x2="278" y2="62"></line>
+              <circle class="line" cx="278" cy="58" r="4"></circle>
+              <rect class="line" x="248" y="74" width="60" height="54" rx="12"></rect>
+              <circle class="dot" cx="266" cy="99" r="5"></circle>
+              <circle class="dot" cx="290" cy="99" r="5"></circle>
             </svg>
           </figure>
         </li>
@@ -652,10 +652,17 @@ STRIPE_KEY    string  true      set</span>
     fill: var(--blume-foreground);
   }
 
+  /* Labels are laid out in viewBox units (Martian Mono advances 0.7em: 7.7
+     units per character at 11px). geometricPrecision keeps that advance at
+     every rendered width — Chromium otherwise lays SVG text out at its
+     on-screen size with whole-pixel glyph advances, so a label drifts by up
+     to half a pixel per character as the figure scales. The landing-page
+     e2e pins that no label crosses a shape or another label */
   .ill .label {
     font-family: var(--blume-font-mono);
     font-size: 11px;
     fill: currentColor;
+    text-rendering: geometricPrecision;
   }
 
   .ill .label.strong {
