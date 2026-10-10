@@ -354,6 +354,22 @@ describe("release.yml publishes only what its build job produced", () => {
     }
   });
 
+  /** The step right after `download` checks that artifact against the build job's digest. */
+  function expectVerified(steps: readonly Step[], download: Step, job: string): void {
+    const verify = steps[steps.indexOf(download) + 1];
+    const artifact = String(download.with?.["name"]);
+    expect(verify?.["working-directory"], job).toBe(download.with?.["path"]);
+    expect(verify?.env?.["EXPECTED_DIGEST"], job).toBe(
+      `\${{ needs.build.outputs.${artifact}-digest }}`,
+    );
+    const run = verify?.run ?? "";
+    expectDigestFunction(run, job);
+    expect(run, job).toContain("actual=$(digest .)");
+    expect(run, job).toContain(
+      'if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then',
+    );
+  }
+
   it("verifies every artifact a publishing job downloads, right after the download", () => {
     expect(publishers.map(([name]) => name).toSorted()).toEqual(["publish-github", "publish-npm"]);
     for (const [name, job] of publishers) {
@@ -361,20 +377,7 @@ describe("release.yml publishes only what its build job produced", () => {
       const downloads = steps.filter(isDownload);
       expect(downloads.length, name).toBeGreaterThan(0);
       expect(needsOf(job), name).toContain("build");
-      for (const download of downloads) {
-        const verify = steps[steps.indexOf(download) + 1];
-        const artifact = String(download.with?.["name"]);
-        expect(verify?.["working-directory"], name).toBe(download.with?.["path"]);
-        expect(verify?.env?.["EXPECTED_DIGEST"], name).toBe(
-          `\${{ needs.build.outputs.${artifact}-digest }}`,
-        );
-        const run = verify?.run ?? "";
-        expectDigestFunction(run, name);
-        expect(run, name).toContain("actual=$(digest .)");
-        expect(run, name).toContain(
-          'if ! [[ "${EXPECTED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || [ "${actual}" != "${EXPECTED_DIGEST}" ]; then',
-        );
-      }
+      for (const download of downloads) expectVerified(steps, download, name);
     }
   });
 
