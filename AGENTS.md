@@ -49,5 +49,8 @@ talking with the owner directly, and in the files listed in
 - Some entries under `.agents/skills` are symlinks into node_modules, so they
   look broken until `bun install` has run
 - To use the deepsec skill (`/deepsec`, `.agents/skills/deepsec`), run
-  `cd .deepsec && pnpm install --frozen-lockfile`. Do not run
+  `cd .deepsec && corepack pnpm install --frozen-lockfile` (corepack checks
+  the sha512 pinned in `packageManager` when it downloads pnpm; without
+  corepack, add `--config.manage-package-manager-versions=false` to a plain
+  `pnpm install --frozen-lockfile`). Do not run
   `npx deepsec init` (the SKILL.md maruhi overlay; `docs/DEEPSEC.md`)

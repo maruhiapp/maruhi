@@ -38,7 +38,7 @@ An agent reads the official runbook via `/deepsec` or "scan with deepsec". It fi
 Step 2 of the official SKILL.md restarts `npx -y deepsec init --through coverage` when `.deepsec/node_modules/deepsec` is missing. Here `INFO.md` was written by hand under scaffold-only and the CLI is pinned in `.deepsec/package.json`, so that path is forbidden. `.agents/skills/deepsec/SKILL.md` carries an overlay:
 
 - `deepsec.config.ts` present = onboarded
-- missing `node_modules` is fixed with `cd .deepsec && pnpm install --frozen-lockfile` (through `corepack pnpm` when corepack exists, which checks the sha512 pinned in `packageManager`; never `bunx pnpm`)
+- missing `node_modules` is fixed with `cd .deepsec && corepack pnpm install --frozen-lockfile` (corepack checks the sha512 pinned in `packageManager` when it downloads pnpm; without corepack, add `--config.manage-package-manager-versions=false` to a plain `pnpm install --frozen-lockfile`; never `bunx pnpm`)
 - `init` only when there is no config
 
 `npx skills update deepsec` removes this overlay (the `skills-lock.json` hash stays upstream's). Restore the same overlay after updating.
@@ -47,9 +47,11 @@ The version-matched documentation is `.deepsec/node_modules/deepsec/SKILL.md` an
 
 ## Daily operations
 
+`.deepsec/pnpm-workspace.yaml` sets `managePackageManagerVersions: false`, so a plain `pnpm` here never switches itself to the `packageManager` version (that download skips the pinned sha512). Run through `corepack pnpm` to get exactly that version, verified.
+
 ```sh
 cd .deepsec
-pnpm install
+corepack pnpm install --frozen-lockfile
 pnpm deepsec scan --project-id maruhi          # regex only. Free
 # after preparing credentials:
 pnpm deepsec process --project-id maruhi       # AI investigation. Paid

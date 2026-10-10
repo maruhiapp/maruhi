@@ -31,11 +31,14 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -x /opt/pw-browsers/chromium ]; then
 fi
 
 # `.deepsec/` is isolated from the root bun install. A failure here must not
-# fail the whole hook. (`/deepsec` repairs itself via pnpm install when
-# missing; init is never re-run.) pnpm itself is never fetched unverified:
-# corepack checks the sha512 pinned in .deepsec/package.json's packageManager;
-# without corepack, a preinstalled pnpm runs as is, since its own switch to the
-# packageManager version downloads without checking that hash.
+# fail the whole hook. (`/deepsec` repairs itself the same way when missing;
+# init is never re-run.) pnpm is never fetched unverified: corepack checks the
+# sha512 pinned in .deepsec/package.json's packageManager whenever it downloads
+# pnpm (a pnpm already in corepack's cache is not re-checked). Without
+# corepack, a preinstalled pnpm runs as is, with its switch to the
+# packageManager version turned off (here and in .deepsec/pnpm-workspace.yaml):
+# that switch downloads without checking the hash. A corepack failure does not
+# fall back to that pnpm.
 if [ -f .deepsec/package.json ]; then
   deepsec_install_status=0
   if command -v corepack >/dev/null 2>&1; then
@@ -48,6 +51,6 @@ if [ -f .deepsec/package.json ]; then
     deepsec_install_status=1
   fi
   if [ "$deepsec_install_status" -ne 0 ]; then
-    echo "session-start: .deepsec install failed; /deepsec needs: cd .deepsec && pnpm install --frozen-lockfile" >&2
+    echo "session-start: .deepsec install failed; /deepsec needs: cd .deepsec && corepack pnpm install --frozen-lockfile (without corepack: pnpm install --frozen-lockfile --config.manage-package-manager-versions=false)" >&2
   fi
 fi

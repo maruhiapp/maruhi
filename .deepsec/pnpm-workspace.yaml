@@ -1,1 +1,4 @@
 packages: []
+# pnpm must not switch itself to the packageManager version: that download
+# skips the sha512 pinned there. corepack pnpm is the verified way to get it.
+managePackageManagerVersions: false
