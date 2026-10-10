@@ -8,9 +8,10 @@
 # run in the default-branch scope can seed, and its only check runs the
 # restored binary (`bun --revision`). On the release path this binary also
 # becomes the runtime inside the published linux-x64 binary (`bun build
-# --compile` for the host target copies the running executable), so this step
-# refuses a runner without AVX2 instead of letting the script fall back to the
-# baseline build.
+# --compile` for the host target copies the running executable), so the step
+# passes `--require-avx2`: the script then refuses a runner without AVX2
+# instead of falling back to the baseline build. The script annotates its own
+# failures (`::error::`).
 
 name: "install-bun"
 description: >-
@@ -24,9 +25,5 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [ "${RUNNER_OS}" = "Linux" ] && ! grep -qw avx2 /proc/cpuinfo; then
-          echo "::error::this runner has no AVX2; the release needs the non-baseline bun-linux-x64 build"
-          exit 1
-        fi
-        bash "${GITHUB_WORKSPACE}/scripts/install-bun.sh"
+        bash "${GITHUB_WORKSPACE}/scripts/install-bun.sh" --require-avx2
         echo "${HOME}/.bun/bin" >> "${GITHUB_PATH}"

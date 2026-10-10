@@ -23,11 +23,15 @@ export PATH="$HOME/.bun/bin:$PATH"
 
 bun install
 
-# The Playwright path is this hook's core job. Write it before the optional
-# deepsec install so a later failure cannot keep e2e off the preinstalled
-# Chromium.
-if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -x /opt/pw-browsers/chromium ]; then
-  echo 'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/opt/pw-browsers/chromium' >>"$CLAUDE_ENV_FILE"
+# The session's PATH and the Playwright path are this hook's core job. Write
+# them before the optional deepsec install so a later failure cannot keep the
+# session off Bun or e2e off the preinstalled Chromium. install-bun.sh edits
+# no shell profile, so the session gets ~/.bun/bin from here.
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  echo 'export PATH="$HOME/.bun/bin:$PATH"' >>"$CLAUDE_ENV_FILE"
+  if [ -x /opt/pw-browsers/chromium ]; then
+    echo 'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/opt/pw-browsers/chromium' >>"$CLAUDE_ENV_FILE"
+  fi
 fi
 
 # `.deepsec/` is isolated from the root bun install. A failure here must not

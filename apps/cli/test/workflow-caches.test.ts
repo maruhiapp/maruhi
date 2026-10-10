@@ -17,11 +17,10 @@
 //      container
 //   3. ci.yml, which release.yml runs as its gate, gates each cache step on
 //      `skip-caches`, and release.yml passes `skip-caches: true`
-//   4. Bun comes only from .github/actions/install-bun, which runs
-//      scripts/install-bun.sh (whose pinned version is `.bun-version`), and
-//      release.yml's publish-npm (the OIDC publish) runs only a pinned
-//      Node.js; both check the pinned SHA-256 before unpacking, and unpack
-//      before first running anything
+//   4. Bun comes only from .github/actions/install-bun, whose pinned version
+//      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
+//      runs only a pinned Node.js; both check the pinned SHA-256 before
+//      unpacking, and unpack before first running anything
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -210,40 +209,13 @@ describe("Actions caches stay out of privileged workflows", () => {
   });
 
   describe("Bun comes only from the pinned install-bun action", () => {
-    const actionSource = read(".github/actions/install-bun/action.yml");
-    const action = parseYaml(actionSource) as { runs: { using: string; steps: Step[] } };
-    const script = read("scripts/install-bun.sh");
-    const assigned = (name: string) => new RegExp(`^${name}="([^"]*)"$`, "m").exec(script)?.[1];
-
+    // The action runs scripts/install-bun.sh, which holds the pin; both are pinned in
+    // dev-setup.test.ts
     it("is the only Bun installer in any workflow", () => {
       for (const file of [...PRIVILEGED, ...UNPRIVILEGED]) {
         const { source } = loadWorkflow(file);
         expect(source, file).not.toMatch(/setup-bun@|bun\.sh\/install/);
       }
-    });
-
-    it("runs one shell step that refuses a runner without AVX2, then runs scripts/install-bun.sh", () => {
-      expect(action.runs.using).toBe("composite");
-      expect(action.runs.steps.map((s) => s.uses)).toEqual([undefined]);
-      const run = action.runs.steps[0]?.run ?? "";
-      const refuse = run.indexOf("grep -qw avx2 /proc/cpuinfo");
-      const exit = run.indexOf("exit 1", refuse);
-      const install = run.indexOf('bash "${GITHUB_WORKSPACE}/scripts/install-bun.sh"');
-      expect(refuse).toBeGreaterThan(-1);
-      expect(exit).toBeGreaterThan(refuse);
-      expect(install).toBeGreaterThan(exit);
-      // The pin lives only in the script
-      expect(actionSource).not.toMatch(/[0-9a-f]{64}/);
-    });
-
-    it("pins the version .bun-version names, with SHA-256s, and checks them before running", () => {
-      expect(assigned("BUN_VERSION")).toBe(read(".bun-version").trim());
-      expect(assigned("BUN_LINUX_X64_ZIP_SHA256")).toMatch(/^[0-9a-f]{64}$/);
-      expect(assigned("BUN_LINUX_X64_BASELINE_ZIP_SHA256")).toMatch(/^[0-9a-f]{64}$/);
-      expect(script).toContain(
-        "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-${target}.zip",
-      );
-      expectVerifiedBeforeRun(script, "unzip ", '"${bin_dir}/bun" --revision');
     });
   });
 

@@ -12,8 +12,9 @@ talking with the owner directly, and in the files listed in
 ## Claude Code on the web specific instructions
 
 - Setup is handled by the SessionStart hook (`.claude/hooks/session-start.sh`):
- syncing Bun to `.bun-version` through `scripts/install-bun.sh` (the release
- zip checked against a pinned SHA-256) and running `bun install`. Do NOT download
+  syncing Bun to `.bun-version` through `scripts/install-bun.sh` (the release
+  zip checked against a pinned SHA-256), putting `~/.bun/bin` on the session's
+  PATH (through `CLAUDE_ENV_FILE`), and running `bun install`. Do NOT download
   Playwright's Chromium — use the environment's preinstalled build
   (`/opt/pw-browsers/chromium`)
 - The hook writes `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` into the session
@@ -29,11 +30,13 @@ talking with the owner directly, and in the files listed in
 ## Cursor Cloud specific instructions
 
 - Bun is installed to `~/.bun/bin` per `.bun-version` (strict pin; PATH comes
- via `~/.bashrc`). The startup install script syncs the version, runs
- `bun install`, and fetches the Playwright Chromium. It must install Bun with
- `bash scripts/install-bun.sh`, which checks the release zip against the
- SHA-256 pinned there (the pin CI uses) before running it — never
- `curl https://bun.sh/install | bash`, which runs an unverified script
+  via `~/.bashrc`). The startup install script syncs the version, runs
+  `bun install`, and fetches the Playwright Chromium. It must install Bun with
+  `bash scripts/install-bun.sh`, which checks the release zip against the
+  SHA-256 pinned there (the pin CI uses) before running it — never
+  `curl https://bun.sh/install | bash`, which runs an unverified script. The
+  script edits no shell profile, so the startup script also adds
+  `export PATH="$HOME/.bun/bin:$PATH"` to `~/.bashrc` when it is missing
 - The quality gate is `bun run check` (see root `package.json`), the same order
   as CI (`.github/workflows/ci.yml`)
 - Root `bun run test` intentionally does not include the `apps/web` e2e. Run it
