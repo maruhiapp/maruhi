@@ -17,10 +17,10 @@ on:
   workflow_call:
     inputs:
       # release.yml passes true to make the whole release path restore no
-      # Actions cache (the reasoning is at release.yml's verify job): it gates
-      # setup-bun's bun-binary cache and the Playwright browser cache below.
-      # Push / PR runs are not workflow_call, so inputs is empty and this
-      # reads as null (see the `== true` note on setup-bun's no-cache)
+      # Actions cache (the reasoning is at release.yml's verify job). The
+      # Playwright browser cache below is the only cache this file uses (Bun
+      # comes from the pinned install-bun action, which has none). Push / PR
+      # runs are not workflow_call, so inputs is empty and this reads as null
       skip-caches:
         type: boolean
         default: false
@@ -67,18 +67,8 @@ jobs:
           # runs dependencies and test code
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-          # setup-bun caches the bun executable itself in actions/cache under
-          # a URL-derived key, restoring it with only a `bun --revision` string
-          # check — so on the release path (skip-caches: true) it is a poisoning
-          # vector into a privileged job (release.yml's verify reasoning). Off
-          # there, on for push / PR. `== true` is required: on push / PR runs
-          # inputs is empty, so `inputs.skip-caches` is null and a bare
-          # reference may render "" — which setup-bun's getBooleanInput
-          # rejects. `== true` renders a clean "false" / "true" instead
-          no-cache: ${{ inputs.skip-caches == true }}
+      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
+      - uses: ./.github/actions/install-bun
 
       # ADR-0019: no tracked file may contain CJK text (exemptions:
       # scripts/english-exemptions.txt + inline `english-exempt` markers).
@@ -341,8 +331,8 @@ jobs:
       # does not depend on later outcomes
       - name: Restore Playwright Chromium cache (headless shell)
         id: playwright-cache
-        # Skipped on the release path (same reasoning as setup-bun's no-cache):
-        # a restored browser binary executes in the gate job
+        # Skipped on the release path (release.yml's verify reasoning): a
+        # restored browser binary executes in the gate job
         if: ${{ !inputs.skip-caches }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

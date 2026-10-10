@@ -46,19 +46,18 @@ env:
 
 jobs:
   # The full quality gate (bun audit + 11 steps). Calls ci.yml via workflow_call.
-  # skip-caches: true makes every job of the release run restore no Actions
-  # cache — not the bun binary (setup-bun's own cache) and not the Playwright
-  # browser. An Actions cache entry is writable by any run in the default
-  # branch's scope (including the Pullfrog agent's workflow_dispatch), and
-  # setup-bun restores the bun executable verifying only a `bun --revision`
-  # string — under a key an attacker can pre-seed (e.g. via a public
-  # .bun-version bump PR). Every job of this run, verify and build included,
-  # holds a token that can overwrite the `binaries` / `npm-package` artifacts
-  # publish downloads, so one poisoned entry could reach a published release.
-  # (A dependency cache would be worse still — bun would install a cached hit
+  # skip-caches: true turns off the Playwright browser cache, so no job of the
+  # release run restores an Actions cache (Bun never comes from one: the
+  # install-bun action verifies a pinned SHA-256). An Actions cache entry in
+  # the default branch's scope is writable by code in any run there (a push
+  # to main and its dependencies, the Pullfrog agent's workflow_dispatch) —
+  # GITHUB_TOKEN permissions do not limit cache writes — and tag runs read
+  # that scope. Every job of this run, verify and build included, holds a
+  # token that can overwrite the `binaries` / `npm-package` artifacts publish
+  # downloads, so one poisoned entry could reach a published release. (A
+  # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
-  # added; the other is that it measured slower than a cold install.) A cold
-  # download + install costs seconds on this infrequent, privileged path
+  # added; the other is that it measured slower than a cold install.)
   verify:
     permissions:
       contents: read
@@ -144,15 +143,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .bun-version
-          # Do not restore the bun executable from Actions cache on this
-          # privileged build job (it produces the published binaries / npm
-          # artifacts). setup-bun verifies a cache hit by a revision string
-          # only, and the key is attacker-pre-seedable from the default-branch
-          # scope (full reasoning at the verify job). A cold download is seconds
-          no-cache: true
+      # The running Bun becomes the runtime inside the published linux-x64
+      # binary, so it comes from the SHA-256-pinned zip, never a cache
+      - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

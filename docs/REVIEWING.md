@@ -195,7 +195,9 @@ What exists today:
 - Releases are built from source in CI (`.github/workflows/release.yml`,
   `apps/cli/scripts/build-binaries.ts`): binaries for five targets plus
   `checksums.txt`, smoke-tested on real runners. Third-party actions are
-  pinned by commit SHA, Bun by `.bun-version`, dependencies by
+  pinned by commit SHA, Bun by `.bun-version` (CI installs the official zip
+  verified against a SHA-256 pinned in `.github/actions/install-bun/action.yml`,
+  never from an Actions cache), dependencies by
   `bun install --frozen-lockfile`.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token).
