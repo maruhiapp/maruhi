@@ -964,7 +964,7 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expectNoSecretLeak(fixture);
   });
 
-  it("the pre-flight refuses a pending or stale variable before the issuer is touched", async () => {
+  it("the pre-flight refuses a pending or stale variable, or a project at the storage guard, before the issuer is touched", async () => {
     const fixture = await startCi();
     fixture.preflighted.reject = {
       status: 422,
@@ -991,6 +991,17 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
       "a member pushed the variable after this job leased it",
     );
     expect(stale.env.captureCalls).toHaveLength(0);
+    const full = await startCi();
+    full.preflighted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "storage-limit" },
+    };
+    expect(await ciRotate(full)).toBe(1);
+    expect(full.env.errors.join("\n")).toContain(
+      "the project's stored data has reached the server's storage guard (AUTH_SPEC §12-8)",
+    );
+    expect(full.env.captureCalls).toHaveLength(0);
+    expect(full.minted.bodies).toHaveLength(0);
     expectNoSecretLeak(fixture);
   });
 
@@ -1007,6 +1018,17 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
       ]),
     );
     expectNoSecretLeak(fixture);
+    // The storage guard can be crossed between the pre-flight and the mint
+    const full = await startCi();
+    full.minted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "storage-limit" },
+    };
+    expect(await ciRotate(full)).toBe(1);
+    const errors = full.env.errors.join("\n");
+    expect(errors).toContain("the project's stored data has reached the server's storage guard");
+    expect(errors).toContain("Recovery for the credential that now exists at the issuer");
+    expectNoSecretLeak(full);
   });
 
   it("surfaces the crypto layer's InvalidInput verbatim when the new value exceeds the sealed-value bound", async () => {

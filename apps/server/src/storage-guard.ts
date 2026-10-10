@@ -4,7 +4,9 @@
 // The project DO's measured SQLite size (`SqlStorage.databaseSize`)
 // is gated by two thresholds — warn / reject (policy.ts; draft values
 // 8 GB / 9 GB) — so it never reaches the 10 GB SQLITE_FULL floor
-// (readable but unwritable). The platform still passes a bare DELETE
+// (every insert fails — maruhi's value reads too, with their audit
+// row: the floor refuses them rather than serving an unrecorded read).
+// The platform still passes a bare DELETE
 // at the floor, but maruhi's delete operations carry tombstone,
 // deletion-statement, and audit-row INSERTs in the same task, so they
 // fail at the floor = the tenant cannot recover on its own. This is
@@ -27,9 +29,13 @@
 //   activation / rename / schema re-issue, environment rename,
 //   environment-create composite, DEK-wrap registration, add_member
 //   / grant_server, and the schemaPolicy change which needs no
-//   evacuation / release / remediation yet stacks an audit row.
-//   Reads (including the bulk pull that carries a var.read audit
-//   append — the evacuation path), deletions (the release means),
+//   evacuation / release / remediation yet stacks an audit row. The
+//   sealed value proposal mint and its pre-flight refuse at the same
+//   level in the workload vocabulary (programs-proposal.ts —
+//   `storage-limit`).
+//   Reads (including the bulk pull, the version value range and the
+//   export that carry an audit append — the evacuation paths),
+//   deletions (the release means),
 //   revocation / permission-narrowing, rotation composites, leases,
 //   head declarations, standalone checkpoints, and dismiss do
 //   **not** call it (the surfaces that keep accepting under
@@ -57,7 +63,7 @@
 //   image of idFromName).
 //   **The observation point sits not only on the growth surfaces but
 //   also on the read surfaces that write audit rows (with-values
-//   pull, lease)** (observeStorageLevel — it does not refuse): a
+//   pull, version value range, export, lease)** (observeStorageLevel — it does not refuse): a
 //   pull-dominated project crosses the threshold without any
 //   growth-surface write, so watching the growth surfaces alone
 //   would never warn
@@ -152,7 +158,8 @@ export const storageMeterLayer = (sql: SqlStorage): Layer.Layer<StorageMeter> =>
  * It is the front half of the growth-surface guard
  * (ensureStorageAdmitsGrowth), and is also called by **read
  * surfaces that do not refuse but write audit rows** (with-values
- * pull's var.read, lease's server.* — §12-8's enumeration (a)(e)):
+ * pull's and version value range's var.read, export's
+ * project.exported, lease's server.* — §12-8's enumeration (a)(e)):
  * a project whose dominant growth term is var.read (pull-dominated
  * projects, as SELF_HOSTING describes) can pass 8 GB → 9 GB with no
  * growth-surface write, so placing the warning observation point
@@ -215,7 +222,11 @@ export const ensureStorageAdmitsGrowth: Effect.Effect<void, DataRejectedError, S
  * So it is judged as a growth surface **only when materialization
  * is needed** — with the column up to date it is a pure read and
  * passes even under rejection (§12-8's enumeration (a) exception
- * note).
+ * note). The same line stops the export's materialization (null
+ * trailer head — programs-export.ts) and a restore's head storage
+ * (chain-do.ts): no path extends the column at or above it, except a
+ * mirror's replica, whose derivation and convergence only its per-page
+ * guard bounds (AUTH_SPEC §11-7 — ledger Sc-6d).
  */
 export const ensureStorageAdmitsAuditHeadExtension: Effect.Effect<
   void,

@@ -777,12 +777,20 @@ export interface RestoreSnapshotInput {
   readonly tables: readonly string[];
   readonly schemaVersion: number;
   readonly body: ReadableStream;
+  /**
+   * Asked before each chunk of the audit-head derivation: false = hash and
+   * check, but store no further head (the storage guard's rejection line —
+   * AUTH_SPEC §11-7 / §12-8; chain-do.ts measures it).
+   */
+  readonly storesAuditHeads: () => boolean;
 }
 
 export interface RestoreSnapshotResult {
   readonly header: SnapshotHeader;
   readonly trailer: SnapshotTrailer;
   readonly rows: Readonly<Record<string, number>>;
+  /** The audit head at the restored log's end, as the derivation computed it (stored or not — AUTH_SPEC §11-7). */
+  readonly auditHeadHashHex: string;
 }
 
 async function* lines(body: ReadableStream): AsyncGenerator<string> {
@@ -933,6 +941,7 @@ class RestoreReader {
     private readonly storage: DurableObjectStorage,
     private readonly known: ReadonlySet<string>,
     private readonly schemaVersion: number,
+    private readonly storesAuditHeads: () => boolean,
   ) {}
 
   accept(line: SnapshotLine): void {
@@ -971,9 +980,9 @@ class RestoreReader {
       }
     }
     this.#verifyAuditContiguity();
-    await this.#deriveAuditHeads();
+    const auditHeadHashHex = await this.#deriveAuditHeads();
     this.#promoteChainStaging();
-    return { header, trailer, rows: this.rows };
+    return { header, trailer, rows: this.rows, auditHeadHashHex };
   }
 
   /**
@@ -983,8 +992,11 @@ class RestoreReader {
    * refuses is `malformed` and the DO stays empty — restored, it threw the
    * append-only defect on every later read, with the DO `not-empty` for a
    * re-run. The convergence after the restore then has nothing to do.
+   * Heads are stored only below the storage guard's rejection threshold
+   * (AUTH_SPEC §11-7 / §12-8): past it every row is still hashed and
+   * checked, and the head is returned from memory.
    */
-  async #deriveAuditHeads(): Promise<void> {
+  async #deriveAuditHeads(): Promise<string> {
     const sql = this.storage.sql;
     const tail = sql
       .exec("SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
@@ -1006,10 +1018,12 @@ class RestoreReader {
       "audit_head_hashes",
       from,
       String(start),
+      this.storesAuditHeads,
     );
-    if (!derived) {
+    if (derived === null) {
       throw new RestoreRefusedError({ code: "malformed" });
     }
+    return derived;
   }
 
   /**
@@ -1125,7 +1139,12 @@ export function restoreSnapshot(
     // Wipe the previous partial restore (leftover non-chain tables) first
     wipeTables(storage.sql, tables);
     storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
-    const reader = new RestoreReader(storage, new Set(tables), input.schemaVersion);
+    const reader = new RestoreReader(
+      storage,
+      new Set(tables),
+      input.schemaVersion,
+      input.storesAuditHeads,
+    );
     return yield* Effect.tryPromise({
       try: async () => {
         for await (const text of lines(input.body)) {

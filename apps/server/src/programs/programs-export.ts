@@ -32,6 +32,8 @@ import {
   exportSnapshotPage,
 } from "../do/do-snapshot.ts";
 import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } from "../policy.ts";
+import type { StorageMeter } from "../storage-guard.ts";
+import { observeStorageLevel } from "../storage-guard.ts";
 
 /** One page as the worker returns it (the wire shape of api-schema's ExportPageSchema). */
 export interface ExportPageValue {
@@ -54,7 +56,11 @@ export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(
   sql: SqlStorage,
   doIdHex: string,
   cache: StateCache,
-): Effect.fn.Return<ExportPageValue, DataRejectedError, ChainStore | DataStore | AuditStore> {
+): Effect.fn.Return<
+  ExportPageValue,
+  DataRejectedError,
+  ChainStore | DataStore | AuditStore | StorageMeter
+> {
   const { state } = yield* requireMemberState(actor.userId, "owner", cache);
   const nowMs = yield* Clock.currentTimeMillis;
   const cursor = yield* continuationOf(cursorText, sql, actor.userId);
@@ -130,8 +136,9 @@ function pageValue(
  * The first page: the window (judged after authorization), then the audit
  * row before the marks are read, so the exported log carries the row of
  * its own export (ruling F); then the cumulative-hash column is brought to
- * the mark, so the trailer always carries the audit head the restore
- * recomputes (bounded extension, run to convergence like a restore).
+ * the mark, so the trailer carries the audit head the restore recomputes
+ * (bounded extension, run to convergence below the storage guard's
+ * rejection threshold — null past it).
  * Returns the seq of the export's row (the cursor binds it).
  */
 const openExport = Effect.fn("programs-export.openExport")(function* (
@@ -140,7 +147,7 @@ const openExport = Effect.fn("programs-export.openExport")(function* (
   chainHeadHashHex: string,
   sql: SqlStorage,
   nowMs: number,
-): Effect.fn.Return<number, DataRejectedError, DataStore | AuditStore> {
+): Effect.fn.Return<number, DataRejectedError, DataStore | AuditStore | StorageMeter> {
   const store = yield* DataStore;
   const audit = yield* AuditStore;
   const window = yield* store.checkLeaseWindow("exported", MAX_EXPORTS_PER_WINDOW, nowMs);
@@ -160,7 +167,15 @@ const openExport = Effect.fn("programs-export.openExport")(function* (
     );
     return lastAuditSeq(sql);
   });
-  while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+  // Only below the storage guard's rejection threshold, measured before
+  // each bounded call (AUTH_SPEC §11-6 / §12-8 — at most one call
+  // overshoots); a column left short puts null in the trailer's head. The
+  // measurement is also the warning-band observation of this audit-writing
+  // read
+  while (
+    (yield* observeStorageLevel) !== "reject" &&
+    (yield* audit.ensureHeadCurrent) === "more-remains"
+  ) {
     // Each call makes progress (the bounded contract of audit-store.ts)
   }
   return exportedSeq;

@@ -367,6 +367,11 @@ function preflightRefusal(error: unknown, primary: string): CliError {
           "the project already holds the maximum number of pending proposals",
           "A member accepts or rejects some with `maruhi rotation proposals`, then re-run the job",
         );
+      case "storage-limit":
+        return refuse(
+          "the project's stored data has reached the server's storage guard (AUTH_SPEC §12-8)",
+          "No new value can be pushed to it either until its members free space or move the project; re-run the job then (against the new project if it moved)",
+        );
       default:
         return refuse(`${error.reason} (AUTH_SPEC §14-5)`, "Check the rule and re-run the job");
     }
@@ -398,6 +403,11 @@ function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
         return next(
           "the project already holds the maximum number of pending proposals",
           "A member accepts or rejects some with `maruhi rotation proposals`, then re-run the job",
+        );
+      case "storage-limit":
+        return next(
+          "the project's stored data has reached the server's storage guard, or the proposal would pass its ciphertext limit (AUTH_SPEC §12-8)",
+          "No new value can be pushed to it either until its members free space or move the project; re-run the job then (against the new project if it moved)",
         );
       default:
         return next(`${error.reason} (AUTH_SPEC §14-5)`, "Check the rule and re-run the job");

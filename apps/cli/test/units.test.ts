@@ -725,6 +725,7 @@ describe("toCliError (terminal neutralization of server-sourced strings)", () =>
     expect(storage.message).toContain("9000000000 bytes");
     expect(storage.message).toContain("reading values");
     expect(storage.message).toContain("deleting");
+    expect(storage.message).toContain("move the values to a new project");
     // Other §12-8 quantity caps keep the conventional general form
     const generic = toCliError(new DataLimitExceededError({ resource: "variables", limit: 1000 }));
     expect(generic.message).toBe("Exceeds a server acceptance limit (variables limit 1000)");
