@@ -259,6 +259,94 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     },
   );
 
+  it("keeps every figure label clear of the shapes and labels around it", async () => {
+    // A label sits wholly inside or wholly outside each rect (frames and
+    // masks), no other outline (paths, lines, circles) passes through it, it
+    // overlaps no other label, and it stays in the viewBox. Widths: the
+    // narrowest phone, the stacked and two-column layouts, and the narrowest
+    // two-column figure (just above the 46rem breakpoint)
+    const page = await browser.newPage();
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    // The layouts are measured in Martian Mono; a fallback face is narrower
+    // and would pass unnoticed
+    const martianLoaded = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.fonts].some(
+        (f) => f.family.startsWith("Martian Mono") && f.status === "loaded",
+      );
+    });
+    expect(martianLoaded).toBe(true);
+    for (const width of [320, 390, 737, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      const clashes = await page.evaluate(() => {
+        type Box = { x0: number; y0: number; x1: number; y1: number };
+        const boxOf = (el: SVGGraphicsElement, grow = 0): Box => {
+          const b = el.getBBox();
+          return {
+            x0: b.x - grow,
+            y0: b.y - grow,
+            x1: b.x + b.width + grow,
+            y1: b.y + b.height + grow,
+          };
+        };
+        const within = (a: Box, b: Box): boolean =>
+          a.x0 >= b.x0 && a.x1 <= b.x1 && a.y0 >= b.y0 && a.y1 <= b.y1;
+        const apart = (a: Box, b: Box): boolean =>
+          a.x1 <= b.x0 || a.x0 >= b.x1 || a.y1 <= b.y0 || a.y0 >= b.y1;
+        return [...document.querySelectorAll<SVGSVGElement>("svg.ill")].flatMap((svg) => {
+          const at = svg.closest("li")?.id ?? "?";
+          const { width: w, height: h } = svg.viewBox.baseVal;
+          const view = { x0: 0, y0: 0, x1: w, y1: h };
+          const rects = [...svg.querySelectorAll("rect")].map((rect) => {
+            const half = Number.parseFloat(getComputedStyle(rect).strokeWidth) / 2;
+            return { inner: boxOf(rect, -half), outer: boxOf(rect, half) };
+          });
+          // Each outline sampled once per unit of length, padded by its stroke
+          const outlines = [...svg.querySelectorAll<SVGGeometryElement>("path, line, circle")].map(
+            (shape) => {
+              const half = Number.parseFloat(getComputedStyle(shape).strokeWidth) / 2;
+              const length = shape.getTotalLength();
+              const points = Array.from({ length: Math.ceil(length) + 1 }, (_, n) =>
+                shape.getPointAtLength(Math.min(n, length)),
+              );
+              return { tag: shape.tagName, half, points };
+            },
+          );
+          const labels = [...svg.querySelectorAll("text")].map((t) => ({
+            name: `${at}: ${t.textContent}`,
+            box: boxOf(t),
+          }));
+          return labels.flatMap(({ name, box }, i) => [
+            ...(within(box, view) ? [] : [`${name} leaves the viewBox`]),
+            ...rects
+              .filter((r) => !within(box, r.inner) && !apart(box, r.outer))
+              .map((r) => `${name} crosses the rect at ${r.outer.x0},${r.outer.y0}`),
+            ...outlines
+              .filter(({ half, points }) =>
+                points.some(
+                  (p) =>
+                    p.x > box.x0 - half &&
+                    p.x < box.x1 + half &&
+                    p.y > box.y0 - half &&
+                    p.y < box.y1 + half,
+                ),
+              )
+              .map(
+                ({ tag, points: [start] }) =>
+                  `${name} crosses the ${tag} from ${start?.x},${start?.y}`,
+              ),
+            ...labels
+              .slice(i + 1)
+              .filter((other) => !apart(box, other.box))
+              .map((other) => `${name} overlaps ${other.name}`),
+          ]);
+        });
+      });
+      expect(clashes, `${width}px`).toEqual([]);
+    }
+    await page.close();
+  });
+
   it("keeps the space between text and the inline elements that follow a line break", async () => {
     // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
     // element, so the source writes `{" "}` there (pages/index.astro). A
