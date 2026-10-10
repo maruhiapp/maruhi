@@ -63,7 +63,7 @@
 //   image of idFromName).
 //   **The observation point sits not only on the growth surfaces but
 //   also on the read surfaces that write audit rows (with-values
-//   pull, lease)** (observeStorageLevel — it does not refuse): a
+//   pull, version value range, export, lease)** (observeStorageLevel — it does not refuse): a
 //   pull-dominated project crosses the threshold without any
 //   growth-surface write, so watching the growth surfaces alone
 //   would never warn
@@ -158,7 +158,8 @@ export const storageMeterLayer = (sql: SqlStorage): Layer.Layer<StorageMeter> =>
  * It is the front half of the growth-surface guard
  * (ensureStorageAdmitsGrowth), and is also called by **read
  * surfaces that do not refuse but write audit rows** (with-values
- * pull's var.read, lease's server.* — §12-8's enumeration (a)(e)):
+ * pull's and version value range's var.read, export's
+ * project.exported, lease's server.* — §12-8's enumeration (a)(e)):
  * a project whose dominant growth term is var.read (pull-dominated
  * projects, as SELF_HOSTING describes) can pass 8 GB → 9 GB with no
  * growth-surface write, so placing the warning observation point

@@ -32,6 +32,8 @@ import {
   exportSnapshotPage,
 } from "../do/do-snapshot.ts";
 import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } from "../policy.ts";
+import type { StorageMeter } from "../storage-guard.ts";
+import { observeStorageLevel } from "../storage-guard.ts";
 
 /** One page as the worker returns it (the wire shape of api-schema's ExportPageSchema). */
 export interface ExportPageValue {
@@ -54,7 +56,11 @@ export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(
   sql: SqlStorage,
   doIdHex: string,
   cache: StateCache,
-): Effect.fn.Return<ExportPageValue, DataRejectedError, ChainStore | DataStore | AuditStore> {
+): Effect.fn.Return<
+  ExportPageValue,
+  DataRejectedError,
+  ChainStore | DataStore | AuditStore | StorageMeter
+> {
   const { state } = yield* requireMemberState(actor.userId, "owner", cache);
   const nowMs = yield* Clock.currentTimeMillis;
   const cursor = yield* continuationOf(cursorText, sql, actor.userId);
@@ -140,7 +146,10 @@ const openExport = Effect.fn("programs-export.openExport")(function* (
   chainHeadHashHex: string,
   sql: SqlStorage,
   nowMs: number,
-): Effect.fn.Return<number, DataRejectedError, DataStore | AuditStore> {
+): Effect.fn.Return<number, DataRejectedError, DataStore | AuditStore | StorageMeter> {
+  // Observation only (AUTH_SPEC §12-8): the first page appends an audit row
+  // and materializes the audit head, and stays open under rejection
+  yield* observeStorageLevel;
   const store = yield* DataStore;
   const audit = yield* AuditStore;
   const window = yield* store.checkLeaseWindow("exported", MAX_EXPORTS_PER_WINDOW, nowMs);

@@ -808,23 +808,17 @@ describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surfa
       },
     ],
   };
-  const preflight = (baseVersion: number, cache: StateCache) =>
+  const preflight = (baseVersion: number, cache: StateCache, facts = workloadFacts()) =>
     preflightRotationProgram(
       testEnvironmentId(ENV),
       ephemeralPubHex,
-      workloadFacts(),
+      facts,
       [{ variableId: VAR, baseVersion }],
       cache,
       writers,
     );
-  const mint = (cache: StateCache) =>
-    proposeRotationProgram(
-      testEnvironmentId(ENV),
-      ephemeralPubHex,
-      workloadFacts(),
-      proposal,
-      cache,
-    );
+  const mint = (cache: StateCache, facts = workloadFacts()) =>
+    proposeRotationProgram(testEnvironmentId(ENV), ephemeralPubHex, facts, proposal, cache);
   const failureOf = (exit: Exit.Exit<unknown, unknown>) =>
     Exit.isSuccess(exit) ? null : Cause.squash(exit.cause);
   const STORAGE_LIMIT = { kind: "proposal-rejected", reason: "storage-limit" };
@@ -875,6 +869,36 @@ describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surfa
     } finally {
       errorSpy.mockRestore();
       warnSpy.mockRestore();
+    }
+  });
+
+  it("answers a caller no lease policy matches with the uniform 404 even in the refusal band, and a refused mint does not sweep", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await grantLeases({ scope: [ENV] });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInProject(0, async (run, state) => {
+        expect(Exit.isSuccess(await run(mint({ current: null, chain: null })))).toBe(true);
+        state.storage.sql.exec("UPDATE rotation_proposals SET expires_at = 1");
+      });
+      const stranger = { ...workloadFacts(), claims: { sub: "repo:someone-else/app:ref:main" } };
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run, state) => {
+        const cache: StateCache = { current: null, chain: null };
+        // The storage level is project state: never answered before authorization (§11-2 / §14-3)
+        expect(failureOf(await run(preflight(1, cache, stranger)))).toEqual({ kind: "not-found" });
+        expect(failureOf(await run(mint(cache, stranger)))).toEqual({ kind: "not-found" });
+        expect(failureOf(await run(preflight(1, cache)))).toEqual(STORAGE_LIMIT);
+        expect(failureOf(await run(mint(cache)))).toEqual(STORAGE_LIMIT);
+        // The refusal precedes the expiry sweep (and the mint window)
+        expect(
+          state.storage.sql.exec("SELECT COUNT(*) AS n FROM rotation_proposals").one()["n"],
+        ).toBe(1);
+      });
+      const events = (await readAuditEvents(projectId)).map((event) => event["event"]);
+      expect(events).not.toContain("rotation.proposal_expired");
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 });
