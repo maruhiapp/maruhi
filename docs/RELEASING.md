@@ -11,25 +11,42 @@ The distribution design is [ADR-0015](./adr/0015-cli-distribution.md); the imple
    - Provider: GitHub Actions
    - Organization/User: `maruhiapp` / Repository: `maruhi`
    - Workflow filename: `release.yml`
-   - Environment name: `release` (a token from any other environment, or from none, is refused)
+   - Environment name: leave blank for now (it becomes `release` in "Before the first public
+     release")
    - New configurations since 2026-05-20 require an explicit allowed action — pick "publish"
 3. Registering an npm token in GitHub Secrets is **not needed** (OIDC only. No long-lived tokens)
-4. **Create the `release` environment** (GitHub → repository Settings → Environments →
-   New environment → `release`). Both publish jobs (`publish-github`, then `publish-npm`)
-   wait there for an approval, so nothing irreversible happens before a reviewer approves:
-   - **Required reviewers**: add the people who approve releases (one approval per job suffices).
-     Leave "Prevent self-review" off while the person who pushes the tag is the only
-     reviewer, or the release can never be approved
-   - **Deployment branches and tags**: "Selected branches and tags" → add one rule,
-     type **Tag**, pattern `v[0-9]*` (the workflow's tag trigger), and no branch rule
-   - No secrets or variables
-
-   The release workflow's `release-environment` job reads this configuration and fails the run
-   (dry runs included) unless the environment has at least one required reviewer and
-   exactly that one tag rule. A job that names a missing environment would otherwise make
-   GitHub create it with no protection and run unapproved
-5. (Recommended) Restrict creation of `v*` tags to admins via a GitHub tag ruleset
+4. (Recommended) Restrict creation of `v*` tags to admins via a GitHub tag ruleset
    (the workflow also checks "tag = a commit on main's lineage", but defense in depth)
+
+## Before the first public release (owner's tasks, once)
+
+During development a release runs with no manual step: rc tags publish to the GitHub Release
+(prerelease) and npm `next` without anyone's approval. The release workflow's other protections
+need no setting and stay on: the artifact digest binding to the build job, the SHA-256-pinned Bun
+runtimes and Node.js, and the main-ancestry check on the tag. What is deferred is a reviewer's
+approval before each publish job. Until it is enabled, nothing stable can ship:
+`bun run check` fails once `apps/cli/package.json` carries a stable version, and the workflow's
+`version-check` job refuses a stable tag. Before the first public release, in this order:
+
+1. **Create the `release` environment** (GitHub → repository Settings → Environments → New
+   environment → `release`):
+   - **Required reviewers**: the people who approve releases (one approval per job suffices).
+     Leave "Prevent self-review" off while the person who pushes the tag is the only reviewer,
+     or a release can never be approved
+   - **Deployment branches and tags**: "Selected branches and tags" → exactly one rule, type
+     **Tag**, pattern `v[0-9]*` (the workflow's tag trigger), and no branch rule
+   - No secrets or variables
+2. **Name the environment in the npm trusted publisher** (npmjs.com → package `maruhi` →
+   Settings → Trusted Publisher → Environment name: `release`). From then on a token from any
+   other environment, or from none, is refused
+3. **Revert the commit that deferred the gate** (`git log --grep "defer the release approval
+   gate"`) in one PR, resolving conflicts until `bun run check` passes. The revert puts both
+   publish jobs back in the `release` environment, restores the `release-environment` job
+   (it fails every run, dry runs included, unless step 1's settings are in place), removes the
+   stable-version refusals, and restores this file's approval steps. Then mark the ROADMAP
+   pre-publication item done
+
+After that, each release waits for two approvals: `publish-github`, then `publish-npm`.
 
 ## Normal release
 
@@ -46,12 +63,10 @@ The distribution design is [ADR-0015](./adr/0015-cli-distribution.md); the imple
 3. The release workflow automatically: runs the quality gate (all ci.yml steps) → checks version
    match → builds binaries for 5 targets + checksums.txt → smokes them on 5 real OS runners →
    creates the GitHub Release (notes auto-generated. `-rc.N` marked prerelease) → npm publish
-   (with provenance. `-rc.N` goes to dist-tag `next`, stable to `latest`), each after an approval
-4. **Approve twice**: once smoke is green, `publish-github` waits for a required reviewer
-   (the run page shows "Review deployments" → `release` → Approve). After the Release exists,
-   `publish-npm` waits for its own approval the same way. Rejecting the first leaves nothing
-   published; rejecting the second leaves a Release without npm (recover as in "Retrying")
-5. **Verify**: the Release carries tar.gz × 5 + checksums.txt,
+   (with provenance. `-rc.N` goes to dist-tag `next`, stable to `latest`). No manual step is
+   needed during development; a stable tag is refused until "Before the first public release"
+   is done
+4. **Verify**: the Release carries tar.gz × 5 + checksums.txt,
    `npm view maruhi dist-tags` looks as expected, and the npm page shows the
    provenance badge
 
@@ -113,9 +128,8 @@ cadence rises.
 ## Dry run (pipeline verification before tagging)
 
 The release workflow can run everything except publish (build + 5-OS smoke +
-checksums + npm staging + the `release` environment check) via `workflow_dispatch`.
-On PRs that touch the workflow, run it once against the branch before merging. The
-environment check fails until first-time item 4 is done.
+checksums + npm staging) via `workflow_dispatch`.
+On PRs that touch the workflow, run it once against the branch before merging.
 
 Exception (bootstrap): `workflow_dispatch` only works once the workflow exists on the
 **default branch**, so the very PR that creates or renames release.yml cannot be
@@ -134,9 +148,10 @@ no need to bump the rc. npm has not consumed that version, so fix the cause (the
 time it is usually the trusted publisher config — workflow name, org, allowed action)
 and **re-run the failed job** on the same run to recover on the same version (GitHub
 allows a re-run up to **30 days** after the run. Past that, bumping the rc is the only
-way). The artifacts are kept 60 days, so a re-run started on day 30 still finds them
-after waiting the full 30 days GitHub allows for its approval; keep the repository's
-artifact retention setting (Settings → Actions → General) at 60 days or more.
+way). The artifacts are kept 60 days, so once the approval gate is enabled a re-run
+started on day 30 still finds them after waiting the full 30 days GitHub allows for its
+approval; keep the repository's artifact retention setting (Settings → Actions → General)
+at 60 days or more.
 However, **re-run only fixes config/environment causes**. A failure that needs a code
 fix cannot be re-run away (the run uses the workflow and artifacts from tag time), so
 fix it and bump the rc (the v0.1.0-rc.1 bin-normalization bug is a real example). The
@@ -144,8 +159,7 @@ order Release-first → npm-later exists to make this recovery possible (in reve
 published npm version cannot be retried).
 Note also that **the OIDC (trusted publishing) path cannot be exercised by a dry run**
 (authentication only happens when publish actually runs). Before the first tag,
-re-confirm the first-time setup (items 1–4 above). A re-run of a publish job
-waits for an approval again.
+re-confirm the first-time setup (items 1–3 above).
 
 ## Notes
 

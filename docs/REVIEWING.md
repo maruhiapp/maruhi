@@ -211,11 +211,11 @@ What exists today:
   its own outputs.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token), with lifecycle scripts
-  off. Both publish jobs wait in the `release` environment for a required
-  reviewer's approval, so the GitHub Release is not created before one; the
-  npm trusted-publisher entry names that environment, and the run fails
-  before either publish job unless the environment requires a reviewer and
-  admits only `v*` tags.
+  off. No reviewer approval gates the publish jobs yet: that gate is
+  enabled before the first public release ([RELEASING.md](RELEASING.md),
+  "Before the first public release"). Until then only prereleases ship; a
+  stable version fails `bun run check` and a stable tag is refused by the
+  release workflow.
 - `packaging/install.sh` refuses to install without a SHA-256 match against
   `checksums.txt`. That file is unsigned: integrity rests on TLS to
   github.com, and the script says so rather than claim signature verification.
