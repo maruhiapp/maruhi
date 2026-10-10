@@ -295,8 +295,9 @@ silently.
 ### Per-project storage guard (why 9 GB)
 
 Each project lives in one Durable Object whose SQLite database has a hard
-platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`:
-the project stays readable, and while the platform still lets a bare `DELETE`
+platform ceiling of **10 GB**. At that ceiling SQLite returns `SQLITE_FULL`
+on every insert. Value reads record an audit row, so they fail there (see
+below), and while the platform still lets a bare `DELETE`
 through, every maruhi deletion also **inserts** rows in the same transaction
 (the tombstone statement or the chain entry, and the audit events), so **maruhi's own deletes fail
 too** — a project at the ceiling cannot free space by itself, and the operator
@@ -314,18 +315,31 @@ on every write that adds content and:
   renaming or re-declaring variables, creating or renaming environments,
   registering DEK wraps, adding members, granting server access and changing
   the schema policy — with 422 `DataLimitExceeded` (`project-storage-bytes`).
+  Minting a sealed value proposal (`maruhi ci rotate`) is refused too, as 422
+  `RotationProposalRejected` (`storage-limit`), and the job's pre-flight gets
+  the same answer, so it stops before it touches the issuer.
 
 What **keeps working** above 9 GB, by design (AUTH_SPEC §12-8 lists these
-explicitly): all reads (`maruhi pull` / `maruhi run`, chain fetch, audit log —
-members can always take their values out), all deletions (environments,
-variables, DEK wraps — the way back under the threshold), member removal,
-server-access revocation, role changes, epoch rotation, workload leases, head
-attestations and periodic checkpoints. The 1 GB between the rejection threshold
+explicitly): all reads (`maruhi pull` / `maruhi run`, older versions' values,
+chain fetch, audit log, the owner's `maruhi project export` — members can take
+their values out), all deletions (environments, variables, DEK wraps), member
+removal, server-access revocation, role changes, epoch rotation, workload
+leases, head attestations, periodic checkpoints, and accepting, rejecting or
+listing the sealed proposals already stored. The 1 GB between the rejection threshold
 and the platform floor absorbs the bookkeeping those operations still write.
 One read is guarded as if it were a write: fetching the **audit head**
 (`GET /projects/:id/audit-head`, and checkpoints that notarize it) lazily
 materializes a hash column proportional to the audit log, so it is refused above
 9 GB only while that column lags behind the log; once current, it reads freely.
+An export brings the same column current and is not refused for it: it is
+the way out with the history.
+
+The band between 9 GB and the 10 GB floor is a **grace period for moving
+out**, not a permanent read-only state. At the floor every read that appends an
+audit row — value pulls, older versions' values, workload leases, exports —
+fails with that row instead of being served unrecorded: no member can be
+removed there either, and an untraceable read by someone you cannot remove is
+worse than no read.
 
 The audit log is append-only and never pruned (AUDIT_SPEC §5.3), so on a busy
 project the dominant growth is `var.read` rows from pulls. The guard is the
@@ -910,9 +924,15 @@ or newer.
 - **Pushes / creates fail with `DataLimitExceeded` and
   `resource: "project-storage-bytes"` while pulls still work**: the project's
   Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is
-  working as intended — have the project admins delete environments,
-  variables or DEK wraps they no longer need (deletes are accepted above the
-  threshold), then retry
+  working as intended. Everything but the audit log is capped far lower
+  (ciphertext at 1 GiB, AUTH_SPEC §12-8), so at 9 GB the project is almost
+  always mostly audit rows, which are never pruned: deleting environments,
+  variables or DEK wraps (accepted above the threshold) frees little.
+  Plan the move before the 10 GB floor, where pulls stop too: the owner can
+  keep the history with `maruhi project export`, and the members create a
+  new project and push the values into it (their CLIs still decrypt them in
+  the band). An import of the export elsewhere carries the same audit log, so
+  it does not reset the size
 - **`/auth/config` has no `serverKeyFingerprintHex` /
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
