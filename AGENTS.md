@@ -19,7 +19,8 @@ talking with the owner directly, and in the files listed in
   environment, and `apps/web/test/e2e.test.ts`, `apps/web/test/screenshots.ts`,
   `apps/site/test/e2e.test.ts`, and `packages/crypto/vitest.browser.config.ts`
   pass it as Chromium's `executablePath` (when unset they fall back to the
-  Playwright-managed browser, so Cursor / CI are unaffected)
+  Playwright-managed browser, so Cursor is unaffected; CI sets it to the
+  SHA-256-verified headless shell it installs in `.github/workflows/ci.yml`)
 - Do not run `bunx playwright install` (it conflicts with the preinstalled build
   and consumes the disk quota)
 - Everything else (quality gate, how to run e2e, dev-server caveats) is shared

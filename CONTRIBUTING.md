@@ -5,6 +5,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 ## Development setup
 
 - The runtime is Bun, pinned exactly by `.bun-version` (currently 1.4.2, the 1.4 series decided in ADR-0004). A Bun bump also updates the version and SHA-256 pinned in `.github/actions/install-bun/action.yml`, which CI installs from
+- A Playwright bump also updates the Chrome Headless Shell version and SHA-256 pinned in `.github/workflows/ci.yml` (the procedure is at its install step); `bun run check` fails until they match
 - Install dependencies with `bun install`
 - Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → Effect diagnostics → ImportLint → fallow → React Doctor → tests)
 
