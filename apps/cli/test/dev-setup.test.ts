@@ -1,8 +1,9 @@
 // Pins "the dev-environment setup runs no toolchain fetched without a pinned
 // digest". The Claude Code on the web SessionStart hook installs Bun through
 // scripts/install-bun.sh — the script and pin CI uses (workflow-caches.test.ts
-// pins its version and SHA-256s). The script is also run here offline against
-// a tampered download, to show it fails closed with nothing installed.
+// pins its version and SHA-256s) — and pnpm only through corepack's check of
+// the sha512 in .deepsec/package.json. The script is also run here offline
+// against a tampered download, to show it fails closed with nothing installed.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -30,6 +31,26 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   it("installs Bun only through scripts/install-bun.sh", () => {
     expect(hook).toContain("bash scripts/install-bun.sh");
     expect(hook).not.toMatch(/bun\.sh\/install/);
+  });
+
+  it("fetches nothing itself: no curl, wget, piped shell, bunx, npx, dlx or Playwright download", () => {
+    expect(hook).not.toMatch(/\b(curl|wget|bunx|npx|dlx)\b|\|\s*(ba)?sh\b|playwright install/);
+  });
+
+  it("runs pnpm through corepack when it exists, and a preinstalled pnpm without its self-switch", () => {
+    const corepack = hook.indexOf("command -v corepack");
+    const pnpm = hook.indexOf("command -v pnpm");
+    expect(corepack).toBeGreaterThan(-1);
+    expect(pnpm).toBeGreaterThan(corepack);
+    expect(hook).toContain("corepack pnpm install --frozen-lockfile");
+    expect(hook).toContain(
+      "pnpm install --frozen-lockfile --config.manage-package-manager-versions=false",
+    );
+  });
+
+  it(".deepsec pins pnpm with the sha512 corepack checks", () => {
+    const manifest = JSON.parse(read(".deepsec/package.json")) as { packageManager?: string };
+    expect(manifest.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[0-9a-f]{128}$/);
   });
 });
 

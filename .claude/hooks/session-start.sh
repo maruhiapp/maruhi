@@ -32,13 +32,20 @@ fi
 
 # `.deepsec/` is isolated from the root bun install. A failure here must not
 # fail the whole hook. (`/deepsec` repairs itself via pnpm install when
-# missing; init is never re-run.)
+# missing; init is never re-run.) pnpm itself is never fetched unverified:
+# corepack checks the sha512 pinned in .deepsec/package.json's packageManager;
+# without corepack, a preinstalled pnpm runs as is, since its own switch to the
+# packageManager version downloads without checking that hash.
 if [ -f .deepsec/package.json ]; then
   deepsec_install_status=0
-  if command -v pnpm >/dev/null 2>&1; then
-    (cd .deepsec && pnpm install --frozen-lockfile) || deepsec_install_status=$?
+  if command -v corepack >/dev/null 2>&1; then
+    (cd .deepsec && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm install --frozen-lockfile) ||
+      deepsec_install_status=$?
+  elif command -v pnpm >/dev/null 2>&1; then
+    (cd .deepsec && pnpm install --frozen-lockfile --config.manage-package-manager-versions=false) ||
+      deepsec_install_status=$?
   else
-    (cd .deepsec && bunx pnpm install --frozen-lockfile) || deepsec_install_status=$?
+    deepsec_install_status=1
   fi
   if [ "$deepsec_install_status" -ne 0 ]; then
     echo "session-start: .deepsec install failed; /deepsec needs: cd .deepsec && pnpm install --frozen-lockfile" >&2
