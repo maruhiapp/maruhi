@@ -13,7 +13,8 @@
 //   2. privileged workflows use only allowlisted actions (default-deny: an
 //      action with an implicit cache — setup-go, setup-python's `cache`,
 //      setup-node v5's package-manager cache — fails here first), no cache
-//      input, and no cross-run artifact download
+//      input, no cross-run artifact download, and no job or service
+//      container
 //   3. ci.yml, which release.yml runs as its gate, gates each cache step on
 //      `skip-caches`, and release.yml passes `skip-caches: true`
 //   4. Bun comes only from .github/actions/install-bun, whose pinned version
@@ -53,6 +54,8 @@ interface Step {
 }
 interface Job {
   readonly uses?: string;
+  readonly container?: unknown;
+  readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
   readonly permissions?: unknown;
   readonly steps?: readonly Step[];
@@ -156,6 +159,14 @@ describe("Actions caches stay out of privileged workflows", () => {
       expect(risks.filter((risk) => risk !== undefined)).toEqual([]);
     });
 
+    it("runs no job in a container and starts no service container", () => {
+      // An image pulled by tag is another unverified executable; none is needed today
+      const images = Object.entries(workflow.jobs).filter(
+        ([, job]) => job.container !== undefined || job.services !== undefined,
+      );
+      expect(images.map(([name]) => name)).toEqual([]);
+    });
+
     it("downloads artifacts from its own run only", () => {
       const downloads = stepsOf(workflow).filter((s) =>
         s.uses?.startsWith("actions/download-artifact@"),
@@ -234,9 +245,9 @@ describe("Actions caches stay out of privileged workflows", () => {
       expectVerifiedBeforeRun(run, "tar -xzf ", '"${node_dir}/bin/node"');
     });
 
-    it("installs Node before any step runs node or npm", () => {
+    it("installs Node before any step runs node, npm, npx or corepack", () => {
       const firstUse = steps.findIndex(
-        (s, i) => i !== install && /\b(node|npm)\b/.test(s.run ?? ""),
+        (s, i) => i !== install && /\b(node|npm|npx|corepack)\b/.test(s.run ?? ""),
       );
       expect(install).toBeGreaterThan(-1);
       expect(firstUse).toBeGreaterThan(install);

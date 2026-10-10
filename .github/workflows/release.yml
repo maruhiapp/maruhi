@@ -337,10 +337,13 @@ jobs:
       # where this job's OIDC request token is in the environment. Inline
       # (not a local action) because this job has no checkout. A Node bump
       # changes both values: the SHA-256 is the
-      # node-v<version>-linux-x64.tar.gz line of the release's
-      # SHASUMS256.txt.asc, clearsigned by a key in github.com/nodejs/
-      # release-keys (`gpg --output shasums.txt --decrypt
-      # SHASUMS256.txt.asc && grep …`, gated on gpg's exit status).
+      # node-v<version>-linux-x64.tar.gz line of the release's clearsigned
+      # SHASUMS256.txt.asc, checked by gpgv against the active release keys
+      # only (not a personal keyring, where any key would pass):
+      #   curl -fsSLO https://raw.githubusercontent.com/nodejs/release-keys/main/gpg-only-active-keys/pubring.kbx
+      #   rm -f shasums.txt
+      #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
+      #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
       # Pinned by apps/cli/test/workflow-caches.test.ts
       - name: Install Node.js (pinned SHA-256, no cache)
         env:

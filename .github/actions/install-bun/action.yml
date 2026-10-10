@@ -13,13 +13,17 @@
 # fails closed on a mismatch, and apps/cli/test/workflow-caches.test.ts fails
 # first in `bun run check`). BUN_LINUX_X64_ZIP_SHA256 comes from the
 # release's clearsigned SHASUMS256.txt.asc, signed by the Robobun key
-# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59 (from keys.openpgp.org:
-# `gpg --recv-keys` or /vks/v1/by-fingerprint/<fingerprint>):
-#   gpg --output shasums.txt --decrypt SHASUMS256.txt.asc &&
+# F3DCC08A8572C0749B3E18888EAB4D40A7B22B59. Check it with gpgv against a
+# keyring holding that key only, and require that fingerprint in VALIDSIG:
+#   curl -fsSL https://keys.openpgp.org/vks/v1/by-fingerprint/F3DCC08A8572C0749B3E18888EAB4D40A7B22B59 |
+#     gpg --dearmor > robobun.gpg
+#   rm -f shasums.txt
+#   gpgv --status-fd 1 --keyring ./robobun.gpg --output shasums.txt SHASUMS256.txt.asc |
+#     grep -q '^\[GNUPG:\] VALIDSIG .* F3DCC08A8572C0749B3E18888EAB4D40A7B22B59$' &&
 #     grep ' bun-linux-x64.zip$' shasums.txt
-# Gate on gpg's exit status (`&&`, not a pipe): `gpg --decrypt` still prints
-# the text after a BAD signature, and `gpg --verify` on the clearsigned file
-# says nothing about a separately downloaded SHASUMS256.txt.
+# Not `gpg --decrypt … | grep`: it still prints the text after a BAD
+# signature, and a plain gpg accepts a good signature from any key in the
+# user's keyring.
 #
 # Only linux-x64 runners with AVX2 (GitHub-hosted ubuntu) are supported. No
 # job here installs Bun on another platform, so the step refuses rather than
