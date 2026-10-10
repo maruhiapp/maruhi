@@ -58,6 +58,8 @@ jobs:
   # dependency cache would be worse still — bun would install a cached hit
   # without re-verifying lockfile integrity — which is one reason none is
   # added; the other is that it measured slower than a cold install.)
+  # apps/cli/test/workflow-caches.test.ts keeps every privileged workflow
+  # free of Actions caches
   verify:
     permissions:
       contents: read
