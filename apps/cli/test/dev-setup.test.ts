@@ -135,7 +135,10 @@ describe(".github/actions/install-bun", () => {
     expect(action).toContain('using: "composite"');
     expect(action).not.toMatch(/^\s*(-\s+)?uses:/m);
     expect(action.match(/^\s*run: \|$/gm)).toHaveLength(1);
-    expect(action).toContain('bash "${GITHUB_WORKSPACE}/scripts/install-bun.sh" --require-avx2');
+    // The whole line, so nothing (`|| true`, another flag) can ride along
+    expect(action).toMatch(
+      /^ {8}bash "\$\{GITHUB_WORKSPACE\}\/scripts\/install-bun\.sh" --require-avx2$/m,
+    );
     expect(action).not.toMatch(/[0-9a-f]{64}/);
   });
 });
@@ -263,6 +266,7 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
     /** The version ~/.bun/bin/bun reports, or undefined when it is not installed. */
     readonly bun?: string | undefined;
     readonly installBunExit?: number;
+    readonly bunInstallExit?: number;
     /** corepack's exit status, or undefined when it is not on PATH. */
     readonly corepack?: number;
     readonly pnpm?: boolean;
@@ -270,9 +274,11 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
 
   /**
    * Runs the real hook against a scratch project, on a PATH holding only logging stubs (bun,
-   * corepack, pnpm, and the fetchers it must never call) plus the few tools it needs.
+   * corepack, pnpm, and the fetchers it must never call) plus the few tools it needs. A call
+   * to a tool outside that PATH (an absolute path, or a command after `||` that fails as not
+   * found) is not seen: an accepted limit of the stub approach.
    */
-  function runHook({ bun, installBunExit = 0, corepack, pnpm = false }: Hook) {
+  function runHook({ bun, installBunExit = 0, bunInstallExit = 0, corepack, pnpm = false }: Hook) {
     const root = scratch();
     const [project, home, stubs, tools] = ["project", "home", "stubs", "tools"].map((dir) =>
       join(root, dir),
@@ -293,7 +299,11 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
         ...behavior,
       ]);
     const bunStub = join(root, "bun-stub");
-    stub(bunStub, "bun", [`[ "$1" = --version ] && echo ${bun ?? pinned}`, "exit 0"]);
+    stub(bunStub, "bun", [
+      `[ "$1" = --version ] && echo ${bun ?? pinned}`,
+      `[ "$1" = install ] && exit ${bunInstallExit}`,
+      "exit 0",
+    ]);
     const installBun = () => {
       mkdirSync(bunBin, { recursive: true });
       copyFileSync(bunStub, join(bunBin, "bun"));
@@ -359,6 +369,13 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
     expect(result.status).not.toBe(0);
     expect(calls).toEqual([`bun --version ${project}`, `install-bun.sh  ${project}`]);
     expect(env).toBe("");
+  });
+
+  it("keeps Bun on the session PATH when bun install fails", () => {
+    const { result, calls, env } = runHook({ bun: pinned, bunInstallExit: 1, corepack: 0 });
+    expect(result.status).not.toBe(0);
+    expect(calls).toEqual([`bun --version ${project}`, `bun install ${project}`]);
+    expect(env).toContain(ENV_PATH_LINE);
   });
 
   it("does not fall back to pnpm when corepack fails, and the hook still succeeds", () => {
