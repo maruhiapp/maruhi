@@ -200,7 +200,10 @@ What exists today:
   an Actions cache; the dev-environment setup uses the same script; the npm
   publish job's Node.js is pinned the
   same way in `release.yml`), dependencies by
-  `bun install --frozen-lockfile`.
+  `bun install --frozen-lockfile`. The Bun runtime embedded in each of the
+  five binaries is the official release zip for that target, verified
+  against a SHA-256 pinned in `apps/cli/scripts/bun-runtimes.ts` and passed
+  to `bun build --compile-executable-path`.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token).
 - `packaging/install.sh` refuses to install without a SHA-256 match against

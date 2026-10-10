@@ -21,15 +21,23 @@
 //      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
 //      runs only a pinned Node.js; both check the pinned SHA-256 before
 //      unpacking, and unpack before first running anything
+//   5. the Bun runtime embedded in each release binary is a release zip
+//      pinned in apps/cli/scripts/bun-runtimes.ts at that same version (the
+//      linux-x64 pin is install-bun's), and the build cannot fall back to an
+//      unpinned download
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+
+import { BUN_RUNTIME_VERSION, BUN_RUNTIMES, downloadVerified } from "../scripts/bun-runtimes.ts";
+import { TARGETS } from "../scripts/shared.ts";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -208,14 +216,57 @@ describe("Actions caches stay out of privileged workflows", () => {
     });
   });
 
-  describe("Bun comes only from the pinned install-bun action", () => {
-    // The action runs scripts/install-bun.sh, which holds the pin; both are pinned in
-    // dev-setup.test.ts
+  describe("Bun comes only from pinned release zips", () => {
+    // The install-bun action runs scripts/install-bun.sh, which holds the CI pin; both are
+    // pinned in dev-setup.test.ts
+    const installScript = read("scripts/install-bun.sh");
+    const scriptPin = (name: string) =>
+      new RegExp(`^${name}="([^"]*)"$`, "m").exec(installScript)?.[1];
+
     it("is the only Bun installer in any workflow", () => {
       for (const file of [...PRIVILEGED, ...UNPRIVILEGED]) {
         const { source } = loadWorkflow(file);
         expect(source, file).not.toMatch(/setup-bun@|bun\.sh\/install/);
       }
+    });
+
+    it("pins the runtime embedded in every release target, at the same version and zip", () => {
+      expect(BUN_RUNTIME_VERSION).toBe(read(".bun-version").trim());
+      expect(Object.keys(BUN_RUNTIMES).toSorted()).toEqual(
+        TARGETS.map((t) => t.bunTarget).toSorted(),
+      );
+      for (const runtime of Object.values(BUN_RUNTIMES)) {
+        expect(runtime.sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(runtime.member).toMatch(/^bun-[a-z0-9-]+\/bun(\.exe)?$/);
+        expect(runtime.zip).toBe(`${runtime.member.split("/")[0]}.zip`);
+      }
+      // One zip, two pins: the CI Bun and the linux-x64 runtime must not drift apart
+      expect(scriptPin("BUN_VERSION")).toBe(BUN_RUNTIME_VERSION);
+      expect(BUN_RUNTIMES["bun-linux-x64"].sha256).toBe(scriptPin("BUN_LINUX_X64_ZIP_SHA256"));
+    });
+
+    it("compiles every target with a pinned runtime and no fallback download", () => {
+      const script = read("apps/cli/scripts/build-binaries.ts");
+      expect(script).toContain("`--compile-executable-path=${executable}`");
+      expect(script).toContain("downloadVerified(runtimeUrl(runtime), runtime.sha256)");
+      // A flag bun ignored would fetch the runtime from npm; this env makes that fail
+      expect(script).toContain("HTTPS_PROXY: unreachable,");
+      expect(script).toContain('BUN_INSTALL_CACHE_DIR: join(runtimesDir, "install-cache"),');
+      expect(script).toMatch(/run\(\s*"bun",\s*\[[^\]]*\],\s*cliRoot,\s*compileEnv,\s*\)/);
+      expect(script.match(/"--compile"/g)).toHaveLength(1);
+    });
+
+    it("downloadVerified returns only bytes matching the pin", async () => {
+      const url = "https://runtime.invalid/bun.zip";
+      const pin = createHash("sha256").update("runtime").digest("hex");
+      const serve = (body: string, status = 200) =>
+        (async () => new Response(body, { status })) as unknown as typeof fetch;
+      const bytes = await downloadVerified(url, pin, serve("runtime"));
+      expect(new TextDecoder().decode(bytes)).toBe("runtime");
+      await expect(downloadVerified(url, pin, serve("evil"))).rejects.toThrow(
+        /does not match the pinned/,
+      );
+      await expect(downloadVerified(url, pin, serve("runtime", 404))).rejects.toThrow(/HTTP 404/);
     });
   });
 

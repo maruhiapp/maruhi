@@ -38,8 +38,13 @@ export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 
 /** Runs a child process synchronously, distinguishing spawn failure, signal death, and non-zero exit. */
-export function run(command: string, args: readonly string[], cwd: string): void {
-  const result = spawnSync(command, [...args], { cwd, stdio: "inherit" });
+export function run(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const result = spawnSync(command, [...args], { cwd, env, stdio: "inherit" });
   if (result.error !== undefined) {
     throw new Error(`failed to spawn ${command}: ${result.error.message}`);
   }

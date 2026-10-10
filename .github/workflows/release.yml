@@ -145,8 +145,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # The running Bun becomes the runtime inside the published linux-x64
-      # binary, so it comes from the SHA-256-pinned zip, never a cache
+      # The running Bun bundles the published code and writes every artifact,
+      # so it comes from the SHA-256-pinned zip, never a cache. The runtimes
+      # embedded in the binaries are pinned separately, per target, in
+      # apps/cli/scripts/bun-runtimes.ts
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
