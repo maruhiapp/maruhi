@@ -632,7 +632,12 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     browser:
       'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$HOME/.cache/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell"',
   };
-  const BASHRC = "# the image's own lines\n";
+  // Commented-out copies of every line: only the exact line counts as present
+  const BASHRC = [
+    "# the image's own lines",
+    ...Object.values(LINES).map((line) => `# ${line}`),
+    "",
+  ].join("\n");
 
   interface Setup {
     readonly installBunExit?: number;
@@ -704,6 +709,8 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     for (const fetcher of ["curl", "wget", "npm", "npx", "node", "bunx", "git", "playwright"]) {
       writeExecutable(join(stubs, fetcher), logged(fetcher, ["exit 0"]));
     }
+    // Ahead of ~/.bun/bin unless the script puts the installed Bun first on PATH
+    writeExecutable(join(stubs, "bun"), logged("stray-bun", ["exit 0"]));
     const result = spawnSync(systemTool("bash"), [join(project, "scripts/dev-setup-cursor.sh")], {
       encoding: "utf8",
       timeout: 30_000,
@@ -766,7 +773,7 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     const { result, calls, bashrc } = runSetup({ bunInstallExit: 5 });
     expect(result.status).toBe(5);
     expect(calls).toEqual(installs.slice(0, 2));
-    expect(bashrc).not.toContain(LINES.browser);
+    expect(bashrc.split("\n")).not.toContain(LINES.browser);
   });
 
   it("fails without the browser line when the browser install fails, Playwright's own browsers already gone", () => {
@@ -774,7 +781,7 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     const { result, calls, bashrc, unverifiedKept } = runSetup({ headlessExit: 7 });
     expect(result.status).toBe(7);
     expect(calls).toEqual(installs);
-    expect(bashrc).not.toContain(LINES.browser);
+    expect(bashrc.split("\n")).not.toContain(LINES.browser);
     expect(unverifiedKept).toBe(false);
   });
 
@@ -782,7 +789,7 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     const { result, bashrc } = runSetup({ headlessAt: ".cache/elsewhere/chrome-headless-shell" });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("not the path the ~/.bashrc line names");
-    expect(bashrc).not.toContain(LINES.browser);
+    expect(bashrc.split("\n")).not.toContain(LINES.browser);
   });
 
   it("fails on any error", () => {
