@@ -213,9 +213,9 @@ What exists today:
   trusted publishing (OIDC, no long-lived token), with lifecycle scripts
   off. No reviewer approval gates the publish jobs yet: that gate is
   enabled before the first public release ([RELEASING.md](RELEASING.md),
-  "Before the first public release"). Until then only prereleases ship; a
-  stable version fails `bun run check` and a stable tag is refused by the
-  release workflow.
+  "Before the first public release"). Until then the workflow ships no
+  stable version: a stable version fails `bun run check` and a stable tag
+  is refused by the release workflow.
 - `packaging/install.sh` refuses to install without a SHA-256 match against
   `checksums.txt`. That file is unsigned: integrity rests on TLS to
   github.com, and the script says so rather than claim signature verification.

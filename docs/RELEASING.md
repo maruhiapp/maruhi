@@ -36,15 +36,18 @@ approval before each publish job. Until it is enabled, nothing stable can ship:
    - **Deployment branches and tags**: "Selected branches and tags" → exactly one rule, type
      **Tag**, pattern `v[0-9]*` (the workflow's tag trigger), and no branch rule
    - No secrets or variables
-2. **Name the environment in the npm trusted publisher** (npmjs.com → package `maruhi` →
-   Settings → Trusted Publisher → Environment name: `release`). From then on a token from any
-   other environment, or from none, is refused
-3. **Revert the commit that deferred the gate** (`git log --grep "defer the release approval
-   gate"`) in one PR, resolving conflicts until `bun run check` passes. The revert puts both
-   publish jobs back in the `release` environment, restores the `release-environment` job
-   (it fails every run, dry runs included, unless step 1's settings are in place), removes the
-   stable-version refusals, and restores this file's approval steps. Then mark the ROADMAP
-   pre-publication item done
+2. **Revert PR #390** (squash-merged; the PR page's Revert button, or
+   `git revert <its squash commit>`) in one PR that passes `bun run check`. The revert puts both
+   publish jobs back in the `release` environment, restores the `release-environment` job (it
+   fails every run, dry runs included, unless step 1's settings are in place), removes the
+   stable-version refusals, and restores this file's approval steps. Keep `ROADMAP.md` as it is
+   on main (restore it with `git checkout origin/main -- ROADMAP.md` if the revert touched it)
+   and, in the same PR, mark its "release approval gate" pre-publication item done
+3. **Name the environment in the npm trusted publisher** (npmjs.com → package `maruhi` →
+   Settings → Trusted Publisher → Environment name: `release`), only after step 2 has merged:
+   a blank name accepts a token from inside the environment, but a set name refuses the
+   ungated jobs of today, so setting it earlier makes the next rc create its GitHub Release and
+   then fail at npm. From then on a token from any other environment, or from none, is refused
 
 After that, each release waits for two approvals: `publish-github`, then `publish-npm`.
 

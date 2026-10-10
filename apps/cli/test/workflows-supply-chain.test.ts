@@ -531,12 +531,52 @@ const DRY_RUN_RUN = [
 
 const PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
 const RELEASE_TAGS = "v[0-9]*";
-/** version-check's refusal of a stable tag while no approval gates the publish jobs. */
-const STABLE_TAG_REFUSAL = [
+/**
+ * version-check's resolve step, byte for byte: the version and tag checks, the prerelease
+ * decision, and the refusal of a stable tag while no approval gates the publish jobs.
+ */
+const RESOLVE_RUN = [
+  "VERSION=$(node -p \"require('./apps/cli/package.json').version\")",
+  "# Canonical SemVer (same shape as SEMVER_PATTERN in",
+  "# scripts/shared.ts). With a lax check, leading zeros etc. are first",
+  "# rejected at the final npm publish and Release and npm diverge.",
+  "# Later jobs expand this output into the shell, so the format check",
+  "# doubles as injection hardening",
+  "SEMVER_RE='^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'",
+  'if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then',
+  '  echo "::error::apps/cli/package.json version is not SemVer: ${VERSION}"',
+  "  exit 1",
+  "fi",
+  'if [ "${EVENT_NAME}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then',
+  '  echo "::error::tag ${GITHUB_REF_NAME} does not match apps/cli/package.json version ${VERSION} (docs/RELEASING.md)"',
+  "  exit 1",
+  "fi",
+  'if [ "${EVENT_NAME}" = "push" ]; then',
+  "  # Force the tag to point at a commit in the main ancestry.",
+  "  # Without this, tagging any unreviewed branch commit with a v tag",
+  "  # would reach a real Release / npm publish (with provenance).",
+  "  # origin/main is already fetched by checkout (fetch-depth: 0 = all",
+  "  # branches, full history) \u2014 do not re-fetch here (a manual fetch",
+  "  # after persist-credentials: false is the one line that breaks the",
+  "  # moment the repository goes private)",
+  "  if ! git merge-base --is-ancestor HEAD origin/main; then",
+  '    echo "::error::tag ${GITHUB_REF_NAME} does not point at a commit on main (docs/RELEASING.md)"',
+  "    exit 1",
+  "  fi",
+  "fi",
+  'case "${VERSION}" in',
+  "  *-*) PRERELEASE=true ;;",
+  "  *) PRERELEASE=false ;;",
+  "esac",
+  "# A stable tag publishes to npm `latest` with nobody's approval",
+  "# until the release gate exists, so it stops here",
   'if [ "${EVENT_NAME}" = "push" ] && [ "${PRERELEASE}" = "false" ]; then',
   '  echo "::error::stable tag ${GITHUB_REF_NAME}: enable the release approval gate first (docs/RELEASING.md, \\"Before the first public release\\")"',
   "  exit 1",
   "fi",
+  'echo "version=${VERSION}" >> "$GITHUB_OUTPUT"',
+  'echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"',
+  "",
 ].join("\n");
 
 /** No condition and no continue-on-error: a failure here stops what depends on it. */
@@ -659,7 +699,8 @@ describe("release.yml publishes only what its build job produced", () => {
 
   it("lets nothing reshape the shell those steps run in", () => {
     // defaults.run.shell or BASH_ENV (sourced before every bash step) at any level would run
-    // before or instead of the pinned scripts
+    // before or instead of the pinned scripts, and GH_HOST would point publish-github's
+    // `gh release create` at another server
     expect(workflow.defaults).toBeUndefined();
     expect(workflow.env).toEqual({
       DO_NOT_TRACK: "1",
@@ -720,17 +761,16 @@ describe("release.yml ships no stable release until the approval gate is enabled
 
   it("keeps apps/cli's version a prerelease", () => {
     const { version } = JSON.parse(read("apps/cli/package.json")) as { version: string };
-    expect(version, "a stable version needs the release approval gate first").toMatch(/-/);
+    expect(version, "a stable version needs the release approval gate first").toMatch(
+      /^\d+\.\d+\.\d+-/,
+    );
   });
 
   it("refuses a stable tag in version-check, which every other job waits for", () => {
     expectUnconditional(versionCheck, "version-check");
     expectUnconditional(resolve, "version-check's resolve step");
     expect(resolve?.env).toEqual({ EVENT_NAME: "${{ github.event_name }}" });
-    expect(resolve?.run).toContain(STABLE_TAG_REFUSAL);
-    expect(resolve?.run?.indexOf(STABLE_TAG_REFUSAL)).toBeGreaterThan(
-      resolve?.run?.indexOf("*) PRERELEASE=false ;;") ?? Infinity,
-    );
+    expect(resolve?.run).toBe(RESOLVE_RUN);
     for (const name of ["build", "publish-github", "publish-npm"]) {
       expect(needsOf(workflow.jobs[name]), name).toContain("version-check");
     }
