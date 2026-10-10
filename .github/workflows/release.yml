@@ -3,8 +3,10 @@
 # On push of a `v*` tag: quality gate (reuses ci.yml wholesale) → tag ↔
 # apps/cli version match check → bun compile binaries for 5 targets →
 # real-machine smoke (5 OS runners) → GitHub Release (with checksums.txt) →
-# npm publish (trusted publishing + provenance). Each publish job waits for
-# a reviewer's approval in the `release` environment.
+# npm publish (trusted publishing + provenance). No reviewer approval gates
+# the publish jobs yet: that gate is enabled before the first public release
+# (docs/RELEASING.md, "Before the first public release"), and until then
+# version-check refuses a stable tag.
 # workflow_dispatch is a dry run: everything except publish runs (for
 # verifying the plumbing before tagging).
 #
@@ -127,6 +129,12 @@ jobs:
             *-*) PRERELEASE=true ;;
             *) PRERELEASE=false ;;
           esac
+          # A stable tag publishes to npm `latest` with nobody's approval
+          # until the release gate exists, so it stops here
+          if [ "${EVENT_NAME}" = "push" ] && [ "${PRERELEASE}" = "false" ]; then
+            echo "::error::stable tag ${GITHUB_REF_NAME}: enable the release approval gate first (docs/RELEASING.md, \"Before the first public release\")"
+            exit 1
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
@@ -203,10 +211,10 @@ jobs:
           name: binaries
           path: apps/cli/dist/
           if-no-files-found: error
-          # The publish jobs download this after their approvals, and recovery
-          # from a publish-npm-only failure re-runs the job (docs/RELEASING.md).
-          # A re-run can start up to 30 days after the run and then wait up to
-          # 30 days for its approval, so keep the artifacts 60 days
+          # Recovery from a publish-npm-only failure re-runs the job
+          # (docs/RELEASING.md). A re-run can start up to 30 days after the
+          # run, and once the release approval gate is enabled it can then wait
+          # up to 30 days for an approval, so keep the artifacts 60 days
           retention-days: 60
           # A new "Re-run all jobs" attempt makes the same-named artifact 409;
           # with tag re-cutting banned, this closes the trap of having to burn
@@ -292,61 +300,16 @@ jobs:
             *) echo "::warning::failed with output other than the keychain typed error"; exit 1 ;;
           esac
 
-  # Both publish jobs run in the `release` environment, which must require a
-  # reviewer and admit only v* tags (docs/RELEASING.md, first time): nothing
-  # irreversible happens before a reviewer approves, and npm's
-  # trusted-publisher entry names the environment. When a job references an
-  # environment that does not exist, GitHub creates it with no protection at
-  # all and runs the job, so this job reads the configuration and fails
-  # closed before either publish job starts, on dry runs too. The
-  # environment API needs actions: read; this job runs no checkout and no
-  # action
-  release-environment:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      actions: read
-    steps:
-      - name: Require a reviewer and a v* tag policy on the release environment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ENVIRONMENT: release
-          TAG_PATTERN: "v[0-9]*"
-        run: |
-          set -euo pipefail
-          api="repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}"
-          if ! config=$(gh api "${api}"); then
-            echo "::error::cannot read the ${ENVIRONMENT} environment; create it as docs/RELEASING.md describes"
-            exit 1
-          fi
-          reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<< "${config}")
-          if [ "${reviewers}" -lt 1 ]; then
-            echo "::error::the ${ENVIRONMENT} environment has no required reviewer (docs/RELEASING.md)"
-            exit 1
-          fi
-          if [ "$(jq '.deployment_branch_policy.custom_branch_policies' <<< "${config}")" != "true" ]; then
-            echo "::error::the ${ENVIRONMENT} environment must admit selected tags only (docs/RELEASING.md)"
-            exit 1
-          fi
-          policies=$(gh api --paginate "${api}/deployment-branch-policies" --jq '.branch_policies[] | "\(.type) \(.name)"')
-          if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then
-            echo "::error::the ${ENVIRONMENT} environment must admit exactly the tag pattern ${TAG_PATTERN} (got: ${policies//$'\n'/, })"
-            exit 1
-          fi
-          echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"
-
   # Create the GitHub Release (with checksums.txt). Release notes are
-  # auto-generated (ADR-0015: no CHANGELOG until 1.0). The job waits in the
-  # release environment for a reviewer's approval, and it also checks the
-  # npm-package artifact, so a swapped or roundtrip-damaged npm package
+  # auto-generated (ADR-0015: no CHANGELOG until 1.0). The job also checks
+  # the npm-package artifact, so a swapped or roundtrip-damaged npm package
   # stops the release before the Release exists
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # npm staging lives inside the build job (a precondition via smoke). If it
     # is broken, build fails and the irreversible Release creation is never
     # reached
-    needs: [verify, version-check, build, smoke, release-environment]
-    environment: release
+    needs: [verify, version-check, build, smoke]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -417,11 +380,7 @@ jobs:
   # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
   # to this job alone, and only the pinned download-artifact action and the
   # SHA-256-pinned Node.js / npm run here (no checkout, no repository
-  # dependency code). The job waits in the release environment for a
-  # reviewer's approval of its own (checked by release-environment), and
-  # npm's trusted-publisher entry names that environment, so no job outside
-  # it, approved or not, can publish. Lifecycle scripts never run
-  # (--ignore-scripts)
+  # dependency code). Lifecycle scripts never run (--ignore-scripts)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # build is the producer of the npm-package artifact (execution order is
@@ -430,7 +389,6 @@ jobs:
     # publish-github's needs would fail at download after the irreversible
     # Release creation)
     needs: [version-check, build, publish-github]
-    environment: release
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:

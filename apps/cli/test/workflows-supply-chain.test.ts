@@ -38,16 +38,15 @@
 //      publish-github checks both artifacts against them before creating the
 //      Release, and publish-npm checks the npm package again before anything
 //      else, each publishing from the checked directory only
-//   7. both publish jobs, and only they, run in the `release` environment,
-//      and an unconditional job fails the run before either of them unless
-//      that environment requires a reviewer and admits exactly the release
-//      tag pattern (GitHub creates a missing environment unprotected)
+//   7. until the reviewer-approval gate is enabled before the first public
+//      release, no stable version ships: apps/cli's version stays a
+//      prerelease, and version-check refuses a stable tag
 //   8. the publish path cannot be skipped or soft-fail: the publish jobs'
 //      `if:`, step sequences, and every check and publish command are pinned
 //      byte for byte, with no `if:`, continue-on-error or custom shell on
-//      their steps, no `defaults` or extra `env` (BASH_ENV, GH_HOST) above
-//      them, smoke's soft-fail limited to the keychain probe, and artifacts
-//      kept as long as a re-run can wait for its approval
+//      their steps, no `defaults` or extra `env` (BASH_ENV) above them,
+//      smoke's soft-fail limited to the keychain probe, and artifacts kept
+//      as long as a re-run can wait for an approval
 //   9. ci.yml's browser is the Chrome Headless Shell version the pinned
 //      Playwright expects (bun.lock resolves one Playwright), installed only
 //      by scripts/install-headless-shell.sh (the one pin, shared with the
@@ -543,32 +542,6 @@ const RELEASE_RUN = [
   "",
 ].join("\n");
 
-/** release-environment's fail-closed read of the environment's protection. */
-const ENVIRONMENT_CHECK_RUN = [
-  "set -euo pipefail",
-  'api="repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}"',
-  'if ! config=$(gh api "${api}"); then',
-  '  echo "::error::cannot read the ${ENVIRONMENT} environment; create it as docs/RELEASING.md describes"',
-  "  exit 1",
-  "fi",
-  'reviewers=$(jq \'[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length\' <<< "${config}")',
-  'if [ "${reviewers}" -lt 1 ]; then',
-  '  echo "::error::the ${ENVIRONMENT} environment has no required reviewer (docs/RELEASING.md)"',
-  "  exit 1",
-  "fi",
-  'if [ "$(jq \'.deployment_branch_policy.custom_branch_policies\' <<< "${config}")" != "true" ]; then',
-  '  echo "::error::the ${ENVIRONMENT} environment must admit selected tags only (docs/RELEASING.md)"',
-  "  exit 1",
-  "fi",
-  'policies=$(gh api --paginate "${api}/deployment-branch-policies" --jq \'.branch_policies[] | "\\(.type) \\(.name)"\')',
-  'if [ "${policies}" != "tag ${TAG_PATTERN}" ]; then',
-  "  echo \"::error::the ${ENVIRONMENT} environment must admit exactly the tag pattern ${TAG_PATTERN} (got: ${policies//$'\\n'/, })\"",
-  "  exit 1",
-  "fi",
-  'echo "${ENVIRONMENT}: ${reviewers} required reviewer(s), tags ${TAG_PATTERN} only"',
-  "",
-].join("\n");
-
 /** publish-npm's dry run, lifecycle scripts off. */
 const DRY_RUN_RUN = [
   "set +e",
@@ -589,7 +562,53 @@ const DRY_RUN_RUN = [
 
 const PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
 const RELEASE_TAGS = "v[0-9]*";
-const RELEASE_ENVIRONMENT = "release";
+/**
+ * version-check's resolve step, byte for byte: the version and tag checks, the prerelease
+ * decision, and the refusal of a stable tag while no approval gates the publish jobs.
+ */
+const RESOLVE_RUN = [
+  "VERSION=$(node -p \"require('./apps/cli/package.json').version\")",
+  "# Canonical SemVer (same shape as SEMVER_PATTERN in",
+  "# scripts/shared.ts). With a lax check, leading zeros etc. are first",
+  "# rejected at the final npm publish and Release and npm diverge.",
+  "# Later jobs expand this output into the shell, so the format check",
+  "# doubles as injection hardening",
+  "SEMVER_RE='^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'",
+  'if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then',
+  '  echo "::error::apps/cli/package.json version is not SemVer: ${VERSION}"',
+  "  exit 1",
+  "fi",
+  'if [ "${EVENT_NAME}" = "push" ] && [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then',
+  '  echo "::error::tag ${GITHUB_REF_NAME} does not match apps/cli/package.json version ${VERSION} (docs/RELEASING.md)"',
+  "  exit 1",
+  "fi",
+  'if [ "${EVENT_NAME}" = "push" ]; then',
+  "  # Force the tag to point at a commit in the main ancestry.",
+  "  # Without this, tagging any unreviewed branch commit with a v tag",
+  "  # would reach a real Release / npm publish (with provenance).",
+  "  # origin/main is already fetched by checkout (fetch-depth: 0 = all",
+  "  # branches, full history) \u2014 do not re-fetch here (a manual fetch",
+  "  # after persist-credentials: false is the one line that breaks the",
+  "  # moment the repository goes private)",
+  "  if ! git merge-base --is-ancestor HEAD origin/main; then",
+  '    echo "::error::tag ${GITHUB_REF_NAME} does not point at a commit on main (docs/RELEASING.md)"',
+  "    exit 1",
+  "  fi",
+  "fi",
+  'case "${VERSION}" in',
+  "  *-*) PRERELEASE=true ;;",
+  "  *) PRERELEASE=false ;;",
+  "esac",
+  "# A stable tag publishes to npm `latest` with nobody's approval",
+  "# until the release gate exists, so it stops here",
+  'if [ "${EVENT_NAME}" = "push" ] && [ "${PRERELEASE}" = "false" ]; then',
+  '  echo "::error::stable tag ${GITHUB_REF_NAME}: enable the release approval gate first (docs/RELEASING.md, \\"Before the first public release\\")"',
+  "  exit 1",
+  "fi",
+  'echo "version=${VERSION}" >> "$GITHUB_OUTPUT"',
+  'echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"',
+  "",
+].join("\n");
 
 /** No condition and no continue-on-error: a failure here stops what depends on it. */
 function expectUnconditional(item: Step | Job | undefined, where: string): void {
@@ -602,8 +621,6 @@ function expectUnconditional(item: Step | Job | undefined, where: string): void 
 
 const needsOf = (job: Job | undefined) =>
   typeof job?.needs === "string" ? [job.needs] : [...(job?.needs ?? [])];
-const environmentOf = (job: Job | undefined) =>
-  typeof job?.environment === "string" ? job.environment : job?.environment?.name;
 /** Jobs that can publish: any write permission or the OIDC token. */
 const canPublish = ({ permissions }: Job) =>
   typeof permissions === "string"
@@ -701,28 +718,27 @@ describe("release.yml publishes only what its build job produced", () => {
     }
     expect(needsOf(workflow.jobs["publish-github"]).toSorted()).toEqual([
       "build",
-      "release-environment",
       "smoke",
       "verify",
       "version-check",
     ]);
     expect(needsOf(workflow.jobs["publish-npm"])).toContain("publish-github");
-    for (const name of ["version-check", "build", "smoke", "release-environment"]) {
+    for (const name of ["version-check", "build", "smoke"]) {
       expect(workflow.jobs[name]?.["continue-on-error"], name).toBeUndefined();
     }
   });
 
   it("lets nothing reshape the shell those steps run in", () => {
     // defaults.run.shell or BASH_ENV (sourced before every bash step) at any level would run
-    // before or instead of the pinned scripts, and GH_HOST would point the environment check
-    // at another server
+    // before or instead of the pinned scripts, and GH_HOST would point publish-github's
+    // `gh release create` at another server
     expect(workflow.defaults).toBeUndefined();
     expect(workflow.env).toEqual({
       DO_NOT_TRACK: "1",
       WRANGLER_SEND_METRICS: "false",
       CF_SEND_TELEMETRY: "false",
     });
-    for (const name of ["build", "release-environment", "publish-github", "publish-npm"]) {
+    for (const name of ["version-check", "build", "publish-github", "publish-npm"]) {
       expect(workflow.jobs[name]?.defaults, name).toBeUndefined();
       expect(workflow.jobs[name]?.env, name).toBeUndefined();
     }
@@ -757,25 +773,46 @@ describe("release.yml publishes only what its build job produced", () => {
     expect(smoke.map((s) => s.if)).toEqual([undefined, undefined, undefined]);
   });
 
-  it("keeps the artifacts as long as a re-run can still wait for its approval", () => {
-    // A re-run may start 30 days after the run and then wait 30 days for an approval
+  it("keeps the artifacts as long as a re-run can still wait for an approval", () => {
+    // A re-run may start 30 days after the run and, with the approval gate, wait 30 days more
     const uploads = buildSteps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
     expect(uploads.map((s) => s.with?.["retention-days"])).toEqual([60, 60]);
   });
 });
 
-describe("release.yml publishes nothing before a reviewer approves", () => {
+describe("release.yml ships no stable release until the approval gate is enabled", () => {
+  // The reviewer-approval gate on the publish jobs is deferred until the first public release
+  // (docs/RELEASING.md, "Before the first public release"). Until then a stable version is
+  // refused twice: here, when apps/cli is bumped to one, and in version-check, when one is
+  // tagged. Enabling the gate replaces this block.
   const { workflow } = loadWorkflow("release.yml");
   const jobs = Object.entries(workflow.jobs);
-  const check = workflow.jobs["release-environment"];
+  const versionCheck = workflow.jobs["version-check"];
+  const resolve = versionCheck?.steps?.find((s) => s.id === "resolve");
 
-  it("runs every job that can publish, and only those, in the release environment", () => {
+  it("keeps apps/cli's version a prerelease", () => {
+    const { version } = JSON.parse(read("apps/cli/package.json")) as { version: string };
+    expect(version, "a stable version needs the release approval gate first").toMatch(
+      /^\d+\.\d+\.\d+-/,
+    );
+  });
+
+  it("refuses a stable tag in version-check, which every other job waits for", () => {
+    expectUnconditional(versionCheck, "version-check");
+    expectUnconditional(resolve, "version-check's resolve step");
+    expect(resolve?.env).toEqual({ EVENT_NAME: "${{ github.event_name }}" });
+    expect(resolve?.run).toBe(RESOLVE_RUN);
+    for (const name of ["build", "publish-github", "publish-npm"]) {
+      expect(needsOf(workflow.jobs[name]), name).toContain("version-check");
+    }
+  });
+
+  it("runs no job in an environment, and only the two publish jobs can publish", () => {
+    expect(jobs.filter(([, job]) => job.environment !== undefined).map(([name]) => name)).toEqual(
+      [],
+    );
     const publishers = jobs.filter(([, job]) => canPublish(job)).map(([name]) => name);
     expect(publishers.toSorted()).toEqual(["publish-github", "publish-npm"]);
-    const gated = jobs.filter(([, job]) => job.environment !== undefined);
-    expect(gated.map(([name]) => name).toSorted()).toEqual(publishers.toSorted());
-    for (const name of publishers)
-      expect(environmentOf(workflow.jobs[name])).toBe(RELEASE_ENVIRONMENT);
     const oidc = jobs.filter(
       ([, job]) =>
         (job.permissions as Record<string, unknown> | undefined)?.["id-token"] === "write",
@@ -783,22 +820,7 @@ describe("release.yml publishes nothing before a reviewer approves", () => {
     expect(oidc.map(([name]) => name)).toEqual(["publish-npm"]);
   });
 
-  it("checks that environment's protection, failing closed, before either publish job", () => {
-    expectUnconditional(check, "release-environment");
-    expect(check?.permissions).toEqual({ actions: "read" });
-    expect(check?.steps).toHaveLength(1);
-    const step = check?.steps?.[0];
-    expectUnconditional(step, "the environment check");
-    expect(step?.uses).toBeUndefined();
-    expect(step?.env).toEqual({
-      GH_TOKEN: "${{ github.token }}",
-      ENVIRONMENT: RELEASE_ENVIRONMENT,
-      TAG_PATTERN: RELEASE_TAGS,
-    });
-    expect(step?.run).toBe(ENVIRONMENT_CHECK_RUN);
-  });
-
-  it("triggers on exactly the tag pattern the environment admits", () => {
+  it("triggers on exactly the release tag pattern", () => {
     expect((workflow.on["push"] as { tags: readonly string[] }).tags).toEqual([RELEASE_TAGS]);
   });
 });
