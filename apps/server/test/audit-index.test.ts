@@ -24,7 +24,7 @@
 // from duplicating the statements).
 
 import { auditReadPayload } from "@maruhi/core";
-import { testUserId, testVariableId } from "@maruhi/crypto/test-support";
+import { testEnvironmentId, testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
@@ -271,57 +271,6 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
     });
   });
 
-  it("Q5 rotationFlagEvents reads only the pairs that carry a rotation.recommended row, through ae_var", async () => {
-    await withSql((sql) => {
-      sql.exec("DELETE FROM audit_events");
-      const { sql: wrapped, captured } = capturing(sql);
-      const store = makeAuditStore(wrapped);
-      // var-a is flagged in env-a and env-b (the server's uniqueness unit
-      // is the pair), var-b in env-a is pushed but never flagged
-      store.appendManySync([
-        pushEvent("env-a", "var-a", 1),
-        pushEvent("env-a", "var-b", 1),
-        recommendedEvent("env-a", "var-a"),
-        pushEvent("env-b", "var-a", 1),
-        recommendedEvent("env-b", "var-a"),
-        readEvent(0),
-        {
-          serverTs: 1_700_000_000_000,
-          event: "rotation.dismissed",
-          actorType: "user",
-          actorUserId: testUserId("user-admin-0001"),
-          environmentId: "env-b",
-          variableId: "var-a",
-        },
-        pushEvent("env-a", "var-b", 2),
-        pushEvent("env-a", "var-a", 2),
-      ]);
-      captured.length = 0;
-      const rows = store.readRotationSync.rotationFlagEvents();
-      expect(rows.map((row) => [row.seq, row.event, row.environmentId, row.variableId])).toEqual([
-        [1, "var.version_pushed", "env-a", "var-a"],
-        [3, "rotation.recommended", "env-a", "var-a"],
-        [4, "var.version_pushed", "env-b", "var-a"],
-        [5, "rotation.recommended", "env-b", "var-a"],
-        [7, "rotation.dismissed", "env-b", "var-a"],
-        [9, "var.version_pushed", "env-a", "var-a"],
-      ]);
-      // The env-a flag is resolved by version 2 (epoch 2 > bound 1); the
-      // env-b flag is dismissed
-      expect(deriveEffectiveFlags(rows)).toEqual([]);
-      expect(deriveEffectiveFlags(rows.filter((row) => row.seq !== 9))).toMatchObject([
-        { environmentId: "env-a", variableId: "var-a", basis: "readable" },
-      ]);
-      const query = captured.at(-1);
-      if (query === undefined) throw new Error("no query captured");
-      const plan = planOf(sql, query);
-      expect(plan).toMatch(/USING INDEX ae_event \(event=\?\)/);
-      expect(plan).toMatch(/SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/);
-      expect(plan).not.toMatch(/SCAN a\b/);
-      sql.exec("DELETE FROM audit_events");
-    });
-  });
-
   it("with 10,000 var.read rows, the partial indexes are smaller than plain ones (measured via databaseSize)", async () => {
     const ROWS = 10_000;
     const measured = await withSql((sql) => {
@@ -366,5 +315,117 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
     expect(measured.rebuilt).toBeLessThanOrEqual(measured.partial);
     // The 3 indexes × (NULL key + seq) entries are at least tens of bytes per row
     expect(perRow).toBeGreaterThan(10);
+  });
+});
+
+describe("rotation flag reads (Q5 — audit-store.ts)", () => {
+  /** Seeds the flag-read fixture (seqs 1..13, in this order). */
+  function seedFlagRows(store: ReturnType<typeof makeAuditStore>): void {
+    store.appendManySync([
+      { ...pushEvent("env-a", "var-a", 1), event: "var.created", payload: { name: "A" } },
+      pushEvent("env-a", "var-a", 1),
+      pushEvent("env-a", "var-b", 1),
+      recommendedEvent("env-a", "var-a"),
+      { ...pushEvent("env-a", "var-a", 1), event: "var.renamed", payload: { name: "B" } },
+      pushEvent("env-b", "var-a", 1),
+      recommendedEvent("env-b", "var-a"),
+      readEvent(0),
+      {
+        serverTs: 1_700_000_000_000,
+        event: "rotation.dismissed",
+        actorType: "user",
+        actorUserId: testUserId("user-admin-0001"),
+        environmentId: "env-b",
+        variableId: "var-a",
+      },
+      recommendedEvent("env-a", "var-a"),
+      pushEvent("env-a", "var-b", 2),
+      pushEvent("env-a", "var-a", 2),
+      // A corrupt row: a recommended row without its pair's ids
+      {
+        serverTs: 1_700_000_000_000,
+        event: "rotation.recommended",
+        actorType: "system",
+        epoch: 1,
+        payload: { basis: "readable", triggerChainSeq: 2, trigger: "remove_member" },
+      },
+    ]);
+  }
+
+  it("rotationFlagEvents reads only the pairs that carry a rotation.recommended row, through ae_var", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const { sql: wrapped, captured } = capturing(sql);
+      const store = makeAuditStore(wrapped);
+      // var-a is flagged in env-a (twice) and env-b — the server's
+      // uniqueness unit is the pair; var-b in env-a is pushed, never flagged
+      seedFlagRows(store);
+      captured.length = 0;
+      const rows = store.readRotationSync.rotationFlagEvents();
+      // No lifecycle rows, no unflagged pair, each flagged pair's rows
+      // once, and the corrupt row matched to its own (NULL) pair
+      expect(rows.map((row) => [row.seq, row.event, row.environmentId, row.variableId])).toEqual([
+        [2, "var.version_pushed", "env-a", "var-a"],
+        [4, "rotation.recommended", "env-a", "var-a"],
+        [6, "var.version_pushed", "env-b", "var-a"],
+        [7, "rotation.recommended", "env-b", "var-a"],
+        [9, "rotation.dismissed", "env-b", "var-a"],
+        [10, "rotation.recommended", "env-a", "var-a"],
+        [12, "var.version_pushed", "env-a", "var-a"],
+        [13, "rotation.recommended", "null", "null"],
+      ]);
+      // Version 2 (epoch 2 > bound 1) resolves both env-a flags; the env-b
+      // flag is dismissed
+      expect(deriveEffectiveFlags(rows)).toMatchObject([
+        { environmentId: "null", variableId: "null" },
+      ]);
+      expect(deriveEffectiveFlags(rows.filter((row) => row.seq !== 12))).toMatchObject([
+        { environmentId: "env-a", variableId: "var-a" },
+        { environmentId: "env-a", variableId: "var-a" },
+        { environmentId: "null", variableId: "null" },
+      ]);
+      const query = captured.at(-1);
+      if (query === undefined) throw new Error("no query captured");
+      const plan = planOf(sql, query);
+      expect(plan).toMatch(/USING INDEX ae_event \(event=\?\)/);
+      expect(plan).toMatch(/SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/);
+      expect(plan).not.toMatch(/SCAN a\b/);
+      sql.exec("DELETE FROM audit_events");
+    });
+  });
+
+  it("rotationFlagEventsFor reads the given pairs' rows once each in one statement, through ae_var", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const { sql: wrapped, captured } = capturing(sql);
+      const store = makeAuditStore(wrapped);
+      seedFlagRows(store);
+      captured.length = 0;
+      const envB = testEnvironmentId("env-b");
+      const rows = store.readRotationSync.rotationFlagEventsFor([
+        { environmentId: envB, variableId: testVariableId("var-a") },
+        { environmentId: envB, variableId: testVariableId("var-a") },
+        { environmentId: testEnvironmentId("env-a"), variableId: testVariableId("var-b") },
+        { environmentId: testEnvironmentId("env-a"), variableId: testVariableId("var-a") },
+      ]);
+      expect(rows.map((row) => [row.seq, row.event, row.environmentId, row.variableId])).toEqual([
+        [2, "var.version_pushed", "env-a", "var-a"],
+        [3, "var.version_pushed", "env-a", "var-b"],
+        [4, "rotation.recommended", "env-a", "var-a"],
+        [6, "var.version_pushed", "env-b", "var-a"],
+        [7, "rotation.recommended", "env-b", "var-a"],
+        [9, "rotation.dismissed", "env-b", "var-a"],
+        [10, "rotation.recommended", "env-a", "var-a"],
+        [11, "var.version_pushed", "env-a", "var-b"],
+        [12, "var.version_pushed", "env-a", "var-a"],
+      ]);
+      expect(captured).toHaveLength(1);
+      const query = captured[0];
+      if (query === undefined) throw new Error("no query captured");
+      const plan = planOf(sql, query);
+      expect(plan).toMatch(/SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/);
+      expect(plan).not.toMatch(/SCAN a\b/);
+      sql.exec("DELETE FROM audit_events");
+    });
   });
 });

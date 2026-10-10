@@ -65,7 +65,7 @@ export const dismissRotationFlagsProgram = Effect.fn(
   }
   const audit = yield* AuditStore;
   const live = new Set(
-    deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()).map(pairKey),
+    deriveEffectiveFlags(audit.readRotationSync.rotationFlagEventsFor(targets)).map(pairKey),
   );
   // Duplicate pairs are folded into one (dismissal semantics are
   // idempotent per pair — one request, one event per pair). A pair

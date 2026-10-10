@@ -184,14 +184,17 @@ export interface AuditRotationRead {
   readonly environmentEpochEvents: () => readonly EnvironmentEpochRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
   /**
-   * The same rows narrowed to one (variable × environment) pair (the
-   * history's flagsIfCurrent — ae_var). The pair is typed with the id
-   * brands so a caller cannot swap the two same-shaped ids; it only binds
-   * them as query parameters, so nothing is minted here.
+   * The same rows narrowed to the given (variable × environment) pairs (the
+   * history's flagsIfCurrent, a dismissal's live check — ae_var). The pairs
+   * are typed with the id brands so a caller cannot swap the two
+   * same-shaped ids; they are only bound as a query parameter, so nothing
+   * is minted here.
    */
   readonly rotationFlagEventsFor: (
-    environmentId: EnvironmentId,
-    variableId: VariableId,
+    pairs: readonly {
+      readonly environmentId: EnvironmentId;
+      readonly variableId: VariableId;
+    }[],
   ) => readonly RotationFlagSourceRow[];
 }
 
@@ -1405,7 +1408,9 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   // fixes the join order (SQLite never reorders it): without statistics the
   // planner could drive the join from ae_event's var.version_pushed range —
   // every push in the project. IS lets a NULL id (a corrupt row) still
-  // match its own pair (test/audit-index.test.ts pins the plan via EXPLAIN)
+  // match its own pair; rotationFlagSourceRow then reads it as the string
+  // "null", so the fold merges it with a pair whose id is literally "null"
+  // (test/audit-index.test.ts pins the rows and the plan via EXPLAIN)
   rotationFlagEvents: () =>
     sql
       .exec(
@@ -1420,17 +1425,24 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(rotationFlagSourceRow),
-  rotationFlagEventsFor: (environmentId: EnvironmentId, variableId: VariableId) =>
+  // The given pairs' rows (ae_var), in one statement however many pairs:
+  // json_each expands the bound list, and DISTINCT keeps a repeated pair
+  // from repeating its rows
+  rotationFlagEventsFor: (pairs) =>
     sql
       .exec(
-        `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
-                target_user_id, target_key_fingerprint, payload
-         FROM audit_events
-         WHERE variable_id = ? AND environment_id = ?
-           AND event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
-         ORDER BY seq`,
-        variableId,
-        environmentId,
+        `SELECT a.seq, a.server_ts, a.event, a.environment_id, a.variable_id, a.version,
+                a.epoch, a.target_user_id, a.target_key_fingerprint, a.payload
+         FROM (SELECT DISTINCT json_extract(value, '$.variableId') AS variable_id,
+                               json_extract(value, '$.environmentId') AS environment_id
+               FROM json_each(?)) AS target
+         CROSS JOIN audit_events AS a
+         WHERE a.variable_id = target.variable_id AND a.environment_id = target.environment_id
+           AND a.event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
+         ORDER BY a.seq`,
+        JSON.stringify(
+          pairs.map((pair) => ({ variableId: pair.variableId, environmentId: pair.environmentId })),
+        ),
       )
       .toArray()
       .map(rotationFlagSourceRow),
