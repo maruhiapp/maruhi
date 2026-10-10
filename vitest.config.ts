@@ -6,6 +6,17 @@ import { defineConfig } from "vitest/config";
 // steps that assume a built dist.
 export default defineConfig({
   test: {
+    sequence: {
+      // File-order shuffle that enforces order independence in the server
+      // suite (audit T-2). It lives at the root because Vitest 4.1.x derives
+      // file order from this root sequencer alone — a project's own
+      // sequence.shuffle is ignored when it runs as a project here. The
+      // rationale, reproduction steps, and cost are documented at the canonical
+      // site, apps/server/vitest.config.ts (the isolate: false note). The other
+      // projects keep default per-file isolation, so a shuffled file order is
+      // harmless for them.
+      shuffle: { files: true },
+    },
     projects: [
       "packages/*/vitest.config.ts",
       "apps/cli/vitest.config.ts",
