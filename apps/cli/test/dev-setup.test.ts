@@ -354,9 +354,10 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   });
 
   it("stops when scripts/install-bun.sh fails, before bun install and the session PATH", () => {
-    const { result, calls, env } = runHook({ installBunExit: 1, corepack: 0 });
+    // An older bun stays on disk, so carrying on would still find a `bun` to run
+    const { result, calls, env } = runHook({ bun: "1.0.0", installBunExit: 1, corepack: 0 });
     expect(result.status).not.toBe(0);
-    expect(calls).toEqual([`install-bun.sh  ${project}`]);
+    expect(calls).toEqual([`bun --version ${project}`, `install-bun.sh  ${project}`]);
     expect(env).toBe("");
   });
 
