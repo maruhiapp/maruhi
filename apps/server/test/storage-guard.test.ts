@@ -15,7 +15,12 @@
 //    are rejected for another reason or succeed). Since the guard
 //    sits at each program's head (right after membership, before
 //    semantic checks), any result other than limit-exceeded is
-//    evidence the guard was not called (or admitted).
+//    evidence the guard was not called (or admitted). The sealed
+//    value proposal mint and pre-flight refuse in the workload
+//    vocabulary (`storage-limit`)
+// 3. the 10 GB floor: the reads that append an audit row run under an
+//    audit store whose appends fail like SQLITE_FULL, and pin that they
+//    fail rather than being served unrecorded
 //
 // The warning (8 GB) operations log is a static message, once per DO
 // instance (= per meter).
@@ -32,13 +37,12 @@ import {
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer, Redacted } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it, vi } from "vitest";
 
 import { putHeadAttestationProgram } from "../src/attestation-accept.ts";
-import type { AuditStore } from "../src/audit-store.ts";
-import { auditStoreLayer } from "../src/audit-store.ts";
+import { AuditStore, auditStoreLayer, makeAuditStore } from "../src/audit-store.ts";
 import {
   toManifestInput,
   toMetaStatementInput,
@@ -69,6 +73,17 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "../src/programs/programs-environment.ts";
+import { exportPageProgram } from "../src/programs/programs-export.ts";
+import { variableVersionValuesProgram } from "../src/programs/programs-history.ts";
+import type { LeaseTokenFacts } from "../src/programs/programs-lease.ts";
+import { leaseProgram } from "../src/programs/programs-lease.ts";
+import type { RotationProposalInput } from "../src/programs/programs-proposal.ts";
+import {
+  listRotationProposalsProgram,
+  preflightRotationProgram,
+  proposeRotationProgram,
+  resolveRotationProposalProgram,
+} from "../src/programs/programs-proposal.ts";
 import { dismissRotationFlagsProgram } from "../src/programs/programs-rotation.ts";
 import {
   getSchemaPolicyProgram,
@@ -81,14 +96,16 @@ import {
   pushVersionProgram,
   renameVariableProgram,
 } from "../src/programs/programs-variable.ts";
+import { makeServerKey, ServerKey } from "../src/server-key.ts";
 import { ServerLoggerLive } from "../src/server-logger.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
-import { addMemberOperation, signEntryAt } from "./support/data-crypto.ts";
+import { addMemberOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
 import { testEnvironmentId } from "./support/data-crypto.ts";
 import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
+  MEMBER,
   OWNER,
   projectId,
   READER,
@@ -106,43 +123,82 @@ import {
   unsignedVariableStatement,
   VAR,
 } from "./support/data-scenario.ts";
+import {
+  backfillServerWrap,
+  grantServer as grantLeases,
+  workloadKeyPair,
+} from "./support/lease-scenario.ts";
+import { LEASE_AUDIENCE, LEASE_SUBJECT } from "./support/lease.ts";
+import { OIDC_ISSUER } from "./support/oidc-issuer.ts";
+import { readAuditEvents } from "./support/project-do.ts";
 
 registerDataScenario();
 
 const actor = (userId: string): DataActor => ({ userId: testUserId(userId) });
 
-/** The services in-DO programs require (chain-do.ts's DoServices minus the lease-only ServerKey). */
-type DoProgram<A, E> = Effect.Effect<A, E, ChainStore | DataStore | AuditStore | StorageMeter>;
+/** The services in-DO programs require (chain-do.ts's DoServices). */
+type DoProgram<A, E> = Effect.Effect<
+  A,
+  E,
+  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+>;
 type Runner = <A, E>(program: DoProgram<A, E>) => Promise<Exit.Exit<A, E>>;
 
 /**
  * Under a meter with a fixed measured size, run programs against the
  * real project DO's SqlStorage (the same layer composition as
  * chain-do.ts's constructor, with the meter swapped). StateCache is
- * empty per call = a full load from the stored rows.
+ * empty per call = a full load from the stored rows. `atFloor` swaps the
+ * audit store's appends for the 10 GB floor's SQLITE_FULL (the platform
+ * limit cannot be reached for real either).
  */
 async function runInProject<A>(
   databaseSizeBytes: number,
-  body: (run: Runner) => Promise<A>,
+  body: (run: Runner, state: DurableObjectState) => Promise<A>,
+  options: { readonly atFloor?: boolean } = {},
 ): Promise<A> {
   const meter = makeStorageMeter(() => databaseSizeBytes);
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   return await runInDurableObject(stub, async (_instance, state) => {
     const cache: StateCache = { current: null, chain: null };
+    const full = () => {
+      throw new Error(SQLITE_FULL);
+    };
     const layers = Layer.mergeAll(
       chainStoreLayer(state.storage.sql, cache),
       dataStoreLayer(state.storage.sql),
-      auditStoreLayer(state.storage.sql),
+      options.atFloor === true
+        ? Layer.sync(AuditStore, () => ({
+            ...makeAuditStore(state.storage.sql),
+            appendSync: full,
+            appendManySync: full,
+          }))
+        : auditStoreLayer(state.storage.sql),
       Layer.succeed(StorageMeter, meter),
+      // The deployment key the DO derives (the workload paths authorize against its grant)
+      Layer.sync(ServerKey, () => makeServerKey(Redacted.make(env.SERVER_ENC_KEY_IKM ?? ""))),
       // The DO runtime's logger (chain-do.ts) — without it the
       // converted Effect.logWarning / logError lines do not reach
       // the console spies
       ServerLoggerLive,
     );
     const run: Runner = (program) => Effect.runPromiseExit(program.pipe(Effect.provide(layers)));
-    return await body(run);
+    return await body(run, state);
   });
 }
+
+const SQLITE_FULL = "SQLITE_FULL: database or disk is full";
+
+/** The verified token facts the worker hands the DO, matching the lease scenario's default policy. */
+const workloadFacts = (): LeaseTokenFacts => ({
+  issuer: OIDC_ISSUER,
+  subject: LEASE_SUBJECT,
+  audiences: [LEASE_AUDIENCE],
+  claims: { sub: LEASE_SUBJECT },
+  claimsDigestHex: "00".repeat(32),
+  bindingKeyHex: "11".repeat(32),
+  bindingExpiresAtMs: Date.now() + 300_000,
+});
 
 /** Exit → rejection reason (success / defect is null). */
 function rejectionOf(exit: Exit.Exit<unknown, unknown>): DataRejection | null {
@@ -724,6 +780,148 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
       const snapshot = await run(snapshotProgram(OWNER, cache));
       expect(Exit.isSuccess(snapshot) && snapshot.value.headSeq).toBe(fixture.head.seq + 1);
     });
+  });
+});
+
+describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surface, the closing paths are bounded)", () => {
+  const ephemeralPubHex = "ab".repeat(32);
+  const writers = [OWNER, MEMBER].map((userId) => ({
+    userId,
+    encPubHex: vectorKeyOf(userId).enc_pub_hex,
+  }));
+  // Sealed to W(E) (owner + member devices); the server verifies nothing inside a wrap
+  const proposal: RotationProposalInput = {
+    proposalId: "00112233445566778899aabbccddeeff",
+    connector: "exec",
+    facts: [],
+    expiresInDays: 7,
+    variables: [
+      {
+        variableId: VAR,
+        baseVersion: 1,
+        wraps: writers.map((writer) => ({
+          recipientUserId: writer.userId,
+          recipientEncPubHex: writer.encPubHex,
+          encHex: "cd".repeat(32),
+          ciphertextHex: "ef".repeat(48),
+        })),
+      },
+    ],
+  };
+  const preflight = (baseVersion: number, cache: StateCache) =>
+    preflightRotationProgram(
+      testEnvironmentId(ENV),
+      ephemeralPubHex,
+      workloadFacts(),
+      [{ variableId: VAR, baseVersion }],
+      cache,
+      writers,
+    );
+  const mint = (cache: StateCache) =>
+    proposeRotationProgram(
+      testEnvironmentId(ENV),
+      ephemeralPubHex,
+      workloadFacts(),
+      proposal,
+      cache,
+    );
+  const failureOf = (exit: Exit.Exit<unknown, unknown>) =>
+    Exit.isSuccess(exit) ? null : Cause.squash(exit.cause);
+  const STORAGE_LIMIT = { kind: "proposal-rejected", reason: "storage-limit" };
+
+  it("refuses the mint and its pre-flight with storage-limit before every other check, and keeps the stored proposals' list and resolution open", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await grantLeases({ scope: [ENV] });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        expect(failureOf(await run(preflight(1, cache)))).toEqual(STORAGE_LIMIT);
+        // A stale base version would be base-version-stale: the guard precedes the semantic checks
+        expect(failureOf(await run(preflight(5, cache)))).toEqual(STORAGE_LIMIT);
+        expect(failureOf(await run(mint(cache)))).toEqual(STORAGE_LIMIT);
+      });
+      const events = (await readAuditEvents(projectId)).map((event) => event["event"]);
+      expect(events).not.toContain("rotation.proposed");
+      // In the warning band the same requests are admitted (observation only)
+      await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        expect(Exit.isSuccess(await run(preflight(1, cache)))).toBe(true);
+        expect(Exit.isSuccess(await run(mint(cache)))).toBe(true);
+      });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      // The closing paths of a stored proposal stay open under rejection (§12-8 (h))
+      await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
+        const cache: StateCache = { current: null, chain: null };
+        const listed = await run(listRotationProposalsProgram(actor(OWNER), cache));
+        expect(Exit.isSuccess(listed) && listed.value.map((p) => p.proposalId)).toEqual([
+          proposal.proposalId,
+        ]);
+        expect(
+          Exit.isSuccess(
+            await run(
+              resolveRotationProposalProgram(
+                actor(OWNER),
+                proposal.proposalId,
+                { outcome: "rejected", versions: [] },
+                cache,
+              ),
+            ),
+          ),
+        ).toBe(true);
+      });
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe("the audit-writing reads (§12-8 (a)(e) — open in the rejection band, refused at the floor)", () => {
+  it("serves the with-values pull, the version value range, the lease and the export under rejection, and fails each with its audit append at the floor", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await grantLeases({ scope: [ENV] });
+    await backfillServerWrap(1, dek);
+    const workload = await workloadKeyPair();
+    const reads = async (atFloor: boolean) =>
+      await runInProject(
+        DO_STORAGE_REJECT_BYTES,
+        async (run, state) => {
+          const cache: StateCache = { current: null, chain: null };
+          return {
+            pull: await run(pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache)),
+            versionValues: await run(
+              variableVersionValuesProgram(actor(READER), testEnvironmentId(ENV), VAR, 1, cache),
+            ),
+            lease: await run(
+              leaseProgram(testEnvironmentId(ENV), workload.publicKeyHex, workloadFacts(), cache),
+            ),
+            export: await run(
+              exportPageProgram(actor(OWNER), null, state.storage.sql, state.id.toString(), cache),
+            ),
+          };
+        },
+        { atFloor },
+      );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const [read, exit] of Object.entries<Exit.Exit<unknown, unknown>>(await reads(false))) {
+        expect(Exit.isSuccess(exit), read).toBe(true);
+      }
+      // No read is served without its audit row (an unrecorded read of a
+      // member nobody can remove at the floor)
+      for (const [read, exit] of Object.entries<Exit.Exit<unknown, unknown>>(await reads(true))) {
+        expect(Exit.isSuccess(exit), read).toBe(false);
+        if (Exit.isFailure(exit)) {
+          expect(String(Cause.squash(exit.cause)), read).toContain(SQLITE_FULL);
+        }
+      }
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

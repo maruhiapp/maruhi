@@ -162,14 +162,15 @@ export const DO_STORAGE_WARN_BYTES = 8_000_000_000;
  * §12-8 DO storage total guard rejection threshold. In a DO whose measured
  * `databaseSize` is at or above this value, the content-growth surfaces (value
  * push, variable/environment creation, renames, DEK registration,
- * add_member / grant_server) are rejected with 422 `project-storage-bytes`.
+ * add_member / grant_server) are rejected with 422 `project-storage-bytes`,
+ * and the sealed value proposal mint with `storage-limit`.
  * Reads, deletions, revocations, rotations, leases, attestations, and
  * checkpoints are still accepted under rejection (explicit enumeration in the
  * same section — storage-guard.ts). This is the only line of defense against
- * reaching 10 GB SQLITE_FULL (a floor where reads work but writes fail —
- * maruhi's delete operations also involve INSERTs, so they fail at the floor
- * and a tenant cannot recover on its own); if the threshold is moved, keep it
- * below the floor.
+ * reaching 10 GB SQLITE_FULL (a floor where every INSERT fails — maruhi's
+ * delete operations and the reads that append an audit row fail with it, so a
+ * tenant cannot recover on its own); if the threshold is moved, keep it below
+ * the floor.
  */
 export const DO_STORAGE_REJECT_BYTES = 9_000_000_000;
 

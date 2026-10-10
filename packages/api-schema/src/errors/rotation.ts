@@ -43,7 +43,9 @@ export const RotationProposalRejectReasonSchema = Schema.Literals([
   "recipients-mismatch",
   "pending-limit",
   "version-missing",
-  // The proposal's sealed values would carry the project past the §12-8 ciphertext cap
+  // The proposal's sealed values would carry the project past the §12-8
+  // ciphertext cap, or the project is at §12-8's storage-total rejection
+  // threshold (the latter is also the pre-flight's answer)
   "storage-limit",
   // The pre-flight (AUTH_SPEC §14-5 — O-4): a pending proposal already
   // targets the variable; the job stops before the issuer is touched

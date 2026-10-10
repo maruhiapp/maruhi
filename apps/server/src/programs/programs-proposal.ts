@@ -252,6 +252,7 @@ export const proposeRotationProgram = Effect.fn("programs-proposal.proposeRotati
         reason: "mirror-read-only",
       });
     }
+    yield* ensureStorageAdmitsMint;
     // (1) The mint window — judged after authorization (existence
     // concealment), consumed only when a proposal is stored
     const window = yield* store.checkLeaseWindow(
@@ -277,10 +278,6 @@ export const proposeRotationProgram = Effect.fn("programs-proposal.proposeRotati
     // instant is the server's, so a client clock ahead of the server can
     // never make a proposal unacceptable after the issuer was touched
     const expiresAtMs = nowMs + proposal.expiresInDays * DAY_MS;
-    // The storage-total guard observes (the caps above bound a
-    // proposal's size; the mint is accepted under the warning level like
-    // the lease — AUTH_SPEC §12-8)
-    yield* observeStorageLevel;
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
       // Window consumption, the first-come binding (idempotent for the
@@ -364,6 +361,26 @@ const sweepExpired = Effect.fn("programs-proposal.sweepExpired")(function* (
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The storage-total guard of the mint and its pre-flight (AUTH_SPEC §12-8 /
+ * §14-5): at or above the rejection threshold nothing is minted — the sealed
+ * values could take the whole headroom below the floor, and a proposal
+ * minted there could never be accepted (the acceptance's push is refused).
+ * Judged before the mint window and every semantic check, in the workload
+ * vocabulary (`storage-limit`), so the pre-flight stops the job before the
+ * issuer is touched.
+ */
+const ensureStorageAdmitsMint: Effect.Effect<void, ProposalRejection, StorageMeter> = Effect.gen(
+  function* () {
+    if ((yield* observeStorageLevel) === "reject") {
+      return yield* Effect.fail<ProposalRejection>({
+        kind: "proposal-rejected",
+        reason: "storage-limit",
+      });
+    }
+  },
+);
+
 /** The pre-flight's variables (AUTH_SPEC §14-5 — O-4): what the job intends to propose, before the issuer is touched. */
 export interface PreflightVariableInput {
   readonly variableId: VariableId;
@@ -386,7 +403,7 @@ export type PreflightOutcome =
  * authorization, then every §14-5 check a sealed value is not needed
  * for — the variables active at the named base versions, no pending
  * proposal targeting one of them (`variable-pending`), the pending cap,
- * the mirror mark. Nothing is stored and no window is consumed; the
+ * the mirror mark, the storage-total guard. Nothing is stored and no window is consumed; the
  * token's first-come binding is taken like the lease's.
  */
 export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRotationProgram")(
@@ -408,6 +425,7 @@ export const preflightRotationProgram = Effect.fn("programs-proposal.preflightRo
     if (store.isMirrorSync()) {
       return yield* preflightRefusal("mirror-read-only");
     }
+    yield* ensureStorageAdmitsMint;
     // The mint window, read without consuming it (ruling O revision): a
     // job that would be rate-limited learns it before the issuer is touched
     const window = yield* store.checkLeaseWindow(
