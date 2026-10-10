@@ -261,7 +261,7 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
 
   interface Hook {
     /** The version ~/.bun/bin/bun reports, or undefined when it is not installed. */
-    readonly bun?: string;
+    readonly bun?: string | undefined;
     readonly installBunExit?: number;
     /** corepack's exit status, or undefined when it is not on PATH. */
     readonly corepack?: number;
