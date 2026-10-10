@@ -7,11 +7,7 @@
 // - Preliminary value-size check (§12-8 — resource protection precedes
 //   semantic checks; §12-3)
 
-import type {
-  DistributedVariableMetaStatement,
-  EncryptedPayload,
-  EnvironmentManifest,
-} from "@maruhi/api-schema";
+import type { EncryptedPayload, EnvironmentManifest } from "@maruhi/api-schema";
 import {
   ActivationRequiredError,
   AttestationRateLimitedError,
@@ -76,6 +72,8 @@ import type {
   MetaStatementInput,
   PulledVariableValue,
   ValueInput,
+  WireMetaStatement,
+  WireSchemaField,
 } from "./data-plane.ts";
 import { roleAtLeast } from "./data-plane.ts";
 
@@ -198,52 +196,52 @@ export function toManifestInput(manifest: EnvironmentManifest): EnvManifestInput
 }
 
 /**
- * The fields every wire request statement carries past the coordinate check
- * (variable and environment, every lifecycle and layout): api-schema's
- * self-describing statement form without the coordinates (already matched
- * against the URL — checkStatementCoordinates) and the distribution-only
- * author fields. Every request statement form of api-schema is assignable to
- * it, so the converter cannot drift from the wire contract.
- */
-type WireMetaStatement = Omit<
-  DistributedVariableMetaStatement,
-  "environmentId" | "variableId" | "authorUserId" | "authorKeyFingerprintHex"
->;
-
-/**
  * Wire statement → the store input handed to the DO (coordinates already
- * verified). In layout v3 (§12-2) layoutVersion and the schema fields are
- * present as a set — the wire Schema forces the coupling, so the branch may
- * test their presence directly (missing schema fields fall earlier as a
- * Schema 400; a missing maxAgeDays is verify-meta.ts's 422).
+ * verified). The runtime object is the wider request struct — it still carries
+ * the wire-declared coordinates (environmentId / variableId), which are not in
+ * the WireMetaStatement type — so the fields are copied by explicit name rather
+ * than by rest-spread: that is what keeps those coordinates (and any future
+ * request-only field) out of the stored input, since the DO reconstructs the
+ * signed target from the storage coordinates and never from the wire's
+ * declared values (§12-5). The `satisfies` pins `base` to the non-schema wire
+ * fields, so a new required wire field is a compile error here rather than a
+ * silent omission. In layout v3 (§12-2) layoutVersion and the schema fields are
+ * present as a set — the wire Schema forces the coupling, so the branch tests
+ * their presence directly (missing schema fields fall earlier as a Schema 400;
+ * a missing maxAgeDays is verify-meta.ts's 422).
  */
 export function toMetaStatementInput(statement: WireMetaStatement): MetaStatementInput {
-  return {
+  const base = {
     suite: statement.suite,
     name: statement.name,
     status: statement.status,
     metaVersion: statement.metaVersion,
     prevMetaSigHashHex: statement.prevMetaSigHashHex,
-    ...(statement.layoutVersion === undefined ||
-    statement.varType === undefined ||
-    statement.required === undefined ||
-    statement.description === undefined
-      ? {}
-      : {
-          layoutVersion: statement.layoutVersion,
-          schema: {
-            varType: statement.varType,
-            required: statement.required,
-            description: statement.description,
-            // maxAgeDays rides only when the wire carries it (its absence
-            // on layout 3 is verify-meta.ts's 422 payload-mismatch, after
-            // the layout support-range check)
-            ...(statement.maxAgeDays === undefined ? {} : { maxAgeDays: statement.maxAgeDays }),
-          },
-        }),
     chainHeadHashHex: statement.chainHeadHashHex,
     chainHeadSeq: statement.chainHeadSeq,
     signatureHex: statement.signatureHex,
+  } satisfies Omit<WireMetaStatement, WireSchemaField | "layoutVersion">;
+  const { layoutVersion, varType, required, description, maxAgeDays } = statement;
+  if (
+    layoutVersion === undefined ||
+    varType === undefined ||
+    required === undefined ||
+    description === undefined
+  ) {
+    return base;
+  }
+  return {
+    ...base,
+    layoutVersion,
+    schema: {
+      varType,
+      required,
+      description,
+      // maxAgeDays rides only when the wire carries it (its absence on
+      // layout 3 is verify-meta.ts's 422 payload-mismatch, after the layout
+      // support-range check)
+      ...(maxAgeDays === undefined ? {} : { maxAgeDays }),
+    },
   };
 }
 
