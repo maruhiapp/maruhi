@@ -21,12 +21,17 @@
 //      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
 //      runs only a pinned Node.js; both check the pinned SHA-256 before
 //      unpacking, and unpack before first running anything
+//   5. ci.yml's browser is the Chrome Headless Shell version the pinned
+//      Playwright expects, from an archive checked against a pinned SHA-256
+//      on every path (download or cache hit) before it is unpacked; the only
+//      cache is that archive, and nothing runs `playwright install`
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -54,6 +59,7 @@ interface Step {
 }
 interface Job {
   readonly uses?: string;
+  readonly env?: Readonly<Record<string, unknown>>;
   readonly container?: unknown;
   readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
@@ -251,6 +257,80 @@ describe("Actions caches stay out of privileged workflows", () => {
       );
       expect(install).toBeGreaterThan(-1);
       expect(firstUse).toBeGreaterThan(install);
+    });
+  });
+
+  describe("ci.yml runs only the pinned, verified Chrome Headless Shell", () => {
+    const { workflow } = loadWorkflow("ci.yml");
+    const job = workflow.jobs["check"];
+    const steps = job?.steps ?? [];
+    const install = steps.findIndex(
+      (s) => s.name === "Install Chrome Headless Shell (pinned SHA-256)",
+    );
+    const run = steps[install]?.run ?? "";
+    const ARCHIVE = "~/.cache/chrome-headless-shell/chrome-headless-shell-linux64.zip";
+
+    it("pins the headless-shell version the pinned Playwright expects, with a SHA-256", () => {
+      const pin = (app: string): unknown =>
+        (
+          JSON.parse(read(`apps/${app}/package.json`)) as {
+            devDependencies: Record<string, unknown>;
+          }
+        ).devDependencies["playwright"];
+      // Steps 9 / 9b / 11 share the one browser
+      expect(pin("site"), "apps/site and apps/web pin the same playwright").toBe(pin("web"));
+      const fromWeb = createRequire(join(repoRoot, "apps/web/package.json"));
+      const corePackage = createRequire(fromWeb.resolve("playwright/package.json")).resolve(
+        "playwright-core/package.json",
+      );
+      const core = JSON.parse(readFileSync(corePackage, "utf8")) as { version: string };
+      expect(core.version).toBe(pin("web"));
+      const { browsers } = JSON.parse(
+        readFileSync(join(dirname(corePackage), "browsers.json"), "utf8"),
+      ) as { browsers: { name: string; browserVersion?: string }[] };
+      const expected = browsers.find((b) => b.name === "chromium-headless-shell")?.browserVersion;
+      expect(expected).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+      expect(
+        job?.env?.["CHROME_HEADLESS_SHELL_VERSION"],
+        `playwright ${core.version} expects headless shell ${expected}: update the version and SHA-256 together (procedure at the install step)`,
+      ).toBe(expected);
+      expect(job?.env?.["CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("checks the cached or downloaded archive against the pin before unpacking it", () => {
+      expect(install).toBeGreaterThan(-1);
+      expect(run).toContain(`zip="${ARCHIVE.replace(/^~/, "${HOME}")}"`);
+      expect(run).toContain(
+        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip",
+      );
+      expectVerifiedBeforeRun(run, "unzip ", "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=");
+      // Top level of the script, so a cache hit (which skips the download branch) is checked too
+      const check = run.split("\n").find((line) => line.includes("sha256sum --check --strict"));
+      expect(check).toBe(
+        'if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict; then',
+      );
+    });
+
+    it("caches only that archive, around the install step", () => {
+      const cacheSteps = steps.flatMap((s, i) => (CACHE_ACTIONS.test(s.uses ?? "") ? [i] : []));
+      expect(cacheSteps.map((i) => steps[i]?.with?.["path"])).toEqual([ARCHIVE, ARCHIVE]);
+      expect(cacheSteps[0]).toBeLessThan(install);
+      expect(cacheSteps[1]).toBeGreaterThan(install);
+    });
+
+    it("installs the browser before every browser step, and nothing runs playwright install", () => {
+      const browserSteps = steps.flatMap((s, i) =>
+        /\be2e\b|test:browser/.test(s.run ?? "") ? [i] : [],
+      );
+      expect(browserSteps.length).toBeGreaterThan(0);
+      for (const i of browserSteps) expect(i, steps[i]?.name).toBeGreaterThan(install);
+      for (const file of [...PRIVILEGED, ...UNPRIVILEGED]) {
+        const runs = stepsOf(loadWorkflow(file).workflow).map((s) => s.run ?? "");
+        expect(
+          runs.filter((r) => /playwright(-core)?\s+install/.test(r)),
+          file,
+        ).toEqual([]);
+      }
     });
   });
 });
