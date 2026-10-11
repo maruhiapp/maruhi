@@ -68,16 +68,26 @@ export class AuthFlowError extends Schema.TaggedError<AuthFlowError>()(
   { httpApiStatus: 400 },
 ) {}
 
-/** Reason codes for a 503 on an unconfigured self-hosted server (AUTH_SPEC §3). */
-export const SetupIncompleteReasonSchema = Schema.Literals(["github-oauth-unconfigured"]);
+/**
+ * Reason codes for a 503 on an unconfigured self-hosted server (AUTH_SPEC §3).
+ *
+ * - `github-oauth-unconfigured` — the GitHub OAuth App is not configured
+ *   (client_id is a placeholder / empty / absent, or client_secret is
+ *   unregistered / empty)
+ * - `rate-limit-unconfigured` — the per-source-IP rate-limit binding of
+ *   the endpoint answering is absent from the deployment (the AUTH_SPEC
+ *   §4-1 (1) binding pattern fails closed on a missing binding)
+ */
+export const SetupIncompleteReasonSchema = Schema.Literals([
+  "github-oauth-unconfigured",
+  "rate-limit-unconfigured",
+]);
 
 /**
- * 503: this deployment has not finished self-host setup — the GitHub OAuth
- * App is not configured (AUTH_SPEC §3: client_id is a placeholder /
- * empty / absent, or client_secret is unregistered / empty). The client
- * directs the user to the setup procedure in docs/SELF_HOSTING.md
- * (supports the semantics that a success response = both are
- * registered).
+ * 503: this deployment has not finished self-host setup (AUTH_SPEC §3 —
+ * the reasons above). The client directs the user to the setup procedure
+ * in docs/SELF_HOSTING.md (supports the semantics that `/auth/config`'s
+ * success response = the OAuth App is registered).
  */
 export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteError>()(
   "SetupIncomplete",

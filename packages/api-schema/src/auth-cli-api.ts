@@ -189,6 +189,12 @@ export const authCliGroup = HttpApiGroup.make("authCli")
         flowToken: CliFlowTokenSchema,
       }),
       success: CliPollResultSchema,
-      error: [CliFlowExpiredError, CliFlowRejectedError, AuthRateLimitedError, TokenLimitError],
+      error: [
+        CliFlowExpiredError,
+        CliFlowRejectedError,
+        SetupIncompleteError,
+        AuthRateLimitedError,
+        TokenLimitError,
+      ],
     }),
   );

@@ -176,6 +176,14 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (`maruhi env rotate` / `maruhi server grant`), then retry";
 }
 
+/** Reason-specific guidance for 503 `SetupIncomplete` (AUTH_SPEC §3): both are fixed by the server administrator. */
+function renderSetupIncomplete(error: SetupIncompleteError): string {
+  if (error.reason === "rate-limit-unconfigured") {
+    return "The server's self-hosting setup is incomplete (rate-limit-unconfigured): its deployment lacks the per-source-IP rate-limit binding this request needs. The server administrator should redeploy with the `bindings.rateLimit` entries of apps/server/cloudflare.config.ts (docs/SELF_HOSTING.md)";
+  }
+  return "The server's self-hosting setup is incomplete (github-oauth-unconfigured). The server administrator should register a GitHub OAuth App following docs/SELF_HOSTING.md";
+}
+
 /**
  * Whether the failure is the server not answering at all — no response
  * (DNS, connection, TLS, a cut-off transfer) or a gateway's own status in
@@ -438,11 +446,7 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `Too many login attempts from this address (HTTP 429). Retry after ${e.retryAfterSeconds} seconds`,
   ),
-  when(
-    isInstanceOf(SetupIncompleteError),
-    (e) =>
-      `The server's self-hosting setup is incomplete (${e.reason}). The server administrator should register a GitHub OAuth App following docs/SELF_HOSTING.md`,
-  ),
+  when(isInstanceOf(SetupIncompleteError), renderSetupIncomplete),
   when(
     isInstanceOf(TokenLimitError),
     (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,

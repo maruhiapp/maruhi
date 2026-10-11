@@ -184,6 +184,11 @@ export interface Env {
    * through worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
    */
   readonly SERVER_ENC_KEY_IKM?: string;
+  // The five *_RATE_LIMIT bindings below are required here because both
+  // serving modes declare them (test/cf-env.test.ts), but a deployment
+  // whose config lacks one has it undefined at runtime. They are read only
+  // through worker-env.ts's ipRateLimitAllowed, which answers a missing
+  // binding with 503 SetupIncomplete (AUTH_SPEC §4-1 (1)).
   /**
    * The source-IP rate limit of unauthenticated CLI-login start
    * (AUTH_SPEC §4-1 (1) — the ratelimits of wrangler.jsonc. An unrecorded

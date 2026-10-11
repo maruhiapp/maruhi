@@ -301,7 +301,7 @@ export const authGroup = HttpApiGroup.make("auth")
         state: Schema.String.check(Schema.isMaxLength(512)),
       },
       success: Redirect,
-      error: [AuthFlowError, AuthRateLimitedError],
+      error: [AuthFlowError, SetupIncompleteError, AuthRateLimitedError],
     }),
   )
   .add(
