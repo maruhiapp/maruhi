@@ -98,6 +98,12 @@ interface VersionAnchor {
   readonly epoch: number;
 }
 
+/** An environment's current ciphertext bytes and one variable's share of them (§12-8). */
+interface EnvironmentCiphertextBytes {
+  readonly totalBytes: number;
+  readonly variableBytes: number;
+}
+
 /**
  * A statement's author (stored into the *_meta_statements tables'
  * author_* columns — the user_id + key FP of the chain-derived member
@@ -543,6 +549,15 @@ export interface DataStoreShape {
   ) => Effect.Effect<VersionAnchor | null>;
   /** The project's cumulative ciphertext bytes (the amount currently stored. §12-8). */
   readonly totalCiphertextBytes: Effect.Effect<number>;
+  /**
+   * The environment's current ciphertext bytes (§12-8 — the latest version
+   * of every active variable) and the share of `variableId`'s latest
+   * version in it (0 when it has none: a declared or new variable).
+   */
+  readonly environmentCiphertextBytes: (
+    environmentId: EnvironmentId,
+    variableId: VariableId,
+  ) => Effect.Effect<EnvironmentCiphertextBytes>;
 
   readonly countWrapsForEpoch: (
     environmentId: EnvironmentId,

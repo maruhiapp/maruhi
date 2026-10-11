@@ -45,6 +45,17 @@ export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 /** §12-8: acceptance limit on a value's ciphertext (ct || tag). */
 export const MAX_VALUE_CIPHERTEXT_BYTES = 64 * 1024;
 
+/**
+ * §12-8 (Sc-3): the sum of the ciphertext bytes of the latest version of
+ * every active variable of one environment — what one with-values pull or
+ * lease carries. Those reads return as one DO RPC result, which workerd
+ * refuses above 32 MiB serialized; values travel as hex, so a full
+ * environment above ~15.9 MiB is unreadable. 8 MiB keeps such a response
+ * near half the frame, leaving the rest to statements, DEK wraps and a
+ * lease's chain. Raising it in self-hosting is free up to that ceiling.
+ */
+export const MAX_ENVIRONMENT_CIPHERTEXT_BYTES = 8 * 1024 * 1024;
+
 /** §12-8: active environments per project. */
 export const MAX_ACTIVE_ENVIRONMENTS = 100;
 

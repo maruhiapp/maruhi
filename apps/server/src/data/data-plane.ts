@@ -570,6 +570,7 @@ export type DataLimitResource =
   | "variable-rows"
   | "versions"
   | "meta-versions"
+  | "environment-ciphertext-bytes"
   | "project-ciphertext-bytes"
   | "dek-wraps-per-request"
   | "dek-wrap-rows"
