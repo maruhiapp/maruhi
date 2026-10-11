@@ -361,10 +361,12 @@ project the dominant growth is `var.read` rows from pulls. The guard is the
 safety net for that growth; there is no per-tenant audit quota. Two of the
 operations that stay open above 9 GB are not constant-size: pulls keep adding
 `var.read` rows (one row per value pull of an environment, listing the
-variables it returned — AUDIT_SPEC §3.3), and removing a member or revoking server access writes one
-`rotation.recommended` row per variable (including deleted ones) that the
-departing party could have read — proportional to the project's variable
-history rather than a fixed number. Both are deliberate (exit path and
+variables it returned — AUDIT_SPEC §3.3), and removing a member or revoking
+server access writes `rotation.recommended` rows listing every variable
+(including deleted ones) that the departing party could have read — one row
+per environment per chunk of up to 1,000 variables, so the enumerated-pair
+count is proportional to the project's variable history rather than a fixed
+number. Both are deliberate (exit path and
 security remediation) and sized well inside the 1 GB headroom for realistic
 projects; the warning band exists to give you time before they matter.
 

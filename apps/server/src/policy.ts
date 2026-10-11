@@ -68,6 +68,23 @@ export const MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT = 1_000;
 /** §12-8: variable rows per environment (including tombstones). */
 export const MAX_VARIABLE_ROWS_PER_ENVIRONMENT = 5_000;
 
+/**
+ * AUDIT_SPEC §3.3 (Sc-5): the maximum variables one `rotation.recommended`
+ * aggregate row enumerates. A detection's candidates include deleted
+ * variables, so one environment can flag up to
+ * {@link MAX_VARIABLE_ROWS_PER_ENVIRONMENT} pairs; a single row holding all of
+ * them would be ~0.5 MiB (5,000 × a 64-char id — AUTH_SPEC §12-1), above
+ * {@link MAX_MIRROR_PAGE_SLACK_BYTES} (256 KiB), so the row's export line
+ * would be refused forever (audit rows are permanent — ensurePageBounds in
+ * do-mirror.ts). The detection therefore splits one environment's flags into
+ * rows of at most this many variables. 1,000 × 64-char ids ≈ a 100 KiB payload
+ * / ~110 KiB export line — well under the slack (a > 2x margin), and equal to
+ * {@link MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT} so the chunk matches a
+ * value-bearing pull's natural bound. Measured by
+ * test/audit-read-aggregate.test.ts.
+ */
+export const MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW = 1_000;
+
 /** §12-8: versions per variable. */
 export const MAX_VERSIONS_PER_VARIABLE = 1_000;
 

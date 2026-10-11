@@ -593,6 +593,43 @@ export function auditReadPayload(variables: readonly AuditReadVariable[]): Audit
   };
 }
 
+/** One variable listed by an aggregated `rotation.recommended` row (AUDIT_SPEC §3.3 — Sc-5). */
+export interface RotationRecommendedVariable {
+  readonly variableId: VariableId;
+  readonly basis: "read" | "readable";
+}
+
+/**
+ * Reads the variables listed by an aggregated `rotation.recommended` payload
+ * (§3.3 Sc-5 — one row per environment, per chunk; the per-variable basis
+ * rides each element). Returns null when the payload is not the aggregated
+ * form. A malformed element is skipped and an unknown basis falls to
+ * "readable" (the safe over-report side) — the audit log is server-managed
+ * data, so corruption is surfaced rather than a reason to abort.
+ */
+export function rotationRecommendedVariablesOf(
+  payload: Readonly<Record<string, unknown>> | null | undefined,
+): readonly RotationRecommendedVariable[] | null {
+  const listed = payload?.["variables"];
+  if (!Array.isArray(listed)) {
+    return null;
+  }
+  return listed.flatMap((entry: unknown): RotationRecommendedVariable[] => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const { variableId, basis } = entry as Record<string, unknown>;
+    return typeof variableId === "string" && isVariableId(variableId)
+      ? [
+          {
+            variableId: decodeVariableId(variableId),
+            basis: basis === "read" ? "read" : "readable",
+          },
+        ]
+      : [];
+  });
+}
+
 /**
  * Reads the variables listed by an aggregated `var.read` payload. Returns
  * `null` when the payload is not the aggregated form — an unrelated event

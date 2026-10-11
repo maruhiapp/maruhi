@@ -987,6 +987,41 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     expect((await readHistory(OWNER)).map((entry) => entry.flagsIfCurrent)).toEqual([1, 0, 1]);
   });
 
+  it("two variables flagged in one aggregate row keep independent per-variable history (§3.3 Sc-5 / §12-7)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await createVariableOk(dek, "var-api-key", "API_KEY", "sk-alpha");
+    await pullAs(MEMBER);
+    await removeMember(MEMBER);
+    // One aggregate row flags both pairs (§3.3 Sc-5)
+    const recommended = (await readAuditEvents(projectId)).filter(
+      (event) => event["event"] === "rotation.recommended",
+    );
+    expect(recommended).toHaveLength(1);
+    const apiKeyHistory = async (): Promise<readonly WireHistoryEntry[]> => {
+      const response = await requestJson(
+        "GET",
+        `/environments/${ENV}/variables/var-api-key/versions`,
+        token(OWNER),
+      );
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { versions: readonly WireHistoryEntry[] }).versions;
+    };
+    // Both flagged while their live value is within the exposure bound (epoch 1)
+    expect((await readHistory(OWNER)).at(-1)?.flagsIfCurrent).toBe(1);
+    expect((await apiKeyHistory()).at(-1)?.flagsIfCurrent).toBe(1);
+    // Rotate and push a fresh value for VAR only — VAR resolves, var-api-key stays flagged
+    const dek2 = await rotateTo(2, [OWNER, READER]);
+    await pushNextVersion({
+      dek: dek2,
+      version: 2,
+      epoch: 2,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
+    expect((await readHistory(OWNER)).at(-1)?.flagsIfCurrent).toBe(0);
+    expect((await apiKeyHistory()).at(-1)?.flagsIfCurrent).toBe(1);
+  });
+
   it("sameValueAs must name an earlier version (422 payload-mismatch — §12-5)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

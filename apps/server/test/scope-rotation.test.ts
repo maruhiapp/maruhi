@@ -25,6 +25,7 @@ import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
 import type { AuditRotationRead, ScopeSnapshot, SeqRange } from "../src/audit-store.ts";
+import { MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW } from "../src/policy.ts";
 import {
   deriveEffectiveFlags,
   detectMemberRemoval,
@@ -825,6 +826,42 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
       nowMs: 1,
     });
     expect(variableIdsOf(events)).toEqual(["v"]);
+  });
+
+  it("one environment with more than a chunk of candidates splits into rows of at most MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW (§3.3 Sc-5)", () => {
+    const count = MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW + 500;
+    const events = detectMemberRemoval({
+      read: fakeRead({
+        membership: [
+          // scope null = the window derivation treats it as `all` (fail-safe)
+          { seq: 2, event: "chain.member_added", role: "member", scope: null },
+          { seq: 10, event: "chain.member_removed", role: null, scope: null },
+        ],
+        lifecycles: Array.from({ length: count }, (_v, index) => ({
+          seq: 5,
+          event: "var.created",
+          environmentId: testEnvironmentId("env-a"),
+          variableId: testVariableId(`v${index.toString(16).padStart(6, "0")}`),
+        })),
+      }),
+      targetUserId: testUserId("u"),
+      triggerChainSeq: 9,
+      nowMs: 1,
+    });
+    // Two rows (1,000 + 500), all env-a, no row over the cap
+    expect(events).toHaveLength(2);
+    expect(events.every((event) => event.environmentId === "env-a")).toBe(true);
+    expect(events.map((event) => event.payload.variables.length)).toEqual([
+      MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW,
+      500,
+    ]);
+    // Every candidate appears exactly once across the chunks, globally ascending
+    const allVars = events.flatMap((event) =>
+      event.payload.variables.map((variable) => variable.variableId),
+    );
+    expect(allVars).toHaveLength(count);
+    expect(new Set(allVars).size).toBe(count);
+    expect(allVars).toEqual([...allVars].toSorted());
   });
 
   it("a rotation.recommended row with no trigger is defective — corruption, not data (only the server writes them)", () => {

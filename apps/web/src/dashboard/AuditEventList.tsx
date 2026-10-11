@@ -46,6 +46,9 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { ApiFailure, ApiResult } from "./api.ts";
 import {
   aggregatedReadVariables,
+  aggregatedRecommendedVariables,
+  flaggedVariableLabel,
+  flagSummaryLabel,
   listedReadVariableLabel,
   payloadWithoutVariables,
   lineageLabel,
@@ -135,6 +138,7 @@ function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
  */
 function EventSummary({ event }: { event: AuditEvent }): ReactNode {
   const listed = aggregatedReadVariables(event);
+  const flagged = aggregatedRecommendedVariables(event);
   return (
     <VStack gap={1}>
       <HStack gap={4} align="center" wrap="wrap">
@@ -156,6 +160,11 @@ function EventSummary({ event }: { event: AuditEvent }): ReactNode {
         {listed === null ? null : (
           <Text type="supporting" size="sm">
             {readSummaryLabel(listed)}
+          </Text>
+        )}
+        {flagged === null ? null : (
+          <Text type="supporting" size="sm">
+            {flagSummaryLabel(flagged)}
           </Text>
         )}
       </HStack>
@@ -230,10 +239,27 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   );
 }
 
-/** The payload minus the enumeration (variables). The payload itself when not the aggregated shape. */
+/** A list of the flagged variables of an aggregated rotation.recommended row (§3.3 Sc-5). */
+function FlagsList({ event }: { event: AuditEvent }): ReactNode {
+  const flagged = aggregatedRecommendedVariables(event);
+  if (flagged === null) return null;
+  // The enumeration is ascending and unique by variableId (§3.3), so the id is a stable key
+  return (
+    <VStack gap={2}>
+      <Text weight="semibold">{flagSummaryLabel(flagged)}</Text>
+      <List density="compact" edgeCompensation="inline">
+        {flagged.map((variable) => (
+          <ListItem key={variable.variableId} label={flaggedVariableLabel(variable)} />
+        ))}
+      </List>
+    </VStack>
+  );
+}
+
+/** The payload minus the enumeration (variables). The payload itself when not an aggregated shape. */
 function recordedPayload(event: AuditEvent): Readonly<Record<string, unknown>> | null {
   if (event.payload === undefined) return null;
-  return aggregatedReadVariables(event) === null
+  return aggregatedReadVariables(event) === null && aggregatedRecommendedVariables(event) === null
     ? event.payload
     : payloadWithoutVariables(event.payload);
 }
@@ -258,6 +284,7 @@ function EventDetails({ event }: { event: AuditEvent }): ReactNode {
       </MetadataList>
       {payload === null ? null : <RecordedPayload payload={payload} />}
       <ReadsList event={event} />
+      <FlagsList event={event} />
     </VStack>
   );
 }

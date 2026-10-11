@@ -454,4 +454,65 @@ describe("rotation flag reads (Q5 — audit-store.ts)", () => {
       sql.exec("DELETE FROM audit_events");
     });
   });
+
+  it("rotationFlagEventsFor expands a multi-variable aggregate row to the requested pair only (restrict)", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const store = makeAuditStore(sql);
+      // One aggregate row lists both var-a and var-b (§3.3 Sc-5)
+      store.appendManySync([
+        recommendedEvent("env-a", ["var-a", "var-b"]),
+        pushEvent("env-a", "var-a", 1),
+        pushEvent("env-a", "var-b", 1),
+      ]);
+      const rows = store.readRotationSync.rotationFlagEventsFor([
+        { environmentId: testEnvironmentId("env-a"), variableId: testVariableId("var-b") },
+      ]);
+      // The recommended row is expanded to var-b only (not var-a); only var-b's
+      // resolution row is read. Without the restrict, var-a's flag would leak in
+      expect(rows.map((row) => [row.seq, row.event, row.variableId])).toEqual([
+        [1, "rotation.recommended", "var-b"],
+        [3, "var.version_pushed", "var-b"],
+      ]);
+      expect(rows.some((row) => row.variableId === "var-a")).toBe(false);
+      sql.exec("DELETE FROM audit_events");
+    });
+  });
+
+  it("the §7 variable filter's rotation.recommended aggregate query uses ae_event, never ae_var over var.read", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const { sql: wrapped, captured } = capturing(sql);
+      const store = makeAuditStore(wrapped);
+      store.appendManySync([
+        { ...pushEvent("env-a", "var-a", 1), event: "var.created", payload: { name: "A" } },
+        recommendedEvent("env-a", ["var-a"]),
+        // A var.read row shares variable_id IS NULL, so an ae_var plan would scan it
+        readEvent(0),
+      ]);
+      captured.length = 0;
+      store.queryEventsSync({
+        beforeRowId: null,
+        limit: 50,
+        event: null,
+        eventPrefix: null,
+        chainSeqPresent: false,
+        actorUserId: null,
+        targetUserId: null,
+        variableId: testVariableId("var-a"),
+        environmentId: null,
+        visibility: { kind: "admin" },
+      });
+      const recommendedQuery = captured.find((query) =>
+        query.query.includes("+variable_id IS NULL"),
+      );
+      if (recommendedQuery === undefined) {
+        throw new Error("no rotation.recommended aggregate query captured");
+      }
+      const plan = planOf(sql, recommendedQuery);
+      expect(plan).toMatch(/USING INDEX ae_event \(event=\?\)/);
+      expect(plan).not.toMatch(/USING INDEX ae_var/);
+      sql.exec("DELETE FROM audit_events");
+    });
+  });
 });

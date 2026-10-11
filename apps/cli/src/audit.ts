@@ -41,6 +41,8 @@ import {
   CHAIN_MIRROR_EVENT_PREFIX,
   CHAIN_MIRROR_EVENTS,
   chainMirrorEvents,
+  type RotationRecommendedVariable,
+  rotationRecommendedVariablesOf,
   VAR_READ_EVENT,
 } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -115,6 +117,28 @@ function describeReadCount(listed: readonly AuditReadVariable[]): string {
   return listed.length === variables
     ? countNoun(variables, "variable")
     : `${countNoun(listed.length, "version")} of ${countNoun(variables, "variable")}`;
+}
+
+/**
+ * The variable enumeration of an aggregated `rotation.recommended` row (§3.3
+ * Sc-5 — one row per environment, per chunk; variableId column absent, the
+ * flagged variables and their basis in the payload's `variables`). Other
+ * events return null. Uses the same shared reader as the server (@maruhi/core).
+ */
+function aggregatedRecommendedOf(
+  event: WireAuditEvent,
+): readonly RotationRecommendedVariable[] | null {
+  return event.event === "rotation.recommended" && event.variableId === undefined
+    ? rotationRecommendedVariablesOf(event.payload)
+    : null;
+}
+
+/** The display form of one flagged variable of an aggregated rotation.recommended row (shared by --var's match display). */
+function recommendedVariableLabel(
+  variable: RotationRecommendedVariable,
+  names: NameIndex | undefined,
+): string {
+  return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tbasis=${variable.basis}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +386,28 @@ function variableLabel(variableId: string, resolvedName: string | null): string 
     : `${displayText(resolvedName)} (${displayText(variableId)})`;
 }
 
+/**
+ * The summary column of an aggregated row (§3.3): var.read's `read=` count or
+ * rotation.recommended's `flags=` count — the enumeration (tens / ~100 KiB)
+ * is never dumped on the line (it rides --expand-reads / the recorded payload
+ * stripped of `variables`). With --var, the matched variable's item follows.
+ * A row is one kind, so at most one summary.
+ */
+function aggregatedSummaryParts(event: WireAuditEvent, matched: string | null): readonly string[] {
+  const read = aggregatedReadOf(event);
+  const flagged = read === null ? aggregatedRecommendedOf(event) : null;
+  const summary =
+    read !== null
+      ? `read=${describeReadCount(read)}`
+      : flagged !== null
+        ? `flags=${countNoun(flagged.length, "variable")}`
+        : null;
+  if (summary === null) {
+    return [];
+  }
+  return matched === null ? [summary] : [summary, `matched=${matched}`];
+}
+
 /** The coordinate/number columns (env / var / epoch / version — absent ones are not printed). */
 function coordinateParts(
   event: WireAuditEvent,
@@ -372,16 +418,7 @@ function coordinateParts(
   if (event.environmentId !== undefined) {
     parts.push(`env=${displayText(event.environmentId)}`);
   }
-  const listed = aggregatedReadOf(event);
-  if (listed !== null) {
-    // Aggregated row: the variable enumeration lives in the payload (the
-    // summary is count-only; expansion is --expand-reads). With --var, add
-    // that variable's item (shows why the row matched)
-    parts.push(`read=${describeReadCount(listed)}`);
-    if (matched !== null) {
-      parts.push(`matched=${matched}`);
-    }
-  }
+  parts.push(...aggregatedSummaryParts(event, matched));
   if (event.variableId !== undefined) {
     parts.push(`var=${variableLabel(event.variableId, resolvedName)}`);
   }
@@ -432,7 +469,11 @@ function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unkno
   if (event.payload === undefined) {
     return null;
   }
-  if (aggregatedReadOf(event) === null) {
+  // An aggregated var.read or rotation.recommended carries its enumeration in
+  // `variables` (tens / ~100 KiB); it is surfaced by the read= / flags=
+  // summary and --var's match, so drop it from recorded= (authMethod,
+  // trigger, triggerChainSeq, revokedDeviceKeyFingerprints remain)
+  if (aggregatedReadOf(event) === null && aggregatedRecommendedOf(event) === null) {
     return event.payload;
   }
   const { variables: _variables, ...rest } = event.payload;
@@ -544,7 +585,9 @@ function environmentIdsForNames(
     // resolution (degrades to identifier display, never a defect — the
     // same SHOULD-level treatment as a failed metadata pull)
     if (
-      (event.variableId !== undefined || (resolveListed && aggregatedReadOf(event) !== null)) &&
+      (event.variableId !== undefined ||
+        (resolveListed &&
+          (aggregatedReadOf(event) !== null || aggregatedRecommendedOf(event) !== null))) &&
       isEnvironmentId(event.environmentId)
     ) {
       ids.add(decodeEnvironmentId(event.environmentId));
@@ -570,9 +613,18 @@ function renderListEvent(
   const trust = projectMirrorTrustOf(event, entries, headSeq, index);
   const warnings = mirrorWarnings(event, trust);
   const listed = aggregatedReadOf(event);
-  // With --var: the item of the variable the aggregated row matched on (the server returns rows whose enumeration contains that variable)
-  const hit = listed?.find((variable) => variable.variableId === matchVariableId);
-  const matched = hit === undefined ? null : listedVariableLabel(hit, environmentNames);
+  const flagged = aggregatedRecommendedOf(event);
+  // With --var: the item of the variable the aggregated row matched on (the
+  // server returns rows whose enumeration contains that variable — var.read or
+  // rotation.recommended; a row is one kind, so at most one matches)
+  const readHit = listed?.find((variable) => variable.variableId === matchVariableId);
+  const flagHit = flagged?.find((variable) => variable.variableId === matchVariableId);
+  const matched =
+    readHit !== undefined
+      ? listedVariableLabel(readHit, environmentNames)
+      : flagHit !== undefined
+        ? recommendedVariableLabel(flagHit, environmentNames)
+        : null;
   return {
     lines: [
       formatEventLine(event, name, trust, matched),

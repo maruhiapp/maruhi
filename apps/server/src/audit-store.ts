@@ -28,6 +28,7 @@ import {
   auditReadVariablesOf,
   CHAIN_MIRROR_EVENT_PREFIX,
   cryptoEffect,
+  rotationRecommendedVariablesOf,
   VAR_READ_EVENT,
 } from "@maruhi/core";
 import type { AuditHeadRow } from "@maruhi/crypto";
@@ -1092,8 +1093,12 @@ function aggregatedRecommendedContains(sql: SqlStorage, variableId: string): Sql
     return null;
   }
   return {
+    // `+variable_id` disqualifies variable_id from index candidacy (the unary-+
+    // idiom): without it the planner could pick ae_var (variable_id IS NULL)
+    // and scan every var.read row (also NULL). `event = ?` then drives ae_event
+    // (test/audit-index.test.ts pins the plan).
     conditions: [
-      "variable_id IS NULL",
+      "+variable_id IS NULL",
       "event = ?",
       "json_valid(payload)",
       "EXISTS (SELECT 1 FROM json_each(audit_events.payload, '$.variables') WHERE json_extract(json_each.value, '$.variableId') = ?)",
@@ -1476,14 +1481,34 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
     }
     return mergeFlagRowsBySeq(expanded, resolutionRowsFor(sql, pairs));
   },
-  // The given pairs only: the aggregate recommended rows expanded to just
-  // those pairs, plus their resolution rows (ae_var). The dismissal live
-  // check and the history's flagsIfCurrent pass specific pairs.
+  // The given pairs only: the aggregate recommended rows that cover a
+  // requested pair, expanded to just those pairs, plus their resolution rows
+  // (ae_var). The dismissal live check and the reader-callable history GET
+  // pass specific pairs, so the recommended rows are narrowed in SQL
+  // (environment_id IN … and the payload enumeration containing a requested
+  // variableId) before the JS expansion — it does not read and parse every
+  // recommended row in the project (the #392-style narrowing, restored for the
+  // aggregate form). `wanted` is the precise pair set that drops a row's
+  // non-requested variables (the `IN` predicates over-match within a mixed
+  // row).
   rotationFlagEventsFor: (pairs) => {
+    if (pairs.length === 0) {
+      return [];
+    }
     const wanted = new Set(pairs.map((pair) => pairKeyOf(pair.environmentId, pair.variableId)));
+    const environments = [...new Set(pairs.map((pair) => String(pair.environmentId)))];
+    const variables = [...new Set(pairs.map((pair) => String(pair.variableId)))];
     const expanded = sql
       .exec(
-        `SELECT ${RECOMMENDED_COLUMNS} FROM audit_events WHERE event = 'rotation.recommended' ORDER BY seq`,
+        `SELECT ${RECOMMENDED_COLUMNS} FROM audit_events
+         WHERE event = 'rotation.recommended'
+           AND environment_id IN (SELECT value FROM json_each(?))
+           AND json_valid(payload)
+           AND EXISTS (SELECT 1 FROM json_each(audit_events.payload, '$.variables') AS v
+                       WHERE json_extract(v.value, '$.variableId') IN (SELECT value FROM json_each(?)))
+         ORDER BY seq`,
+        JSON.stringify(environments),
+        JSON.stringify(variables),
       )
       .toArray()
       .flatMap((row) => expandRecommendedRow(row, wanted));
@@ -1519,62 +1544,28 @@ function expandRecommendedRow(
 ): RotationFlagSourceRow[] {
   const environmentId = String(row["environment_id"]);
   const payload = parsePayload(row["payload"]);
-  const trigger = payload?.["trigger"];
-  const triggerChainSeq = payload?.["triggerChainSeq"];
-  const seq = Number(row["seq"]);
-  const serverTs = Number(row["server_ts"]);
-  const epoch = row["epoch"] === null ? null : Number(row["epoch"]);
-  const targetUserId =
-    row["target_user_id"] === null ? null : decodeUserId(String(row["target_user_id"]));
-  const targetKeyFingerprintHex =
-    row["target_key_fingerprint"] === null
-      ? null
-      : decodeKeyFingerprintHex(String(row["target_key_fingerprint"]));
-  const rows: RotationFlagSourceRow[] = [];
-  for (const variable of recommendedVariablesOf(payload)) {
-    if (restrict !== undefined && !restrict.has(pairKeyOf(environmentId, variable.variableId))) {
-      continue;
-    }
-    rows.push({
-      seq,
-      serverTs,
-      event: "rotation.recommended",
-      environmentId,
+  // The columns shared by every expanded pair of this aggregate row
+  const shared = {
+    seq: Number(row["seq"]),
+    serverTs: Number(row["server_ts"]),
+    event: "rotation.recommended" as const,
+    environmentId,
+    version: null,
+    epoch: numberOrNull(row["epoch"]),
+    targetUserId: brandOrNull(row["target_user_id"], decodeUserId),
+    targetKeyFingerprintHex: brandOrNull(row["target_key_fingerprint"], decodeKeyFingerprintHex),
+  };
+  const scalars = { trigger: payload?.["trigger"], triggerChainSeq: payload?.["triggerChainSeq"] };
+  return (rotationRecommendedVariablesOf(payload) ?? [])
+    .filter(
+      (variable) =>
+        restrict === undefined || restrict.has(pairKeyOf(environmentId, variable.variableId)),
+    )
+    .map((variable): RotationFlagSourceRow => ({
+      ...shared,
       variableId: variable.variableId,
-      version: null,
-      epoch,
-      targetUserId,
-      targetKeyFingerprintHex,
-      payload: { basis: variable.basis, trigger, triggerChainSeq },
-    });
-  }
-  return rows;
-}
-
-/**
- * The variable enumeration of an aggregate `rotation.recommended` payload
- * (§3.3). Defensive: an element missing a string variableId is dropped, an
- * unknown basis falls to "readable" (the safe over-report side) — a corrupt
- * row never makes detection / the flag read a defect.
- */
-function recommendedVariablesOf(
-  payload: Readonly<Record<string, unknown>> | null,
-): { readonly variableId: string; readonly basis: string }[] {
-  const variables = payload?.["variables"];
-  if (!Array.isArray(variables)) {
-    return [];
-  }
-  const result: { variableId: string; basis: string }[] = [];
-  for (const entry of variables) {
-    if (typeof entry === "object" && entry !== null) {
-      const variableId = (entry as Record<string, unknown>)["variableId"];
-      if (typeof variableId === "string") {
-        const basis = (entry as Record<string, unknown>)["basis"];
-        result.push({ variableId, basis: basis === "read" ? "read" : "readable" });
-      }
-    }
-  }
-  return result;
+      payload: { basis: variable.basis, ...scalars },
+    }));
 }
 
 /** The distinct (environment, variable) pairs an expanded flag-row list covers. */
