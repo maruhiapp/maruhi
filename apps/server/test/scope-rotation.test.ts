@@ -361,7 +361,7 @@ describe("rotation-needed detection: the change_role variants (§4.1 — demotio
     expect(narrowSeq).toBeGreaterThan(widenSeq);
   });
 
-  it("a simultaneous demotion and narrowing still yields 1 row per (variable × environment) (§3.3's granularity)", async () => {
+  it("a simultaneous demotion and narrowing still yields one flag per (variable × environment) (the flag view's granularity)", async () => {
     await setupTwoEnvironments([ENV, OTHER]);
     await changeRole("reader", [ENV]);
     const flags = await readFlags();
