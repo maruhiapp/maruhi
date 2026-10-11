@@ -47,6 +47,16 @@
 // servers (fingerprint, scope, grant seq) with crypto's verified state,
 // plus a built chain whose delete_environment empties a member scope, a
 // device cap and a grant. The one skip is documented at `membershipAt`.
+//
+// Policy, proposal records and readability: the same prefixes and built
+// chains compare the fold's four-eyes policy and each pending proposal's
+// record (seq, proposer, inner op, expiry) with crypto's verified state,
+// and require the fold to read every entry of a valid chain
+// (`unreadableEntries` is 0). With the sections above, every field of the
+// reported view is compared except `innerSummary`, display text derived
+// from the compared inner op. The proposer's role at proposal time is
+// the structural difference above (member role on the web, effective
+// role in crypto), so the reported view does not carry it.
 
 import {
   approvalSignersOf,
@@ -663,5 +673,154 @@ describe("members and servers drift (web fold vs crypto verifyChain)", () => {
     expect(crypto.servers.map((s) => s.scope)).toEqual(
       expect.arrayContaining(["listed:", "listed:prod"]),
     );
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Policy, proposal records and readability (the rest of the reported view)
+// ---------------------------------------------------------------------------
+
+interface ProposalRecord {
+  hash: string;
+  seq: number;
+  proposer: string;
+  innerOp: string;
+  expiresAtMs: number;
+}
+
+/** The policy, the pending proposals' records and the unreadable count at one prefix. */
+async function recordsAt(entries: ReadonlyArray<VerifiedChainEntry>) {
+  const state = unwrapResult(await verifyChain(entries), "verifyChain");
+  const view = deriveReportedView(entries as ReadonlyArray<ChainEntry>, state.headHashHex);
+  const policyOf = (policy: { requiredApprovals: number; ops: ReadonlyArray<string> } | null) =>
+    policy === null ? null : `${policy.requiredApprovals}:${policy.ops.toSorted().join(",")}`;
+  const bySeq = (a: ProposalRecord, b: ProposalRecord) => a.seq - b.seq;
+  return {
+    web: {
+      policy: policyOf(view.policy),
+      proposals: view.proposals
+        .map((p) => ({
+          hash: p.proposalHashHex,
+          seq: p.proposalSeq,
+          proposer: p.proposerUserId,
+          innerOp: p.innerOp,
+          expiresAtMs: p.expiresAtMs,
+        }))
+        .toSorted(bySeq),
+      unreadableEntries: view.unreadableEntries,
+    },
+    crypto: {
+      policy: policyOf(state.approvalPolicy),
+      proposals: [...state.pendingProposals.values()]
+        .map((p) => ({
+          hash: p.proposalHashHex,
+          seq: p.proposalSeq,
+          proposer: p.proposerUserId,
+          innerOp: p.inner.op,
+          expiresAtMs: p.expiresAtMs,
+        }))
+        .toSorted(bySeq),
+      unreadableEntries: 0,
+    },
+  };
+}
+
+/** Counts of what the record comparison saw (guards against a vacuous pass). */
+interface RecordCoverage {
+  points: number;
+  policyPoints: number;
+  policies: Set<string>;
+  proposals: number;
+  innerOps: Set<string>;
+}
+
+async function expectRecordAgreementAtEveryPrefix(
+  name: string,
+  entries: ReadonlyArray<VerifiedChainEntry>,
+  coverage: RecordCoverage,
+  fromLength = 1,
+): Promise<void> {
+  for (let length = fromLength; length <= entries.length; length += 1) {
+    const { web, crypto } = await recordsAt(entries.slice(0, length));
+    expect(web, `${name} @ seq ${length}`).toEqual(crypto);
+    coverage.points += 1;
+    if (crypto.policy !== null) {
+      coverage.policyPoints += 1;
+      coverage.policies.add(crypto.policy);
+    }
+    coverage.proposals += crypto.proposals.length;
+    for (const proposal of crypto.proposals) coverage.innerOps.add(proposal.innerOp);
+  }
+}
+
+/**
+ * A policy set with a duplicated op (both sides store the op set), a
+ * proposal left pending under it, and the policy turned off through a
+ * second proposal (required 0 — the vectors never turn a policy off).
+ */
+async function policyOffChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, a, m] = await Promise.all(["user_o", "user_a", "user_m"].map(makeKey));
+  const chain = new ChainBuilder();
+  await chain.append(o!, genesisOp(o!));
+  await chain.append(o!, addMemberOp(a!, "owner"));
+  await chain.append(o!, addMemberOp(m!, "member"));
+  await chain.append(o!, {
+    op: "set_approval_policy",
+    payload: { ops: ["remove_member", "grant_server", "remove_member"], requiredApprovals: 2 },
+  });
+  await chain.append(o!, proposeRemoveOp(m!.actor.userId));
+  // A policy change is always a target while a policy is active (§6.2)
+  const off = await chain.append(o!, {
+    op: "propose",
+    payload: {
+      inner: { op: "set_approval_policy", payload: { ops: [], requiredApprovals: 0 } },
+      expiresAtMs: EXPIRES_AT_MS,
+    },
+  });
+  await chain.append(a!, approveOp(off));
+  return chain.entries;
+}
+
+const emptyRecordCoverage = (): RecordCoverage => ({
+  points: 0,
+  policyPoints: 0,
+  policies: new Set(),
+  proposals: 0,
+  innerOps: new Set(),
+});
+
+describe("policy, proposal record and readability drift (web fold vs crypto verifyChain)", () => {
+  it("agrees on the policy and each pending proposal's record, and reads every entry, at every prefix of every positive chain vector", async () => {
+    const coverage = emptyRecordCoverage();
+    for (const chain of vectorChains()) {
+      await expectRecordAgreementAtEveryPrefix(
+        chain.name,
+        chain.entries,
+        coverage,
+        chain.fromLength,
+      );
+    }
+    expect(coverage.points).toBeGreaterThanOrEqual(200);
+    expect(coverage.policyPoints).toBeGreaterThanOrEqual(150);
+    expect(coverage.policies.size).toBeGreaterThanOrEqual(4);
+    expect(coverage.proposals).toBeGreaterThanOrEqual(125);
+    expect(coverage.innerOps.size).toBeGreaterThanOrEqual(6);
+  }, 60_000);
+
+  it("agrees at every prefix of the built chains, including a policy turned off with a proposal pending", async () => {
+    const coverage = emptyRecordCoverage();
+    for (const [name, entries] of [
+      ["demotion-and-revocation", await demotionAndRevocationChain()],
+      ["ambiguous-owner-capped", await ambiguousOwnerCappedChain()],
+      ["deletion", await deletionChain()],
+      ["policy-off", await policyOffChain()],
+    ] as const) {
+      await expectRecordAgreementAtEveryPrefix(name, entries, coverage);
+    }
+    expect(coverage.policies).toEqual(new Set(["3:remove_member", "2:grant_server,remove_member"]));
+    expect(coverage.proposals).toBeGreaterThanOrEqual(18);
+    const offAtHead = await recordsAt(await policyOffChain());
+    expect(offAtHead.crypto.policy).toBeNull();
+    expect(offAtHead.crypto.proposals).toHaveLength(1);
   }, 60_000);
 });

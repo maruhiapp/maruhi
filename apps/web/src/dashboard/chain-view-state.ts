@@ -19,6 +19,12 @@ export interface PendingFold {
   seq: number;
   proposerUserId: string;
   proposerKeyFingerprintHex: string;
+  /**
+   * The proposer's member role at proposal time, not crypto's effective
+   * role: `owner` puts the proposal signature into the signer set (§6.2),
+   * and `countedVoters`' per-device cap check drops it when the signing
+   * device is capped below owner.
+   */
   proposerRoleAtProposal: string;
   inner: ProposableEntry;
   expiresAtMs: number;

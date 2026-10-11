@@ -62,8 +62,6 @@ export interface ReportedProposal {
   proposalHashHex: string;
   proposalSeq: number;
   proposerUserId: string;
-  /** `owner` puts the proposal signature into the signer set (one vote — §6.2). */
-  proposerRoleAtProposal: string;
   innerOp: string;
   /** One-line summary of the inner operation (ids are shown raw — the UI neutralizes on render). */
   innerSummary: string;

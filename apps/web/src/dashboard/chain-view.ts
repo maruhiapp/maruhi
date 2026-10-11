@@ -273,7 +273,6 @@ export function deriveReportedView(
         proposalHashHex: hash,
         proposalSeq: pending.seq,
         proposerUserId: pending.proposerUserId,
-        proposerRoleAtProposal: pending.proposerRoleAtProposal,
         innerOp: pending.inner.op,
         innerSummary: summarizeInner(pending.inner),
         expiresAtMs: pending.expiresAtMs,
