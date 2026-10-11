@@ -280,6 +280,18 @@ silently.
 | Active projects per organization | 100 | `MAX_ACTIVE_PROJECTS_PER_ORG` | 429 `ProjectLimit` on `POST /projects` |
 | Per-project Durable Object storage | warn at 8 GB, reject at 9 GB | `DO_STORAGE_WARN_BYTES` / `DO_STORAGE_REJECT_BYTES` | 422 `DataLimitExceeded` with `resource: "project-storage-bytes"` |
 
+One of the AUTH_SPEC §12-8 limits has a platform ceiling to know before you
+raise it: an environment's current values (the latest version of each variable)
+may hold at most **8 MiB** of ciphertext in total
+(`MAX_ENVIRONMENT_CIPHERTEXT_BYTES`; a push past it fails with 422
+`DataLimitExceeded`, `resource: "environment-ciphertext-bytes"`). A pull or a
+workload lease returns all of them in one Durable Object RPC result, values
+travel as hex, and Workers refuses an RPC result above 32 MiB, so an
+environment holding more than about 15.9 MiB cannot be read at all. 8 MiB
+keeps such a response near half that frame, leaving the rest for the
+variables' statements and a lease's bundled chain. Raising it shrinks that
+room; raising it past about 15 MiB makes full environments unreadable.
+
 ### Projects per organization
 
 - Counts every `projects` row of the organization (there is no project deletion
@@ -944,6 +956,11 @@ or newer.
   limit (default 100 — "Tenant quotas"). Existing projects are unaffected;
   raise `MAX_ACTIVE_PROJECTS_PER_ORG` in `apps/server/src/policy.ts` and
   redeploy if the deployment legitimately needs more
+- **A push fails with `DataLimitExceeded` and
+  `resource: "environment-ciphertext-bytes"`**: the environment's current
+  values would exceed 8 MiB of ciphertext ("Tenant quotas"). Delete values
+  the environment no longer needs or move some to another environment;
+  replacing a value with one of the same size or smaller always works
 - **Pushes / creates fail with `DataLimitExceeded` and
   `resource: "project-storage-bytes"` while pulls still work**: the project's
   Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is
