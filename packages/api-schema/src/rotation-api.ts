@@ -66,8 +66,11 @@ export const RotationFlagTriggerSchema = Schema.Literals([
 ]);
 
 /**
- * One currently-effective `rotation.recommended` event (AUDIT_SPEC §3.3 —
- * one row per (variable × environment)). Exactly one of `targetUserId`
+ * One currently-effective rotation-needed flag, per (variable × environment)
+ * (AUDIT_SPEC §3.3 / §4.1 step 5). The stored `rotation.recommended` row is an
+ * aggregate — one row per environment, enumerating its variables (2026-10-11
+ * Sc-5) — but the server expands it back to per-pair flags for this view.
+ * Exactly one of `targetUserId`
  * (remove_member variant) / `targetServerKeyFingerprintHex` (revoke_server
  * variant) is present. `triggerChainSeq` is the chain seq of the removal /
  * role-change / revocation entry that produced the flag; `trigger` names that

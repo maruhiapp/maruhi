@@ -64,6 +64,50 @@ export function aggregatedReadVariables(
     : null;
 }
 
+/** One variable of an aggregated `rotation.recommended` row (§3.3 Sc-5): the pair and its basis. */
+export interface FlaggedVariable {
+  readonly variableId: string;
+  readonly basis: string;
+}
+
+/** Shapes one flagged-variable element (dropped unless variableId is a string; an unknown basis falls to "readable"). */
+function flaggedVariableOf(entry: unknown): FlaggedVariable | null {
+  if (isRecord(entry) && typeof entry["variableId"] === "string") {
+    const basis = entry["basis"];
+    return { variableId: entry["variableId"], basis: basis === "read" ? "read" : "readable" };
+  }
+  return null;
+}
+
+/** The payload's `variables` enumeration as flagged variables (null if not an array = not the aggregated shape). */
+function listedFlaggedVariablesOf(
+  payload: AuditEvent["payload"] | undefined,
+): ReadonlyArray<FlaggedVariable> | null {
+  const listed = payload?.["variables"];
+  return Array.isArray(listed)
+    ? listed.map(flaggedVariableOf).filter((entry) => entry !== null)
+    : null;
+}
+
+/** Detecting an aggregated rotation.recommended: event name + missing variableId + the enumeration (§3.3 Sc-5). */
+export function aggregatedRecommendedVariables(
+  event: Pick<AuditEvent, "event" | "variableId" | "payload">,
+): ReadonlyArray<FlaggedVariable> | null {
+  return event.event === "rotation.recommended" && event.variableId === undefined
+    ? listedFlaggedVariablesOf(event.payload)
+    : null;
+}
+
+/** The list summary (English — ADR-0017): "flags 3 variables" / "flags 1 variable". */
+export function flagSummaryLabel(listed: ReadonlyArray<FlaggedVariable>): string {
+  return `flags ${listed.length} ${listed.length === 1 ? "variable" : "variables"}`;
+}
+
+/** The display shape of one flagged variable: `var-id · read`. */
+export function flaggedVariableLabel(variable: FlaggedVariable): string {
+  return `${variable.variableId} · ${variable.basis}`;
+}
+
 /**
  * The rest of an aggregated var.read's payload with the variable
  * enumeration removed (authMethod etc.). null if empty. The enumeration

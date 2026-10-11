@@ -28,6 +28,10 @@ import { describe, expect, it } from "vitest";
 import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";
 import { ensureProjectDoTables } from "../src/do/do-schema.ts";
+import {
+  MAX_MIRROR_PAGE_SLACK_BYTES,
+  MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW,
+} from "../src/policy.ts";
 import { detectMemberRemoval } from "../src/rotation-detect.ts";
 import { fetchEvents, type WireAuditEvent } from "./support/audit-read-scenario.ts";
 import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
@@ -229,6 +233,54 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
   });
 });
 
+describe("the aggregate rotation.recommended row size (§3.3 Sc-5 — the mirror page slack)", () => {
+  it("a full chunk (1,000 variables at the 64-char id maximum) exports to a line well under MAX_MIRROR_PAGE_SLACK_BYTES", async () => {
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-recommended-size-test"));
+    const measured = await runInDurableObject(stub, (_instance, state) => {
+      ensureProjectDoTables(state.storage);
+      const sql = state.storage.sql;
+      sql.exec("DELETE FROM audit_events");
+      const store = makeAuditStore(sql);
+      // A full chunk at the worst case: 64-char ids (AUTH_SPEC §12-1), ascending, all readable
+      const variables = Array.from(
+        { length: MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW },
+        (_v, index) => ({
+          variableId: `v${index.toString(16).padStart(63, "0")}`,
+          basis: "readable" as const,
+        }),
+      );
+      store.appendSync({
+        serverTs: 1_700_000_000_000,
+        event: "rotation.recommended",
+        actorType: "system",
+        targetUserId: testUserId("user-removed-0001"),
+        environmentId: "env-size-0001",
+        epoch: 1,
+        payload: { triggerChainSeq: 2, trigger: "remove_member", variables },
+      });
+      // The snapshot export line (do-snapshot.ts): { kind, table, values } with the
+      // row's columns verbatim (audit rows carry no blobs, so values serialize directly)
+      const raw = [
+        ...sql
+          .exec("SELECT rowid AS __rid, * FROM audit_events WHERE event = 'rotation.recommended'")
+          .raw(),
+      ][0] as unknown[];
+      const [, ...values] = raw;
+      const line = JSON.stringify({ kind: "row", table: "audit_events", values });
+      const payloadBytes = new TextEncoder().encode(
+        JSON.stringify({ triggerChainSeq: 2, trigger: "remove_member", variables }),
+      ).length;
+      sql.exec("DELETE FROM audit_events");
+      return { lineBytes: new TextEncoder().encode(line).length, payloadBytes };
+    });
+    console.log(
+      `rotation.recommended full chunk (${MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW} × 64-char ids): payload ${measured.payloadBytes} B, export line ${measured.lineBytes} B (mirror slack ${MAX_MIRROR_PAGE_SLACK_BYTES} B)`,
+    );
+    // A > 2x margin under the slack, so the row's export line is always accepted (never un-mirrorable)
+    expect(measured.lineBytes).toBeLessThan(MAX_MIRROR_PAGE_SLACK_BYTES / 2);
+  });
+});
+
 describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the aggregated form)", () => {
   const TARGET = testUserId("user-target-0001");
   const E = "env-equiv-0001";
@@ -310,11 +362,15 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         nowMs: 1_700_000_000_500,
       });
       sql.exec("DELETE FROM audit_events");
+      // One aggregate row per environment (§3.3 Sc-5) — expand its payload
+      // enumeration to (environment/variable → basis)
       return Object.fromEntries(
-        recommended.map((event) => [
-          `${event.environmentId}/${event.variableId}`,
-          String(event.payload?.["basis"]),
-        ]),
+        recommended.flatMap((event) =>
+          (event.payload?.variables ?? []).map(
+            (variable) =>
+              [`${event.environmentId}/${variable.variableId}`, variable.basis] as const,
+          ),
+        ),
       );
     });
   }
@@ -571,6 +627,57 @@ describe("scan range of the variable_id filter (bounding the shared resource con
     expect(result.all).toEqual([B, E]);
     expect(result.onlyA).toEqual([E]);
     expect(result.onlyB).toEqual([B]);
+  });
+
+  it("an aggregate rotation.recommended row is matched by its payload enumeration (§7 / §4.2 Q4 — Sc-5), visible below admin (class 1)", async () => {
+    const result = await withScanDo(
+      [
+        created("v-flagged"),
+        {
+          serverTs: ts,
+          event: "rotation.recommended",
+          actorType: "system",
+          targetUserId: OWNER,
+          environmentId: E,
+          epoch: 1,
+          payload: {
+            triggerChainSeq: 2,
+            trigger: "remove_member",
+            variables: [
+              { variableId: testVariableId("v-flagged"), basis: "read" },
+              { variableId: testVariableId("v-other"), basis: "readable" },
+            ],
+          },
+        },
+      ],
+      (store) => {
+        const forFlagged = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-flagged"),
+          visibility: { kind: "admin" },
+        });
+        // A below-admin viewer who is not the actor still sees it (class 1 — no self restriction)
+        const forOther = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-other"),
+          visibility: { kind: "class1-or-self", selfUserId: "user-nobody" },
+        });
+        const forAbsent = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-absent"),
+          visibility: { kind: "admin" },
+        });
+        return {
+          flagged: forFlagged.map((row) => row.event),
+          otherVisibleBelowAdmin: forOther.some((row) => row.event === "rotation.recommended"),
+          absent: forAbsent.map((row) => row.event),
+        };
+      },
+    );
+    // The column match (var.created) and the aggregate-payload match both appear for v-flagged
+    expect(result.flagged).toEqual(expect.arrayContaining(["rotation.recommended", "var.created"]));
+    expect(result.otherVisibleBelowAdmin).toBe(true);
+    expect(result.absent).not.toContain("rotation.recommended");
   });
 
   it("a below-admin aggregated-side query is bound to one's own actor rows (it does not scan other people's pull history)", async () => {

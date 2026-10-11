@@ -64,6 +64,23 @@ function isAuditText(_value: string): _value is AuditText {
   return true;
 }
 
+/**
+ * The `rotation.recommended` enumeration discipline (§3.3): non-empty and
+ * strictly ascending by variableId (which also makes it duplicate-free). An
+ * identity guard so it composes as a `Schema.refine` over the array.
+ */
+function isAscendingUniqueEnumeration<T extends { readonly variableId: string }>(
+  variables: readonly T[],
+): variables is readonly T[] {
+  return (
+    variables.length >= 1 &&
+    variables.every(
+      (variable, index) =>
+        index === 0 || (variables[index - 1]?.variableId ?? "") < variable.variableId,
+    )
+  );
+}
+
 const Text = Schema.String.pipe(
   Schema.refine(isAuditText, { expected: "audit text (never a provider subject)" }),
 );
@@ -187,10 +204,22 @@ const PROJECT_AUDIT_PAYLOADS = {
   "dek.deleted": Schema.UndefinedOr(
     Schema.Struct({ cause: Schema.Literal("member-readded"), triggerChainSeq: Seq }),
   ),
+  // Aggregate form (§3.3 — 2026-10-11 Sc-5): one row per environment, per chunk
+  // of variables. The per-variable basis rides each `variables` element; epoch
+  // (the exposure bound) and the target stay columns (a per-environment /
+  // per-detection invariant), so they are not repeated here. The enumeration is
+  // non-empty (an empty detection writes no row) and ascending + unique by
+  // variableId (the row_digest input's fixity — §5.1).
   "rotation.recommended": Schema.Struct({
-    basis: Schema.Literals(ROTATION_BASES),
     triggerChainSeq: Seq,
     trigger: Schema.Literals(ROTATION_TRIGGERS),
+    variables: Schema.Array(
+      Schema.Struct({ variableId: Text, basis: Schema.Literals(ROTATION_BASES) }),
+    ).pipe(
+      Schema.refine(isAscendingUniqueEnumeration, {
+        expected: "a non-empty enumeration, ascending and unique by variableId (AUDIT_SPEC §3.3)",
+      }),
+    ),
     revokedDeviceKeyFingerprints: Schema.optionalKey(Schema.Array(KeyFingerprintHexSchema)),
   }),
   "rotation.dismissed": Schema.Undefined,

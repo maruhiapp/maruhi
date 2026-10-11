@@ -8,6 +8,9 @@ import { describe, expect, it } from "vitest";
 import { auditReadVariablesOf } from "../../../../packages/core/src/audit.ts";
 import {
   aggregatedReadVariables,
+  aggregatedRecommendedVariables,
+  flaggedVariableLabel,
+  flagSummaryLabel,
   lineageLabel,
   listedReadVariableLabel,
   payloadWithoutVariables,
@@ -79,6 +82,78 @@ describe("aggregatedReadVariables", () => {
     expect(aggregatedReadVariables({ event: "var.read", payload: { variables } })).toEqual(
       auditReadVariablesOf({ variables }),
     );
+  });
+});
+
+describe("aggregatedRecommendedVariables (AUDIT_SPEC §3.3 — Sc-5)", () => {
+  it("returns the aggregated shape (missing variableId + payload.variables) with the per-variable basis", () => {
+    expect(
+      aggregatedRecommendedVariables({
+        event: "rotation.recommended",
+        payload: {
+          triggerChainSeq: 2,
+          trigger: "remove_member",
+          variables: [
+            { variableId: "var-a", basis: "read" },
+            { variableId: "var-b", basis: "readable" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { variableId: "var-a", basis: "read" },
+      { variableId: "var-b", basis: "readable" },
+    ]);
+  });
+
+  it("returns null for the old shape (with a variableId column), another event, and no enumeration", () => {
+    expect(
+      aggregatedRecommendedVariables({
+        event: "rotation.recommended",
+        variableId: testVariableId("var-a"),
+      }),
+    ).toBeNull();
+    expect(
+      aggregatedRecommendedVariables({ event: "var.read", payload: { variables: [] } }),
+    ).toBeNull();
+    expect(
+      aggregatedRecommendedVariables({ event: "rotation.recommended", payload: {} }),
+    ).toBeNull();
+  });
+
+  it("drops an element without a string variableId, defaults an unknown basis to readable, keeps a non-conforming id", () => {
+    expect(
+      aggregatedRecommendedVariables({
+        event: "rotation.recommended",
+        payload: {
+          variables: [
+            "x",
+            { basis: "read" },
+            { variableId: 3, basis: "read" },
+            { variableId: "BAD ID", basis: "weird" },
+            { variableId: "var-ok", basis: "read" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { variableId: "BAD ID", basis: "readable" },
+      { variableId: "var-ok", basis: "read" },
+    ]);
+  });
+});
+
+describe("flag labels", () => {
+  it("the flag summary switches singular/plural by the count", () => {
+    expect(flagSummaryLabel([{ variableId: "a", basis: "read" }])).toBe("flags 1 variable");
+    expect(
+      flagSummaryLabel([
+        { variableId: "a", basis: "read" },
+        { variableId: "b", basis: "readable" },
+      ]),
+    ).toBe("flags 2 variables");
+  });
+
+  it("the flagged row lists variableId · basis", () => {
+    expect(flaggedVariableLabel({ variableId: "var-a", basis: "read" })).toBe("var-a · read");
   });
 });
 

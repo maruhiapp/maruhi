@@ -4,7 +4,8 @@
 // - Detection runs inside the project DO at the acceptance of `remove_member` /
 //   `change_role` (demotion, scope reduction — 2026-09-14 ES) / `revoke_server`
 //   / `revoke_device` (device windows — 2026-09-19 DK), and appends
-//   `rotation.recommended` (one row per (variable × environment) — §3.3) in
+//   `rotation.recommended` (one aggregate row per environment, per chunk of at
+//   most MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW variables — §3.3 Sc-5) in
 //   the same synchronous task as the mirror append (chain-accept.ts wires it).
 //   The coordinate system is the audit seq (the total order inside the DO —
 //   chain acceptance and data operations ride on the same sequence)
@@ -62,6 +63,7 @@ import type {
   ScopeSnapshot,
   VariableLifecycleRow,
 } from "./audit-store.ts";
+import { MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW } from "./policy.ts";
 
 /** Basis rank (§4.1 step 3): read = definitely obtained / readable = could have been obtained. */
 export type RotationBasis = (typeof ROTATION_BASES)[number];
@@ -326,40 +328,99 @@ function exposureBound(
   return bound;
 }
 
-/** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
-function recommendedEvent(input: {
-  readonly nowMs: number;
-  readonly lifetime: VariableLifetime;
+/**
+ * One detected (variable × environment) flag before aggregation: the pair, its
+ * basis (§4.1 step 3), and the environment's exposure bound (§4.1-5 — VH). The
+ * bound is a per-environment invariant across a detection's candidates (every
+ * candidate of E uses the same selected windows), so {@link aggregateRecommended}
+ * folds a detection's pairs into rows per environment (chunked) with the bound
+ * on the epoch column.
+ */
+interface DetectedPairFlag {
+  readonly environmentId: string;
+  readonly variableId: string;
   readonly basis: RotationBasis;
+  readonly epochBound: number;
+}
+
+/**
+ * Fold a detection's per-pair flags into the §3.3 aggregate rows — **one
+ * `rotation.recommended` row per environment, per chunk of at most
+ * {@link MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW} variables** (2026-10-11
+ * Sc-5, following the var.read aggregation). Chunking bounds a single row's
+ * size: a detection's candidates include deleted variables, so one environment
+ * can flag up to MAX_VARIABLE_ROWS_PER_ENVIRONMENT (5,000) pairs, and an
+ * unbounded row's export line would exceed the mirror page slack and become
+ * un-exportable forever (audit rows are permanent — ensurePageBounds in
+ * do-mirror.ts). Each row's payload enumerates its variables with the
+ * per-variable basis in ascending variableId order (the row_digest input's
+ * fixity — §5.1; chunk boundaries fall on that order), the exposure bound rides
+ * the epoch column (a per-environment invariant across the whole detection, so
+ * every chunk of an environment carries the same bound), and the single
+ * subject / trigger ride the columns and payload scalars. Actor is system (the
+ * §3.3 recording rules). Each variable lands in exactly one chunk, so each pair
+ * still gets one recommended row per detection.
+ */
+function aggregateRecommended(input: {
+  readonly nowMs: number;
+  readonly flags: readonly DetectedPairFlag[];
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];
-  /** The exposure bound (§4.1-5 — VH): written to the epoch column when known. */
-  readonly epochBound: number;
-}): RecommendedEvent {
-  return {
-    event: "rotation.recommended",
-    serverTs: input.nowMs,
-    actorType: "system",
-    ...(Number.isFinite(input.epochBound) ? { epoch: input.epochBound } : {}),
-    ...(input.targetUserId === undefined ? {} : { targetUserId: input.targetUserId }),
-    ...(input.targetKeyFingerprintHex === undefined
-      ? {}
-      : { targetKeyFingerprintHex: input.targetKeyFingerprintHex }),
-    environmentId: input.lifetime.environmentId,
-    variableId: input.lifetime.variableId,
-    payload: {
-      basis: input.basis,
-      triggerChainSeq: input.triggerChainSeq,
-      trigger: input.trigger,
-      ...(input.revokedDeviceKeyFingerprints === undefined
-        ? {}
-        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
-    },
-  };
+}): readonly RecommendedEvent[] {
+  const byEnvironment = new Map<string, DetectedPairFlag[]>();
+  for (const flag of input.flags) {
+    const bucket = byEnvironment.get(flag.environmentId);
+    if (bucket === undefined) {
+      byEnvironment.set(flag.environmentId, [flag]);
+    } else {
+      bucket.push(flag);
+    }
+  }
+  return [...byEnvironment.entries()]
+    .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .flatMap(([environmentId, flags]): RecommendedEvent[] => {
+      // Every candidate of one environment shares the same windows, so the
+      // exposure bound is identical across them (the invariant that lets the
+      // bound stay on the epoch column — §3.3; structural, taken from the
+      // first flag rather than asserted)
+      const epochBound = flags[0]?.epochBound ?? Number.POSITIVE_INFINITY;
+      const variables = flags
+        .map((flag) => ({ variableId: flag.variableId, basis: flag.basis }))
+        .toSorted((a, b) =>
+          a.variableId < b.variableId ? -1 : a.variableId > b.variableId ? 1 : 0,
+        );
+      const rows: RecommendedEvent[] = [];
+      for (
+        let offset = 0;
+        offset < variables.length;
+        offset += MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW
+      ) {
+        rows.push({
+          event: "rotation.recommended",
+          serverTs: input.nowMs,
+          actorType: "system",
+          ...(Number.isFinite(epochBound) ? { epoch: epochBound } : {}),
+          ...(input.targetUserId === undefined ? {} : { targetUserId: input.targetUserId }),
+          ...(input.targetKeyFingerprintHex === undefined
+            ? {}
+            : { targetKeyFingerprintHex: input.targetKeyFingerprintHex }),
+          environmentId,
+          payload: {
+            triggerChainSeq: input.triggerChainSeq,
+            trigger: input.trigger,
+            variables: variables.slice(offset, offset + MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW),
+            ...(input.revokedDeviceKeyFingerprints === undefined
+              ? {}
+              : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
+          },
+        });
+      }
+      return rows;
+    });
 }
 
 /**
@@ -422,24 +483,25 @@ function detectForMember(input: {
       .map(pairKey),
   );
   const epochRows = input.read.environmentEpochEvents();
-  return candidates.map((lifetime) =>
-    recommendedEvent({
-      nowMs: input.nowMs,
-      lifetime,
+  return aggregateRecommended({
+    nowMs: input.nowMs,
+    flags: candidates.map((lifetime): DetectedPairFlag => ({
+      environmentId: lifetime.environmentId,
+      variableId: lifetime.variableId,
       basis: readPairs.has(pairKey(lifetime)) ? "read" : "readable",
-      trigger: input.trigger,
-      triggerChainSeq: input.triggerChainSeq,
-      targetUserId: input.targetUserId,
       epochBound: exposureBound(
         epochRows,
         lifetime.environmentId,
         selected.get(lifetime.environmentId) ?? [],
       ),
-      ...(input.revokedDeviceKeyFingerprints === undefined
-        ? {}
-        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
-    }),
-  );
+    })),
+    trigger: input.trigger,
+    triggerChainSeq: input.triggerChainSeq,
+    targetUserId: input.targetUserId,
+    ...(input.revokedDeviceKeyFingerprints === undefined
+      ? {}
+      : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
+  });
 }
 
 /**
@@ -486,8 +548,8 @@ const WRITER_ROLES: ReadonlySet<string> = new Set(["member", "admin", "owner"]);
  *   keep receiving DEKs as a reader, but detection runs on windows clipped at
  *   the trigger seq — detection of the fact "someone who knew upstream
  *   credentials lost the privilege" (§4.1). If a shrink happened at the same
- *   time, the union still yields one row per (variable × environment) (the
- *   §3.3 granularity)
+ *   time, the union still lists each (variable × environment) once in the
+ *   aggregate enumeration (the §3.3 granularity)
  * - Promotion, enlargement, and scope-unchanged role changes (not demotions)
  *   produce no candidates
  */
@@ -661,7 +723,7 @@ export function detectServerRevocation(input: {
   const lifetimes = [...variableLifetimes(input.read.variableLifecycles()).values()];
   const access = input.read.serverAccessEventsBy(input.serverKeyFingerprintHex);
   const epochRows = input.read.environmentEpochEvents();
-  const results: RecommendedEvent[] = [];
+  const flags: DetectedPairFlag[] = [];
   for (const lifetime of lifetimes) {
     const windows = windowsOf(lifetime.environmentId).filter((window) =>
       overlaps(window, lifetime.start, lifetime.end),
@@ -684,23 +746,24 @@ export function detectServerRevocation(input: {
       // server.value_decrypted (reserved — never occurs in v1): variable-granularity matching
       return row.variableId === lifetime.variableId;
     });
-    results.push(
-      recommendedEvent({
-        nowMs: input.nowMs,
-        lifetime,
-        basis: fetched ? "read" : "readable",
-        trigger: "revoke_server",
-        triggerChainSeq: input.triggerChainSeq,
-        targetKeyFingerprintHex: input.serverKeyFingerprintHex,
-        epochBound: exposureBound(
-          epochRows,
-          lifetime.environmentId,
-          windowsOf(lifetime.environmentId),
-        ),
-      }),
-    );
+    flags.push({
+      environmentId: lifetime.environmentId,
+      variableId: lifetime.variableId,
+      basis: fetched ? "read" : "readable",
+      epochBound: exposureBound(
+        epochRows,
+        lifetime.environmentId,
+        windowsOf(lifetime.environmentId),
+      ),
+    });
   }
-  return results;
+  return aggregateRecommended({
+    nowMs: input.nowMs,
+    flags,
+    trigger: "revoke_server",
+    triggerChainSeq: input.triggerChainSeq,
+    targetKeyFingerprintHex: input.serverKeyFingerprintHex,
+  });
 }
 
 /** Read payload.trigger (rows written by this server itself — check the type defensively). */

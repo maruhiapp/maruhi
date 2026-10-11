@@ -117,9 +117,9 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
         event: "rotation.recommended",
         actorType: "system",
         payload: {
-          basis: "read",
           triggerChainSeq: 3,
           trigger: "revoke_device",
+          variables: [{ variableId: "v", basis: "read" }],
           // @ts-expect-error the revoked fingerprints are minted ones
           revokedDeviceKeyFingerprints: ["cd".repeat(16)],
         },
@@ -179,7 +179,8 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
   it("narrows by the event name", () => {
     const row = {} as AuditEventRecord;
     if (row.event === "rotation.recommended") {
-      const basis: "read" | "readable" = row.payload.basis;
+      // The per-variable basis rides the aggregate payload's enumeration (§3.3 — Sc-5)
+      const basis: "read" | "readable" | undefined = row.payload.variables[0]?.basis;
       expect(basis).toBeUndefined();
     }
     const recommended = {} as AuditEventRecordOf<"rotation.recommended">;
@@ -267,6 +268,43 @@ describe("the stores' payload check (runtime)", () => {
       assertProjectAuditPayload({ event: "env.created", payload: { name: "production" } }),
     ).not.toThrow();
     expect(() => assertProjectAuditPayload({ event: "var.deleted" })).not.toThrow();
+    // The aggregate rotation.recommended (§3.3 — Sc-5): basis rides the enumeration
+    expect(() =>
+      assertProjectAuditPayload({
+        event: "rotation.recommended",
+        payload: {
+          triggerChainSeq: 2,
+          trigger: "remove_member",
+          variables: [{ variableId: "v", basis: "read" }],
+        },
+      }),
+    ).not.toThrow();
+    // The pre-Sc-5 per-pair shape (basis at the top level, no enumeration) is refused
+    expect(() =>
+      assertProjectAuditPayload({
+        event: "rotation.recommended",
+        payload: { basis: "read", triggerChainSeq: 2, trigger: "remove_member" },
+      }),
+    ).toThrow();
+    // The enumeration discipline (§3.3): non-empty, ascending, unique by variableId
+    for (const variables of [
+      [],
+      [
+        { variableId: "v-b", basis: "read" },
+        { variableId: "v-a", basis: "read" },
+      ],
+      [
+        { variableId: "v-a", basis: "read" },
+        { variableId: "v-a", basis: "readable" },
+      ],
+    ]) {
+      expect(() =>
+        assertProjectAuditPayload({
+          event: "rotation.recommended",
+          payload: { triggerChainSeq: 2, trigger: "remove_member", variables },
+        }),
+      ).toThrow();
+    }
     expect(() =>
       assertUserOrgAuditPayload({
         event: "auth.token_created",

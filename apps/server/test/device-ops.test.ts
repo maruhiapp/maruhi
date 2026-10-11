@@ -570,20 +570,27 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
       vectorKeyOf(OWNER).key_fingerprint_hex,
     ]);
 
-    // Rotation-needed detection: one row per pair right after the mirror, trigger = revoke_device
+    // Rotation-needed detection: one aggregate row per environment right after
+    // the mirror (§3.3 Sc-5), trigger = revoke_device, the revoked FP set on the payload
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
-    expect(recommended).toHaveLength(2);
-    expect(Math.min(...recommended.map((event) => Number(event["seq"])))).toBe(
-      Number(mirror?.["seq"]) + 1,
-    );
-    for (const event of recommended) {
-      expect(event["actor_type"]).toBe("system");
-      expect(event["target_user_id"]).toBe(OWNER);
-      const payload = JSON.parse(String(event["payload"])) as Record<string, unknown>;
-      expect(payload["trigger"]).toBe("revoke_device");
-      expect(payload["triggerChainSeq"]).toBe(revokeSeq);
-      expect(payload["revokedDeviceKeyFingerprints"]).toEqual([phone.fp]);
-    }
+    expect(recommended).toHaveLength(1);
+    const recommendedRow = recommended[0];
+    if (recommendedRow === undefined) throw new Error("missing rotation.recommended row");
+    expect(Number(recommendedRow["seq"])).toBe(Number(mirror?.["seq"]) + 1);
+    expect(recommendedRow["actor_type"]).toBe("system");
+    expect(recommendedRow["target_user_id"]).toBe(OWNER);
+    expect(recommendedRow["variable_id"]).toBeNull();
+    const recommendedPayload = JSON.parse(String(recommendedRow["payload"])) as Record<
+      string,
+      unknown
+    >;
+    expect(recommendedPayload["trigger"]).toBe("revoke_device");
+    expect(recommendedPayload["triggerChainSeq"]).toBe(revokeSeq);
+    expect(recommendedPayload["revokedDeviceKeyFingerprints"]).toEqual([phone.fp]);
+    expect(recommendedPayload["variables"]).toEqual([
+      { variableId: "var-api-key", basis: "readable" },
+      { variableId: VAR, basis: "read" },
+    ]);
     const flags = await readFlags();
     const byVariable = new Map(flags.map((flag) => [flag.variableId, flag]));
     expect(byVariable.get(VAR)).toMatchObject({
