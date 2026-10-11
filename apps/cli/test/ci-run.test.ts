@@ -968,6 +968,25 @@ describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
     expect(env.errors.join("\n")).toContain("`maruhi env rotate` / `maruhi server grant`");
   });
 
+  it("guides 503 SetupIncomplete rate-limit-unconfigured toward the deployment's rate-limit binding", async () => {
+    // The lease's source-IP limit fails closed on a missing binding
+    // (AUTH_SPEC §4-1 (1)) — a deploy configuration fix, not a credential
+    // problem, and not retried
+    const { env, server } = await startCiEnv([
+      flakyLeaseHandler(99, {
+        status: 503,
+        json: { _tag: "SetupIncomplete", reason: "rate-limit-unconfigured" },
+      }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    const output = env.errors.join("\n");
+    expect(output).toContain("rate-limit-unconfigured");
+    expect(output).toContain("bindings.rateLimit");
+    expect(output).not.toContain("Log in again");
+    expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+
   it("guides the fix target (coordinates / grant / policy) for 404, the uniform lease-specific response", async () => {
     // §14-1 existence hiding: unknown project, no grant, policy mismatch, and
     // out-of-scope all return the same 404. Rather than the member-facing

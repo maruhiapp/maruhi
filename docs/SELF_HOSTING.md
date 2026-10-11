@@ -120,8 +120,9 @@ takes effect immediately (no redeploy).
 
 ```sh
 curl <deploy-url>/auth/config
-# → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
-#   (200 means both client_id and client_secret are registered)
+# → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means the OAuth App is set up
+#   (200 means both client_id and client_secret are registered; it does not cover the
+#   rate-limit bindings — step 7's `maruhi login` exercises those)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret registration from step 5 was skipped
 #   (list registered secrets with `bunx cf workers secrets list --worker maruhi-server` — values are not shown)
 ```
@@ -829,31 +830,28 @@ What a mirror does not do: it does not forward writes, it is as fresh as its
 last sync, and the identities of members added after the bootstrap are not
 carried (re-run the identities step of the import for them).
 
-## Recommended hardening (optional): rate-limit unauthenticated endpoints
+## Rate limits on unauthenticated endpoints (bindings required, WAF rules optional)
 
-Of maruhi's unauthenticated surface, the following four are the ones where a
-third party can trigger work that costs money or drain a shared quota (the other
-unauthenticated surfaces stay lightweight: `/auth/github/start` without a
-`signup_code` and `/auth/cli/verify` are self-contained responses with no
-database access; `/auth/config` performs one indexed D1 point read for the
-`signupPolicy` advisory; a start request carrying a `signup_code` performs one
-D1 read and has its own default per-IP binding, `SIGNUP_START_RATE_LIMIT` at
-10/min).
-All four already have server-side defenses (input size caps, stateless MAC
-verification before any lookup, a fixed window per project, and a TTL cache for
-JWKS).
+Of maruhi's unauthenticated surface, the paths in the WAF table below are the
+ones where a third party can trigger work that costs money or drain a shared
+quota (the other unauthenticated surfaces stay lightweight: `/auth/github/start`
+without a `signup_code` and `/auth/cli/verify` are self-contained responses with
+no database access; `/auth/config` performs one indexed D1 point read for the
+`signupPolicy` advisory). All of them already have server-side defenses (input
+size caps, stateless MAC verification before any lookup, a fixed window per
+project, and a TTL cache for JWKS).
 
 **The deploy config ships per-source-IP Workers Rate Limiting bindings** for
-all paths in the table below — the same limits it recommends — so a default
-deploy enforces them by itself (Cloudflare's docs list no plan requirement for
-the binding at the time of writing). The bindings are required: a path whose
-binding is missing from the deployment answers 503 `SetupIncomplete`
-(`rate-limit-unconfigured`) instead of running without its limit (AUTH_SPEC
-§4-1). A limiter that fails at run time lets the request through and leaves a
-`rate limiter call failed` warning in the Worker's logs. These bindings are
-per-colo and memory-backed (best effort): a distributed flood spread across
-colos can still exceed the nominal number, so the WAF rules below remain the
-stronger, globally-counted option.
+every path in the WAF table below, at the limits that table recommends, so a
+default deploy enforces them by itself (Cloudflare's docs list no plan
+requirement for the binding at the time of writing). The bindings are required:
+a path whose binding is missing from the deployment answers 503
+`SetupIncomplete` (`rate-limit-unconfigured`) instead of running without its
+limit (AUTH_SPEC §4-1). A limiter that fails at run time lets the request
+through and leaves a `rate limiter call failed` warning in the Worker's logs.
+These bindings are per-colo and memory-backed (best effort): a distributed
+flood spread across colos can still exceed the nominal number, so the optional
+WAF rules below remain the stronger, globally-counted option.
 
 | Binding | Path it guards |
 |---|---|
@@ -878,7 +876,8 @@ nominal number, but if you still hit it, raise the `limit` values in
 `cloudflare.config.ts` to match your traffic shape. Do not remove a binding
 entry: the path it guards then answers 503 `SetupIncomplete`.
 
-Add the following in the dashboard under Security → WAF → Rate limiting rules.
+Optionally, add the following in the dashboard under Security → WAF → Rate
+limiting rules.
 **The Free plan allows only one rule, so in that case pick
 `/auth/github/callback`** (it is the surface in the table where exhausting the
 per-OAuth-App code-exchange quota stops login for the **entire deployment**, not
@@ -889,9 +888,10 @@ merely degrades one caller):
 | `/auth/cli/start` | 10 requests / min / IP | Unauthenticated and recordless (nothing is stored — AUTH_SPEC §4-1), so the cost is pure CPU: each request computes two HMACs. A per-IP cap keeps a flood from turning that into a Workers bill |
 | `/auth/cli/poll` | 30 requests / min / IP | Unauthenticated; the legitimate CLI polls at a 5-second floor (12/min), so 30/min leaves room for several concurrent flows behind one address. Fabricated credentials are rejected by a stateless MAC check before any database lookup, and the limit is enforced before even that |
 | `/auth/github/callback` | 30 requests / min / IP | Each request can trigger one GitHub code exchange (the legitimate flow is at most 3 calls including `/user` and `/user/emails` after success), and the server cannot validate the code contents so format checks cannot block it. **This is the browser login path — both web login and the CLI flow's browser leg — so loosen it relative to start to allow shared egress such as office NAT** |
-| `/projects/*/environments/*/lease` | 60 requests / min / IP | The server-side window (300 calls / hour) is per project and does not care who is calling. A modest per-IP cap that does not interfere with normal CI retries absorbs a single source running wild or being abusive (the external call here — fetching the issuer's JWKS — is already TTL-cached with a cooldown, and does not happen on every request) |
+| `/auth/github/start` (requests carrying `signup_code`) | 10 requests / min / IP | Each code-bearing start performs one D1 read to pre-validate the signup invite code (AUTH_SPEC §3). The code is a 256-bit single-use value, so this is not a guessing oracle; the cap protects the database. A plain start (no `signup_code`) is the login funnel and stays unlimited |
+| `/projects/*/environments/*/lease`, `/projects/*/environments/*/rotation-proposals` and `.../rotation-proposals/preflight` | 60 requests / min / IP, shared | The workload paths (AUTH_SPEC §14) share one budget. The server-side windows (300 leases / hour, 60 proposal mints / hour) are per project and do not care who is calling. A modest per-IP cap that does not interfere with normal CI retries absorbs a single source running wild or being abusive (the external call here — fetching the issuer's JWKS — is already TTL-cached with a cooldown, and does not happen on every request) |
 
-CLI / CI paths (cli/start, cli/poll and lease) have spread-out source IPs and
+CLI / CI paths (cli/start, cli/poll and the workload paths) have spread-out source IPs and
 easy retries, so per-IP limits almost never get in the way of normal operation.
 callback is the exception: concurrent logins behind shared egress can bunch up,
 so do not go below the recommended value above.
@@ -928,7 +928,7 @@ or newer.
   `bunx cf workers secrets list --worker maruhi-server` (values are not shown)
 - **A rate-limited path (login, the OAuth callback, a lease) returns 503
   `SetupIncomplete` (`rate-limit-unconfigured`)**: the deployment lacks that
-  path's rate-limit binding ("Recommended hardening" lists them). Restore the
+  path's rate-limit binding ("Rate limits on unauthenticated endpoints" lists them). Restore the
   binding entries in `cloudflare.config.ts` and redeploy
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in

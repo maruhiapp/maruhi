@@ -179,7 +179,7 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
 /** Reason-specific guidance for 503 `SetupIncomplete` (AUTH_SPEC §3): both are fixed by the server administrator. */
 function renderSetupIncomplete(error: SetupIncompleteError): string {
   if (error.reason === "rate-limit-unconfigured") {
-    return "The server's self-hosting setup is incomplete (rate-limit-unconfigured): its deployment lacks the per-source-IP rate-limit binding this request needs. The server administrator should redeploy with the ratelimits bindings of apps/server/cloudflare.config.ts (docs/SELF_HOSTING.md)";
+    return "The server's self-hosting setup is incomplete (rate-limit-unconfigured): its deployment lacks the per-source-IP rate-limit binding this request needs. The server administrator should redeploy with the `bindings.rateLimit` entries of apps/server/cloudflare.config.ts (docs/SELF_HOSTING.md)";
   }
   return "The server's self-hosting setup is incomplete (github-oauth-unconfigured). The server administrator should register a GitHub OAuth App following docs/SELF_HOSTING.md";
 }

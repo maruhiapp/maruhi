@@ -608,7 +608,7 @@ describe("maruhi login", () => {
     expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("rate-limit-unconfigured");
-    expect(errors).toContain("ratelimits bindings");
+    expect(errors).toContain("bindings.rateLimit");
     expect(errors).not.toContain("GitHub OAuth App");
   });
 

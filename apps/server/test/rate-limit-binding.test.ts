@@ -243,6 +243,17 @@ describe("a present binding is consulted per source address (the normal path)", 
       expect(limited.status).toBe(429);
       expect(refusing.keys).toEqual([SOURCE_IP]);
 
+      // An IPv6 source is keyed by its /64 (rateLimitKeyOf): rotating the
+      // lower 64 bits must not mint a fresh window
+      const ipv6 = recordingLimiter(true);
+      const v6 = await call(
+        route,
+        envWith(route.binding, ipv6.limiter),
+        "2001:db8:1:2:aaaa:bbbb:cccc:dddd",
+      );
+      expect(v6.status).toBe(route.passedStatus);
+      expect(ipv6.keys).toEqual(["2001:db8:1:2::/64"]);
+
       // An unattributable request (direct arrival only) is not counted
       const unattributed = recordingLimiter(false);
       const direct = await call(route, envWith(route.binding, unattributed.limiter));
