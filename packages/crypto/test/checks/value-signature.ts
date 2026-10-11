@@ -369,14 +369,20 @@ async function invalidInputChecks(c: Checks): Promise<void> {
   // bytes signs and verifies
   const minimumContext = { ...baseContext, ciphertextHex: "ab".repeat(16) };
   const minimumSigned = await signValue({ context: minimumContext, signingKey: pair.privateKey });
-  const minimumVerified = minimumSigned.ok
-    ? await verifyValueSignature({
-        context: minimumContext,
-        signatureHex: minimumSigned.value,
-        writerPublicKey: pair.publicKey,
-      })
-    : minimumSigned;
-  c.push("value-sig input: 16-byte ciphertext (tag only) accepted", minimumVerified.ok);
+  if (minimumSigned.ok) {
+    const minimumVerified = await verifyValueSignature({
+      context: minimumContext,
+      signatureHex: minimumSigned.value,
+      writerPublicKey: pair.publicKey,
+    });
+    c.push(
+      "value-sig: 16-byte ciphertext (tag only) accepted",
+      minimumVerified.ok,
+      minimumVerified.ok ? undefined : "verify failed",
+    );
+  } else {
+    c.push("value-sig: 16-byte ciphertext (tag only) accepted", false, "sign failed");
+  }
   // A check only on the signing side: never sign a version 1 with a non-
   // empty prev (the verify side instead rejects asymmetrically with a reason
   // code, "valid signature + prev-shape-mismatch")
