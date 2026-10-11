@@ -884,14 +884,15 @@ describe("a never-initialized project materializes no tables (Sc-7 / A-4)", () =
   // project ID: the mint and the pre-flight fold to the uniform 404 through
   // the chain load (the server key is configured, so the §14-3 503 does not
   // apply), and leave the DO with no tables — the proposal paths cannot grow
-  // operator storage any more than the lease can.
-  const unknown = "b7".repeat(32);
-  const tablesOf = async (): Promise<string[]> =>
+  // operator storage any more than the lease can. Each test uses its own
+  // project ID so neither relies on the other's (never-materialized) state.
+  const tablesOf = async (unknown: string): Promise<string[]> =>
     (await queryProjectDo(unknown, "SELECT name FROM sqlite_master WHERE type = 'table'")).map(
       (row) => String(row["name"]),
     );
 
   it("the proposal mint to an unknown project is 404 and creates no tables", async () => {
+    const unknown = "b7".repeat(32);
     const response = await SELF.fetch(
       `https://maruhi.test/projects/${unknown}/environments/${ENV}/rotation-proposals`,
       {
@@ -905,10 +906,11 @@ describe("a never-initialized project materializes no tables (Sc-7 / A-4)", () =
       },
     );
     expect(response.status).toBe(404);
-    expect(await tablesOf()).toEqual([]);
+    expect(await tablesOf(unknown)).toEqual([]);
   });
 
   it("the pre-flight to an unknown project is 404 and creates no tables", async () => {
+    const unknown = "b8".repeat(32);
     const response = await SELF.fetch(
       `https://maruhi.test/projects/${unknown}/environments/${ENV}/rotation-proposals/preflight`,
       {
@@ -923,6 +925,6 @@ describe("a never-initialized project materializes no tables (Sc-7 / A-4)", () =
       },
     );
     expect(response.status).toBe(404);
-    expect(await tablesOf()).toEqual([]);
+    expect(await tablesOf(unknown)).toEqual([]);
   });
 });

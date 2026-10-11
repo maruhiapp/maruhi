@@ -791,12 +791,6 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   /**
-   * Run a data-plane program folded into an outcome under the permit.
-   * Reads take the permit too: it makes the membership check and the
-   * data read atomic against chain writes (the TOCTOU fix of the header
-   * comment).
-   */
-  /**
    * Whether this DO's tables exist, re-checking storage when the cached flag
    * is `false` and latching it `true` on the way (read-only — creates
    * nothing). The re-check keeps a never-materialized DO cheap (one
@@ -814,6 +808,12 @@ export class ProjectChainDO extends DurableObject<Env> {
     return false;
   }
 
+  /**
+   * Run a data-plane program folded into an outcome under the permit.
+   * Reads take the permit too: it makes the membership check and the
+   * data read atomic against chain writes (the TOCTOU fix of the header
+   * comment).
+   */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
     // An unmaterialized DO holds no tables (Sc-7 / A-4): every read / write
     // folds to not-initialized (the uniform 404 of §11-2) before any storage
