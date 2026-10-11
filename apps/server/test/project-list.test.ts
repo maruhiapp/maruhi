@@ -21,7 +21,7 @@
 // - cursor paging (candidate-based, ascending project_id, a
 //   server-fixed page size of 100)
 
-import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 import { ensureProjectDoTables } from "../src/do/do-schema.ts";
@@ -257,10 +257,10 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
         "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, 'not-json', 'broken', 8)",
       );
     });
-    // Evict so the next instance's constructor detects the now-materialized
-    // tables (its #initialized flag): otherwise the instance that did the
-    // direct insert would still fold reads to not-initialized.
-    await evictDurableObject(stub);
+    // No eviction needed: the DO re-checks storage when its #initialized flag
+    // is false (#latchInitialized), so the instance that seeded the tables
+    // directly still runs memberRoleFor (it defects on the broken row) instead
+    // of folding to not-initialized.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       // Each rejected DO RPC below makes workerd log an "uncaught

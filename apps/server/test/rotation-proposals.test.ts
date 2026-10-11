@@ -878,3 +878,51 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     ).toEqual([]);
   });
 });
+
+describe("a never-initialized project materializes no tables (Sc-7 / A-4)", () => {
+  // A valid workload credential aimed at an arbitrary (never-initialized)
+  // project ID: the mint and the pre-flight fold to the uniform 404 through
+  // the chain load (the server key is configured, so the §14-3 503 does not
+  // apply), and leave the DO with no tables — the proposal paths cannot grow
+  // operator storage any more than the lease can.
+  const unknown = "b7".repeat(32);
+  const tablesOf = async (): Promise<string[]> =>
+    (await queryProjectDo(unknown, "SELECT name FROM sqlite_master WHERE type = 'table'")).map(
+      (row) => String(row["name"]),
+    );
+
+  it("the proposal mint to an unknown project is 404 and creates no tables", async () => {
+    const response = await SELF.fetch(
+      `https://maruhi.test/projects/${unknown}/environments/${ENV}/rotation-proposals`,
+      {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          oidcToken: await makeOidcToken(),
+          ephemeralPubHex: workload.publicKeyHex,
+          proposal: await proposalFor(),
+        }),
+      },
+    );
+    expect(response.status).toBe(404);
+    expect(await tablesOf()).toEqual([]);
+  });
+
+  it("the pre-flight to an unknown project is 404 and creates no tables", async () => {
+    const response = await SELF.fetch(
+      `https://maruhi.test/projects/${unknown}/environments/${ENV}/rotation-proposals/preflight`,
+      {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          oidcToken: await makeOidcToken(),
+          ephemeralPubHex: workload.publicKeyHex,
+          variables: [{ variableId: VAR, baseVersion: 1 }],
+          recipients: writerRecipients(),
+        }),
+      },
+    );
+    expect(response.status).toBe(404);
+    expect(await tablesOf()).toEqual([]);
+  });
+});
