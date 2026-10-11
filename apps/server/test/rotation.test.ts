@@ -12,10 +12,11 @@
 //   intervals)
 // - the basis rank: var.read inside the membership interval = read;
 //   everything else = readable
-// - the rotation.recommended recording rules (§3.3): one row per
-//   pair, actor = system, the chain_seq column is not used, the
-//   payload carries basis / triggerChainSeq, and the row lands at
-//   the seq right after the mirror's same acceptance
+// - the rotation.recommended recording rules (§3.3 — the aggregate
+//   form, Sc-5): one row per environment, actor = system, variable_id
+//   NULL, the chain_seq column is not used, the payload enumerates the
+//   variables with per-variable basis and carries triggerChainSeq, and
+//   the row lands at the seq right after the mirror's same acceptance
 // - resolution derivation (§4.1-5 — the value lineage, 2026-09-27
 //   VH): a fresh push and a dismissal resolve, a re-encryption
 //   (sameValueAs = the previous version) does not, a rollback to a
@@ -257,7 +258,7 @@ async function rotateTo(
 }
 
 describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
-  it("records one row per pair — read for a variable read inside the interval, readable for unread candidates", async () => {
+  it("records one aggregate row per environment — read for a variable read inside the interval, readable for unread candidates", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // MEMBER fetches the ciphertext (records var.read), then a
@@ -284,27 +285,33 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       trigger: "remove_member",
     });
 
-    // Recording rules (§3.3): actor = system; the chain_seq column
-    // is not used (carried in the payload)
+    // Recording rules (§3.3 Sc-5 — the aggregate form): one row per
+    // environment, actor = system, variable_id NULL, the chain_seq column
+    // unused (carried in the payload), the basis per enumerated variable
     const events = await readAuditEvents(projectId);
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
-    expect(recommended).toHaveLength(2);
-    for (const event of recommended) {
-      expect(event["actor_type"]).toBe("system");
-      expect(event["actor_user_id"]).toBeNull();
-      expect(event["chain_seq"]).toBeNull();
-      expect(event["target_user_id"]).toBe(MEMBER);
-      const payload = JSON.parse(String(event["payload"])) as Record<string, unknown>;
-      expect(payload["triggerChainSeq"]).toBe(removalSeq);
-      expect(["read", "readable"]).toContain(payload["basis"]);
-    }
-    // The detection rows sit at the seq right after the mirror
+    expect(recommended).toHaveLength(1);
+    const row = recommended[0];
+    if (row === undefined) throw new Error("missing rotation.recommended row");
+    expect(row["actor_type"]).toBe("system");
+    expect(row["actor_user_id"]).toBeNull();
+    expect(row["chain_seq"]).toBeNull();
+    expect(row["target_user_id"]).toBe(MEMBER);
+    expect(row["variable_id"]).toBeNull();
+    expect(row["environment_id"]).toBe(ENV);
+    const payload = JSON.parse(String(row["payload"])) as Record<string, unknown>;
+    expect(payload["triggerChainSeq"]).toBe(removalSeq);
+    expect(payload["trigger"]).toBe("remove_member");
+    // Ascending by variableId: the read variable = read, the unread one = readable
+    expect(payload["variables"]).toEqual([
+      { variableId: "var-api-key", basis: "readable" },
+      { variableId: VAR, basis: "read" },
+    ]);
+    // The detection row sits at the seq right after the mirror
     // (chain.member_removed) (a same-acceptance append — §4.1-4)
     const mirror = events.find((event) => event["event"] === "chain.member_removed");
     expect(mirror).toBeDefined();
-    expect(Math.min(...recommended.map((event) => Number(event["seq"])))).toBe(
-      Number(mirror?.["seq"]) + 1,
-    );
+    expect(Number(row["seq"])).toBe(Number(mirror?.["seq"]) + 1);
   });
 
   it("deleted variables are still candidates, only dismissal resolves, and re-detection after a dismissal revives (§4.1-2 / -5)", async () => {

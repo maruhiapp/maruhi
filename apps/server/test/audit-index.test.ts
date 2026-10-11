@@ -14,9 +14,10 @@
 // (c) the measured effect: the databaseSize difference between a plain
 //     index and a partial index over 10,000 var.read rows (whose target
 //     and key FP are all NULL)
-// (d) Q5's flag read starts from the pairs that carry a
-//     rotation.recommended row (ae_event) and reads their rows through
-//     ae_var, never every var.version_pushed in the project
+// (d) Q5's flag read takes the aggregate rotation.recommended rows (§3.3
+//     Sc-5) through ae_event, expands them to per-pair flags, and reads each
+//     flagged pair's resolution rows (rotation.dismissed / var.version_pushed)
+//     through ae_var — never every var.version_pushed in the project
 //
 // This file uses its own DO name and shares no storage with other tests'
 // project DOs. The audit-store query text is captured by thinly wrapping
@@ -134,17 +135,20 @@ function pushEvent(environmentId: string, variableId: string, version: number): 
   };
 }
 
-/** A rotation.recommended row with exposure bound epoch 1 (§4.1-5). */
-function recommendedEvent(environmentId: string, variableId: string): AuditEventInput {
+/** An aggregate rotation.recommended row (one per environment — §3.3 Sc-5) with exposure bound epoch 1 (§4.1-5). */
+function recommendedEvent(environmentId: string, variableIds: readonly string[]): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000,
     event: "rotation.recommended",
     actorType: "system",
     targetUserId: testUserId("user-removed-0001"),
     environmentId,
-    variableId,
     epoch: 1,
-    payload: { basis: "readable", triggerChainSeq: 2, trigger: "remove_member" },
+    payload: {
+      triggerChainSeq: 2,
+      trigger: "remove_member",
+      variables: variableIds.map((variableId) => ({ variableId, basis: "readable" as const })),
+    },
   };
 }
 
@@ -327,16 +331,21 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
 });
 
 describe("rotation flag reads (Q5 — audit-store.ts)", () => {
-  /** Seeds the flag-read fixture (seqs 1..13, in this order). */
-  function seedFlagRows(store: ReturnType<typeof makeAuditStore>): void {
+  /**
+   * Seeds the flag-read fixture (seqs 1..12 via the store, then a corrupt
+   * aggregate row at seq 13 inserted raw). Aggregate recommended rows (§3.3
+   * Sc-5): env-a's var-a is flagged twice (seqs 4, 10) and env-b's var-a once
+   * (seq 7); var-b in env-a is pushed, never flagged.
+   */
+  function seedFlagRows(store: ReturnType<typeof makeAuditStore>, sql: SqlStorage): void {
     store.appendManySync([
       { ...pushEvent("env-a", "var-a", 1), event: "var.created", payload: { name: "A" } },
       pushEvent("env-a", "var-a", 1),
       pushEvent("env-a", "var-b", 1),
-      recommendedEvent("env-a", "var-a"),
+      recommendedEvent("env-a", ["var-a"]),
       { ...pushEvent("env-a", "var-a", 1), event: "var.renamed", payload: { name: "B" } },
       pushEvent("env-b", "var-a", 1),
-      recommendedEvent("env-b", "var-a"),
+      recommendedEvent("env-b", ["var-a"]),
       readEvent(0),
       {
         serverTs: 1_700_000_000_000,
@@ -346,32 +355,31 @@ describe("rotation flag reads (Q5 — audit-store.ts)", () => {
         environmentId: "env-b",
         variableId: "var-a",
       },
-      recommendedEvent("env-a", "var-a"),
+      recommendedEvent("env-a", ["var-a"]),
       pushEvent("env-a", "var-b", 2),
       pushEvent("env-a", "var-a", 2),
-      // A corrupt row: a recommended row without its pair's ids
-      {
-        serverTs: 1_700_000_000_000,
-        event: "rotation.recommended",
-        actorType: "system",
-        epoch: 1,
-        payload: { basis: "readable", triggerChainSeq: 2, trigger: "remove_member" },
-      },
     ]);
+    // A corrupt aggregate row (variables is not an array). The payload schema
+    // runs on the write path, so it is inserted raw; the reader must drop it
+    // (expand to no pair), never crash
+    sql.exec(
+      "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, epoch, payload) VALUES (13, lower(hex(randomblob(16))), ?, 'rotation.recommended', 'system', 1, ?)",
+      1_700_000_000_000,
+      JSON.stringify({ triggerChainSeq: 2, trigger: "remove_member", variables: "oops" }),
+    );
   }
 
-  it("rotationFlagEvents reads only the pairs that carry a rotation.recommended row, through ae_var", async () => {
+  it("rotationFlagEvents reads the aggregate recommended rows (ae_event) and each flagged pair's resolution rows (ae_var)", async () => {
     await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");
       const { sql: wrapped, captured } = capturing(sql);
       const store = makeAuditStore(wrapped);
-      // var-a is flagged in env-a (twice) and env-b — the server's
-      // uniqueness unit is the pair; var-b in env-a is pushed, never flagged
-      seedFlagRows(store);
+      seedFlagRows(store, sql);
       captured.length = 0;
       const rows = store.readRotationSync.rotationFlagEvents();
-      // No lifecycle rows, no unflagged pair, each flagged pair's rows
-      // once, and the corrupt row matched to its own (NULL) pair
+      // Each aggregate recommended row expanded to its pair, each flagged
+      // pair's resolution rows once, no unflagged pair (env-a/var-b), and the
+      // corrupt row dropped
       expect(rows.map((row) => [row.seq, row.event, row.environmentId, row.variableId])).toEqual([
         [2, "var.version_pushed", "env-a", "var-a"],
         [4, "rotation.recommended", "env-a", "var-a"],
@@ -380,34 +388,38 @@ describe("rotation flag reads (Q5 — audit-store.ts)", () => {
         [9, "rotation.dismissed", "env-b", "var-a"],
         [10, "rotation.recommended", "env-a", "var-a"],
         [12, "var.version_pushed", "env-a", "var-a"],
-        [13, "rotation.recommended", "null", "null"],
       ]);
       // Version 2 (epoch 2 > bound 1) resolves both env-a flags; the env-b
-      // flag is dismissed
-      expect(deriveEffectiveFlags(rows)).toMatchObject([
-        { environmentId: "null", variableId: "null" },
-      ]);
+      // flag is dismissed; the corrupt row contributed no flag
+      expect(deriveEffectiveFlags(rows)).toEqual([]);
       expect(deriveEffectiveFlags(rows.filter((row) => row.seq !== 12))).toMatchObject([
         { environmentId: "env-a", variableId: "var-a" },
         { environmentId: "env-a", variableId: "var-a" },
-        { environmentId: "null", variableId: "null" },
       ]);
-      const query = captured.at(-1);
-      if (query === undefined) throw new Error("no query captured");
-      const plan = planOf(sql, query);
-      expect(plan).toMatch(/USING INDEX ae_event \(event=\?\)/);
-      expect(plan).toMatch(/SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/);
-      expect(plan).not.toMatch(/SCAN a\b/);
+      // Two queries: the aggregate recommended rows via ae_event, then the
+      // flagged pairs' resolution rows via ae_var
+      expect(captured).toHaveLength(2);
+      const recommendedQuery = captured[0];
+      const resolutionQuery = captured[1];
+      if (recommendedQuery === undefined || resolutionQuery === undefined) {
+        throw new Error("no query captured");
+      }
+      expect(planOf(sql, recommendedQuery)).toMatch(/USING INDEX ae_event \(event=\?\)/);
+      const resolutionPlan = planOf(sql, resolutionQuery);
+      expect(resolutionPlan).toMatch(
+        /SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/,
+      );
+      expect(resolutionPlan).not.toMatch(/SCAN a\b/);
       sql.exec("DELETE FROM audit_events");
     });
   });
 
-  it("rotationFlagEventsFor reads the given pairs' rows once each in one statement, through ae_var", async () => {
+  it("rotationFlagEventsFor reads the given pairs only (recommended via ae_event, resolution via ae_var)", async () => {
     await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");
       const { sql: wrapped, captured } = capturing(sql);
       const store = makeAuditStore(wrapped);
-      seedFlagRows(store);
+      seedFlagRows(store, sql);
       captured.length = 0;
       const envB = testEnvironmentId("env-b");
       const rows = store.readRotationSync.rotationFlagEventsFor([
@@ -427,12 +439,18 @@ describe("rotation flag reads (Q5 — audit-store.ts)", () => {
         [11, "var.version_pushed", "env-a", "var-b"],
         [12, "var.version_pushed", "env-a", "var-a"],
       ]);
-      expect(captured).toHaveLength(1);
-      const query = captured[0];
-      if (query === undefined) throw new Error("no query captured");
-      const plan = planOf(sql, query);
-      expect(plan).toMatch(/SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/);
-      expect(plan).not.toMatch(/SCAN a\b/);
+      expect(captured).toHaveLength(2);
+      const recommendedQuery = captured[0];
+      const resolutionQuery = captured[1];
+      if (recommendedQuery === undefined || resolutionQuery === undefined) {
+        throw new Error("no query captured");
+      }
+      expect(planOf(sql, recommendedQuery)).toMatch(/USING INDEX ae_event \(event=\?\)/);
+      const resolutionPlan = planOf(sql, resolutionQuery);
+      expect(resolutionPlan).toMatch(
+        /SEARCH a USING INDEX ae_var \(variable_id=\? AND environment_id=\?\)/,
+      );
+      expect(resolutionPlan).not.toMatch(/SCAN a\b/);
       sql.exec("DELETE FROM audit_events");
     });
   });

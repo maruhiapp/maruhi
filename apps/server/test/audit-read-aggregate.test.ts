@@ -310,11 +310,15 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         nowMs: 1_700_000_000_500,
       });
       sql.exec("DELETE FROM audit_events");
+      // One aggregate row per environment (§3.3 Sc-5) — expand its payload
+      // enumeration to (environment/variable → basis)
       return Object.fromEntries(
-        recommended.map((event) => [
-          `${event.environmentId}/${event.variableId}`,
-          String(event.payload?.["basis"]),
-        ]),
+        recommended.flatMap((event) =>
+          (event.payload?.variables ?? []).map(
+            (variable) =>
+              [`${event.environmentId}/${variable.variableId}`, variable.basis] as const,
+          ),
+        ),
       );
     });
   }
@@ -571,6 +575,57 @@ describe("scan range of the variable_id filter (bounding the shared resource con
     expect(result.all).toEqual([B, E]);
     expect(result.onlyA).toEqual([E]);
     expect(result.onlyB).toEqual([B]);
+  });
+
+  it("an aggregate rotation.recommended row is matched by its payload enumeration (§7 / §4.2 Q4 — Sc-5), visible below admin (class 1)", async () => {
+    const result = await withScanDo(
+      [
+        created("v-flagged"),
+        {
+          serverTs: ts,
+          event: "rotation.recommended",
+          actorType: "system",
+          targetUserId: OWNER,
+          environmentId: E,
+          epoch: 1,
+          payload: {
+            triggerChainSeq: 2,
+            trigger: "remove_member",
+            variables: [
+              { variableId: testVariableId("v-flagged"), basis: "read" },
+              { variableId: testVariableId("v-other"), basis: "readable" },
+            ],
+          },
+        },
+      ],
+      (store) => {
+        const forFlagged = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-flagged"),
+          visibility: { kind: "admin" },
+        });
+        // A below-admin viewer who is not the actor still sees it (class 1 — no self restriction)
+        const forOther = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-other"),
+          visibility: { kind: "class1-or-self", selfUserId: "user-nobody" },
+        });
+        const forAbsent = store.queryEventsSync({
+          ...baseQuery,
+          variableId: testVariableId("v-absent"),
+          visibility: { kind: "admin" },
+        });
+        return {
+          flagged: forFlagged.map((row) => row.event),
+          otherVisibleBelowAdmin: forOther.some((row) => row.event === "rotation.recommended"),
+          absent: forAbsent.map((row) => row.event),
+        };
+      },
+    );
+    // The column match (var.created) and the aggregate-payload match both appear for v-flagged
+    expect(result.flagged).toEqual(expect.arrayContaining(["rotation.recommended", "var.created"]));
+    expect(result.otherVisibleBelowAdmin).toBe(true);
+    expect(result.absent).not.toContain("rotation.recommended");
   });
 
   it("a below-admin aggregated-side query is bound to one's own actor rows (it does not scan other people's pull history)", async () => {

@@ -1069,27 +1069,54 @@ function aggregatedReadContains(
   };
 }
 
-/** Merge two seq-descending lists staying seq-descending, and return the first `limit` rows. */
-function mergeDescending(
-  left: readonly StoredAuditEventRow[],
-  right: readonly StoredAuditEventRow[],
+/**
+ * The condition selecting, among the aggregate `rotation.recommended` rows
+ * (§3.3 — 2026-10-11 Sc-5; variable_id IS NULL, a `variables` enumeration in
+ * the payload), the rows whose enumeration contains the given variable (the §7
+ * variable_id filter / §4.2 Q4). Unlike {@link aggregatedReadContains} there is
+ * no value-existence-interval narrowing (rotation.recommended is low-frequency,
+ * bounded by removals × environments) and no self restriction (it is class 1 —
+ * §6; every member sees it, so the base visibility clause already admits it,
+ * and the environment / cursor / other filters ride the base WHERE).
+ * json_valid precedes EXISTS (a server-written row is JSON, but a broken row
+ * must not crash the read API).
+ */
+function aggregatedRecommendedContains(sql: SqlStorage, variableId: string): SqlConditions | null {
+  // Skip the payload scan entirely when the project has no recommended row
+  // (ae_event existence probe — the common case; a declared-only or never-flagged
+  // variable then runs no json_each inspection)
+  const any = sql
+    .exec(`SELECT 1 FROM audit_events WHERE event = 'rotation.recommended' LIMIT 1`)
+    .toArray()[0];
+  if (any === undefined) {
+    return null;
+  }
+  return {
+    conditions: [
+      "variable_id IS NULL",
+      "event = ?",
+      "json_valid(payload)",
+      "EXISTS (SELECT 1 FROM json_each(audit_events.payload, '$.variables') WHERE json_extract(json_each.value, '$.variableId') = ?)",
+    ],
+    bindings: ["rotation.recommended", variableId],
+  };
+}
+
+/**
+ * Merge several seq-descending pages into one seq-descending page, up to
+ * `limit` rows. The sources are disjoint (byColumn is `variable_id = ?`; the
+ * aggregate pages are `variable_id IS NULL` with distinct `event`s), so no
+ * dedup is needed; each page is already its source's top `limit`, so the union
+ * holds the global top `limit`.
+ */
+function mergeDescendingAll(
+  pages: readonly (readonly StoredAuditEventRow[])[],
   limit: number,
 ): readonly StoredAuditEventRow[] {
-  const merged: StoredAuditEventRow[] = [];
-  let i = 0;
-  let j = 0;
-  while (merged.length < limit && (i < left.length || j < right.length)) {
-    const a = left[i];
-    const b = right[j];
-    if (b === undefined || (a !== undefined && a.seq > b.seq)) {
-      merged.push(a as StoredAuditEventRow);
-      i += 1;
-    } else {
-      merged.push(b);
-      j += 1;
-    }
-  }
-  return merged;
+  return pages
+    .flat()
+    .toSorted((a, b) => b.seq - a.seq)
+    .slice(0, limit);
 }
 
 function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredAuditEventRow[] {
@@ -1133,36 +1160,51 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     return selectPage(sql, where, query.limit);
   }
   // The variable_id filter (§7 / Q4): the column match (var.created /
-  // var.version_pushed etc. — stops at `limit` rows in ae_var's index
-  // order) and the aggregate-form var.read (payload inspection —
-  // aggregatedReadContains) run as separate queries and merge in
-  // seq-descending order. Fused into one OR, SQLite would gather all
-  // matching rows of both sides before sorting, degrading the column
-  // match's paging from "index order + early stop" to "proportional to
-  // the match count". The cursor, visibility, and the other filters
-  // apply identically to both queries
-  const byColumn = selectPage(
-    sql,
-    withCondition(where, "variable_id = ?", [query.variableId]),
-    query.limit,
-  );
-  const aggregated = aggregatedReadContains(
+  // var.version_pushed / rotation.dismissed etc. — stops at `limit` rows in
+  // ae_var's index order) and the aggregate-form rows (payload inspection)
+  // run as separate queries and merge in seq-descending order. Fused into one
+  // OR, SQLite would gather all matching rows of every side before sorting,
+  // degrading the column match's paging from "index order + early stop" to
+  // "proportional to the match count". The cursor, visibility, and the other
+  // filters apply identically to every query.
+  const pages: (readonly StoredAuditEventRow[])[] = [
+    selectPage(sql, withCondition(where, "variable_id = ?", [query.variableId]), query.limit),
+  ];
+  // Aggregate var.read (class 2 — bound to the value-existence interval and
+  // to the viewer's own rows). Null = the variable never held a value, so it
+  // never appears in a pull — skip the inspection.
+  const readAggregated = aggregatedReadContains(
     sql,
     query.variableId,
     query.environmentId,
     query.visibility,
   );
-  if (aggregated === null) {
-    // A variable that never held a value never appears in aggregate
-    // rows — do not run the payload inspection
-    return byColumn;
+  if (readAggregated !== null) {
+    pages.push(
+      selectPage(
+        sql,
+        withCondition(where, readAggregated.conditions.join(" AND "), readAggregated.bindings),
+        query.limit,
+      ),
+    );
   }
-  const listed = selectPage(
-    sql,
-    withCondition(where, aggregated.conditions.join(" AND "), aggregated.bindings),
-    query.limit,
-  );
-  return mergeDescending(byColumn, listed, query.limit);
+  // Aggregate rotation.recommended (§3.3 — 2026-10-11 Sc-5; class 1, no
+  // interval narrowing). Null = the project has no recommended row yet.
+  const recommendedAggregated = aggregatedRecommendedContains(sql, query.variableId);
+  if (recommendedAggregated !== null) {
+    pages.push(
+      selectPage(
+        sql,
+        withCondition(
+          where,
+          recommendedAggregated.conditions.join(" AND "),
+          recommendedAggregated.bindings,
+        ),
+        query.limit,
+      ),
+    );
+  }
+  return mergeDescendingAll(pages, query.limit);
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
@@ -1412,52 +1454,186 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         epoch: Number(row["epoch"]),
       })),
-  // Q5: the pairs that carry a rotation.recommended row (ae_event), then
-  // each such pair's rows (ae_var). Valid only while the lineage fold
-  // (rotation-detect.ts) stays per pair and a pair without a recommended
-  // row yields nothing: the other pairs' pushes are never read. CROSS JOIN
-  // fixes the join order (SQLite never reorders it): without statistics the
-  // planner could drive the join from ae_event's var.version_pushed range —
-  // every push in the project. IS lets a NULL id (a corrupt row) still
-  // match its own pair; rotationFlagSourceRow then reads it as the string
-  // "null", so the fold merges it with a pair whose id is literally "null"
-  // (test/audit-index.test.ts pins the rows and the plan via EXPLAIN)
-  rotationFlagEvents: () =>
-    sql
+  // Q5: the aggregate rotation.recommended rows (ae_event — one row per
+  // environment, §3.3's aggregate form), each expanded to its per-pair flag
+  // rows so the lineage fold (rotation-detect.ts) stays per pair. The flagged
+  // pairs then drive the per-pair resolution read (ae_var — rotation.dismissed
+  // / var.version_pushed), so a pair never flagged is never touched. Reading
+  // all recommended rows is bounded by removals × environments (2026-10-11
+  // Sc-5 — it replaces #392's pair-unit narrowing, which the aggregate form
+  // cannot use since a recommended row carries no variable_id column).
+  // test/audit-index.test.ts pins the two plans via EXPLAIN.
+  rotationFlagEvents: () => {
+    const expanded = sql
       .exec(
-        `SELECT a.seq, a.server_ts, a.event, a.environment_id, a.variable_id, a.version,
-                a.epoch, a.target_user_id, a.target_key_fingerprint, a.payload
-         FROM (SELECT DISTINCT variable_id, environment_id FROM audit_events
-               WHERE event = 'rotation.recommended') AS flagged
-         CROSS JOIN audit_events AS a
-         WHERE a.variable_id IS flagged.variable_id AND a.environment_id IS flagged.environment_id
-           AND a.event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
-         ORDER BY a.seq`,
+        `SELECT ${RECOMMENDED_COLUMNS} FROM audit_events WHERE event = 'rotation.recommended' ORDER BY seq`,
       )
       .toArray()
-      .map(rotationFlagSourceRow),
-  // The given pairs' rows (ae_var), in one statement however many pairs:
-  // json_each expands the bound list, and DISTINCT keeps a repeated pair
-  // from repeating its rows
-  rotationFlagEventsFor: (pairs) =>
-    sql
+      .flatMap((row) => expandRecommendedRow(row));
+    const pairs = distinctPairs(expanded);
+    if (pairs.length === 0) {
+      return [];
+    }
+    return mergeFlagRowsBySeq(expanded, resolutionRowsFor(sql, pairs));
+  },
+  // The given pairs only: the aggregate recommended rows expanded to just
+  // those pairs, plus their resolution rows (ae_var). The dismissal live
+  // check and the history's flagsIfCurrent pass specific pairs.
+  rotationFlagEventsFor: (pairs) => {
+    const wanted = new Set(pairs.map((pair) => pairKeyOf(pair.environmentId, pair.variableId)));
+    const expanded = sql
       .exec(
-        `SELECT a.seq, a.server_ts, a.event, a.environment_id, a.variable_id, a.version,
-                a.epoch, a.target_user_id, a.target_key_fingerprint, a.payload
-         FROM (SELECT DISTINCT json_extract(value, '$.variableId') AS variable_id,
-                               json_extract(value, '$.environmentId') AS environment_id
-               FROM json_each(?)) AS target
-         CROSS JOIN audit_events AS a
-         WHERE a.variable_id = target.variable_id AND a.environment_id = target.environment_id
-           AND a.event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
-         ORDER BY a.seq`,
-        JSON.stringify(
-          pairs.map((pair) => ({ variableId: pair.variableId, environmentId: pair.environmentId })),
-        ),
+        `SELECT ${RECOMMENDED_COLUMNS} FROM audit_events WHERE event = 'rotation.recommended' ORDER BY seq`,
       )
       .toArray()
-      .map(rotationFlagSourceRow),
+      .flatMap((row) => expandRecommendedRow(row, wanted));
+    return mergeFlagRowsBySeq(
+      expanded,
+      resolutionRowsFor(
+        sql,
+        pairs.map((pair) => ({ environmentId: pair.environmentId, variableId: pair.variableId })),
+      ),
+    );
+  },
 });
+
+/** The columns read from an aggregate rotation.recommended row (variable_id is NULL — the enumeration is in the payload). */
+const RECOMMENDED_COLUMNS = `seq, server_ts, environment_id, epoch, target_user_id, target_key_fingerprint, payload`;
+
+const pairKeyOf = (environmentId: string, variableId: string): string =>
+  `${environmentId}\u0000${variableId}`;
+
+/**
+ * Expand one aggregate `rotation.recommended` row (§3.3 — 2026-10-11 Sc-5)
+ * into the per-pair flag rows the lineage fold consumes: one row per enumerated
+ * variable, carrying that variable's basis and the row's (shared) trigger,
+ * triggerChainSeq and exposure bound. The reconstructed per-pair payload
+ * `{ basis, trigger, triggerChainSeq }` is byte-for-byte the shape the fold
+ * read before aggregation, so `flagOf` / `originEpochOf` / `foldPairs` are
+ * untouched. `restrict` (when given) keeps only the requested pairs. A broken
+ * payload (no enumeration) yields nothing — a read is never made a defect.
+ */
+function expandRecommendedRow(
+  row: Record<string, SqlStorageValue>,
+  restrict?: ReadonlySet<string>,
+): RotationFlagSourceRow[] {
+  const environmentId = String(row["environment_id"]);
+  const payload = parsePayload(row["payload"]);
+  const trigger = payload?.["trigger"];
+  const triggerChainSeq = payload?.["triggerChainSeq"];
+  const seq = Number(row["seq"]);
+  const serverTs = Number(row["server_ts"]);
+  const epoch = row["epoch"] === null ? null : Number(row["epoch"]);
+  const targetUserId =
+    row["target_user_id"] === null ? null : decodeUserId(String(row["target_user_id"]));
+  const targetKeyFingerprintHex =
+    row["target_key_fingerprint"] === null
+      ? null
+      : decodeKeyFingerprintHex(String(row["target_key_fingerprint"]));
+  const rows: RotationFlagSourceRow[] = [];
+  for (const variable of recommendedVariablesOf(payload)) {
+    if (restrict !== undefined && !restrict.has(pairKeyOf(environmentId, variable.variableId))) {
+      continue;
+    }
+    rows.push({
+      seq,
+      serverTs,
+      event: "rotation.recommended",
+      environmentId,
+      variableId: variable.variableId,
+      version: null,
+      epoch,
+      targetUserId,
+      targetKeyFingerprintHex,
+      payload: { basis: variable.basis, trigger, triggerChainSeq },
+    });
+  }
+  return rows;
+}
+
+/**
+ * The variable enumeration of an aggregate `rotation.recommended` payload
+ * (§3.3). Defensive: an element missing a string variableId is dropped, an
+ * unknown basis falls to "readable" (the safe over-report side) — a corrupt
+ * row never makes detection / the flag read a defect.
+ */
+function recommendedVariablesOf(
+  payload: Readonly<Record<string, unknown>> | null,
+): { readonly variableId: string; readonly basis: string }[] {
+  const variables = payload?.["variables"];
+  if (!Array.isArray(variables)) {
+    return [];
+  }
+  const result: { variableId: string; basis: string }[] = [];
+  for (const entry of variables) {
+    if (typeof entry === "object" && entry !== null) {
+      const variableId = (entry as Record<string, unknown>)["variableId"];
+      if (typeof variableId === "string") {
+        const basis = (entry as Record<string, unknown>)["basis"];
+        result.push({ variableId, basis: basis === "read" ? "read" : "readable" });
+      }
+    }
+  }
+  return result;
+}
+
+/** The distinct (environment, variable) pairs an expanded flag-row list covers. */
+function distinctPairs(
+  rows: readonly RotationFlagSourceRow[],
+): { environmentId: string; variableId: string }[] {
+  const seen = new Set<string>();
+  const pairs: { environmentId: string; variableId: string }[] = [];
+  for (const row of rows) {
+    const key = pairKeyOf(row.environmentId, row.variableId);
+    if (!seen.has(key)) {
+      seen.add(key);
+      pairs.push({ environmentId: row.environmentId, variableId: row.variableId });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Each pair's resolution rows (rotation.dismissed / var.version_pushed —
+ * ae_var), in one statement however many pairs: json_each expands the bound
+ * list, DISTINCT keeps a repeated pair from repeating its rows, and CROSS JOIN
+ * fixes the join order (SQLite never reorders it — without statistics the
+ * planner could otherwise drive from ae_event's whole var.version_pushed
+ * range).
+ */
+function resolutionRowsFor(
+  sql: SqlStorage,
+  pairs: readonly { readonly environmentId: string; readonly variableId: string }[],
+): readonly RotationFlagSourceRow[] {
+  if (pairs.length === 0) {
+    return [];
+  }
+  return sql
+    .exec(
+      `SELECT a.seq, a.server_ts, a.event, a.environment_id, a.variable_id, a.version,
+              a.epoch, a.target_user_id, a.target_key_fingerprint, a.payload
+       FROM (SELECT DISTINCT json_extract(value, '$.variableId') AS variable_id,
+                             json_extract(value, '$.environmentId') AS environment_id
+             FROM json_each(?)) AS target
+       CROSS JOIN audit_events AS a
+       WHERE a.variable_id = target.variable_id AND a.environment_id = target.environment_id
+         AND a.event IN ('rotation.dismissed', 'var.version_pushed')
+       ORDER BY a.seq`,
+      JSON.stringify(
+        pairs.map((pair) => ({ variableId: pair.variableId, environmentId: pair.environmentId })),
+      ),
+    )
+    .toArray()
+    .map(rotationFlagSourceRow);
+}
+
+/** Merge the expanded recommended rows with the resolution rows into one seq-ascending list (the fold's input order). */
+function mergeFlagRowsBySeq(
+  recommended: readonly RotationFlagSourceRow[],
+  resolution: readonly RotationFlagSourceRow[],
+): readonly RotationFlagSourceRow[] {
+  return [...recommended, ...resolution].toSorted((a, b) => a.seq - b.seq);
+}
 
 function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFlagSourceRow {
   return {

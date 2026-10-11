@@ -187,10 +187,16 @@ const PROJECT_AUDIT_PAYLOADS = {
   "dek.deleted": Schema.UndefinedOr(
     Schema.Struct({ cause: Schema.Literal("member-readded"), triggerChainSeq: Seq }),
   ),
+  // Aggregate form (§3.3 — 2026-10-11 Sc-5): one row per environment. The
+  // per-variable basis rides each `variables` element; epoch (the exposure
+  // bound) and the target stay columns (a per-environment / per-detection
+  // invariant), so they are not repeated here.
   "rotation.recommended": Schema.Struct({
-    basis: Schema.Literals(ROTATION_BASES),
     triggerChainSeq: Seq,
     trigger: Schema.Literals(ROTATION_TRIGGERS),
+    variables: Schema.Array(
+      Schema.Struct({ variableId: Text, basis: Schema.Literals(ROTATION_BASES) }),
+    ),
     revokedDeviceKeyFingerprints: Schema.optionalKey(Schema.Array(KeyFingerprintHexSchema)),
   }),
   "rotation.dismissed": Schema.Undefined,

@@ -326,40 +326,80 @@ function exposureBound(
   return bound;
 }
 
-/** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
-function recommendedEvent(input: {
-  readonly nowMs: number;
-  readonly lifetime: VariableLifetime;
+/**
+ * One detected (variable × environment) flag before aggregation: the pair, its
+ * basis (§4.1 step 3), and the environment's exposure bound (§4.1-5 — VH). The
+ * bound is a per-environment invariant across a detection's candidates (every
+ * candidate of E uses the same selected windows), so {@link aggregateRecommended}
+ * folds a detection's pairs into one row per environment with the bound on the
+ * epoch column.
+ */
+interface DetectedPairFlag {
+  readonly environmentId: string;
+  readonly variableId: string;
   readonly basis: RotationBasis;
+  readonly epochBound: number;
+}
+
+/**
+ * Fold a detection's per-pair flags into the §3.3 aggregate rows — **one
+ * `rotation.recommended` row per environment** (2026-10-11 Sc-5, following the
+ * var.read aggregation). Each row's payload enumerates its variables with the
+ * per-variable basis in ascending variableId order (the row_digest input's
+ * fixity — §5.1), the exposure bound rides the epoch column (a per-environment
+ * invariant), and the single subject / trigger ride the columns and payload
+ * scalars. Actor is system (the §3.3 recording rules).
+ */
+function aggregateRecommended(input: {
+  readonly nowMs: number;
+  readonly flags: readonly DetectedPairFlag[];
   readonly trigger: RotationTrigger;
   readonly triggerChainSeq: number;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
   /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];
-  /** The exposure bound (§4.1-5 — VH): written to the epoch column when known. */
-  readonly epochBound: number;
-}): RecommendedEvent {
-  return {
-    event: "rotation.recommended",
-    serverTs: input.nowMs,
-    actorType: "system",
-    ...(Number.isFinite(input.epochBound) ? { epoch: input.epochBound } : {}),
-    ...(input.targetUserId === undefined ? {} : { targetUserId: input.targetUserId }),
-    ...(input.targetKeyFingerprintHex === undefined
-      ? {}
-      : { targetKeyFingerprintHex: input.targetKeyFingerprintHex }),
-    environmentId: input.lifetime.environmentId,
-    variableId: input.lifetime.variableId,
-    payload: {
-      basis: input.basis,
-      triggerChainSeq: input.triggerChainSeq,
-      trigger: input.trigger,
-      ...(input.revokedDeviceKeyFingerprints === undefined
-        ? {}
-        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
-    },
-  };
+}): readonly RecommendedEvent[] {
+  const byEnvironment = new Map<string, DetectedPairFlag[]>();
+  for (const flag of input.flags) {
+    const bucket = byEnvironment.get(flag.environmentId);
+    if (bucket === undefined) {
+      byEnvironment.set(flag.environmentId, [flag]);
+    } else {
+      bucket.push(flag);
+    }
+  }
+  return [...byEnvironment.entries()]
+    .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([environmentId, flags]): RecommendedEvent => {
+      // Every candidate of one environment shares the same windows, so the
+      // exposure bound is identical across them (the invariant that lets the
+      // bound stay on the epoch column — §3.3)
+      const epochBound = flags[0]?.epochBound ?? Number.POSITIVE_INFINITY;
+      return {
+        event: "rotation.recommended",
+        serverTs: input.nowMs,
+        actorType: "system",
+        ...(Number.isFinite(epochBound) ? { epoch: epochBound } : {}),
+        ...(input.targetUserId === undefined ? {} : { targetUserId: input.targetUserId }),
+        ...(input.targetKeyFingerprintHex === undefined
+          ? {}
+          : { targetKeyFingerprintHex: input.targetKeyFingerprintHex }),
+        environmentId,
+        payload: {
+          triggerChainSeq: input.triggerChainSeq,
+          trigger: input.trigger,
+          variables: flags
+            .map((flag) => ({ variableId: flag.variableId, basis: flag.basis }))
+            .toSorted((a, b) =>
+              a.variableId < b.variableId ? -1 : a.variableId > b.variableId ? 1 : 0,
+            ),
+          ...(input.revokedDeviceKeyFingerprints === undefined
+            ? {}
+            : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
+        },
+      };
+    });
 }
 
 /**
@@ -422,24 +462,25 @@ function detectForMember(input: {
       .map(pairKey),
   );
   const epochRows = input.read.environmentEpochEvents();
-  return candidates.map((lifetime) =>
-    recommendedEvent({
-      nowMs: input.nowMs,
-      lifetime,
+  return aggregateRecommended({
+    nowMs: input.nowMs,
+    flags: candidates.map((lifetime): DetectedPairFlag => ({
+      environmentId: lifetime.environmentId,
+      variableId: lifetime.variableId,
       basis: readPairs.has(pairKey(lifetime)) ? "read" : "readable",
-      trigger: input.trigger,
-      triggerChainSeq: input.triggerChainSeq,
-      targetUserId: input.targetUserId,
       epochBound: exposureBound(
         epochRows,
         lifetime.environmentId,
         selected.get(lifetime.environmentId) ?? [],
       ),
-      ...(input.revokedDeviceKeyFingerprints === undefined
-        ? {}
-        : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
-    }),
-  );
+    })),
+    trigger: input.trigger,
+    triggerChainSeq: input.triggerChainSeq,
+    targetUserId: input.targetUserId,
+    ...(input.revokedDeviceKeyFingerprints === undefined
+      ? {}
+      : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
+  });
 }
 
 /**
@@ -661,7 +702,7 @@ export function detectServerRevocation(input: {
   const lifetimes = [...variableLifetimes(input.read.variableLifecycles()).values()];
   const access = input.read.serverAccessEventsBy(input.serverKeyFingerprintHex);
   const epochRows = input.read.environmentEpochEvents();
-  const results: RecommendedEvent[] = [];
+  const flags: DetectedPairFlag[] = [];
   for (const lifetime of lifetimes) {
     const windows = windowsOf(lifetime.environmentId).filter((window) =>
       overlaps(window, lifetime.start, lifetime.end),
@@ -684,23 +725,24 @@ export function detectServerRevocation(input: {
       // server.value_decrypted (reserved — never occurs in v1): variable-granularity matching
       return row.variableId === lifetime.variableId;
     });
-    results.push(
-      recommendedEvent({
-        nowMs: input.nowMs,
-        lifetime,
-        basis: fetched ? "read" : "readable",
-        trigger: "revoke_server",
-        triggerChainSeq: input.triggerChainSeq,
-        targetKeyFingerprintHex: input.serverKeyFingerprintHex,
-        epochBound: exposureBound(
-          epochRows,
-          lifetime.environmentId,
-          windowsOf(lifetime.environmentId),
-        ),
-      }),
-    );
+    flags.push({
+      environmentId: lifetime.environmentId,
+      variableId: lifetime.variableId,
+      basis: fetched ? "read" : "readable",
+      epochBound: exposureBound(
+        epochRows,
+        lifetime.environmentId,
+        windowsOf(lifetime.environmentId),
+      ),
+    });
   }
-  return results;
+  return aggregateRecommended({
+    nowMs: input.nowMs,
+    flags,
+    trigger: "revoke_server",
+    triggerChainSeq: input.triggerChainSeq,
+    targetKeyFingerprintHex: input.serverKeyFingerprintHex,
+  });
 }
 
 /** Read payload.trigger (rows written by this server itself — check the type defensively). */

@@ -245,7 +245,7 @@ CRYPTO_SPEC §4 identifiers.
 | `var.read` ★ | environment_id, payload = { variables: [{ variableId, epoch, version }, …] } | Recorded for **ciphertext distribution** (pull / web fetch). **1 row per environment per with-values bulk pull** (2026-09-02 revision — aggregate form. Old form: 1 row per variable. The variable_id / epoch / version columns are NULL, and the payload enumerates the returned variables — recording rules below). **Metadata-only mode (AUTH_SPEC §12-7) distributes no ciphertext and is not recorded** (don't record as read what was not read — 2026-08-10) |
 | `dek.registered` | environment_id, epoch, target_user_id (recipient), **actor_key_fingerprint (signer key FP)** | DEK-wrap registration (AUTH_SPEC §12-6. **Includes the bundled part of composite requests — epoch 1 of environment creation, the new epoch of rotation (same §12-4. 2026-08-03)**). actor_key_fingerprint copies the signer key FP of the registration signature (CRYPTO_SPEC §5.1) (for cross-check against the signature. Session 07 ruling B) |
 | `dek.deleted` | environment_id, epoch, target_user_id (recipient) | Deletion of a poisoned wrap by an admin (AUTH_SPEC §12-6's repair path) |
-| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), variable_id, environment_id, **epoch = the exposure bound** (the environment's epoch at the end of the subject's last window on it — 2026-09-27 VH; §4.1 step 5. Displayed as the exposure epoch, not a value's epoch), payload = { basis, triggerChainSeq, **trigger** } (+ `revokedDeviceKeyFingerprints` — the revoked FP set — on the revoke_device variant, §4.1) | Persists the §4 computation result (for UI / CLI display). **1 row per (variable × environment)** (2026-08-15 clarification — from §4.2 Q5's index requirement. The set is not folded into one row). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
+| `rotation.recommended` | target_user_id (remove / demote / **shrink** variant) / target_key_fingerprint (revoke_server variant), environment_id, **epoch = the exposure bound** (the environment's epoch at the end of the subject's last window on it — 2026-09-27 VH; §4.1 step 5. Displayed as the exposure epoch, not a value's epoch. A per-environment invariant across every variable of one detection, so it stays a column), payload = { triggerChainSeq, **trigger**, **variables: [{ variableId, basis }, …]** } (+ `revokedDeviceKeyFingerprints` — the revoked FP set — on the revoke_device variant, §4.1) | Persists the §4 computation result (for UI / CLI display). **1 row per environment** (aggregate form — 2026-10-11 owner approval of audit decision Sc-5, following the 2026-09-02 `var.read` precedent; audit rows are kept forever [ruling CZ] so the shape is fixed before launch. Old form: 1 row per (variable × environment). variable_id is NULL, and the payload enumerates the detected variables with their per-variable basis — recording rules below). **`trigger` = `remove_member` \| `change_role` (demotion / shrink — 2026-09-14 ES) \| `revoke_device` (2026-09-19 DK — §4.1's variant) \| `revoke_server`**. Application via four-eyes carries the seq of the completed `approve` entry in `triggerChainSeq` (PF1) |
 | `rotation.dismissed` | variable_id, environment_id | An explicit dismissal by a human (the append-only cancellation event). One row per (variable × environment) |
 | `rotation.proposed` | environment_id, payload = { proposalId, variableIds, claimsDigest, grantChainSeq, connector } | A sealed value proposal stored under a workload lease (AUTH_SPEC §14-5. 2026-10-02 PF7b). actor_type = system (the minter is a workload with no maruhi identity — attributed by the claims digest and the grant's chain seq, the same cross-check as `server.lease_issued`; no external identifier, no fact text, no ciphertext). Class 1 |
 | `rotation.proposal_accepted` / `rotation.proposal_rejected` | environment_id, payload = { proposalId, versions: [{ variableId, version }] } (accepted) / { proposalId } (rejected) | A member's resolution of a proposal (AUTH_SPEC §14-5): accepted = the member's own signed pushes (recorded as `var.version_pushed` as always) named by version; rejected = nothing was pushed. The actor is the resolving member (type=user — a resolution carries no signature, so no FP). The proposal's rows are deleted on resolution; these rows are its history. Class 1 |
@@ -370,13 +370,58 @@ CRYPTO_SPEC §4 identifiers.
   ruling)**: actor is `{ type: "system" }` (detection is a server-side
   derivation accompanying acceptance of a removal / revocation entry, not the
   remover's own act — the actor is held by the chain mirror recorded at the
-  same time, cross-checkable via the payload's `triggerChainSeq`). The
-  payload's `basis` is `"read"` (§4.1 step 3 (a) definitely fetched) |
-  `"readable"` ((b) was fetchable). The `chain_seq` column is not used (per
-  §5.1 it is the chain mirror's own — the trigger's chain seq is carried in
-  the payload). The append is, per §4.1, in the same transaction as the
-  acceptance of the removal / revocation entry (same discipline as the mirror
-  — don't create a shape where a crash loses only the flags)
+  same time, cross-checkable via the payload's `triggerChainSeq`). Each
+  enumerated variable's `basis` is `"read"` (§4.1 step 3 (a) definitely
+  fetched) | `"readable"` ((b) was fetchable). The `chain_seq` column is not
+  used (per §5.1 it is the chain mirror's own — the trigger's chain seq is
+  carried in the payload). The append is, per §4.1, in the same transaction as
+  the acceptance of the removal / revocation entry (same discipline as the
+  mirror — don't create a shape where a crash loses only the flags)
+- **`rotation.recommended`'s aggregate form (2026-10-11 owner approval —
+  audit decision Sc-5, following the 2026-09-02 `var.read` aggregation)**: a
+  departure (removal / demotion / scope shrink / device revocation / server
+  revocation) can flag every (variable × environment) pair the subject could
+  view, so the old per-pair form wrote up to "candidate variables × candidate
+  environments" rows — unbounded by project data (ruling CZ keeps audit rows
+  forever). The recording unit is revised to **1 detection, per environment =
+  1 row**:
+  - **Columns**: environment_id (non-NULL). variable_id is NULL (the detected
+    variables are carried by the payload). epoch stays non-NULL = the
+    exposure bound, which is the environment's epoch at the end of the
+    subject's last window on E (§4.1 step 5) — the same for every candidate
+    variable of E in one detection, so it is a column, not per-variable.
+    target_user_id / target_key_fingerprint stay as the detection's single
+    subject
+  - **payload** = `{ triggerChainSeq, trigger, variables: [ { variableId,
+    basis }, … ] }` (+ `revokedDeviceKeyFingerprints` on the revoke_device
+    variant). `variables` is the **full enumeration** of the detected pairs of
+    E, each with its own basis (the only per-variable datum). The enumeration
+    is in **ascending `variableId` order (code-unit comparison), no duplicate
+    variableId** (one detection produces each (environment, variable)
+    candidate once — §4.1 step 2's existence-interval keying), and each
+    element's key order is fixed `variableId` → `basis` (the stored byte
+    string is the input of row_digest — §5.1; the only writer is the server,
+    and this fixity is for recomputation stability, the same discipline as
+    `var.read`'s enumeration)
+  - **A detection with no candidate in an environment writes no row for it**
+    (an empty enumeration is never stored — the recording condition is "a flag
+    was produced"), and a detection with no candidate at all writes nothing
+    (unchanged — e.g. revoking a vote-only device)
+  - **Multiple recommended rows on one pair stay separate rows** (a
+    re-removal, departures of different subjects): aggregation folds a single
+    detection's pairs into one row per environment, it does not merge
+    detections. The resolution derivation (§4.1 step 5) treats each as before
+  - **Does not degrade detection or the derived view** (ruling CZ's line —
+    aggregation is a density measure, not an information cap): "which variable,
+    with what basis, bounded at what epoch" is fully restorable from the row
+    (environment_id + epoch columns + the payload enumeration). The readers
+    (§4.1 step 5's flag view, the dismissal live-check, the history's
+    `flagsIfCurrent`) **expand the aggregate row back to per-pair flags at read
+    time** (the implementation pins this by test); `rotation.dismissed` stays
+    **per (variable × environment)** (a dismissal is a per-pair decision)
+  - **Visibility stays class 1** (§6 — the detection's purpose is prompting
+    everyone to rotate). **The audit head** (§5.1) digests the aggregate row as
+    one row (unchanged cumulative-hash semantics)
 - **`rotation.dismissed` issuance authority and path (2026-08-15 session 25
   owner ruling — resolving a part §6 left unspecified)**: dismissal can be
   declared by **chain role admin or above × token scope admin** (same level as
@@ -492,8 +537,11 @@ On acceptance of `remove_member(M)`, inside the same project DO:
    **definitely fetched**: those with M's `var.read` inside the membership
    interval (including via API token; matched by actor.user_id), (b) **was
    fetchable**: all other candidates. The UI / CLI highlights (a)
-4. **Persist the result**: append as `rotation.recommended` events; the UI /
-   CLI shows them as "rotation needed" flags
+4. **Persist the result**: append as `rotation.recommended` events — **one
+   aggregate row per environment** (§3.3's aggregate form — 2026-10-11 Sc-5),
+   the detected variables and their per-variable basis enumerated in the
+   payload; the readers expand the row back to per-pair flags at read time. The
+   UI / CLI shows them as "rotation needed" flags
 5. **Flag resolution — the lineage derivation (2026-09-27 VH ruling V2 —
    docs/notes/vh-design.md §3 as corrected by §9's re-check round; replaces
    the 2026-08-15 "a push without the re-encryption marker after the
@@ -608,8 +656,8 @@ windows above work by a query change alone (no schema change needed)
 | Q1 | user_id → membership intervals and per-environment access windows (the sequence of chain.genesis / member_added / role_changed / member_removed events; the scope in member_added / role_changed payloads are the window's open/close points — §4.1 step 2. 2026-09-15 K3 correction: role_changed added to the enumeration), and device windows (the sequence of chain.device_added / device_revoked events — the payload's FP and cap are the device window's open/close points. §4.1's `revoke_device` variant. 2026-09-19 DK. `chain.device_added`'s target is the actor themself) | (target_user_id, seq) (unchanged) |
 | Q2 | Existence intervals of (variable × environment) (the sequence of var.created / deleted events) | (variable_id, environment_id, seq) |
 | Q3 | user_id × period → distinct set of read (variable × environment) | (actor_user_id, seq) + event kind. **The aggregate form of `var.read` (§3.3 — 2026-09-02) obtains the (variable × environment) set by expanding the payload's `variables` enumeration** (the index works on the per-actor rows, and the row count drops to 1/variable-count under aggregation) |
-| Q4 | (variable × environment) × period → list of principals who viewed / changed it (reverse lookup. For incident response) | Same index as Q2. **Because the aggregate `var.read` has no variable ID column**, environment-level rows (variable_id IS NULL, event = var.read) are narrowed to a seq range by the **value-existence interval (the first `var.version_pushed` to the last `var.deleted` in that environment)** before the payload's `variables` is inspected (a with-values pull returns all of the environment's active variables, so nearly every aggregate row in the interval contains the variable, and inspection is bounded by "page limit × payload length" — outside the interval not a single row is inspected. The lower bound is the value's first appearance, not `var.created`, because a declared variable that never held a value never appears in a pull — in that case the inspection itself is skipped). **Variable IDs are client-issued and the server's uniqueness unit is (environment, variable)**, so the interval is taken per environment and bounded by their union (don't miss the same ID deleted in environment A but alive in B; with an environment filter, only that environment's interval). §7's `variable_id` filter has the same shape (unioned with the column match of other events that carry variable_id as a column) |
-| Q5 | Currently effective rotation.recommended − resolution events | event kind + (variable_id, environment_id, seq) |
+| Q4 | (variable × environment) × period → list of principals who viewed / changed it (reverse lookup. For incident response) | Same index as Q2. **Because the aggregate `var.read` has no variable ID column**, environment-level rows (variable_id IS NULL, event = var.read) are narrowed to a seq range by the **value-existence interval (the first `var.version_pushed` to the last `var.deleted` in that environment)** before the payload's `variables` is inspected (a with-values pull returns all of the environment's active variables, so nearly every aggregate row in the interval contains the variable, and inspection is bounded by "page limit × payload length" — outside the interval not a single row is inspected. The lower bound is the value's first appearance, not `var.created`, because a declared variable that never held a value never appears in a pull — in that case the inspection itself is skipped). **Variable IDs are client-issued and the server's uniqueness unit is (environment, variable)**, so the interval is taken per environment and bounded by their union (don't miss the same ID deleted in environment A but alive in B; with an environment filter, only that environment's interval). §7's `variable_id` filter has the same shape (unioned with the column match of other events that carry variable_id as a column). **The aggregate `rotation.recommended` (§3.3 — 2026-10-11 Sc-5) is inspected the same way** (variable_id IS NULL, event = rotation.recommended, the payload's `variables` enumerates `{ variableId, basis }`) but **without the value-existence-interval narrowing**: unlike `var.read` it is low-frequency (bounded by removals × environments) and class 1, so a plain event + (optional) environment scan of its payloads suffices and no self-restriction applies |
+| Q5 | Currently effective rotation.recommended − resolution events | event kind (ae_event) to read the **aggregate** rotation.recommended rows (§3.3's aggregate form — 2026-10-11 Sc-5; the reader expands each to its enumerated pairs), then (variable_id, environment_id, seq) to read each flagged pair's resolution / dismissal rows (var.version_pushed / rotation.dismissed, which keep the variable_id column). The read is bounded by "removals × environments" aggregate rows, not by the per-pair row count #392 narrowed |
 | Q6 | server key FP → grant intervals and scope (the sequence of chain.server_granted / revoked events), plus in-period server.lease_issued (matched by actor_key_fingerprint = server key FP. The main input of §4.1 variant's (a) — 2026-08-12) + server.value_decrypted (reserved — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
 All of these **complete inside a single project DO** (no cross-DO joins). §5's
