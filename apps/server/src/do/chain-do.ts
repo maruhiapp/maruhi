@@ -717,6 +717,15 @@ export class ProjectChainDO extends DurableObject<Env> {
   // writes to an unmaterialized DO fold to the uniform 404 (§11-2) without
   // touching storage (#runData), so a probe of an arbitrary project ID — the
   // unauthenticated lease, an authenticated GET — leaves nothing behind.
+  //
+  // A performance cache, not the source of truth: it is `true` only when the
+  // tables are known to exist, and a `false` value is re-checked against
+  // storage before it is trusted (#latchInitialized). So a path that
+  // materialized the tables without returning through a flag-setting branch
+  // (an opsRestore whose post-commit extension defects after the tables
+  // committed) cannot strand the DO reporting not-initialized — which would
+  // 404 every read, skip evacuation, and make `GET /projects` prune live
+  // members as phantoms (handlers-membership.ts).
   #initialized: boolean;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -787,13 +796,31 @@ export class ProjectChainDO extends DurableObject<Env> {
    * data read atomic against chain writes (the TOCTOU fix of the header
    * comment).
    */
+  /**
+   * Whether this DO's tables exist, re-checking storage when the cached flag
+   * is `false` and latching it `true` on the way (read-only — creates
+   * nothing). The re-check keeps a never-materialized DO cheap (one
+   * `sqlite_master` lookup per probe, no storage) while never stranding a DO
+   * whose tables were materialized outside a flag-setting branch.
+   */
+  #latchInitialized(): boolean {
+    if (this.#initialized) {
+      return true;
+    }
+    if (projectDoInitialized(this.ctx.storage.sql)) {
+      this.#initialized = true;
+      return true;
+    }
+    return false;
+  }
+
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
     // An unmaterialized DO holds no tables (Sc-7 / A-4): every read / write
     // folds to not-initialized (the uniform 404 of §11-2) before any storage
     // is touched. The lease / proposal family does not take this gate — their
     // server-key-unconfigured 503 must precede the existence check (§14-3), so
     // they reach uninitialized through the chain load instead (loadInitializedChain).
-    if (!this.#initialized) {
+    if (!this.#latchInitialized()) {
       return Promise.resolve({ kind: "rejected", rejection: { kind: "not-initialized" } });
     }
     return this.#runtime.runPromise(
@@ -1389,7 +1416,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     // A never-materialized DO has nothing to evacuate (Sc-7 / A-4). The sweep
     // enumerates D1 `projects`, which only an accepted genesis writes, so this
     // is a defensive guard — reading the watermarks would fault without tables.
-    if (!this.#initialized) {
+    if (!this.#latchInitialized()) {
       const databaseSizeBytes = this.ctx.storage.sql.databaseSize;
       return Promise.resolve({
         kind: "skipped",
@@ -1506,12 +1533,14 @@ export class ProjectChainDO extends DurableObject<Env> {
     });
     return this.#runtime
       .runPromise(this.#opLock.withPermit(restoreProgram(this.ctx.storage, body, this.#stateCache)))
-      .then((outcome) => {
-        // restoreProgram materialized the DO's tables (Sc-7 / A-4), even on a
-        // refusal (wiped back to empty, but present): record it so later reads
-        // run instead of folding to not-initialized.
-        this.#initialized = true;
-        return outcome;
+      .finally(() => {
+        // restoreProgram may have materialized the tables (Sc-7 / A-4) before
+        // the outcome resolved — a committed restore whose post-commit head
+        // extension then defects still leaves them. Re-check storage and latch
+        // the flag either way, so a defect cannot strand the DO reporting
+        // not-initialized. A refusal before any table was created (object
+        // missing / changed, below) leaves none, and the flag stays false.
+        this.#latchInitialized();
       });
   }
 }
@@ -1529,15 +1558,21 @@ export const restoreProgram = Effect.fn("chain-do.restoreProgram")(function* (
   body: Effect.Effect<ReadableStream, RestoreRefusedError>,
   cache: StateCache,
 ): Effect.fn.Return<OpsRestoreOutcome, never, AuditStore | StorageMeter> {
-  // A restore materializes a fresh destination DO (hosted-ops.md §2-E): the
-  // restore reads and writes the schema's tables (isProjectDoEmpty, wipe,
-  // acceptColumns), so create them first (Sc-7 / A-4 — a fresh destination
-  // holds none; idempotent on a re-run into an empty DO).
-  yield* Effect.sync(() => ensureProjectDoTables(storage));
   const sql = storage.sql;
   const audit = yield* AuditStore;
   const meter = yield* StorageMeter;
   const restored = yield* body.pipe(
+    Effect.flatMap((stream) =>
+      Effect.sync(() =>
+        // A restore materializes a fresh destination DO (hosted-ops.md §2-E):
+        // the restore reads and writes the schema's tables (isProjectDoEmpty,
+        // wipe, acceptColumns), so create them (Sc-7 / A-4 — a fresh
+        // destination holds none; idempotent on a re-run into an empty DO).
+        // Created only **after** the object is fetched, so an object-missing /
+        // object-changed refusal leaves the destination with no tables.
+        ensureProjectDoTables(storage),
+      ).pipe(Effect.as(stream)),
+    ),
     Effect.flatMap((stream) =>
       restoreSnapshot({
         storage,

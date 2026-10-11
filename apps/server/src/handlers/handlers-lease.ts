@@ -124,15 +124,15 @@ const authenticateWorkload = Effect.fn("handlers-lease.authenticateWorkload")(fu
   payload: { readonly oidcToken: string; readonly ephemeralPubHex: string },
   request: { readonly source: unknown },
 ) {
-  // 0. Request-level rate limiting on the source IP. Since a DO is
-  // implicitly created by naming it, anyone holding a valid OIDC
-  // token could mass-produce DOs under different project IDs (the
-  // constructor creates tables) — bound the creation rate before
-  // projectStub. This serves a different role than the per-project
-  // window inside the DO (post-authorization — placed after the
-  // 404s for §11-2's existence hiding), and this check is
-  // independent of project state (IP only), so it does not break
-  // existence hiding
+  // 0. Request-level rate limiting on the source IP. A DO is addressable
+  // by naming it, so anyone holding a valid OIDC token could aim requests
+  // at many project IDs; a never-initialized DO no longer stores anything
+  // on reach (Sc-7 / A-4 — its tables are created only at genesis
+  // acceptance), so this bounds the CPU of such probing, not storage
+  // growth, before projectStub. This serves a different role than the
+  // per-project window inside the DO (post-authorization — placed after
+  // the 404s for §11-2's existence hiding), and this check is independent
+  // of project state (IP only), so it does not break existence hiding
   const env = yield* WorkerEnv;
   const allowed = yield* ipRateLimitAllowed(env.LEASE_RATE_LIMIT, request);
   if (!allowed) {
