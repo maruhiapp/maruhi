@@ -21,7 +21,11 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do/do-schema.ts";
+import {
+  ensureProjectDoTables,
+  PROJECT_DO_TABLES,
+  readProjectDoSchemaVersion,
+} from "../src/do/do-schema.ts";
 import { restoreSnapshot, type RestoreFailureCode } from "../src/do/do-snapshot.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
@@ -108,6 +112,10 @@ async function restoreLines(lines: readonly string[]): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   const text = `${lines.join("\n")}\n`;
   await runInDurableObject(stub, async (_instance, state) => {
+    // A mirror bootstrap restores into a fresh destination (§11-6). The DO is
+    // materialized at import time in production (opsRestore); materialize here
+    // too, since the reset left no tables (Sc-7 / A-4).
+    ensureProjectDoTables(state.storage);
     // The stream is created inside the DO's context (an I/O object of
     // the test context cannot be read on behalf of the DO)
     await Effect.runPromise(
@@ -128,8 +136,11 @@ async function restoreLinesRefusal(lines: readonly string[]): Promise<RestoreFai
   await resetProjectDo(projectId);
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   const text = `${lines.join("\n")}\n`;
-  const code = await runInDurableObject(stub, async (_instance, state) =>
-    Effect.runPromise(
+  const code = await runInDurableObject(stub, async (_instance, state) => {
+    // Materialize the fresh destination before restoring (Sc-7 / A-4 — the
+    // reset left no tables; opsRestore does this in production).
+    ensureProjectDoTables(state.storage);
+    return Effect.runPromise(
       restoreSnapshot({
         storage: state.storage,
         tables: PROJECT_DO_TABLES,
@@ -140,8 +151,8 @@ async function restoreLinesRefusal(lines: readonly string[]): Promise<RestoreFai
         Effect.map((): RestoreFailureCode | null => null),
         Effect.catchTag("RestoreRefused", (error) => Effect.succeed(error.code)),
       ),
-    ),
-  );
+    );
+  });
   await evictProjectDo(projectId);
   return code;
 }

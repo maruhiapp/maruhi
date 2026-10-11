@@ -30,12 +30,20 @@ import { describe, expect, it } from "vitest";
 
 import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";
+import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { deriveEffectiveFlags } from "../src/rotation-detect.ts";
 
-/** Run body on the storage of this file's dedicated DO. */
+/**
+ * Run body on the storage of this file's dedicated DO. The tables are
+ * materialized first (a DO is normally materialized at genesis acceptance —
+ * Sc-7 / A-4; this unit-style test seeds storage directly instead).
+ */
 async function withSql<T>(body: (sql: SqlStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-partial-index-test"));
-  return await runInDurableObject(stub, (_instance, state) => body(state.storage.sql));
+  return await runInDurableObject(stub, (_instance, state) => {
+    ensureProjectDoTables(state.storage);
+    return body(state.storage.sql);
+  });
 }
 
 const PARTIAL_INDEXES = {

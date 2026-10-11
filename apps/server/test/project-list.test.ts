@@ -21,9 +21,10 @@
 // - cursor paging (candidate-based, ascending project_id, a
 //   server-fixed page size of 100)
 
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
+import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import { vectorKeyOf } from "./support/data-crypto.ts";
@@ -248,10 +249,18 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
     await insertProjectionRow(broken, OWNER);
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(broken));
     await runInDurableObject(stub, (_instance, state) => {
+      // Materialize the DO first (a project is normally materialized at
+      // genesis acceptance — Sc-7 / A-4), then seed a row that fails JSON
+      // decode to make memberRoleFor a defect.
+      ensureProjectDoTables(state.storage);
       state.storage.sql.exec(
         "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, 'not-json', 'broken', 8)",
       );
     });
+    // Evict so the next instance's constructor detects the now-materialized
+    // tables (its #initialized flag): otherwise the instance that did the
+    // direct insert would still fold reads to not-initialized.
+    await evictDurableObject(stub);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       // Each rejected DO RPC below makes workerd log an "uncaught

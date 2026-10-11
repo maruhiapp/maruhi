@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AuditEventInput, AuditHeadExtensionOutcome } from "../src/audit-store.ts";
 import { makeAuditStore, MAX_HEAD_EXTENSION_CHUNKS_PER_CALL } from "../src/audit-store.ts";
+import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { commitmentOf, makeDek, signEntryAt, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
@@ -87,10 +88,13 @@ async function expectNotReady(response: Response): Promise<void> {
 
 describe("unit semantics of bounded extension (audit-store — maxHeadExtensionChunks)", () => {
   it("returns more-remains at the chunk limit, resumes from the saved tail, and converges", async () => {
-    // A DO independent of the fixture's project DO (its constructor applies
-    // the migrations, so it can be used as-is as a bare SqlStorage)
+    // A DO independent of the fixture's project DO. Materialize its tables
+    // first (a DO is normally materialized at genesis acceptance — Sc-7 / A-4;
+    // this unit test seeds the audit store directly), then use it as a bare
+    // SqlStorage.
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-head-bounded-unit"));
     await runInDurableObject(stub, async (_instance, state) => {
+      ensureProjectDoTables(state.storage);
       const sql = state.storage.sql;
       sql.exec("DELETE FROM audit_events");
       sql.exec("DELETE FROM audit_head_hashes");
@@ -118,6 +122,7 @@ describe("unit semantics of bounded extension (audit-store — maxHeadExtensionC
   it("a call that finishes exactly at the limit does not return more-remains (the remaining-row existence check)", async () => {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-head-bounded-exact"));
     await runInDurableObject(stub, async (_instance, state) => {
+      ensureProjectDoTables(state.storage);
       const sql = state.storage.sql;
       sql.exec("DELETE FROM audit_events");
       sql.exec("DELETE FROM audit_head_hashes");

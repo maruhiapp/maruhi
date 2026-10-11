@@ -27,6 +27,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";
+import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { detectMemberRemoval } from "../src/rotation-detect.ts";
 import { fetchEvents, type WireAuditEvent } from "./support/audit-read-scenario.ts";
 import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
@@ -176,6 +177,7 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
   it("the aggregated form is 1 row per pull, and even at 100 variables it is smaller than the legacy 100 rows", async () => {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-read-density-test"));
     const measured = await runInDurableObject(stub, (_instance, state) => {
+      ensureProjectDoTables(state.storage);
       const sql = state.storage.sql;
       const store = makeAuditStore(sql);
       // Identifiers match the CLI's real issuance shape (`v` + 24 hex = 25 chars — meta-statement.ts)
@@ -296,6 +298,7 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
   async function basisOf(rows: readonly AuditEventInput[]): Promise<Record<string, string>> {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-read-equivalence-test"));
     return await runInDurableObject(stub, (_instance, state) => {
+      ensureProjectDoTables(state.storage);
       const sql = state.storage.sql;
       sql.exec("DELETE FROM audit_events");
       const store = makeAuditStore(sql);
@@ -453,6 +456,7 @@ describe("scan range of the variable_id filter (bounding the shared resource con
   ): Promise<T> {
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-read-scan-test"));
     return await runInDurableObject(stub, (_instance, state) => {
+      ensureProjectDoTables(state.storage);
       const raw = state.storage.sql;
       raw.exec("DELETE FROM audit_events");
       makeAuditStore(raw).appendManySync(rows);

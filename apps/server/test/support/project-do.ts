@@ -4,37 +4,32 @@
 // configuration is the worker (isolate: false —
 // apps/server/vitest.config.ts), so DO SQLite carries over not only between
 // tests in a file but also from other files handled by the same worker.
-// Instantiating the DO via runInDurableObject makes the constructor apply
-// migrations, so here every table in PROJECT_DO_TABLES is DELETE'd by name,
-// and then evictDurableObject drops the in-memory cache of derived
-// ChainState too.
-// PROJECT_DO_TABLES is derived from the tables declarations of the
-// migration plan in src/do/do-schema.ts (the base step and every later step;
-// a step that adds a table must always declare it in tables). schema_meta is
-// intentionally not DELETE'd because it records the applied version.
+// A DO materializes its tables only at genesis acceptance now (Sc-7 / A-4),
+// so "empty" means "never initialized": every user table is DROPped (the
+// snapshot tables, the deployment-local tables, any mirror staging, and
+// `schema_meta`), returning the DO to the pristine no-storage state a fresh
+// DO has. A subsequent init re-materializes from the base migration, and a
+// test that seeds storage directly materializes with ensureProjectDoTables.
+// A reset of an already-fresh DO is a no-op (nothing to drop).
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 
 import type { ProjectChainDO } from "../../src/do/chain-do.ts";
-import { PROJECT_DO_LOCAL_TABLES, PROJECT_DO_TABLES } from "../../src/do/do-schema.ts";
 
-/** Returns the given project's DO storage to empty and evicts the
- * instance. */
+/** Returns the given project's DO to the pristine never-initialized state and evicts the instance. */
 export async function resetProjectDo(projectId: string): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   await runInDurableObject(stub, (_instance, state) => {
-    for (const table of [...PROJECT_DO_TABLES, ...PROJECT_DO_LOCAL_TABLES]) {
-      state.storage.sql.exec(`DELETE FROM ${table}`);
-    }
-    // A mirror replication left mid-way keeps staging tables (PF2 —
-    // `<table>_mirror`, `trailer_mirror`, `audit_events_mirror_local`); drop them
-    const staging = state.storage.sql
+    // Every user table: the base / step tables, the deployment-local tables,
+    // any mirror staging left mid-replication, and schema_meta. The `_cf_*` /
+    // `sqlite_*` internals are left alone.
+    const tables = state.storage.sql
       .exec(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_mirror%' ESCAPE '\\'",
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite_%'`,
       )
       .toArray()
       .map((row) => String(row["name"]));
-    for (const table of staging) {
+    for (const table of tables) {
       state.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
   });

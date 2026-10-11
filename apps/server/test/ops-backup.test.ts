@@ -308,6 +308,16 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         "version"
       ],
     );
+    // Read the live column lists before the reset: a reset now drops the
+    // tables (a DO is never-initialized until genesis acceptance — Sc-7 / A-4),
+    // and the restore below re-materializes them to compare against these.
+    const chainColumns = (
+      await queryProjectDo(
+        projectId,
+        "SELECT name FROM pragma_table_info('chain_entries') ORDER BY cid",
+      )
+    ).map((row) => String(row["name"]));
+    expect(chainColumns.length).toBeGreaterThan(1);
     await resetProjectDo(projectId);
     const header = {
       kind: "header",
@@ -324,13 +334,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       "created_at",
       "deleted_at",
     ];
-    const chainColumns = (
-      await queryProjectDo(
-        projectId,
-        "SELECT name FROM pragma_table_info('chain_entries') ORDER BY cid",
-      )
-    ).map((row) => String(row["name"]));
-    expect(chainColumns.length).toBeGreaterThan(1);
     const cases: { name: string; table: string; columns: unknown }[] = [
       {
         name: "injected",

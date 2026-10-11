@@ -123,9 +123,14 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
       project: other,
     });
     expect(response.status).toBe(404);
-    // No audit row is created on the uninitialized DO (blocking a bloating DoS from the unauthenticated path)
-    const rows = await queryProjectDo(other, "SELECT COUNT(*) AS n FROM audit_events");
-    expect(rows[0]?.["n"]).toBe(0);
+    // The never-initialized DO materializes no tables at all (Sc-7 / A-4): a
+    // probe of an arbitrary project ID leaves no storage — not even an empty
+    // audit log — so the unauthenticated path cannot bloat operator storage.
+    const tables = await queryProjectDo(
+      other,
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    );
+    expect(tables).toEqual([]);
   });
 
   it("hides a deleted environment that is still inside the disclosure scope", async () => {
