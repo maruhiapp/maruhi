@@ -281,8 +281,8 @@ silently.
 | Per-project Durable Object storage | warn at 8 GB, reject at 9 GB | `DO_STORAGE_WARN_BYTES` / `DO_STORAGE_REJECT_BYTES` | 422 `DataLimitExceeded` with `resource: "project-storage-bytes"` |
 
 One of the AUTH_SPEC §12-8 limits has a platform ceiling to know before you
-raise it: an environment's current values (the latest version of each variable)
-may hold at most **8 MiB** of ciphertext in total
+raise it: an environment's current values (the latest version of each active
+variable) may hold at most **8 MiB** of ciphertext in total
 (`MAX_ENVIRONMENT_CIPHERTEXT_BYTES`; a push past it fails with 422
 `DataLimitExceeded`, `resource: "environment-ciphertext-bytes"`). A pull or a
 workload lease returns all of them in one Durable Object RPC result, values
@@ -960,7 +960,8 @@ or newer.
   `resource: "environment-ciphertext-bytes"`**: the environment's current
   values would exceed 8 MiB of ciphertext ("Tenant quotas"). Delete values
   the environment no longer needs or move some to another environment;
-  replacing a value with one of the same size or smaller always works
+  replacing a value with one of the same size or smaller is never refused by
+  this limit (the 9 GB storage guard and the 1 GiB cumulative cap still apply)
 - **Pushes / creates fail with `DataLimitExceeded` and
   `resource: "project-storage-bytes"` while pulls still work**: the project's
   Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is

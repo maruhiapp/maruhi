@@ -400,11 +400,6 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ValueTooLargeError),
     (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
-  // The DO total-storage guard (AUTH_SPEC §12-8) is told apart by
-  // resource: unlike the other count caps it is a measured-amount
-  // threshold, not "the amount this request adds", so the guidance names
-  // the next step (free space, or move out while reads still pass — the
-  // never-pruned audit log usually dominates, so deleting frees little)
   when(isInstanceOf(DataLimitExceededError), renderDataLimit),
   when(
     isInstanceOf(DekWrapRejectedError),

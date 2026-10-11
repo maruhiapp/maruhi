@@ -202,10 +202,28 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
       ENV,
       VAR,
     );
-    // A deleted variable
-    await createVariableOk(dek, FILLER, "FILLER", "filler");
-    await setLatestBytes(FILLER, CAP);
-    expect((await deleteVariableRequest(FILLER, MEMBER)).status).toBe(204);
+    // A tombstoned variable whose version row is kept (inserted by SQL, since
+    // the delete API removes the version rows): the meter must skip it via
+    // `deleted_at IS NULL`, not merely because the rows are gone
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO variables SELECT environment_id, ?, 'TOMBSTONE', latest_meta_version,
+         latest_version, created_at, 1 FROM variables WHERE environment_id = ? AND variable_id = ?`,
+      FILLER,
+      ENV,
+      VAR,
+    );
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO variable_versions SELECT environment_id, ?, version, suite, epoch, nonce_hex,
+         ciphertext_hex, ?, prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq,
+         signature_hex, signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint, created_at
+       FROM variable_versions WHERE environment_id = ? AND variable_id = ? AND version = 2`,
+      FILLER,
+      CAP,
+      ENV,
+      VAR,
+    );
     // Another environment's current value (rows only — the meter reads no environment row)
     await queryProjectDo(
       projectId,
