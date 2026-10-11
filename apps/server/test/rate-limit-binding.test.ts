@@ -159,7 +159,10 @@ function envWith(binding: RateLimitBinding, limiter: RateLimit): TestEnv {
 }
 
 /** A limiter that records the keys it is asked about and answers `success`. */
-function recordingLimiter(success: boolean): { readonly limiter: RateLimit; readonly keys: string[] } {
+function recordingLimiter(success: boolean): {
+  readonly limiter: RateLimit;
+  readonly keys: string[];
+} {
   const keys: string[] = [];
   return {
     keys,
