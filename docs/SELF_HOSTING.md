@@ -843,17 +843,25 @@ All four already have server-side defenses (input size caps, stateless MAC
 verification before any lookup, a fixed window per project, and a TTL cache for
 JWKS).
 
-**Since 2026-08-24 the default deploy config also ships per-source-IP Workers
-Rate Limiting bindings** for all paths in the table below — the same limits
-it recommends — so a default deploy now enforces them by itself (Cloudflare's
-docs list no plan requirement for the binding at the time of writing; if your
-deploy rejects the `ratelimits` section, remove it — the server falls back to the
-old no-limit behavior). These bindings are per-colo and memory-backed (best
-effort): a distributed flood spread across colos can still exceed the nominal
-number, so the WAF rules below remain the stronger, globally-counted option.
-Deployments that predate the `ratelimits` section keep the old behavior until
-they redeploy with the updated config — the server treats a missing binding as
-"no limit".
+**The deploy config ships per-source-IP Workers Rate Limiting bindings** for
+all paths in the table below — the same limits it recommends — so a default
+deploy enforces them by itself (Cloudflare's docs list no plan requirement for
+the binding at the time of writing). The bindings are required: a path whose
+binding is missing from the deployment answers 503 `SetupIncomplete`
+(`rate-limit-unconfigured`) instead of running without its limit (AUTH_SPEC
+§4-1). A limiter that fails at run time lets the request through and leaves a
+`rate limiter call failed` warning in the Worker's logs. These bindings are
+per-colo and memory-backed (best effort): a distributed flood spread across
+colos can still exceed the nominal number, so the WAF rules below remain the
+stronger, globally-counted option.
+
+| Binding | Path it guards |
+|---|---|
+| `CLI_START_RATE_LIMIT` | `POST /auth/cli/start` |
+| `CLI_POLL_RATE_LIMIT` | `POST /auth/cli/poll` |
+| `OAUTH_CALLBACK_RATE_LIMIT` | `GET /auth/github/callback` |
+| `SIGNUP_START_RATE_LIMIT` | `GET /auth/github/start` with a `signup_code` |
+| `LEASE_RATE_LIMIT` | the lease, `.../rotation-proposals` and `.../rotation-proposals/preflight` |
 
 `/auth/github/callback` gained its binding later than the others (it was
 initially left to the WAF alone as a browser navigation path). It is not
@@ -867,8 +875,8 @@ shared runners funneling many lease calls through one address, or a whole team
 logging in behind one office NAT — the per-IP defaults can throttle it (429).
 The per-colo counting already makes the effective ceiling looser than the
 nominal number, but if you still hit it, raise the `limit` values in
-`cloudflare.config.ts` (or remove the binding entries) to match your traffic
-shape; the server fails open when a binding is absent.
+`cloudflare.config.ts` to match your traffic shape. Do not remove a binding
+entry: the path it guards then answers 503 `SetupIncomplete`.
 
 Add the following in the dashboard under Security → WAF → Rate limiting rules.
 **The Free plan allows only one rule, so in that case pick
@@ -905,7 +913,8 @@ client_id / client_secret live in Workers Secrets, so updates do not touch them.
 **Config-carrying updates**: some changes ship as `cloudflare.config.ts`
 changes (bindings such as the per-IP rate limits), not just code. They take
 effect only after you redeploy with the updated config, so pull the config
-too, not just the code.
+too, not just the code (code that needs a binding your config lacks answers
+503 `SetupIncomplete` on the path it guards).
 
 Update the server before the CLIs: a CLI assumes a server of the same release
 or newer.
@@ -913,9 +922,14 @@ or newer.
 ## Troubleshooting
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
-  `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
-  unregistered (a missed secret registration — step 5). List registered secrets with
+  `SetupIncomplete` (`github-oauth-unconfigured`)**: either `GITHUB_CLIENT_ID` or
+  `GITHUB_CLIENT_SECRET` is unregistered (a missed secret registration — step 5).
+  List registered secrets with
   `bunx cf workers secrets list --worker maruhi-server` (values are not shown)
+- **A rate-limited path (login, the OAuth callback, a lease) returns 503
+  `SetupIncomplete` (`rate-limit-unconfigured`)**: the deployment lacks that
+  path's rate-limit binding ("Recommended hardening" lists them). Restore the
+  binding entries in `cloudflare.config.ts` and redeploy
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
   transit. Run `maruhi login` again for a fresh link

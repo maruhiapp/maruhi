@@ -33,6 +33,7 @@ import {
   LeaseUnavailableError,
   ProjectNotFoundError,
   RotationProposalRejectedError,
+  SetupIncompleteError,
 } from "./errors/index.ts";
 import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { RotationProposalInputSchema, RotationProposalReceiptSchema } from "./rotation-api.ts";
@@ -200,6 +201,8 @@ export const leaseGroup = HttpApiGroup.make("lease")
           ProjectNotFoundError,
           LeaseRateLimitedError,
           LeaseUnavailableError,
+          // A missing source-IP rate-limit binding (AUTH_SPEC §4-1 (1))
+          SetupIncompleteError,
           // Judged after authorization (§14-5 — the reason leaks nothing new)
           RotationProposalRejectedError,
         ],
@@ -219,6 +222,7 @@ export const leaseGroup = HttpApiGroup.make("lease")
           ProjectNotFoundError,
           LeaseRateLimitedError,
           LeaseUnavailableError,
+          SetupIncompleteError,
           RotationProposalRejectedError,
         ],
       },
@@ -247,6 +251,7 @@ export const leaseGroup = HttpApiGroup.make("lease")
         ProjectNotFoundError,
         LeaseRateLimitedError,
         LeaseUnavailableError,
+        SetupIncompleteError,
       ],
     }),
   );

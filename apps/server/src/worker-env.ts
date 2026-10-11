@@ -1,6 +1,7 @@
 // Small pieces shared inside the worker: the Env and secrets services
 // and the DO RPC call helper (with its typed failure).
 
+import { SetupIncompleteError } from "@maruhi/api-schema";
 import type { ProjectId } from "@maruhi/core";
 import { Context, Data, Effect, Redacted } from "effect";
 
@@ -229,20 +230,29 @@ function groupsOfPiece(piece: string, ipv4Allowed: boolean): readonly string[] |
 
 /**
  * Best-effort per-source-IP rate limiting (the Workers Rate
- * Limiting binding). true = allowed.
+ * Limiting binding — AUTH_SPEC §4-1 (1)). true = allowed.
  *
- * The fail-open boundary (everything tips toward availability):
+ * `limiter` admits undefined: a deployment whose config lacks the
+ * binding has it undefined at runtime whatever Env declares. That is
+ * a static configuration mistake which would silently switch the
+ * limit off, so it fails closed (503 SetupIncomplete) before the
+ * source address is even looked at.
+ *
+ * The fail-open boundary (availability over the limit):
  * - A missing CF-Connecting-IP passes as unattributable. On the
  *   production Cloudflare path it is a header the edge always
  *   **overwrites**, leaving no room for client spoofing; it is absent
  *   only on direct arrival (cf dev, tests)
- * - A failure of the limiter itself passes too (auth and lease
- *   paths must not halt wholesale on a limiter failure)
+ * - A failure of a present limiter passes too (auth and lease
+ *   paths must not halt wholesale on a transient limiter failure)
  */
 export function ipRateLimitAllowed(
-  limiter: RateLimit,
+  limiter: RateLimit | undefined,
   request: { readonly source: unknown },
-): Effect.Effect<boolean> {
+): Effect.Effect<boolean, SetupIncompleteError> {
+  if (limiter === undefined) {
+    return Effect.fail(new SetupIncompleteError({ reason: "rate-limit-unconfigured" }));
+  }
   const source = request.source;
   const ip = source instanceof Request ? source.headers.get("cf-connecting-ip") : null;
   if (ip === null || ip === "") {
@@ -256,16 +266,15 @@ export function ipRateLimitAllowed(
     Effect.catch((errorName) =>
       // The **explicit** fail-open recovery (an availability-side
       // design decision — see the doc above). But it is not swallowed
-      // silently (CLAUDE.md): if a binding misconfiguration leaves
-      // the limiter permanently down, every limit stays disabled and
-      // nobody notices. A static message is left in the Workers logs
-      // (wrangler tail / Workers Logs — read only by the operator;
-      // not an external send); no request contents or IPs are logged.
+      // silently (CLAUDE.md): a limiter that stays down keeps its
+      // limit disabled, so a static message is left in the Workers
+      // logs (wrangler tail / Workers Logs — read only by the operator; not
+      // an external send); no request contents or IPs are logged.
       // error.message is a string outside our control (a future
       // limiter implementation could put the key in it), so only the
       // kind name is logged, honoring the "no IPs" promise
       Effect.logWarning(
-        "rate limiter binding failed; allowing the request (fail-open)",
+        "rate limiter call failed; allowing the request (fail-open)",
         errorName,
       ).pipe(Effect.as(true)),
     ),
