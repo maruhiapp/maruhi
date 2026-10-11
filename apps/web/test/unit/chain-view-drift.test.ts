@@ -21,16 +21,16 @@
 // vote lost to a demotion or a device revocation and cast again, a
 // revoked device's vote revived by re-registering its key — two live
 // votes of one user, counted once — a proposal signed from an owner's
-// admin-capped device, an ambiguous vote from one of several
-// fingerprint-unbound owner-capped devices).
+// admin-capped device, the same device revoked and its key re-enrolled
+// owner-capped while that proposal is pending, an ambiguous vote from one
+// of several fingerprint-unbound owner-capped devices).
 //
-// Structural difference with the same result: crypto's signer set takes
-// the proposer's vote when the proposing device's **effective** role
-// was owner; the web's `signersOf` takes it when the proposer's member
-// role was owner (the signing device may be unbound at that point), and
-// `countedVoters`' per-device cap check then drops a signature from a
-// device capped below owner. The counted voters agree (the built chain
-// proposes from an admin-capped device to pin this).
+// The proposal signature: both signer sets take it when the proposer's
+// effective role was owner at the proposal (on the web, the same
+// per-device check as a vote, made at the `propose` entry); whether it
+// still counts is judged at the tally. Judging it only at the tally let
+// the web count a signature from an admin-capped device whose key was
+// later re-enrolled owner-capped, a vote crypto never counts.
 //
 // Intentional difference: when a member has two or more devices whose
 // fingerprints the reported bytes cannot bind (the `add_device` wire
@@ -46,12 +46,26 @@
 // device's cap and added seq, and every fingerprint the fold bound) and
 // servers (fingerprint, scope, grant seq) with crypto's verified state,
 // plus a built chain whose delete_environment empties a member scope, a
-// device cap and a grant. The one skip is documented at `membershipAt`.
+// device cap and a grant. Each member's `sinceSeq` (the seq that last
+// changed its role or scope) is compared with the change point crypto's
+// history index shows. The one skip is documented at `membershipAt`.
+//
+// Policy, proposal records and readability: the same prefixes and built
+// chains compare the fold's four-eyes policy and each pending proposal's
+// record (seq, proposer, inner op, expiry) with crypto's verified state,
+// and require the fold to read every entry of a valid chain
+// (`unreadableEntries` is 0). With the sections above, every field of the
+// reported view is compared except two: `innerSummary` (display text
+// derived from the compared inner op) and a member's
+// `unresolvedRevocations` (the K5-1 count crypto has no counterpart for —
+// that member's devices are the documented skip). The web's proposals are
+// compared in their display order, crypto's sorted by seq.
 
 import {
   approvalSignersOf,
   type ChainActor,
   type ChainEntry as VerifiedChainEntry,
+  type ChainHistoryIndex,
   type ChainOperation,
   computeChainEntryHash,
   computeDekCommitment,
@@ -67,6 +81,7 @@ import {
   SUITE_ID,
   type UserId,
   verifyChain,
+  verifyChainWithHistory,
 } from "@maruhi/crypto";
 import {
   BASE_TIME_MS,
@@ -296,6 +311,58 @@ async function demotionAndRevocationChain(): Promise<ReadonlyArray<VerifiedChain
 }
 
 /**
+ * An owner proposes from an admin-capped device (the signature is not an
+ * owner vote), revokes that device and re-enrolls its key owner-capped
+ * while the proposal is pending; two approvals follow. Crypto never
+ * counts the proposal signature, so the proposal stays pending.
+ */
+async function reenrolledProposerChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, o2, a, b, m] = await Promise.all(
+    ["user_o", "user_o", "user_a", "user_b", "user_m"].map(makeKey),
+  );
+  const chain = new ChainBuilder();
+  await chain.append(o!, genesisOp(o!));
+  for (const owner of [a!, b!]) await chain.append(o!, addMemberOp(owner, "owner"));
+  await chain.append(o!, addMemberOp(m!, "member"));
+  await chain.append(o!, addDeviceOp(o2!, "admin"));
+  await chain.append(o!, policyOp(3));
+  const removeM = await chain.append(o2!, proposeRemoveOp(m!.actor.userId));
+  await chain.append(o!, revokeDeviceOp(o!.actor.userId, o2!));
+  await chain.append(o!, addDeviceOp(o2!, "owner"));
+  await chain.append(a!, approveOp(removeM));
+  await chain.append(b!, approveOp(removeM));
+  return chain.entries;
+}
+
+/**
+ * The same with two fingerprint-unbound devices (d1 owner-capped, d2
+ * admin-capped): d2 proposes, so the web cannot tell which device signed
+ * and counts the signature only if every unbound device is owner-capped
+ * (K5-2) — it is not. d2 is revoked and its key re-enrolled
+ * owner-capped, d2 signs again, and two approvals follow; crypto never
+ * counts the proposal signature.
+ */
+async function reenrolledUnboundProposerChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, d1, d2, a, b, m, n] = await Promise.all(
+    ["user_o", "user_o", "user_o", "user_a", "user_b", "user_m", "user_n"].map(makeKey),
+  );
+  const chain = new ChainBuilder();
+  await chain.append(o!, genesisOp(o!));
+  for (const owner of [a!, b!]) await chain.append(o!, addMemberOp(owner, "owner"));
+  await chain.append(o!, addMemberOp(m!, "member"));
+  await chain.append(o!, addDeviceOp(d1!, "owner"));
+  await chain.append(o!, addDeviceOp(d2!, "admin"));
+  await chain.append(o!, policyOp(3));
+  const removeM = await chain.append(d2!, proposeRemoveOp(m!.actor.userId));
+  await chain.append(o!, revokeDeviceOp(o!.actor.userId, d2!));
+  await chain.append(o!, addDeviceOp(d2!, "owner"));
+  await chain.append(d2!, addMemberOp(n!, "member"));
+  await chain.append(a!, approveOp(removeM));
+  await chain.append(b!, approveOp(removeM));
+  return chain.entries;
+}
+
+/**
  * An owner with two fingerprint-unbound owner-capped devices votes from
  * one of them (the web counts it: every unbound device is owner-capped —
  * K5-2), then votes again on a second proposal from the other.
@@ -329,7 +396,7 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
     expect(coverage.pendingCompared).toBeGreaterThanOrEqual(125);
   }, 60_000);
 
-  it("agrees at every prefix of built chains with multi-vote pending proposals, lost and recast votes, and second-device votes", async () => {
+  it("agrees at every prefix of built chains with multi-vote pending proposals, lost and recast votes, second-device votes, and a proposer key re-enrolled owner-capped", async () => {
     const coverage: Coverage = { pointsWithPending: 0, pendingCompared: 0, multiVoterTallies: 0 };
     await expectAgreementAtEveryPrefix(
       "demotion-and-revocation",
@@ -341,6 +408,12 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
       await ambiguousOwnerCappedChain(),
       coverage,
     );
+    const reenrolled = await reenrolledProposerChain();
+    await expectAgreementAtEveryPrefix("reenrolled-proposer", reenrolled, coverage);
+    expect(Object.values((await talliesAt(reenrolled)).web)).toEqual([["user_a", "user_b"]]);
+    const reenrolledUnbound = await reenrolledUnboundProposerChain();
+    await expectAgreementAtEveryPrefix("reenrolled-unbound-proposer", reenrolledUnbound, coverage);
+    expect(Object.values((await talliesAt(reenrolledUnbound)).web)).toEqual([["user_a", "user_b"]]);
     // The vectors hold no pending proposal with two or more counted
     // votes (their proposals run under a required-2 policy, so a second
     // counted vote applies them); these chains supply them
@@ -394,6 +467,27 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
       expect(web[removeM]).toEqual(["user_o"]);
     }, 60_000);
 
+    it("does not count a proposal signature from one of several unbound devices when one of them is below owner", async () => {
+      // d1 is owner-capped and d2 admin-capped: crypto knows d1 proposed
+      // (an owner vote); the web cannot tell d1 from d2 at the propose entry
+      const [o, d1, d2, a, b, m] = await Promise.all(
+        ["user_o", "user_o", "user_o", "user_a", "user_b", "user_m"].map(makeKey),
+      );
+      const chain = new ChainBuilder();
+      await chain.append(o!, genesisOp(o!));
+      for (const owner of [a!, b!]) await chain.append(o!, addMemberOp(owner, "owner"));
+      await chain.append(o!, addMemberOp(m!, "member"));
+      await chain.append(o!, addDeviceOp(d1!, "owner"));
+      await chain.append(o!, addDeviceOp(d2!, "admin"));
+      await chain.append(o!, policyOp(3));
+      const removeM = await chain.append(d1!, proposeRemoveOp(m!.actor.userId));
+      await chain.append(a!, approveOp(removeM));
+      await expectWebSubsetAtEveryPrefix(chain.entries);
+      const { crypto, web } = await talliesAt(chain.entries);
+      expect(crypto[removeM]).toEqual(["user_a", "user_o"]);
+      expect(web[removeM]).toEqual(["user_a"]);
+    }, 60_000);
+
     it("drops an unbound vote once a revocation the bytes cannot attribute may have hit its device", async () => {
       // Both unbound devices are owner-capped, so the vote counts on both
       // sides; revoking a3 (never bound) may have been a revocation of
@@ -432,7 +526,27 @@ interface MemberRow {
   userId: string;
   role: string;
   scope: string;
+  sinceSeq: number;
   devices: ReadonlyArray<DeviceRow> | null;
+}
+
+/** A member's role and scope at one seq in comparable form, or null outside its tenure. */
+function roleAndScopeAt(history: ChainHistoryIndex, userId: string, seq: number): string | null {
+  const at = history.memberStateAt(userId, seq);
+  if (at === undefined) return null;
+  const ids = at.scope.kind === "all" ? [] : at.scope.environmentIds;
+  return `${at.role}/${scopeKey(at.scope.kind, ids)}`;
+}
+
+/**
+ * Crypto's change point for a member's `sinceSeq`: the earliest seq from
+ * which its role and scope have stayed what they are at the head.
+ */
+function sinceSeqOf(history: ChainHistoryIndex, userId: string): number {
+  const current = roleAndScopeAt(history, userId, history.headSeq);
+  let seq = history.headSeq;
+  while (seq > 1 && roleAndScopeAt(history, userId, seq - 1) === current) seq -= 1;
+  return seq;
 }
 
 interface ServerRow {
@@ -459,7 +573,10 @@ const byServer = (a: ServerRow, b: ServerRow) => a.fingerprint.localeCompare(b.f
  * key only (its fingerprint is null on the web by construction).
  */
 async function membershipAt(entries: ReadonlyArray<VerifiedChainEntry>) {
-  const state = unwrapResult(await verifyChain(entries), "verifyChain");
+  const { state, history } = unwrapResult(
+    await verifyChainWithHistory(entries),
+    "verifyChainWithHistory",
+  );
   const view = deriveReportedView(entries as ReadonlyArray<ChainEntry>, state.headHashHex);
   const webFingerprints = new Map<string, string | null>();
   const unresolved = new Set<string>();
@@ -479,6 +596,7 @@ async function membershipAt(entries: ReadonlyArray<VerifiedChainEntry>) {
       userId: member.userId,
       role: member.role,
       scope: scopeKey(member.scopeKind, member.scopeEnvironmentIds),
+      sinceSeq: member.sinceSeq,
       devices: member.unresolvedRevocations > 0 ? null : devices.toSorted(byKey),
     };
   });
@@ -499,6 +617,7 @@ async function membershipAt(entries: ReadonlyArray<VerifiedChainEntry>) {
         member.scope.kind,
         member.scope.kind === "all" ? [] : member.scope.environmentIds,
       ),
+      sinceSeq: sinceSeqOf(history, member.userId),
       devices: unresolved.has(member.userId) ? null : devices.toSorted(byKey),
     };
   });
@@ -650,6 +769,28 @@ describe("members and servers drift (web fold vs crypto verifyChain)", () => {
     expect(coverage.skippedDevices).toBeLessThan(coverage.points / 10);
   }, 60_000);
 
+  it("agrees on sinceSeq when a change_role restates the current role and scope", async () => {
+    const [o, a] = await Promise.all(["user_o", "user_a"].map(makeKey));
+    const chain = new ChainBuilder();
+    await chain.append(o!, genesisOp(o!));
+    await chain.append(o!, addMemberOp(a!, "member"));
+    const restate = (newRole: "member" | "admin"): ChainOperation => ({
+      op: "change_role",
+      payload: { targetUserId: a!.actor.userId, newRole, ...ALL },
+    });
+    await chain.append(o!, restate("member"));
+    await chain.append(o!, restate("admin"));
+    await chain.append(o!, restate("admin"));
+    const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
+    await expectMembershipAgreementAtEveryPrefix("restated-role", chain.entries, coverage);
+    const sinceSeqAt = async (length: number) =>
+      (await membershipAt(chain.entries.slice(0, length))).web.members.find(
+        (member) => member.userId === "user_a",
+      )?.sinceSeq;
+    expect(await sinceSeqAt(3)).toBe(2);
+    expect(await sinceSeqAt(5)).toBe(4);
+  }, 60_000);
+
   it("agrees at every prefix of a built chain deleting an environment named by member scopes, device caps and server grants", async () => {
     const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
     const entries = await deletionChain();
@@ -663,5 +804,154 @@ describe("members and servers drift (web fold vs crypto verifyChain)", () => {
     expect(crypto.servers.map((s) => s.scope)).toEqual(
       expect.arrayContaining(["listed:", "listed:prod"]),
     );
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Policy, proposal records and readability (the rest of the reported view)
+// ---------------------------------------------------------------------------
+
+interface ProposalRecord {
+  hash: string;
+  seq: number;
+  proposer: string;
+  innerOp: string;
+  expiresAtMs: number;
+}
+
+/** The policy, the pending proposals' records and the unreadable count at one prefix. */
+async function recordsAt(entries: ReadonlyArray<VerifiedChainEntry>) {
+  const state = unwrapResult(await verifyChain(entries), "verifyChain");
+  const view = deriveReportedView(entries as ReadonlyArray<ChainEntry>, state.headHashHex);
+  const policyOf = (policy: { requiredApprovals: number; ops: ReadonlyArray<string> } | null) =>
+    policy === null ? null : `${policy.requiredApprovals}:${policy.ops.toSorted().join(",")}`;
+  const bySeq = (a: ProposalRecord, b: ProposalRecord) => a.seq - b.seq;
+  return {
+    web: {
+      policy: policyOf(view.policy),
+      proposals: view.proposals.map((p) => ({
+        hash: p.proposalHashHex,
+        seq: p.proposalSeq,
+        proposer: p.proposerUserId,
+        innerOp: p.innerOp,
+        expiresAtMs: p.expiresAtMs,
+      })),
+      unreadableEntries: view.unreadableEntries,
+    },
+    crypto: {
+      policy: policyOf(state.approvalPolicy),
+      proposals: [...state.pendingProposals.values()]
+        .map((p) => ({
+          hash: p.proposalHashHex,
+          seq: p.proposalSeq,
+          proposer: p.proposerUserId,
+          innerOp: p.inner.op,
+          expiresAtMs: p.expiresAtMs,
+        }))
+        .toSorted(bySeq),
+      unreadableEntries: 0,
+    },
+  };
+}
+
+/** Counts of what the record comparison saw (guards against a vacuous pass). */
+interface RecordCoverage {
+  points: number;
+  policyPoints: number;
+  policies: Set<string>;
+  proposals: number;
+  innerOps: Set<string>;
+}
+
+async function expectRecordAgreementAtEveryPrefix(
+  name: string,
+  entries: ReadonlyArray<VerifiedChainEntry>,
+  coverage: RecordCoverage,
+  fromLength = 1,
+): Promise<void> {
+  for (let length = fromLength; length <= entries.length; length += 1) {
+    const { web, crypto } = await recordsAt(entries.slice(0, length));
+    expect(web, `${name} @ seq ${length}`).toEqual(crypto);
+    coverage.points += 1;
+    if (crypto.policy !== null) {
+      coverage.policyPoints += 1;
+      coverage.policies.add(crypto.policy);
+    }
+    coverage.proposals += crypto.proposals.length;
+    for (const proposal of crypto.proposals) coverage.innerOps.add(proposal.innerOp);
+  }
+}
+
+/**
+ * A policy set with a duplicated op (both sides store the op set), a
+ * proposal left pending under it, and the policy turned off through a
+ * second proposal (required 0 — the vectors never turn a policy off).
+ */
+async function policyOffChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, a, m] = await Promise.all(["user_o", "user_a", "user_m"].map(makeKey));
+  const chain = new ChainBuilder();
+  await chain.append(o!, genesisOp(o!));
+  await chain.append(o!, addMemberOp(a!, "owner"));
+  await chain.append(o!, addMemberOp(m!, "member"));
+  await chain.append(o!, {
+    op: "set_approval_policy",
+    payload: { ops: ["remove_member", "grant_server", "remove_member"], requiredApprovals: 2 },
+  });
+  await chain.append(o!, proposeRemoveOp(m!.actor.userId));
+  // A policy change is always a target while a policy is active (§6.2)
+  const off = await chain.append(o!, {
+    op: "propose",
+    payload: {
+      inner: { op: "set_approval_policy", payload: { ops: [], requiredApprovals: 0 } },
+      expiresAtMs: EXPIRES_AT_MS,
+    },
+  });
+  await chain.append(a!, approveOp(off));
+  return chain.entries;
+}
+
+const emptyRecordCoverage = (): RecordCoverage => ({
+  points: 0,
+  policyPoints: 0,
+  policies: new Set(),
+  proposals: 0,
+  innerOps: new Set(),
+});
+
+describe("policy, proposal record and readability drift (web fold vs crypto verifyChain)", () => {
+  it("agrees on the policy and each pending proposal's record, and reads every entry, at every prefix of every positive chain vector", async () => {
+    const coverage = emptyRecordCoverage();
+    for (const chain of vectorChains()) {
+      await expectRecordAgreementAtEveryPrefix(
+        chain.name,
+        chain.entries,
+        coverage,
+        chain.fromLength,
+      );
+    }
+    expect(coverage.points).toBeGreaterThanOrEqual(200);
+    expect(coverage.policyPoints).toBeGreaterThanOrEqual(150);
+    expect(coverage.policies.size).toBeGreaterThanOrEqual(4);
+    expect(coverage.proposals).toBeGreaterThanOrEqual(125);
+    expect(coverage.innerOps.size).toBeGreaterThanOrEqual(6);
+  }, 60_000);
+
+  it("agrees at every prefix of the built chains, including a policy turned off with a proposal pending", async () => {
+    const coverage = emptyRecordCoverage();
+    for (const [name, entries] of [
+      ["demotion-and-revocation", await demotionAndRevocationChain()],
+      ["ambiguous-owner-capped", await ambiguousOwnerCappedChain()],
+      ["deletion", await deletionChain()],
+      ["policy-off", await policyOffChain()],
+      ["reenrolled-proposer", await reenrolledProposerChain()],
+      ["reenrolled-unbound-proposer", await reenrolledUnboundProposerChain()],
+    ] as const) {
+      await expectRecordAgreementAtEveryPrefix(name, entries, coverage);
+    }
+    expect(coverage.policies).toEqual(new Set(["3:remove_member", "2:grant_server,remove_member"]));
+    expect(coverage.proposals).toBeGreaterThanOrEqual(18);
+    const offAtHead = await recordsAt(await policyOffChain());
+    expect(offAtHead.crypto.policy).toBeNull();
+    expect(offAtHead.crypto.proposals).toHaveLength(1);
   }, 60_000);
 });

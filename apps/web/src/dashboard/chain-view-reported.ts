@@ -25,7 +25,7 @@ export interface ReportedMember {
   /** Environment scope as reported (CRYPTO_SPEC §6.2 — `all`, or the listed environment ids). */
   scopeKind: "all" | "listed";
   scopeEnvironmentIds: ReadonlyArray<string>;
-  /** The reported chain seq that last set this member's role / scope. */
+  /** The reported chain seq that last changed this member's role / scope (a restatement is not a change). */
   sinceSeq: number;
   /** The member's device keys as reported (may include revoked-but-unresolved ones — see below). */
   devices: ReadonlyArray<ReportedDevice>;
@@ -62,8 +62,6 @@ export interface ReportedProposal {
   proposalHashHex: string;
   proposalSeq: number;
   proposerUserId: string;
-  /** `owner` puts the proposal signature into the signer set (one vote — §6.2). */
-  proposerRoleAtProposal: string;
   innerOp: string;
   /** One-line summary of the inner operation (ids are shown raw — the UI neutralizes on render). */
   innerSummary: string;

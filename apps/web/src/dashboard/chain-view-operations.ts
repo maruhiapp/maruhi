@@ -8,10 +8,26 @@ import {
   startTenure,
   type EntryOf,
   type FoldState,
+  type MutableMember,
   type OperationFolder,
   type ProposableEntry,
 } from "./chain-view-state.ts";
 import { isRecord } from "./json-record.ts";
+
+/** Whether a member already holds this role and scope (listed ids compare as a set). */
+function holdsRoleAndScope(
+  member: MutableMember,
+  role: string,
+  scope: Pick<MutableMember, "scopeKind" | "scopeEnvironmentIds">,
+): boolean {
+  const ids = new Set(member.scopeEnvironmentIds);
+  return (
+    member.role === role &&
+    member.scopeKind === scope.scopeKind &&
+    ids.size === new Set(scope.scopeEnvironmentIds).size &&
+    scope.scopeEnvironmentIds.every((id) => ids.has(id))
+  );
+}
 
 function applyChangeRole(
   state: FoldState,
@@ -23,15 +39,16 @@ function applyChangeRole(
     return;
   }
   const existing = state.members.get(payload.targetUserId);
-  if (existing !== undefined) {
-    // Full replacement by the new (role, scope) (§6.2 — scope is also
-    // copied per 2026-09-15 ES K4). The device set is unchanged
-    const scope = reportedScope(payload);
-    existing.role = payload.newRole;
-    existing.scopeKind = scope.scopeKind;
-    existing.scopeEnvironmentIds = scope.scopeEnvironmentIds;
-    existing.sinceSeq = seq;
-  }
+  if (existing === undefined) return;
+  // Full replacement by the new (role, scope) (§6.2 — scope is also
+  // copied per 2026-09-15 ES K4). The device set is unchanged. A
+  // change_role restating the current role and scope is valid, and
+  // leaves sinceSeq at the last change
+  const scope = reportedScope(payload);
+  if (!holdsRoleAndScope(existing, payload.newRole, scope)) existing.sinceSeq = seq;
+  existing.role = payload.newRole;
+  existing.scopeKind = scope.scopeKind;
+  existing.scopeEnvironmentIds = scope.scopeEnvironmentIds;
 }
 
 function applyGrantServer(

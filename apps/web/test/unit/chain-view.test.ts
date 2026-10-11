@@ -294,7 +294,6 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
         proposalHashHex: HASH_P,
         proposalSeq: proposal.seq,
         proposerUserId: "user_owner",
-        proposerRoleAtProposal: "owner",
         innerOp: "remove_member",
         innerSummary: "remove user_m",
         expiresAtMs: 4_000_000_000_000,
