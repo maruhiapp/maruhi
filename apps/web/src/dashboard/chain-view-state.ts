@@ -20,12 +20,14 @@ export interface PendingFold {
   proposerUserId: string;
   proposerKeyFingerprintHex: string;
   /**
-   * The proposer's member role at proposal time, not crypto's effective
-   * role: `owner` puts the proposal signature into the signer set (§6.2),
-   * and `countedVoters`' per-device cap check drops it when the signing
-   * device is capped below owner.
+   * Whether the proposal signature counted as an owner vote when it was
+   * made (§6.2: the proposer's effective role was owner). It puts the
+   * signature into the signer set; whether it still counts is judged at
+   * the tally like any vote. Decided by the same per-device check as a
+   * vote, so an unbound signing key counts only while every unbound
+   * device of the proposer is owner-capped (K5-2).
    */
-  proposerRoleAtProposal: string;
+  proposerSignedAsOwner: boolean;
   inner: ProposableEntry;
   expiresAtMs: number;
   approvals: Vote[];

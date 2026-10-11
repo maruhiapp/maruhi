@@ -17,10 +17,9 @@ import { isRecord } from "./json-record.ts";
 
 /** Principle 2's S = {the proposer who proposed as an owner} ∪ approvals. */
 export function signersOf(pending: PendingFold): Vote[] {
-  const proposer: Vote[] =
-    pending.proposerRoleAtProposal === "owner"
-      ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
-      : [];
+  const proposer: Vote[] = pending.proposerSignedAsOwner
+    ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
+    : [];
   return [...proposer, ...pending.approvals];
 }
 
@@ -61,11 +60,6 @@ export function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): s
   return [...new Set(counted.map((signer) => signer.userId))];
 }
 
-/** The proposer's current role ("unknown" if not a member). */
-function proposerRoleOf(state: FoldState, userId: string): string {
-  return state.members.get(userId)?.role ?? "unknown";
-}
-
 /** Whether the proposal's inner op is in a readable shape (a record whose op name is a string). */
 function readableInner(inner: unknown): inner is ProposableEntry {
   return hasStrings(inner, ["op"]);
@@ -86,7 +80,10 @@ export function applyPropose(
     seq: entry.seq,
     proposerUserId: entry.actor.userId,
     proposerKeyFingerprintHex: entry.actor.keyFingerprintHex,
-    proposerRoleAtProposal: proposerRoleOf(state, entry.actor.userId),
+    proposerSignedAsOwner: countsAsOwnerVote(state, {
+      userId: entry.actor.userId,
+      keyFingerprintHex: entry.actor.keyFingerprintHex,
+    }),
     inner,
     expiresAtMs: entry.payload.expiresAtMs,
     approvals: [],
