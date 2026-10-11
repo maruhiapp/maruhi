@@ -1,6 +1,6 @@
 # maruhi authentication & identity specification (AUTH_SPEC)
 
-Version: 0.36-draft
+Version: 0.37-draft
 Status: owner-approved. Every revision is approved by the owner; the merge of the PR containing a revision constitutes that approval. History: `git log`.
 
 Authentication is implemented directly against GitHub OAuth (no authentication framework or external IdP service is used).
