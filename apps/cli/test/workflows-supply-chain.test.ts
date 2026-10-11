@@ -56,9 +56,10 @@
 //      at an unresolvable host and nothing else sets a PLAYWRIGHT_ variable,
 //      and no workflow, local action or package.json script (`pre`/`post`
 //      hooks included) runs `playwright install` in any spelling
-//  10. every job that runs on a runner sets `timeout-minutes`, so a hung run
-//      cannot hold its secrets and tokens for GitHub's 6-hour default (the
-//      Pullfrog agent's job holds ten provider keys and an OIDC token)
+//  10. every job that runs on a runner sets `timeout-minutes` of at most
+//      MAX_JOB_TIMEOUT_MINUTES, so a hung run cannot hold its secrets and
+//      tokens for GitHub's 6-hour default (the Pullfrog agent's job holds
+//      provider API keys and an OIDC token)
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -829,6 +830,9 @@ describe("release.yml ships no stable release until the approval gate is enabled
   });
 });
 
+/** The longest bound a job may set (Pullfrog's, the longest today, is 75). */
+const MAX_JOB_TIMEOUT_MINUTES = 120;
+
 describe("Every job that runs on a runner is time-bounded", () => {
   it.each([...PRIVILEGED, ...UNPRIVILEGED])(
     "%s bounds every job that runs on a runner with timeout-minutes",
@@ -838,7 +842,12 @@ describe("Every job that runs on a runner is time-bounded", () => {
         .filter(([, job]) => job.uses === undefined)
         .filter(([, job]) => {
           const minutes = job["timeout-minutes"];
-          return !(typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0);
+          return !(
+            typeof minutes === "number" &&
+            Number.isInteger(minutes) &&
+            minutes > 0 &&
+            minutes <= MAX_JOB_TIMEOUT_MINUTES
+          );
         })
         .map(([name]) => name);
       expect(unbounded).toEqual([]);

@@ -17,9 +17,11 @@ permissions:
 jobs:
   pullfrog:
     runs-on: ubuntu-26.04
-    # A hung agent run would otherwise hold the provider keys below and its
-    # OIDC token for GitHub's 6-hour default (runs take a few minutes)
-    timeout-minutes: 30
+    # A hung agent run would otherwise hold the provider keys below,
+    # id-token: write and GITHUB_TOKEN for GitHub's 6-hour default. The
+    # action stops itself at its `timeout` input's 1-hour default and reports
+    # the failure; this bound leaves headroom for checkout and its post step
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
