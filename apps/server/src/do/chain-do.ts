@@ -24,8 +24,11 @@
 // - Acceptance policy: §6.4 for the chain (1 MiB / 10,000 entries / 32
 //   MiB); §12-8 for the data (policy.ts)
 // - Storage (DO SQLite) is isolated behind Effect services (ChainStore /
-//   DataStore / AuditStore). The DDL lives in do-schema.ts (applied by the
-//   constructor)
+//   DataStore / AuditStore). The DDL lives in do-schema.ts and is applied at
+//   genesis acceptance (init) — a never-initialized DO holds no tables so a
+//   probe of an arbitrary project ID leaves no storage (Sc-7 / A-4). The
+//   constructor only applies pending migration steps to an already-materialized
+//   DO; opsRestore materializes a fresh destination
 
 import type { EnvironmentId, UserId, VariableId } from "@maruhi/core";
 import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
@@ -153,6 +156,7 @@ import { readMirrorState } from "./do-mirror.ts";
 import {
   ensureProjectDoTables,
   PROJECT_DO_TABLES,
+  projectDoInitialized,
   readProjectDoSchemaVersion,
 } from "./do-schema.ts";
 import type { RestoreFailureCode, SnapshotTrailer } from "./do-snapshot.ts";
@@ -214,10 +218,11 @@ export interface Env {
    */
   readonly OAUTH_CALLBACK_RATE_LIMIT: RateLimit;
   /**
-   * The source-IP rate limit of lease issuance. A DO is implicitly
-   * created by name, so a valid OIDC token alone could mass-produce DOs
-   * for arbitrary project IDs — this request-level limit before
-   * projectStub is reached bounds the creation rate.
+   * The source-IP rate limit of lease issuance. A DO is addressable by
+   * name, so a valid OIDC token alone could aim requests at arbitrary
+   * project IDs; a never-materialized DO no longer stores anything on reach
+   * (Sc-7 / A-4), so this request-level limit before projectStub is reached
+   * bounds the CPU of such probing rather than any storage growth.
    */
   readonly LEASE_RATE_LIMIT: RateLimit;
   /**
@@ -442,6 +447,7 @@ const initProgram = Effect.fn("chain-do.initProgram")(function* (
   expectedProjectId: string,
   entry: ChainEntry,
   admission: InitAdmission,
+  storage: DurableObjectStorage,
   cache: StateCache,
 ) {
   const store = yield* ChainStore;
@@ -484,6 +490,11 @@ const initProgram = Effect.fn("chain-do.initProgram")(function* (
   if (applied.state.headHashHex !== expectedProjectId) {
     return yield* new ProjectIdMismatchError();
   }
+  // The genesis is accepted: materialize the DO's tables now (Sc-7 / A-4,
+  // owner approval 2026-10-11 — AUTH_SPEC §14-3 / §11-3). Placed after every
+  // refusal branch above (already-initialized, not-admitted, rejected,
+  // project-id-mismatch), so a refused or probing request leaves no storage.
+  yield* Effect.sync(() => ensureProjectDoTables(storage));
   yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
   updateStateCache(cache, applied);
   return { headSeq: applied.state.headSeq, headHashHex: applied.state.headHashHex };
@@ -700,10 +711,24 @@ export class ProjectChainDO extends DurableObject<Env> {
   readonly #opLock = Semaphore.makeUnsafe(1);
   // Cache of the chain-derived state + the parsed chain (see chain-store.ts)
   readonly #stateCache: StateCache = { current: null, chain: null };
+  // Whether this DO's tables exist. A fresh DO holds no storage until a
+  // genesis is accepted (Sc-7 / A-4, owner approval 2026-10-11 — AUTH_SPEC
+  // §14-3 / §11-3): materialized by init (genesis) or opsRestore. Reads and
+  // writes to an unmaterialized DO fold to the uniform 404 (§11-2) without
+  // touching storage (#runData), so a probe of an arbitrary project ID — the
+  // unauthenticated lease, an authenticated GET — leaves nothing behind.
+  #initialized: boolean;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ensureProjectDoTables(ctx.storage);
+    // Read-only detection (creates nothing). A materialized DO applies any
+    // pending migration steps and re-asserts its triggers (the catch-up that
+    // used to run unconditionally); a fresh DO is left untouched until a
+    // genesis is accepted.
+    this.#initialized = projectDoInitialized(ctx.storage.sql);
+    if (this.#initialized) {
+      ensureProjectDoTables(ctx.storage);
+    }
     this.#runtime = ManagedRuntime.make(
       Layer.mergeAll(
         chainStoreLayer(ctx.storage.sql, this.#stateCache),
@@ -763,6 +788,14 @@ export class ProjectChainDO extends DurableObject<Env> {
    * comment).
    */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
+    // An unmaterialized DO holds no tables (Sc-7 / A-4): every read / write
+    // folds to not-initialized (the uniform 404 of §11-2) before any storage
+    // is touched. The lease / proposal family does not take this gate — their
+    // server-key-unconfigured 503 must precede the existence check (§14-3), so
+    // they reach uninitialized through the chain load instead (loadInitializedChain).
+    if (!this.#initialized) {
+      return Promise.resolve({ kind: "rejected", rejection: { kind: "not-initialized" } });
+    }
     return this.#runtime.runPromise(
       this.#opLock.withPermit(this.#invalidateCachesOnDefect(toDataOutcome(program))),
     );
@@ -819,12 +852,18 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
-          initProgram(expectedProjectId, entry, admission, this.#stateCache).pipe(
-            Effect.map((head): InitOutcome => ({
-              kind: "initialized",
-              headSeq: head.headSeq,
-              headHashHex: head.headHashHex,
-            })),
+          initProgram(expectedProjectId, entry, admission, this.ctx.storage, this.#stateCache).pipe(
+            Effect.map((head): InitOutcome => {
+              // The genesis committed and the tables were materialized
+              // (initProgram): record it so later reads / writes run instead
+              // of folding to not-initialized.
+              this.#initialized = true;
+              return {
+                kind: "initialized",
+                headSeq: head.headSeq,
+                headHashHex: head.headHashHex,
+              };
+            }),
             Effect.catchTags({
               AlreadyInitialized: (error): Effect.Effect<InitOutcome> =>
                 Effect.succeed({
@@ -1347,6 +1386,20 @@ export class ProjectChainDO extends DurableObject<Env> {
     if (bucket === undefined) {
       return Promise.resolve({ kind: "no-bucket" });
     }
+    // A never-materialized DO has nothing to evacuate (Sc-7 / A-4). The sweep
+    // enumerates D1 `projects`, which only an accepted genesis writes, so this
+    // is a defensive guard — reading the watermarks would fault without tables.
+    if (!this.#initialized) {
+      const databaseSizeBytes = this.ctx.storage.sql.databaseSize;
+      return Promise.resolve({
+        kind: "skipped",
+        auditSeq: 0,
+        chainSeq: 0,
+        attestationMark: 0,
+        storageLevel: storageGuardDecision(databaseSizeBytes),
+        databaseSizeBytes,
+      });
+    }
     const sql = this.ctx.storage.sql;
     const doIdHex = this.ctx.id.toString();
     return this.#runtime.runPromise(
@@ -1451,9 +1504,15 @@ export class ProjectChainDO extends DurableObject<Env> {
       }
       return verified.body;
     });
-    return this.#runtime.runPromise(
-      this.#opLock.withPermit(restoreProgram(this.ctx.storage, body, this.#stateCache)),
-    );
+    return this.#runtime
+      .runPromise(this.#opLock.withPermit(restoreProgram(this.ctx.storage, body, this.#stateCache)))
+      .then((outcome) => {
+        // restoreProgram materialized the DO's tables (Sc-7 / A-4), even on a
+        // refusal (wiped back to empty, but present): record it so later reads
+        // run instead of folding to not-initialized.
+        this.#initialized = true;
+        return outcome;
+      });
   }
 }
 
@@ -1470,6 +1529,11 @@ export const restoreProgram = Effect.fn("chain-do.restoreProgram")(function* (
   body: Effect.Effect<ReadableStream, RestoreRefusedError>,
   cache: StateCache,
 ): Effect.fn.Return<OpsRestoreOutcome, never, AuditStore | StorageMeter> {
+  // A restore materializes a fresh destination DO (hosted-ops.md §2-E): the
+  // restore reads and writes the schema's tables (isProjectDoEmpty, wipe,
+  // acceptColumns), so create them first (Sc-7 / A-4 — a fresh destination
+  // holds none; idempotent on a re-run into an empty DO).
+  yield* Effect.sync(() => ensureProjectDoTables(storage));
   const sql = storage.sql;
   const audit = yield* AuditStore;
   const meter = yield* StorageMeter;
