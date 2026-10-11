@@ -335,6 +335,34 @@ async function reenrolledProposerChain(): Promise<ReadonlyArray<VerifiedChainEnt
 }
 
 /**
+ * The same with two fingerprint-unbound devices (d1 owner-capped, d2
+ * admin-capped): d2 proposes, so the web cannot tell which device signed
+ * and counts the signature only if every unbound device is owner-capped
+ * (K5-2) — it is not. d2 is revoked and its key re-enrolled
+ * owner-capped, d2 signs again, and two approvals follow; crypto never
+ * counts the proposal signature.
+ */
+async function reenrolledUnboundProposerChain(): Promise<ReadonlyArray<VerifiedChainEntry>> {
+  const [o, d1, d2, a, b, m, n] = await Promise.all(
+    ["user_o", "user_o", "user_o", "user_a", "user_b", "user_m", "user_n"].map(makeKey),
+  );
+  const chain = new ChainBuilder();
+  await chain.append(o!, genesisOp(o!));
+  for (const owner of [a!, b!]) await chain.append(o!, addMemberOp(owner, "owner"));
+  await chain.append(o!, addMemberOp(m!, "member"));
+  await chain.append(o!, addDeviceOp(d1!, "owner"));
+  await chain.append(o!, addDeviceOp(d2!, "admin"));
+  await chain.append(o!, policyOp(3));
+  const removeM = await chain.append(d2!, proposeRemoveOp(m!.actor.userId));
+  await chain.append(o!, revokeDeviceOp(o!.actor.userId, d2!));
+  await chain.append(o!, addDeviceOp(d2!, "owner"));
+  await chain.append(d2!, addMemberOp(n!, "member"));
+  await chain.append(a!, approveOp(removeM));
+  await chain.append(b!, approveOp(removeM));
+  return chain.entries;
+}
+
+/**
  * An owner with two fingerprint-unbound owner-capped devices votes from
  * one of them (the web counts it: every unbound device is owner-capped —
  * K5-2), then votes again on a second proposal from the other.
@@ -383,6 +411,9 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
     const reenrolled = await reenrolledProposerChain();
     await expectAgreementAtEveryPrefix("reenrolled-proposer", reenrolled, coverage);
     expect(Object.values((await talliesAt(reenrolled)).web)).toEqual([["user_a", "user_b"]]);
+    const reenrolledUnbound = await reenrolledUnboundProposerChain();
+    await expectAgreementAtEveryPrefix("reenrolled-unbound-proposer", reenrolledUnbound, coverage);
+    expect(Object.values((await talliesAt(reenrolledUnbound)).web)).toEqual([["user_a", "user_b"]]);
     // The vectors hold no pending proposal with two or more counted
     // votes (their proposals run under a required-2 policy, so a second
     // counted vote applies them); these chains supply them
@@ -434,6 +465,27 @@ describe("four-eyes tally drift (web fold vs crypto ownerVotersOf)", () => {
       const { crypto, web } = await talliesAt(chain.entries);
       expect(crypto[removeM]).toEqual(["user_a", "user_o"]);
       expect(web[removeM]).toEqual(["user_o"]);
+    }, 60_000);
+
+    it("does not count a proposal signature from one of several unbound devices when one of them is below owner", async () => {
+      // d1 is owner-capped and d2 admin-capped: crypto knows d1 proposed
+      // (an owner vote); the web cannot tell d1 from d2 at the propose entry
+      const [o, d1, d2, a, b, m] = await Promise.all(
+        ["user_o", "user_o", "user_o", "user_a", "user_b", "user_m"].map(makeKey),
+      );
+      const chain = new ChainBuilder();
+      await chain.append(o!, genesisOp(o!));
+      for (const owner of [a!, b!]) await chain.append(o!, addMemberOp(owner, "owner"));
+      await chain.append(o!, addMemberOp(m!, "member"));
+      await chain.append(o!, addDeviceOp(d1!, "owner"));
+      await chain.append(o!, addDeviceOp(d2!, "admin"));
+      await chain.append(o!, policyOp(3));
+      const removeM = await chain.append(d1!, proposeRemoveOp(m!.actor.userId));
+      await chain.append(a!, approveOp(removeM));
+      await expectWebSubsetAtEveryPrefix(chain.entries);
+      const { crypto, web } = await talliesAt(chain.entries);
+      expect(crypto[removeM]).toEqual(["user_a", "user_o"]);
+      expect(web[removeM]).toEqual(["user_a"]);
     }, 60_000);
 
     it("drops an unbound vote once a revocation the bytes cannot attribute may have hit its device", async () => {
@@ -717,6 +769,28 @@ describe("members and servers drift (web fold vs crypto verifyChain)", () => {
     expect(coverage.skippedDevices).toBeLessThan(coverage.points / 10);
   }, 60_000);
 
+  it("agrees on sinceSeq when a change_role restates the current role and scope", async () => {
+    const [o, a] = await Promise.all(["user_o", "user_a"].map(makeKey));
+    const chain = new ChainBuilder();
+    await chain.append(o!, genesisOp(o!));
+    await chain.append(o!, addMemberOp(a!, "member"));
+    const restate = (newRole: "member" | "admin"): ChainOperation => ({
+      op: "change_role",
+      payload: { targetUserId: a!.actor.userId, newRole, ...ALL },
+    });
+    await chain.append(o!, restate("member"));
+    await chain.append(o!, restate("admin"));
+    await chain.append(o!, restate("admin"));
+    const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
+    await expectMembershipAgreementAtEveryPrefix("restated-role", chain.entries, coverage);
+    const sinceSeqAt = async (length: number) =>
+      (await membershipAt(chain.entries.slice(0, length))).web.members.find(
+        (member) => member.userId === "user_a",
+      )?.sinceSeq;
+    expect(await sinceSeqAt(3)).toBe(2);
+    expect(await sinceSeqAt(5)).toBe(4);
+  }, 60_000);
+
   it("agrees at every prefix of a built chain deleting an environment named by member scopes, device caps and server grants", async () => {
     const coverage: MembershipCoverage = { points: 0, listedScopes: 0, skippedDevices: 0 };
     const entries = await deletionChain();
@@ -870,6 +944,7 @@ describe("policy, proposal record and readability drift (web fold vs crypto veri
       ["deletion", await deletionChain()],
       ["policy-off", await policyOffChain()],
       ["reenrolled-proposer", await reenrolledProposerChain()],
+      ["reenrolled-unbound-proposer", await reenrolledUnboundProposerChain()],
     ] as const) {
       await expectRecordAgreementAtEveryPrefix(name, entries, coverage);
     }

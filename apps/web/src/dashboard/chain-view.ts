@@ -103,7 +103,7 @@ function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
 
 /**
  * delete_environment: prunes the deleted id from every member's listed
- * scope (a pruned member's sinceSeq moves to the deletion — it set the
+ * scope (a pruned member's sinceSeq moves to the deletion — it changed the
  * scope, the same change point as crypto's history index), from every
  * device's listed cap, and from every granted server's scope. The
  * environment set itself is not folded (the dashboard lists live

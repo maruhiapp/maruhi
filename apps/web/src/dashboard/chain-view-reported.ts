@@ -25,7 +25,7 @@ export interface ReportedMember {
   /** Environment scope as reported (CRYPTO_SPEC §6.2 — `all`, or the listed environment ids). */
   scopeKind: "all" | "listed";
   scopeEnvironmentIds: ReadonlyArray<string>;
-  /** The reported chain seq that last set this member's role / scope. */
+  /** The reported chain seq that last changed this member's role / scope (a restatement is not a change). */
   sinceSeq: number;
   /** The member's device keys as reported (may include revoked-but-unresolved ones — see below). */
   devices: ReadonlyArray<ReportedDevice>;
