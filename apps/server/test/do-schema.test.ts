@@ -4,11 +4,13 @@
 // the base, application/rollback/rerun of later steps on synthetic plans,
 // and that re-applying to an already-migrated DB is a no-op.
 //
-// The real DO's (ProjectChainDO) constructor applies migrations at
-// runInDurableObject instantiation time, so the "empty DB" / "mid-version
-// DB" states are reproduced by dropping every table + initializing
-// schema_meta. This file uses a dedicated DO name and does not share
-// storage with other tests' project DOs.
+// The real DO's (ProjectChainDO) constructor no longer materializes tables
+// for a fresh DO (Sc-7 / A-4 — they are created at genesis acceptance); it
+// only catches up an already-materialized DO. These tests drive the
+// migration machinery directly (ensureProjectDoTables / applyProjectDoMigrations),
+// so they reproduce the "empty DB" / "mid-version DB" states by dropping
+// every table + initializing schema_meta. This file uses a dedicated DO name
+// and does not share storage with other tests' project DOs.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";

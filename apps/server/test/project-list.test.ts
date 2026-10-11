@@ -24,6 +24,7 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
+import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import { vectorKeyOf } from "./support/data-crypto.ts";
@@ -248,10 +249,18 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
     await insertProjectionRow(broken, OWNER);
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(broken));
     await runInDurableObject(stub, (_instance, state) => {
+      // Materialize the DO first (a project is normally materialized at
+      // genesis acceptance — Sc-7 / A-4), then seed a row that fails JSON
+      // decode to make memberRoleFor a defect.
+      ensureProjectDoTables(state.storage);
       state.storage.sql.exec(
         "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, 'not-json', 'broken', 8)",
       );
     });
+    // No eviction needed: the DO re-checks storage when its #initialized flag
+    // is false (#latchInitialized), so the instance that seeded the tables
+    // directly still runs memberRoleFor (it defects on the broken row) instead
+    // of folding to not-initialized.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       // Each rejected DO RPC below makes workerd log an "uncaught

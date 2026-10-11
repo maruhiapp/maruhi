@@ -232,19 +232,17 @@ export const authorizeWorkload = Effect.fn("programs-lease.authorizeWorkload")(f
       reason: "server-key-unconfigured",
     });
   }
-  // An uninitialized project is 404 with no audit left behind: letting the
-  // unauthenticated path create DO rows for arbitrary project IDs would be
-  // an audit-log inflation DoS. The project ID is a genesis hash =
-  // effectively a capability and cannot be guessed. **Note the fixed window
-  // below bounds the number of audit rows, not the probe itself** (someone
-  // holding one valid token from an allowed issuer can repeat requests to a
-  // known project ID to impose chain-derivation cost, and after exhausting
+  // An uninitialized project is 404 with no storage left behind: a
+  // never-materialized DO holds no tables, and this read creates none
+  // (Sc-7 / A-4, owner approval 2026-10-11 — the DO's tables are created only
+  // at genesis acceptance, chain-do.ts / do-schema.ts). The project ID is a
+  // genesis hash = effectively a capability and cannot be guessed. **Note the
+  // fixed window below bounds the number of audit rows, not the probe itself**
+  // (someone holding one valid token from an allowed issuer can repeat requests
+  // to a known project ID to impose chain-derivation cost, and after exhausting
   // the 100 rows/hour can create a state where subsequent denials go
-  // unrecorded). Also, the DO constructor creates the empty tables on reach,
-  // so a probe to an arbitrary project ID consumes DO-instantiation storage
-  // even without leaving an audit row.
-  // A limit on the request rate itself is unimplemented and is deferred as a
-  // design decision separate from AUDIT_SPEC §3.5's recording bound
+  // unrecorded). The per-source-IP request-level limit (§14-3) bounds the probe
+  // rate itself as CPU protection — a probe no longer consumes DO storage.
   const chain = yield* loadInitializedChain.pipe(
     Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
   );

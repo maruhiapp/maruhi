@@ -69,14 +69,16 @@ describe("POST /projects x projects-per-org limit (§11-3)", () => {
       limit: MAX_ACTIVE_PROJECTS_PER_ORG,
     });
     // The DO wrote nothing (admitFresh = false is report-only): fetching the
-    // chain is uninitialized = 404 (§11-2), and the DO's chain table is empty
+    // chain is uninitialized = 404 (§11-2), and the DO materialized no tables
+    // at all — the report-only init precedes genesis acceptance, so a refused
+    // fresh init leaves no storage behind (Sc-7 / A-4, §11-3).
     const chain = await getChain(vectorProjectId);
     expect(chain.status).toBe(404);
-    const entries = await queryProjectDo(
+    const tables = await queryProjectDo(
       vectorProjectId,
-      "SELECT count(*) AS n FROM chain_entries",
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
     );
-    expect(entries[0]?.["n"]).toBe(0);
+    expect(tables).toEqual([]);
     // D1 is also unchanged (neither the projects row nor an
     // org.project_created audit row is added)
     expect(await projectRowsInOrg(VECTOR_ORG)).toBe(MAX_ACTIVE_PROJECTS_PER_ORG);

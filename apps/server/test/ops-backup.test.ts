@@ -308,6 +308,16 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         "version"
       ],
     );
+    // Read the live column lists before the reset: a reset now drops the
+    // tables (a DO is never-initialized until genesis acceptance — Sc-7 / A-4),
+    // and the restore below re-materializes them to compare against these.
+    const chainColumns = (
+      await queryProjectDo(
+        projectId,
+        "SELECT name FROM pragma_table_info('chain_entries') ORDER BY cid",
+      )
+    ).map((row) => String(row["name"]));
+    expect(chainColumns.length).toBeGreaterThan(1);
     await resetProjectDo(projectId);
     const header = {
       kind: "header",
@@ -324,13 +334,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       "created_at",
       "deleted_at",
     ];
-    const chainColumns = (
-      await queryProjectDo(
-        projectId,
-        "SELECT name FROM pragma_table_info('chain_entries') ORDER BY cid",
-      )
-    ).map((row) => String(row["name"]));
-    expect(chainColumns.length).toBeGreaterThan(1);
     const cases: { name: string; table: string; columns: unknown }[] = [
       {
         name: "injected",
@@ -515,6 +518,21 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     const restored = await restore(outcome.objectKey);
     expect(restored.kind).toBe("restored");
     expect(await allRows()).toEqual(rowsBefore);
+  });
+
+  it("skips a never-initialized DO without materializing its tables (Sc-7 / A-4)", async () => {
+    // The sweep enumerates D1 `projects` (only an accepted genesis writes one),
+    // so a never-initialized DO is not reached in production; the guard keeps
+    // a direct call from faulting on the missing watermark tables, and leaves
+    // no storage behind.
+    const fresh = "c9".repeat(32);
+    await resetProjectDo(fresh);
+    const freshStub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(fresh));
+    const outcome = (await freshStub.opsBackup(backupInput())) as OpsBackupOutcome;
+    expect(outcome.kind).toBe("skipped");
+    expect(
+      await queryProjectDo(fresh, "SELECT name FROM sqlite_master WHERE type = 'table'"),
+    ).toEqual([]);
   });
 });
 

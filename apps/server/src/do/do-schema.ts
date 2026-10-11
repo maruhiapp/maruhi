@@ -608,6 +608,21 @@ const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 )`;
 
+/**
+ * Whether this DO has been materialized (its tables created). A fresh DO
+ * holds no storage until a genesis is accepted (AUTH_SPEC §14-3 / §11-3 —
+ * Sc-7 / A-4, owner approval 2026-10-11): the base step's `chain_entries`
+ * is the marker. Read-only (a `sqlite_master` lookup) — it creates nothing,
+ * so a probe of an arbitrary project ID leaves no storage behind.
+ */
+export function projectDoInitialized(sql: SqlStorage): boolean {
+  return (
+    sql
+      .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chain_entries' LIMIT 1")
+      .toArray().length > 0
+  );
+}
+
 /** Read the recorded schema version (0 for a fresh database). */
 export function readProjectDoSchemaVersion(sql: SqlStorage): number {
   sql.exec(SCHEMA_META_DDL);
@@ -690,7 +705,13 @@ export function applyProjectDoMigrations(
   }
 }
 
-/** Called from the DO constructor (idempotent). Applies only the not-yet-applied changes in order. */
+/**
+ * Materialize / migrate the project DO's tables (idempotent). Applies only
+ * the not-yet-applied changes in order. Called at genesis acceptance (init)
+ * and by a restore to create a fresh DO's tables, and by the constructor to
+ * catch up an already-materialized DO's pending steps (Sc-7 / A-4 — a
+ * never-initialized DO is never passed here, so it holds no tables).
+ */
 export function ensureProjectDoTables(storage: DurableObjectStorage): void {
   applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
   ensureAuditWriteTrigger(storage.sql);

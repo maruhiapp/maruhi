@@ -61,7 +61,7 @@ The findings center on two points:
 | I-3 | Info | .claude | — | The remote-dev-environment SessionStart hook installs Bun via `curl \| bash` (dev environment only) |
 | A-2 | Info | api-schema / docs | **Resolved (PR #65)** | The `serverEncPubHex` returned by `/auth/config` was not in AUTH_SPEC §4's response definition (spec-first discipline missed) → PR #65's `50452f6` added it to §4 |
 | A-3 | Info | cli | **Fixed (2026-08-15)** | `server grant --expect-fingerprint` assumes an out-of-band copy; passing the value fetched from `/auth/config` makes the check self-referential (should be stated in the ops docs) |
-| A-4 | Info | server | New (supplement 2), handoff noted | A single valid OIDC token can materialize a DO (empty tables) for an arbitrary project ID (no audit row is left, but storage is consumed) — the DO-creation aspect should be added to the in-code handoff |
+| A-4 | Info | server | **Fixed (Sc-7, owner approval 2026-10-11)** | A single valid OIDC token could materialize a DO (empty tables) for an arbitrary project ID (no audit row left, but storage consumed), and the same held for authenticated GETs — the DO's tables were created in its constructor. Resolved together with audit ledger Sc-7: the tables are created only at genesis acceptance, so a probe of an arbitrary ID (lease or GET) reads only and leaves no storage. Spec: AUTH_SPEC 0.38-draft §14-3 / §11-3 |
 | A-5 | Info | crypto / cli | New (supplement 2) | Handoffs to A3 (workload implementation): use `computeLeaseClaimsDigest` for the claims digest (using the builder directly bypasses the empty-field guard); DEK-length verification belongs to the §5.2 commitment-check layer; replay non-guarantee (§9.1) was awaiting a ruling |
 | A-6 | Low | server | **Mitigated (supplement 3)** | `/auth/github/callback` has the same unauthenticated outbound amplification as L-3 (self-bound state lets one request induce a code exchange each time), and the query had no input cap — cap added + put under the operational rate limit |
 
@@ -870,6 +870,17 @@ countermeasure itself belongs to the same decision as the probe-rate cap, so
 it stays a handoff. → **The comment addition is done (2026-08-15)**. What
 remains is the design decision on the probe-rate cap itself (same as the
 existing handoff).
+
+→ **Fixed (Sc-7, owner approval 2026-10-11).** Resolved as part of audit ledger
+Sc-7: the project DO's tables are no longer created in the constructor but at
+**genesis acceptance** (`init`), so every path that reaches a never-initialized
+DO — the unauthenticated lease and the authenticated GETs this finding names —
+reads only and leaves no storage behind (`projectDoInitialized` /
+`ensureProjectDoTables` in `apps/server/src/do/do-schema.ts`;
+`apps/server/src/do/chain-do.ts`). A restore (`opsRestore`) and the §11-3
+report-only init at the cap are unaffected (the former materializes the
+destination, the latter declines before materialization). The per-source-IP
+rate limit (§14-3) stays as CPU protection. Spec: AUTH_SPEC 0.38-draft §14-3 / §11-3.
 
 ### A-5. Handoffs to A3 (workload implementation) (Info, new)
 

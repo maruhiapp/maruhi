@@ -7,7 +7,8 @@
 // current member set (CRYPTO_SPEC §6.4), and data operations are also
 // authorized by the chain-derived role (§6.2, AUTH_SPEC §12-3).
 //
-// The tables' DDL lives in do-schema.ts (applied by the DO constructor).
+// The tables' DDL lives in do-schema.ts (applied at genesis acceptance — a
+// never-initialized DO holds no tables; Sc-7 / A-4).
 
 import { ChainEntrySchema } from "@maruhi/api-schema";
 import { ChainInvalidError, cryptoEffect } from "@maruhi/core";
@@ -16,6 +17,7 @@ import { canonicalChainEntryBytes, verifyChainWithHistory } from "@maruhi/crypto
 import { Context, Effect, Layer, Result, Schema } from "effect";
 
 import { catchCryptoErrors } from "../crypto-catch.ts";
+import { projectDoInitialized } from "./do-schema.ts";
 
 export interface StoredChain {
   readonly entries: readonly ChainEntry[];
@@ -100,20 +102,33 @@ const EMPTY_CHAIN: StoredChain = {
   totalCanonicalBytes: 0,
 };
 
-function loadChain(sql: SqlStorage, cache: StateCache): StoredChain {
-  // An invalid cache (e.g. right after a DO restart) makes the differential load off the empty base = a full load
-  const base = cache.chain ?? EMPTY_CHAIN;
-  const diff = loadRowsAfter(sql, base.headSeq);
-  if (diff.entries.length === 0 && cache.chain !== null) {
-    return base;
-  }
-  const chain: StoredChain = {
+/** Concatenate the cached prefix with the newly loaded rows (append-only, so a diff concat = a full load). */
+function mergeLoadedDiff(base: StoredChain, diff: LoadedRows): StoredChain {
+  return {
     entries: [...base.entries, ...diff.entries],
     headSeq: diff.lastSeq ?? base.headSeq,
     headHashHex: diff.hashes[diff.hashes.length - 1] ?? base.headHashHex,
     genesisHashHex: base.genesisHashHex ?? diff.hashes[0] ?? null,
     totalCanonicalBytes: base.totalCanonicalBytes + diff.addedBytes,
   };
+}
+
+function loadChain(sql: SqlStorage, cache: StateCache): StoredChain {
+  // A never-materialized DO has no tables (AUTH_SPEC §14-3 / §11-3 — the
+  // tables are created only at genesis acceptance; Sc-7 / A-4). There is
+  // nothing to load, and querying chain_entries would fault: report
+  // uninitialized (the empty chain). Only paid when the parsed cache is
+  // cold (a materialized DO caches its chain after the first load).
+  if (cache.chain === null && !projectDoInitialized(sql)) {
+    return EMPTY_CHAIN;
+  }
+  // An invalid cache (e.g. right after a DO restart) makes the differential load off the empty base = a full load
+  const base = cache.chain ?? EMPTY_CHAIN;
+  const diff = loadRowsAfter(sql, base.headSeq);
+  if (diff.entries.length === 0 && cache.chain !== null) {
+    return base;
+  }
+  const chain = mergeLoadedDiff(base, diff);
   cache.chain = chain;
   return chain;
 }

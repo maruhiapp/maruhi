@@ -37,6 +37,16 @@ import {
   submitComposite,
   tokenFor,
 } from "./support/membership-scenario.ts";
+import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
+
+/** The user-table names of a project DO (empty = never materialized — Sc-7 / A-4). */
+async function projectDoTableNames(projectId: string): Promise<string[]> {
+  const rows = await queryProjectDo(
+    projectId,
+    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+  );
+  return rows.map((row) => String(row["name"]));
+}
 
 registerMembershipScenario();
 
@@ -254,9 +264,22 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
 });
 
 describe("GET /projects/:projectId/chain", () => {
-  it("returns 404 for a project that was never initialized", async () => {
-    const response = await getChain("ab".repeat(32));
+  it("returns 404 for a project that was never initialized, materializing no tables (Sc-7 / A-4)", async () => {
+    const never = "ab".repeat(32);
+    const response = await getChain(never);
     expect(response.status).toBe(404);
+    // The DO's tables are created only at genesis acceptance: an authenticated
+    // GET to an arbitrary project ID leaves no storage (Sc-7 / A-4).
+    expect(await projectDoTableNames(never)).toEqual([]);
+  });
+
+  it("materializes the DO's tables at genesis acceptance (Sc-7 / A-4)", async () => {
+    // A never-touched project ID holds no tables (the negative above); the
+    // genesis acceptance (init) is what materializes them.
+    await replayVectorChain(1);
+    const tables = await projectDoTableNames(vectorProjectId);
+    expect(tables).toContain("chain_entries");
+    expect(tables).toContain("audit_events");
   });
 
   it("returns 400 for a malformed project id", async () => {
@@ -322,10 +345,47 @@ describe("CAS (the §6.4 optimistic lock)", () => {
     }
   });
 
-  it("rejects an append to an uninitialized project with 404", async () => {
+  it("rejects an append to an uninitialized project with 404, materializing no tables (Sc-7 / A-4)", async () => {
     const entry2 = vectorEntries[1];
     if (entry2 === undefined) throw new Error("missing vector entry 2");
-    const response = await appendEntry("cd".repeat(32), "0".repeat(64), toWireEntry(entry2));
+    const uninitialized = "cd".repeat(32);
+    const response = await appendEntry(uninitialized, "0".repeat(64), toWireEntry(entry2));
     expect(response.status).toBe(404);
+    // A write to a never-initialized project folds to 404 without materializing the DO (Sc-7 / A-4).
+    expect(await projectDoTableNames(uninitialized)).toEqual([]);
+  });
+});
+
+describe("init materializes only after the genesis is accepted (Sc-7 / A-4)", () => {
+  // These call the DO's init RPC directly: the tables must be created after
+  // every refusal branch (verifyAcceptableEntry, the project-id-mismatch
+  // check), so a rejected genesis leaves no storage. Moving the
+  // materialization ahead of either check would pass every other test but
+  // these.
+  it("a rejected genesis (a bad signature) leaves no tables", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    const fresh = "a1".repeat(32);
+    // A genesis whose signature does not verify: verifyAcceptableEntry rejects
+    // it before any table is created
+    const tampered = { ...toWireEntry(genesis), signatureHex: "00".repeat(64) };
+    const outcome = await callProjectDo(fresh, (instance) =>
+      instance.init(fresh, tampered, { admitFresh: true }),
+    );
+    expect(outcome.kind).toBe("rejected");
+    expect(await projectDoTableNames(fresh)).toEqual([]);
+  });
+
+  it("a genesis routed to a mismatched project id leaves no tables", async () => {
+    const genesis = vectorEntries[0];
+    if (genesis === undefined) throw new Error("missing genesis vector");
+    // A valid genesis, but the DO it is routed to is not its hash: the
+    // project-id-mismatch check refuses it before any table is created
+    const fresh = "a2".repeat(32);
+    const outcome = await callProjectDo(fresh, (instance) =>
+      instance.init(fresh, toWireEntry(genesis), { admitFresh: true }),
+    );
+    expect(outcome.kind).toBe("project-id-mismatch");
+    expect(await projectDoTableNames(fresh)).toEqual([]);
   });
 });

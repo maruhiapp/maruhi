@@ -193,6 +193,17 @@ async function exportToBucket(): Promise<{
   return { objectKey, identitiesKey, trailer: parsedLine(lines[lines.length - 1]), identities };
 }
 
+/**
+ * Asserts the destination DO materialized no tables: a pre-check-refused
+ * import never touches the DO, and a reset DO holds nothing until genesis /
+ * restore materializes it (Sc-7 / A-4).
+ */
+async function expectDestinationUnmaterialized(): Promise<void> {
+  expect(
+    await queryProjectDo(projectId, "SELECT name FROM sqlite_master WHERE type = 'table'"),
+  ).toEqual([]);
+}
+
 /** The live row count of every snapshot table (the export's trailer must say exactly this). */
 async function liveCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
@@ -897,9 +908,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       code: "import-refused",
       identities: { kind: "refused", code: "identities-stale" },
     });
-    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
-      { n: 0 },
-    ]);
+    await expectDestinationUnmaterialized();
     await bucket.put(
       "restore/jobs/import-first.json",
       JSON.stringify({ objectKey, target: "production", identitiesKey }),
@@ -931,9 +940,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       code: "import-refused",
       identities: { kind: "refused", code: "identity-conflict" },
     });
-    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
-      { n: 0 },
-    ]);
+    await expectDestinationUnmaterialized();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM linked_identities"),
       env.DB.prepare("DELETE FROM users"),
@@ -955,9 +962,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       status: "failed",
       code: "snapshot-chain-invalid",
     });
-    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
-      { n: 0 },
-    ]);
+    await expectDestinationUnmaterialized();
     // A drill with the companion rehearses the import (no drill namespace
     // here, so the DO half is target-unavailable); D1 is untouched
     await bucket.put(

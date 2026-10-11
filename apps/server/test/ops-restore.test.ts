@@ -17,7 +17,7 @@ import { processRestoreJobs, projectIdFromSnapshot } from "../src/restore-worker
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";
 import { OWNER, projectId, READER, requestJson } from "./support/data-fixture.ts";
 import { ENV, registerDataScenario, token } from "./support/data-scenario.ts";
-import { resetProjectDo } from "./support/project-do.ts";
+import { queryProjectDo, resetProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -94,6 +94,20 @@ describe("restore worker (restore-worker.ts)", () => {
     // The restore target really is the same DO (the product path works)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
+  });
+
+  it("a missing object on a fresh destination leaves no tables (Sc-7 / A-4)", async () => {
+    // The restore materializes the destination only after the object is
+    // fetched, so an object-missing refusal on a never-initialized DO leaves no
+    // storage (the tables would otherwise be created before the fetch failed).
+    const fresh = "d4".repeat(32);
+    await resetProjectDo(fresh);
+    const freshStub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(fresh));
+    const outcome = await freshStub.opsRestore("do/does-not-exist.ndjson.gz");
+    expect(outcome).toEqual({ kind: "refused", code: "object-missing" });
+    expect(
+      await queryProjectDo(fresh, "SELECT name FROM sqlite_master WHERE type = 'table'"),
+    ).toEqual([]);
   });
 
   it("claims the job (moves it out of restore/jobs/) before the restore RPC runs", async () => {
