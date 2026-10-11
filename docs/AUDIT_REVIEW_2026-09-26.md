@@ -42,7 +42,7 @@
 | ID | Severity | Status | Summary |
 |---|---|---|---|
 | S-1 | Low | **Fixed (PR #203 `195b8e0`)** | Snapshot restore embedded the backup's column names into SQL without verifying them → now requires an exact match, including order, against the live table's column names, and only the live table's column names are used in the SQL |
-| S-2 | Low | Owner decision | IP rate limiting fails open when the binding is missing or an exception is thrown. SELF_HOSTING.md has already published the contract that "removing the ratelimits binding restores the old unlimited behavior", so going fail-closed is a contract change. Note the report's "the 300/hr per project is also lost" is wrong (the DO-side fixed window is unaffected; only the per-IP layer is lost) |
+| S-2 | Low | **Fixed (2026-10-11 owner decision)** | IP rate limiting fails open when the binding is missing or an exception is thrown. SELF_HOSTING.md has already published the contract that "removing the ratelimits binding restores the old unlimited behavior", so going fail-closed is a contract change. Note the report's "the 300/hr per project is also lost" is wrong (the DO-side fixed window is unaffected; only the per-IP layer is lost). **2026-10-11 owner decision — a missing binding fails closed, a limiter failure fails open**: a missing binding is a static configuration mistake that silently switched the defense off (including §14-3's bound on DO creation), so every endpoint the AUTH_SPEC §4-1 (1) pattern guards (CLI start / poll, the OAuth callback, a code-bearing signup start, the lease, the sealed-proposal mint and its pre-flight) now answers 503 `SetupIncomplete` with the new reason `rate-limit-unconfigured`, judged before the source-address attribution (`ipRateLimitAllowed` in `apps/server/src/worker-env.ts`); a failing call to a present limiter still passes the request and logs one static warning with the failure's class name only (no address, key or message; local Workers logs, no external report). AUTH_SPEC 0.36-draft §3 / §4-1 (1) / §14-3 state the directions, the CLI renders the reason, and SELF_HOSTING.md's no-limit fallback and old-deployment wording is removed (no backward compatibility before the first release — 2026-10-06 ruling) in favor of a binding → path table. `apps/server/test/rate-limit-binding.test.ts` pins all seven endpoints (missing → 503 with or without a source address; a present limiter is asked with the source address and its verdict is answered; a throwing limiter → passed and logged without the address or message). Rejected: making the `Env` fields optional (breaks `test/cf-env.test.ts`'s Env-mirrors-config check — the helper takes `RateLimit \| undefined` instead, like `readWorkerSecrets`), a dedicated error or a lease-only `LeaseUnavailable` reason (two vocabularies for one deployment fault), `/auth/config` also answering 503 (widens the outage past the guarded paths and takes down the server-key distribution channel), a per-request log on the fail-closed path (the 503 is itself the signal, as for `github-oauth-unconfigured`) |
 
 ## Performance / Scalability
 
@@ -167,8 +167,9 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
    closed without changing crypto's source (2026-10-11 owner decision — see
    their rows); the check that `value-sign.ts` signs at the 16-byte
    ciphertext minimum (the M-6 probe's survivor) is added (PR #395)
-3. **Operational policy** (S-2 / C-1–C-3 / C-5 remainder / C-6–C-8 / T-3 / T-4 /
-   D-6 / D-7): small individual PRs after owner decisions
+3. **Operational policy** (C-1–C-3 / C-5 remainder / C-6–C-8 / T-3 / T-4 /
+   D-6 / D-7): small individual PRs after owner decisions (S-2 is fixed —
+   2026-10-11 owner decision, see its row)
 4. **Standalone items** (no spec change): M-3's web remainder — fold
    `audit-read.ts`'s `isJsonRecord` into `chain-view-state.ts`'s `isRecord` →
    done, through a new shared `apps/web/src/dashboard/json-record.ts` instead

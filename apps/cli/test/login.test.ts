@@ -595,6 +595,23 @@ describe("maruhi login", () => {
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
 
+  it("a server lacking a rate-limit binding (503 SetupIncomplete rate-limit-unconfigured) names the binding fix, not the OAuth App", async () => {
+    const maruhi = await start([
+      onRequest("POST", "/auth/cli/start", () => ({
+        status: 503,
+        json: { _tag: "SetupIncomplete", reason: "rate-limit-unconfigured" },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("rate-limit-unconfigured");
+    expect(errors).toContain("ratelimits bindings");
+    expect(errors).not.toContain("GitHub OAuth App");
+  });
+
   it("degrades explicitly without crashing on an out-of-range expiresAtMs (display.ts's total display)", async () => {
     // expiresAtMs on the wire is an unbounded number — passing a value outside
     // the Date range (±8.64e15) to toISOString would be a RangeError defect (the display.ts rule)
