@@ -56,6 +56,9 @@
 //      at an unresolvable host and nothing else sets a PLAYWRIGHT_ variable,
 //      and no workflow, local action or package.json script (`pre`/`post`
 //      hooks included) runs `playwright install` in any spelling
+//  10. every job that runs on a runner sets `timeout-minutes`, so a hung run
+//      cannot hold its secrets and tokens for GitHub's 6-hour default (the
+//      Pullfrog agent's job holds ten provider keys and an OIDC token)
 // YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
 // same way as apps/site/test/unit/workflows.test.ts.
 
@@ -109,6 +112,7 @@ interface Job {
   readonly services?: unknown;
   readonly with?: Readonly<Record<string, unknown>>;
   readonly permissions?: unknown;
+  readonly "timeout-minutes"?: unknown;
   readonly steps?: readonly Step[];
 }
 interface Workflow {
@@ -823,4 +827,21 @@ describe("release.yml ships no stable release until the approval gate is enabled
   it("triggers on exactly the release tag pattern", () => {
     expect((workflow.on["push"] as { tags: readonly string[] }).tags).toEqual([RELEASE_TAGS]);
   });
+});
+
+describe("Every job that runs on a runner is time-bounded", () => {
+  it.each([...PRIVILEGED, ...UNPRIVILEGED])(
+    "%s bounds every job that runs on a runner with timeout-minutes",
+    (file) => {
+      // A job that calls a reusable workflow cannot set one; ci.yml's own jobs are checked here
+      const unbounded = Object.entries(loadWorkflow(file).workflow.jobs)
+        .filter(([, job]) => job.uses === undefined)
+        .filter(([, job]) => {
+          const minutes = job["timeout-minutes"];
+          return !(typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0);
+        })
+        .map(([name]) => name);
+      expect(unbounded).toEqual([]);
+    },
+  );
 });
