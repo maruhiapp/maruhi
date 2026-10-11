@@ -595,7 +595,16 @@ export function auditReadPayload(variables: readonly AuditReadVariable[]): Audit
 
 /** One variable listed by an aggregated `rotation.recommended` row (AUDIT_SPEC §3.3 — Sc-5). */
 export interface RotationRecommendedVariable {
-  readonly variableId: VariableId;
+  /**
+   * The flagged variable id, kept as a **raw string** — unlike
+   * {@link auditReadVariablesOf}, a present-but-non-conforming id is kept, not
+   * dropped. The flag read (`deriveEffectiveFlags`) and the CLI use it as a
+   * key / label, and silently dropping a flag is the unsafe direction (a
+   * needed rotation prompt would vanish); the detection path's "keep ids as
+   * plain strings so nothing is silently dropped" policy (rotation-detect.ts)
+   * extends to reading these rows back.
+   */
+  readonly variableId: string;
   readonly basis: "read" | "readable";
 }
 
@@ -603,9 +612,9 @@ export interface RotationRecommendedVariable {
  * Reads the variables listed by an aggregated `rotation.recommended` payload
  * (§3.3 Sc-5 — one row per environment, per chunk; the per-variable basis
  * rides each element). Returns null when the payload is not the aggregated
- * form. A malformed element is skipped and an unknown basis falls to
- * "readable" (the safe over-report side) — the audit log is server-managed
- * data, so corruption is surfaced rather than a reason to abort.
+ * form. An element without a string variableId is skipped and an unknown basis
+ * falls to "readable" (the safe over-report side); a present string id is kept
+ * verbatim (no id-format filter — see {@link RotationRecommendedVariable}).
  */
 export function rotationRecommendedVariablesOf(
   payload: Readonly<Record<string, unknown>> | null | undefined,
@@ -619,13 +628,8 @@ export function rotationRecommendedVariablesOf(
       return [];
     }
     const { variableId, basis } = entry as Record<string, unknown>;
-    return typeof variableId === "string" && isVariableId(variableId)
-      ? [
-          {
-            variableId: decodeVariableId(variableId),
-            basis: basis === "read" ? "read" : "readable",
-          },
-        ]
+    return typeof variableId === "string"
+      ? [{ variableId, basis: basis === "read" ? "read" : "readable" }]
       : [];
   });
 }

@@ -15,7 +15,7 @@ import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/cr
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
-import { chainMirrorEvents, indexProposals } from "../src/audit.ts";
+import { chainMirrorEvents, indexProposals, rotationRecommendedVariablesOf } from "../src/audit.ts";
 
 const PROPOSER = {
   userId: testUserId("user-owner-0001"),
@@ -118,5 +118,51 @@ describe("chainMirrorEvents (four-eyes rows — AUDIT_SPEC §3.4)", () => {
     const rows = chainMirrorEvents(propose(1), 9_000, index([propose(1)], [1]));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.payload).toEqual({ innerOp: "remove_member", expiresAtMs: 5_000 });
+  });
+});
+
+describe("rotationRecommendedVariablesOf (AUDIT_SPEC §3.3 — the aggregate rotation.recommended enumeration)", () => {
+  it("reads the variables with their per-variable basis", () => {
+    expect(
+      rotationRecommendedVariablesOf({
+        triggerChainSeq: 2,
+        trigger: "remove_member",
+        variables: [
+          { variableId: "var-a", basis: "read" },
+          { variableId: "var-b", basis: "readable" },
+        ],
+      }),
+    ).toEqual([
+      { variableId: "var-a", basis: "read" },
+      { variableId: "var-b", basis: "readable" },
+    ]);
+  });
+
+  it("returns null when the payload is not the aggregated shape (no variables array)", () => {
+    expect(rotationRecommendedVariablesOf(null)).toBeNull();
+    expect(rotationRecommendedVariablesOf({ triggerChainSeq: 2 })).toBeNull();
+    expect(rotationRecommendedVariablesOf({ variables: "oops" })).toBeNull();
+  });
+
+  it("skips an element without a string variableId, defaults an unknown basis to readable", () => {
+    expect(
+      rotationRecommendedVariablesOf({
+        variables: [
+          { basis: "read" },
+          { variableId: 5, basis: "read" },
+          { variableId: "var-a", basis: "weird" },
+          { variableId: "var-b" },
+        ],
+      }),
+    ).toEqual([
+      { variableId: "var-a", basis: "readable" },
+      { variableId: "var-b", basis: "readable" },
+    ]);
+  });
+
+  it("keeps a present-but-non-conforming id verbatim (unlike var.read — the flag read must not silently drop a flag)", () => {
+    expect(
+      rotationRecommendedVariablesOf({ variables: [{ variableId: "BAD ID", basis: "read" }] }),
+    ).toEqual([{ variableId: "BAD ID", basis: "read" }]);
   });
 });

@@ -413,6 +413,7 @@ function fakeRead(input: {
   }[];
   readonly lifecycles: ReturnType<AuditRotationRead["variableLifecycles"]>;
   readonly reads?: ReturnType<AuditRotationRead["variableReadsBy"]>;
+  readonly epochs?: ReturnType<AuditRotationRead["environmentEpochEvents"]>;
 }): AuditRotationRead {
   return {
     membershipEventsFor: () =>
@@ -422,7 +423,7 @@ function fakeRead(input: {
     variableLifecycles: () => input.lifecycles,
     variableReadsBy: () => input.reads ?? [],
     serverAccessEventsBy: () => [],
-    environmentEpochEvents: () => [],
+    environmentEpochEvents: () => input.epochs ?? [],
     rotationFlagEvents: () => [],
     rotationFlagEventsFor: () => [],
   };
@@ -828,7 +829,7 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
     expect(variableIdsOf(events)).toEqual(["v"]);
   });
 
-  it("one environment with more than a chunk of candidates splits into rows of at most MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW (§3.3 Sc-5)", () => {
+  it("one environment with more than a chunk of candidates splits into rows of at most MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW, every chunk carrying the same epoch / target / trigger (§3.3 Sc-5)", () => {
     const count = MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW + 500;
     const events = detectMemberRemoval({
       read: fakeRead({
@@ -843,6 +844,8 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           environmentId: testEnvironmentId("env-a"),
           variableId: testVariableId(`v${index.toString(16).padStart(6, "0")}`),
         })),
+        // The environment's epoch at detection = the exposure bound on every chunk
+        epochs: [{ seq: 4, environmentId: testEnvironmentId("env-a"), epoch: 1 }],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 9,
@@ -850,11 +853,20 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
     });
     // Two rows (1,000 + 500), all env-a, no row over the cap
     expect(events).toHaveLength(2);
-    expect(events.every((event) => event.environmentId === "env-a")).toBe(true);
     expect(events.map((event) => event.payload.variables.length)).toEqual([
       MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW,
       500,
     ]);
+    // Every chunk carries the same exposure bound (epoch), subject and trigger —
+    // a later chunk missing the epoch would leave its flags clearable only by
+    // dismissal (§4.1-5)
+    for (const event of events) {
+      expect(event.environmentId).toBe("env-a");
+      expect(event.epoch).toBe(1);
+      expect(event.targetUserId).toBe(testUserId("u"));
+      expect(event.payload.trigger).toBe("remove_member");
+      expect(event.payload.triggerChainSeq).toBe(9);
+    }
     // Every candidate appears exactly once across the chunks, globally ascending
     const allVars = events.flatMap((event) =>
       event.payload.variables.map((variable) => variable.variableId),

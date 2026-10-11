@@ -286,6 +286,25 @@ describe("the stores' payload check (runtime)", () => {
         payload: { basis: "read", triggerChainSeq: 2, trigger: "remove_member" },
       }),
     ).toThrow();
+    // The enumeration discipline (§3.3): non-empty, ascending, unique by variableId
+    for (const variables of [
+      [],
+      [
+        { variableId: "v-b", basis: "read" },
+        { variableId: "v-a", basis: "read" },
+      ],
+      [
+        { variableId: "v-a", basis: "read" },
+        { variableId: "v-a", basis: "readable" },
+      ],
+    ]) {
+      expect(() =>
+        assertProjectAuditPayload({
+          event: "rotation.recommended",
+          payload: { triggerChainSeq: 2, trigger: "remove_member", variables },
+        }),
+      ).toThrow();
+    }
     expect(() =>
       assertUserOrgAuditPayload({
         event: "auth.token_created",

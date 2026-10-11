@@ -366,6 +366,50 @@ describe("maruhi audit (list)", () => {
     expect(filtered.logs.join("\n")).not.toContain("- var=vb");
   });
 
+  it("an aggregated rotation.recommended shows a flags= count, keeps the enumeration out of recorded=, and --var attaches the matched variable's basis (§3.3 Sc-5)", async () => {
+    const built = await baseChain();
+    const recommended: WireRow = {
+      id: idOf(4),
+      seq: 4,
+      serverTs: BASE_TS + 4,
+      event: "rotation.recommended",
+      actor: { type: "system" },
+      targetUserId: member.userId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      payload: {
+        triggerChainSeq: 3,
+        trigger: "remove_member",
+        variables: [
+          { variableId: "va", basis: "read" },
+          { variableId: "vb", basis: "readable" },
+        ],
+      },
+    };
+    const rows = [...(await mirrorRowsOf(built)), recommended];
+    const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
+    expect(await runCli(["audit"], env.layer)).toBe(0);
+    const line = env.logs.find((entry) => entry.startsWith("seq=4\t"));
+    expect(line).toContain("flags=2 variables");
+    // The enumeration is summarized, not dumped; the rest of the payload remains
+    expect(line).not.toContain('"variables"');
+    expect(line).toContain('recorded={"triggerChainSeq":3,"trigger":"remove_member"}');
+    // The epoch column is the exposure bound (labelled exposureEpoch), and there is no var= (aggregate)
+    expect(line).toContain("exposureEpoch=1");
+    expect(line).not.toContain("\tvar=");
+
+    // With --var, the matched variable's basis is attached inline
+    const filtered = await makeTestEnv();
+    seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
+    await seedConfig(filtered, {
+      server: servers[servers.length - 1]?.origin ?? "",
+      defaultProject: built.projectId,
+    });
+    expect(await runCli(["audit", "--var", "va"], filtered.layer)).toBe(0);
+    const matchedLine = filtered.logs.find((entry) => entry.startsWith("seq=4\t"));
+    expect(matchedLine).toContain("flags=2 variables\tmatched=var=ALPHA (va)\tbasis=read");
+  });
+
   it("displays rows, resolves names from verified statements, and cross-checks mirror rows OK", async () => {
     const built = await baseChain();
     // The payload's name snapshot is a server claim — never promoted to the
