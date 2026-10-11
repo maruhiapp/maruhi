@@ -8,6 +8,7 @@
 
 import type {
   ChainHistoryIndex,
+  SigningKeyPair,
   ValueInvalidReason,
   ValueSignatureContext,
 } from "../../src/index.ts";
@@ -319,6 +320,28 @@ async function negativeChecks(
   );
 }
 
+// The lower bound is the 16-byte tag alone (an empty value): exactly 16 bytes
+// signs and verifies
+async function minimumCiphertextCheck(
+  c: Checks,
+  baseContext: ValueSignatureContext,
+  pair: SigningKeyPair,
+): Promise<void> {
+  const name = "value-sig: 16-byte ciphertext (tag only) accepted";
+  const context = { ...baseContext, ciphertextHex: "ab".repeat(16) };
+  const signed = await signValue({ context, signingKey: pair.privateKey });
+  if (!signed.ok) {
+    c.push(name, false, "sign failed");
+    return;
+  }
+  const verified = await verifyValueSignature({
+    context,
+    signatureHex: signed.value,
+    writerPublicKey: pair.publicKey,
+  });
+  c.push(name, verified.ok, verified.ok ? undefined : "verify failed");
+}
+
 async function invalidInputChecks(c: Checks): Promise<void> {
   const base = positives[0];
   if (base === undefined) {
@@ -365,6 +388,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
+  await minimumCiphertextCheck(c, baseContext, pair);
   // A check only on the signing side: never sign a version 1 with a non-
   // empty prev (the verify side instead rejects asymmetrically with a reason
   // code, "valid signature + prev-shape-mismatch")
