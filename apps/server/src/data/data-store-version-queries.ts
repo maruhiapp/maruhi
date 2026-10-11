@@ -170,4 +170,28 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
       .toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "total");
   }),
+  // The §12-8 per-environment meter: the latest versions of the active
+  // variables — the same join as latestVersions, so it counts exactly what
+  // a with-values pull or a lease carries
+  environmentCiphertextBytes: (environmentId: EnvironmentId, variableId: VariableId) =>
+    Effect.sync(() => {
+      const row = sql
+        .exec(
+          `SELECT COALESCE(SUM(vv.ciphertext_bytes), 0) AS total,
+                  COALESCE(SUM(CASE WHEN v.variable_id = ? THEN vv.ciphertext_bytes END), 0)
+                    AS own
+           FROM variables v
+           JOIN variable_versions vv
+             ON vv.environment_id = v.environment_id
+            AND vv.variable_id = v.variable_id
+            AND vv.version = v.latest_version
+           WHERE v.environment_id = ? AND v.deleted_at IS NULL`,
+          variableId,
+          environmentId,
+        )
+        .toArray()[0];
+      return row === undefined
+        ? { totalBytes: 0, variableBytes: 0 }
+        : { totalBytes: numberColumn(row, "total"), variableBytes: numberColumn(row, "own") };
+    }),
 });

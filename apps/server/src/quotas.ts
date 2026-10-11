@@ -19,6 +19,7 @@ import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,
+  MAX_ENVIRONMENT_CIPHERTEXT_BYTES,
   MAX_ENVIRONMENT_ROWS,
   MAX_PENDING_PROPOSALS,
   MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES,
@@ -129,6 +130,43 @@ export function metaVersionsExceeded(
 ): boolean {
   return status !== "deleted" && latestMetaVersion + 1 > MAX_VERSIONS_PER_VARIABLE;
 }
+
+/**
+ * §12-8 (Sc-3): the cap on an environment's current ciphertext. The
+ * written version replaces the variable's latest (`replacedBytes` — 0 for
+ * a creation or activation). Only a write that grows the sum past the cap
+ * is refused, so a re-encryption or a smaller value still lands in an
+ * environment above it (a lowered constant, an import) — pure function,
+ * exposed for unit tests.
+ */
+export function environmentBytesExceeded(
+  totalBytes: number,
+  replacedBytes: number,
+  addedBytes: number,
+): boolean {
+  const resultingBytes = totalBytes - replacedBytes + addedBytes;
+  return resultingBytes > MAX_ENVIRONMENT_CIPHERTEXT_BYTES && resultingBytes > totalBytes;
+}
+
+/** Called on every path that sets an active variable's latest version (push, create with a value, activation). */
+export const ensureEnvironmentCapacity = Effect.fn("quotas.ensureEnvironmentCapacity")(function* (
+  environmentId: EnvironmentId,
+  variableId: VariableId,
+  addedBytes: number,
+) {
+  const store = yield* DataStore;
+  const { totalBytes, variableBytes } = yield* store.environmentCiphertextBytes(
+    environmentId,
+    variableId,
+  );
+  if (environmentBytesExceeded(totalBytes, variableBytes, addedBytes)) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "environment-ciphertext-bytes",
+      limit: MAX_ENVIRONMENT_CIPHERTEXT_BYTES,
+    });
+  }
+});
 
 /** §12-8: the cap on accumulated ciphertext bytes. A pure function that includes the addition in the check (exposed for unit tests). */
 export function projectBytesExceeded(storedBytes: number, addedBytes: number): boolean {

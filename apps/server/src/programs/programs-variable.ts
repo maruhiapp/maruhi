@@ -46,6 +46,7 @@ import { ensureValueCas, ensureValueSignature } from "../data/verify-value.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
 import {
+  ensureEnvironmentCapacity,
   ensureProjectCapacity,
   ensureVariableQuota,
   requireActiveEnvironment,
@@ -393,7 +394,9 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
       },
     });
     if (acceptedValue !== null) {
-      yield* ensureProjectCapacity(acceptedValue.value.ciphertextHex.length / 2);
+      const addedBytes = acceptedValue.value.ciphertextHex.length / 2;
+      yield* ensureEnvironmentCapacity(environmentId, input.variableId, addedBytes);
+      yield* ensureProjectCapacity(addedBytes);
     }
     const store = yield* DataStore;
     const audit = yield* AuditStore;
@@ -512,6 +515,7 @@ export const pushVersionProgram = Effect.fn("programs-variable.pushVersionProgra
       limit: MAX_VERSIONS_PER_VARIABLE,
     });
   }
+  yield* ensureEnvironmentCapacity(environmentId, variableId, value.ciphertextHex.length / 2);
   yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
   const store = yield* DataStore;
   const audit = yield* AuditStore;
@@ -621,7 +625,9 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
         signedBytesHashHex: metaSignedBytesHashHex,
       },
     });
-    yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
+    const addedBytes = input.value.ciphertextHex.length / 2;
+    yield* ensureEnvironmentCapacity(environmentId, variableId, addedBytes);
+    yield* ensureProjectCapacity(addedBytes);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = yield* Clock.currentTimeMillis;

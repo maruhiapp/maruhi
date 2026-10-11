@@ -185,6 +185,24 @@ function renderSetupIncomplete(error: SetupIncompleteError): string {
 }
 
 /**
+ * 422 `DataLimitExceeded` (AUTH_SPEC §12-8). Two resources get their next
+ * step named: the DO storage guard is a measured threshold, not "what this
+ * request adds", and the never-pruned audit log usually dominates, so
+ * deleting frees little; an environment's current ciphertext is freed by
+ * deleting or shrinking values of that environment. The other caps keep
+ * the general form.
+ */
+function renderDataLimit(error: DataLimitExceededError): string {
+  if (error.resource === "project-storage-bytes") {
+    return `The project's stored data has reached the server's storage guard (${error.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and a rotation's key change still work (re-encrypted values cannot be pushed). Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`;
+  }
+  if (error.resource === "environment-ciphertext-bytes") {
+    return `The environment's current values would exceed the server's per-environment limit (${error.limit} bytes of ciphertext in total — AUTH_SPEC §12-8: a pull returns them all in one response). Delete values this environment no longer needs, or move some to another environment, then retry`;
+  }
+  return `Exceeds a server acceptance limit (${error.resource} limit ${error.limit})`;
+}
+
+/**
  * Whether the failure is the server not answering at all — no response
  * (DNS, connection, TLS, a cut-off transfer) or a gateway's own status in
  * front of it (502 / 503 / 504, Cloudflare's 52x) — as opposed to an
@@ -382,16 +400,7 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ValueTooLargeError),
     (e) => `The value is too large (ciphertext limit ${e.limitBytes} bytes)`,
   ),
-  // The DO total-storage guard (AUTH_SPEC §12-8) is told apart by
-  // resource: unlike the other count caps it is a measured-amount
-  // threshold, not "the amount this request adds", so the guidance names
-  // the next step (free space, or move out while reads still pass — the
-  // never-pruned audit log usually dominates, so deleting frees little)
-  when(isInstanceOf(DataLimitExceededError), (e) =>
-    e.resource === "project-storage-bytes"
-      ? `The project's stored data has reached the server's storage guard (${e.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and a rotation's key change still work (re-encrypted values cannot be pushed). Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`
-      : `Exceeds a server acceptance limit (${e.resource} limit ${e.limit})`,
-  ),
+  when(isInstanceOf(DataLimitExceededError), renderDataLimit),
   when(
     isInstanceOf(DekWrapRejectedError),
     (e) => `The DEK-wrap registration was rejected (${e.reason})`,

@@ -374,6 +374,10 @@ export const DataLimitResourceSchema = Schema.Literals([
   // statement rows too (blocks DO-storage bloat from unlimited rename
   // spam)
   "meta-versions",
+  // The current ciphertext of one environment (the latest version of
+  // every active variable — what one with-values pull or lease carries;
+  // Sc-3). Refused only when a write grows the sum past the limit
+  "environment-ciphertext-bytes",
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
   "dek-wrap-rows",

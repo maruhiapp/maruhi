@@ -726,6 +726,13 @@ describe("toCliError (terminal neutralization of server-sourced strings)", () =>
     expect(storage.message).toContain("reading values");
     expect(storage.message).toContain("deleting");
     expect(storage.message).toContain("move the values to a new project");
+    // 422 DataLimitExceeded environment-ciphertext-bytes (Sc-3): freed within the environment
+    const environment = toCliError(
+      new DataLimitExceededError({ resource: "environment-ciphertext-bytes", limit: 8_388_608 }),
+    );
+    expect(environment.message).toContain("per-environment limit (8388608 bytes");
+    expect(environment.message).toContain("Delete values this environment no longer needs");
+    expect(environment.message).toContain("another environment");
     // Other §12-8 quantity caps keep the conventional general form
     const generic = toCliError(new DataLimitExceededError({ resource: "variables", limit: 1000 }));
     expect(generic.message).toBe("Exceeds a server acceptance limit (variables limit 1000)");
