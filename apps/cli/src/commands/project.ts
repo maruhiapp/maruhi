@@ -569,7 +569,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
       const unchanged = summary.unchangedEnvironmentIds.length;
       if (summary.headSeq === null) {
         yield* io.log(
-          `Nothing to notarize: ${unchanged === 1 ? "the environment matches its" : "every environment matches its"} latest checkpoint (CRYPTO_SPEC §6.3)`,
+          `Nothing to notarize: ${unchanged === 0 ? "no environment in your scope was built" : unchanged === 1 ? "the environment matches its latest checkpoint" : `all ${unchanged} environments in your scope match their latest checkpoint`} (CRYPTO_SPEC §6.3)`,
         );
         if (summary.outOfScopeEnvironmentIds.length > 0) {
           yield* io.log(
