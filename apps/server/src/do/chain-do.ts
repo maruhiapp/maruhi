@@ -59,7 +59,6 @@ import type {
 import { rejectData, requireMemberState } from "../data/data-plane.ts";
 import type { StoredHeadAttestation } from "../data/data-store.ts";
 import { DataStore, dataStoreLayer } from "../data/data-store.ts";
-import { randomHex } from "../ids.ts";
 import { MAX_DEVICES_PER_MEMBER } from "../policy.ts";
 import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
 import {
@@ -168,6 +167,7 @@ import {
   snapshotObjectKey,
   writeSnapshot,
 } from "./do-snapshot.ts";
+import { LeaseChainGrants } from "./lease-chain-grants.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -706,25 +706,14 @@ const toDataOutcome = <T, R>(
     ),
   );
 
-/** How long an issued lease's chain read stays open (it follows within the same request). */
-const LEASE_CHAIN_GRANT_TTL_MS = 60_000;
-
 export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
   // Serialization of all operations (writes + reads) — see the header comment
   readonly #opLock = Semaphore.makeUnsafe(1);
   // Cache of the chain-derived state + the parsed chain (see chain-store.ts)
   readonly #stateCache: StateCache = { current: null, chain: null };
-  // Issued leases' heads awaiting their chain read, by single-use token
-  // (leaseChain). Instance memory only: the read follows the issuance within
-  // the same request, and an eviction in between fails that lease with a 500
-  readonly #leaseChainGrants = new Map<
-    string,
-    {
-      readonly head: { readonly seq: number; readonly hashHex: string };
-      readonly expiresAtMs: number;
-    }
-  >();
+  // Issued leases' heads awaiting their chain read (lease-chain-grants.ts)
+  readonly #leaseChainGrants = new LeaseChainGrants();
   // Whether this DO's tables exist. A fresh DO holds no storage until a
   // genesis is accepted (Sc-7 / A-4, owner approval 2026-10-11 — AUTH_SPEC
   // §14-3 / §11-3): materialized by init (genesis) or opsRestore. Reads and
@@ -1405,7 +1394,10 @@ export class ProjectChainDO extends DurableObject<Env> {
                 Effect.map(Clock.currentTimeMillis, (nowMs): LeaseOutcome => ({
                   kind: "ok",
                   value,
-                  chainToken: this.#grantLeaseChain(value, nowMs),
+                  chainToken: this.#leaseChainGrants.grant(
+                    { seq: value.headSeq, hashHex: value.headHashHex },
+                    nowMs,
+                  ),
                 })),
               onFailure: (rejection) =>
                 Effect.succeed<LeaseOutcome>({ kind: "rejected", rejection }),
@@ -1414,21 +1406,6 @@ export class ProjectChainDO extends DurableObject<Env> {
         ),
       ),
     );
-  }
-
-  /** Records an issued lease's head under a fresh single-use token for its chain read. */
-  #grantLeaseChain(value: LeaseValue, nowMs: number): string {
-    for (const [token, grant] of this.#leaseChainGrants) {
-      if (grant.expiresAtMs <= nowMs) {
-        this.#leaseChainGrants.delete(token);
-      }
-    }
-    const token = randomHex(32);
-    this.#leaseChainGrants.set(token, {
-      head: { seq: value.headSeq, hashHex: value.headHashHex },
-      expiresAtMs: nowMs + LEASE_CHAIN_GRANT_TTL_MS,
-    });
-    return token;
   }
 
   /**
@@ -1443,15 +1420,14 @@ export class ProjectChainDO extends DurableObject<Env> {
   leaseChain(chainToken: string): Promise<readonly ChainEntry[]> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
-        this.#invalidateCachesOnDefect(
-          Effect.flatMap(Clock.currentTimeMillis, (nowMs) => {
-            const grant = this.#leaseChainGrants.get(chainToken);
-            this.#leaseChainGrants.delete(chainToken);
-            return grant === undefined || grant.expiresAtMs <= nowMs
-              ? Effect.die(new Error("unknown, spent or expired lease chain token"))
-              : leaseChainProgram(grant.head, this.#stateCache);
-          }),
-        ),
+        Effect.flatMap(Clock.currentTimeMillis, (nowMs) => {
+          // A token miss is checked before the defect guard: it touches no
+          // state, so it must not drop the caches
+          const head = this.#leaseChainGrants.take(chainToken, nowMs);
+          return head === undefined
+            ? Effect.die(new Error("unknown, spent or expired lease chain token"))
+            : this.#invalidateCachesOnDefect(leaseChainProgram(head, this.#stateCache));
+        }),
       ),
     );
   }

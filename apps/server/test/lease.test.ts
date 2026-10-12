@@ -286,42 +286,57 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
   it("reads the chain in a second RPC, cut at the head the issuance was judged against (§14-2 — Sc-3a)", async () => {
     await readyProject();
     const workload = await workloadKeyPair();
-    const outcome = await callProjectDo(projectId, async (instance) =>
-      instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
-        issuer: OIDC_ISSUER,
-        subject: LEASE_SUBJECT,
-        audiences: [LEASE_AUDIENCE],
-        claims: { iss: OIDC_ISSUER, sub: LEASE_SUBJECT, aud: LEASE_AUDIENCE },
-        claimsDigestHex: await claimsDigestOf(),
-        bindingKeyHex: "b2".repeat(32),
-        bindingExpiresAtMs: Date.now() + 600_000,
-      }),
-    );
-    if (outcome.kind !== "ok") {
-      throw new Error("lease not issued");
-    }
-    // The values result carries no chain — each half has its own frame
-    expect("chain" in outcome.value).toBe(false);
-    const judged = { seq: outcome.value.headSeq, hashHex: outcome.value.headHashHex };
-    expect(judged).toEqual(fixture.head);
-    // An entry landing between the two RPCs is not in the lease's chain
-    await appendOperation(fixture, OWNER, {
-      op: "checkpoint",
+    const issue = async (bindingKeyHex: string) => {
+      const outcome = await callProjectDo(projectId, async (instance) =>
+        instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
+          issuer: OIDC_ISSUER,
+          subject: LEASE_SUBJECT,
+          audiences: [LEASE_AUDIENCE],
+          claims: { iss: OIDC_ISSUER, sub: LEASE_SUBJECT, aud: LEASE_AUDIENCE },
+          claimsDigestHex: await claimsDigestOf(),
+          bindingKeyHex,
+          bindingExpiresAtMs: Date.now() + 600_000,
+        }),
+      );
+      if (outcome.kind !== "ok") {
+        throw new Error("lease not issued");
+      }
+      // The values result carries no chain — each half has its own frame
+      expect("chain" in outcome.value).toBe(false);
+      return {
+        token: outcome.chainToken,
+        head: { seq: outcome.value.headSeq, hashHex: outcome.value.headHashHex },
+      };
+    };
+    const readChain = (token: string) =>
+      callProjectDo(projectId, (instance) => instance.leaseChain(token));
+    const tupleLess = {
+      op: "checkpoint" as const,
       payload: { environments: [], auditHeadHashHex: "" },
-    });
-    const chain = await callProjectDo(projectId, (instance) =>
-      instance.leaseChain(outcome.chainToken),
+    };
+    // Lease A, an append, lease B: both grants are open at once
+    const a = await issue("b2".repeat(32));
+    expect(a.head).toEqual(fixture.head);
+    await appendOperation(fixture, OWNER, tupleLess);
+    const b = await issue("b3".repeat(32));
+    expect(b.head.seq).toBe(a.head.seq + 1);
+    // An entry landing after B is in neither lease's chain
+    await appendOperation(fixture, OWNER, tupleLess);
+    // A made-up token opens nothing, even with grants open (500 — no chain
+    // leaves the DO)
+    await expect(readChain("00".repeat(32))).rejects.toThrow(
+      "unknown, spent or expired lease chain token",
     );
-    expect(chain.length).toBe(judged.seq);
-    expect(await computeChainEntryHash(requireFirst(chain.slice(-1), "entry"))).toBe(
-      judged.hashHex,
-    );
-    // The chain read needs the token of an authorized issuance, once: a
-    // spent or made-up token is refused (500 — no chain leaves the DO)
-    for (const token of [outcome.chainToken, "00".repeat(32)]) {
-      await expect(
-        callProjectDo(projectId, (instance) => instance.leaseChain(token)),
-      ).rejects.toThrow("unknown, spent or expired lease chain token");
+    // Each token opens exactly its own issuance's head, once
+    for (const lease of [a, b]) {
+      const chain = await readChain(lease.token);
+      expect(chain.length).toBe(lease.head.seq);
+      expect(await computeChainEntryHash(requireFirst(chain.slice(-1), "entry"))).toBe(
+        lease.head.hashHex,
+      );
+      await expect(readChain(lease.token)).rejects.toThrow(
+        "unknown, spent or expired lease chain token",
+      );
     }
   });
 
