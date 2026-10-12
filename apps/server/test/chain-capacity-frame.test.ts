@@ -4,6 +4,9 @@
 // fetch inside one RPC result, a lease of a full environment on it answers
 // even though the response is larger than one frame (the chain and the
 // values are separate RPC results), and one more byte is a typed 422.
+// This pins the frame only: the test isolate has nodejs_compat and no memory
+// limit, so the worker's memory for the same lease is measured separately
+// (workerd with the deployed flags — AUTH_SPEC §14-2's assembly note).
 // Real workerd via @cloudflare/vitest-plugin; the fixture lives in
 // support/data-scenario.ts.
 

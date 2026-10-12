@@ -298,10 +298,14 @@ entries and **12 MiB** of canonical bytes (`MAX_CHAIN_ENTRIES` /
 `MAX_CHAIN_TOTAL_CANONICAL_BYTES`; an append past either fails with 422
 `ChainCapacityExceeded`). The chain fetch and a lease each return the whole
 chain in one RPC result, and a chain at 12 MiB serializes to about 14.6 MB.
-Raising the byte cap is safe up to about 26 MiB, where a chain of small
-entries would no longer fit the frame. Lowering it never invalidates a chain,
-but a chain already above the new value accepts no further append — not even
-a member removal or a rotation.
+Raising either cap has two costs. The frame: a chain of small entries stops
+fitting one RPC result from about 26 MiB. The memory: a lease holds the chain
+and the environment's values in the worker while it writes the response — about
+39 MB with both default caps reached (measured), out of a 128 MB isolate that
+concurrent requests share — so raising the byte cap or the 8 MiB environment
+cap grows every large lease's footprint. Lowering it never invalidates a
+chain, but a chain already above the new value accepts no further append —
+not even a member removal or a rotation.
 
 ### Projects per organization
 
@@ -979,7 +983,8 @@ or newer.
   project's chain holds 10,000 entries or 12 MiB of canonical bytes ("Tenant
   quotas"). Entries are never removed, so the project stays readable but
   takes no further member, device, environment or rotation change. Raise
-  `MAX_CHAIN_TOTAL_CANONICAL_BYTES` (up to about 26 MiB) or
+  `MAX_CHAIN_TOTAL_CANONICAL_BYTES` (mind the frame and memory costs in
+  "Tenant quotas") or
   `MAX_CHAIN_ENTRIES` in `apps/server/src/policy.ts` and redeploy
 - **Pushes / creates fail with `DataLimitExceeded` and
   `resource: "project-storage-bytes"` while pulls still work**: the project's

@@ -18,8 +18,10 @@ export const MAX_CHAIN_ENTRIES = 10_000;
  * §6.4 (Sc-3a): acceptance limit on cumulative canonical bytes across a whole
  * chain. The chain fetch and a lease each return the chain as one DO RPC
  * result, which workerd refuses above 32 MiB serialized; a chain at 12 MiB
- * serializes to at most ~14.6 MB. Lowering it freezes appends to a chain
- * above it; raising it is free up to the frame.
+ * serializes to about 14.6 MB. A lease holds the chain and the values in
+ * the worker isolate while it writes them (~39 MB live with both caps reached, of the isolate's 128 MB).
+ * Lowering it freezes appends to a chain above it; raising it costs frame
+ * room and worker memory.
  */
 export const MAX_CHAIN_TOTAL_CANONICAL_BYTES = 12 * 1024 * 1024;
 

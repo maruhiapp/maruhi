@@ -17,6 +17,7 @@
 
 import {
   LeaseRateLimitedError,
+  LeaseResponseSchema,
   LeaseUnauthorizedError,
   LeaseUnavailableError,
   maruhiApi,
@@ -26,7 +27,8 @@ import {
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import { type ChainEntry, computeLeaseClaimsDigest } from "@maruhi/crypto";
-import { Clock, Effect } from "effect";
+import { Clock, Effect, Schema } from "effect";
+import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { toWireVariable } from "../data/data-http.ts";
@@ -45,6 +47,7 @@ import {
   rpcCall,
   WorkerEnv,
 } from "../worker-env.ts";
+import { jsonStream } from "./json-stream.ts";
 
 /**
  * claims_digest (CRYPTO_SPEC §9.1) is computed from the **verified**
@@ -224,7 +227,7 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         // The value wire form is identical to the bulk pull (§12-7) —
         // they share the verification-material bundling discipline, so
         // the workload's client-side verification stays as §6.3
-        return {
+        const response: typeof LeaseResponseSchema.Type = {
           projectId: params.projectId,
           environmentId: leased.environmentId,
           currentEpoch: leased.currentEpoch,
@@ -250,6 +253,14 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             ? {}
             : { checkpointSnapshot: leased.checkpointSnapshot }),
         };
+        // Encoded up front (an invalid body is still a 500 before any
+        // byte is sent), then written in chunks: the default path would
+        // hold the serialized text and its bytes together beside the
+        // value — three copies of a body up to ~36 MB (§12-8)
+        const encoded = yield* Schema.encodeEffect(LeaseResponseSchema)(response).pipe(
+          Effect.orDie,
+        );
+        return HttpServerResponse.raw(jsonStream(encoded), { contentType: "application/json" });
       }),
     )
     // The mint's pre-flight (§14-5 — O-4): the same credential and

@@ -18,7 +18,9 @@
 // - lease-binding.test.ts: first-come binding (§14-1) and source-IP
 //   rate limits
 
+import { LeaseResponseSchema } from "@maruhi/api-schema";
 import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
+import { Schema } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { hexBytes } from "./support/data-crypto.ts";
@@ -65,7 +67,12 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       ephemeralPubHex: workload.publicKeyHex,
     });
     expect(response.status).toBe(200);
+    // Written in chunks (handlers/json-stream.ts — no single buffer of the
+    // whole body), and still a valid §14-2 response
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("content-length")).toBeNull();
     const body = (await response.json()) as LeaseBody;
+    expect(() => Schema.decodeUnknownSync(LeaseResponseSchema)(body)).not.toThrow();
 
     // The response bundles the chain (non-members get a 404 from the
     // chain API — §11-2). The length is exactly determined by the
