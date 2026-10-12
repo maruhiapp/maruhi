@@ -115,7 +115,7 @@ function leaseRejectionError(rejection: LeaseRejection, projectId: ProjectId) {
 
 function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: ProjectId) {
   return outcome.kind === "ok"
-    ? Effect.succeed(outcome.value)
+    ? Effect.succeed(outcome)
     : Effect.fail(leaseRejectionError(outcome.rejection, projectId));
 }
 
@@ -219,10 +219,10 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         const outcome = yield* workloadRpc<LeaseOutcome>(params, payload, request, (stub, facts) =>
           stub.issueLease(params.environmentId, payload.ephemeralPubHex, facts),
         );
-        const leased = yield* unwrapLeaseOutcome(outcome, params.projectId);
+        const { value: leased, chainToken } = yield* unwrapLeaseOutcome(outcome, params.projectId);
         const env = yield* WorkerEnv;
         const chain = yield* rpcCall<readonly ChainEntry[]>(() =>
-          projectStub(env, params.projectId).leaseChain(leased.headSeq, leased.headHashHex),
+          projectStub(env, params.projectId).leaseChain(chainToken),
         ).pipe(Effect.orDie);
         // The value wire form is identical to the bulk pull (§12-7) —
         // they share the verification-material bundling discipline, so

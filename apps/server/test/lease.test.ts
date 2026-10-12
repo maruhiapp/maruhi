@@ -20,9 +20,12 @@
 
 import { LeaseResponseSchema } from "@maruhi/api-schema";
 import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
-import { Schema } from "effect";
+import { env, runInDurableObject } from "cloudflare:test";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { chainStoreLayer, type StateCache } from "../src/do/chain-store.ts";
+import { leaseChainProgram } from "../src/programs/programs-lease.ts";
 import { hexBytes } from "./support/data-crypto.ts";
 import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
@@ -307,16 +310,35 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       payload: { environments: [], auditHeadHashHex: "" },
     });
     const chain = await callProjectDo(projectId, (instance) =>
-      instance.leaseChain(judged.seq, judged.hashHex),
+      instance.leaseChain(outcome.chainToken),
     );
     expect(chain.length).toBe(judged.seq);
     expect(await computeChainEntryHash(requireFirst(chain.slice(-1), "entry"))).toBe(
       judged.hashHex,
     );
-    // A head that is not on the stored chain is a broken invariant (500)
-    await expect(
-      callProjectDo(projectId, (instance) => instance.leaseChain(judged.seq, "00".repeat(32))),
-    ).rejects.toThrow("the lease head is not on the stored chain");
+    // The chain read needs the token of an authorized issuance, once: a
+    // spent or made-up token is refused (500 — no chain leaves the DO)
+    for (const token of [outcome.chainToken, "00".repeat(32)]) {
+      await expect(
+        callProjectDo(projectId, (instance) => instance.leaseChain(token)),
+      ).rejects.toThrow("unknown, spent or expired lease chain token");
+    }
+  });
+
+  it("refuses a lease head that is not on the stored chain as a broken invariant (§14-2)", async () => {
+    await readyProject();
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    const exit = await runInDurableObject(stub, (_instance, state) => {
+      const cache: StateCache = { current: null, chain: null };
+      return Effect.runPromiseExit(
+        leaseChainProgram({ seq: fixture.head.seq, hashHex: "00".repeat(32) }, cache).pipe(
+          Effect.provide(chainStoreLayer(state.storage.sql, cache)),
+        ),
+      );
+    });
+    expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+      "the lease head is not on the stored chain",
+    );
   });
 });
 

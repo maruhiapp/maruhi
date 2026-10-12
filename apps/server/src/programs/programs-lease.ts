@@ -126,7 +126,12 @@ export type LeaseRejection =
 
 /** The lease result crossing the RPC boundary. */
 export type LeaseOutcome =
-  | { readonly kind: "ok"; readonly value: LeaseValue }
+  | {
+      readonly kind: "ok";
+      readonly value: LeaseValue;
+      /** Single-use token for the chain read (ProjectChainDO.leaseChain — §14-2). */
+      readonly chainToken: string;
+    }
   | { readonly kind: "rejected"; readonly rejection: LeaseRejection };
 
 /**
