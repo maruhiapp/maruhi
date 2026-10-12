@@ -419,6 +419,10 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
     await expectRejected({ checkpointSnapshot: null }, "omitted the checkpoint value snapshot");
   });
 
+  it("points a missing enumeration to the server's operator, not to a re-issued checkpoint", async () => {
+    await expectRejected({ checkpointSnapshot: null }, "report this to the server's operator");
+  });
+
   it("rejects when the enumeration's recomputed digest differs from the chain's values_digest", async () => {
     const first = snapshot.values[0];
     if (first === undefined) throw new Error("fixture snapshot is empty");

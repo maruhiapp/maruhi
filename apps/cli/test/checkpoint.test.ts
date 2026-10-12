@@ -114,6 +114,8 @@ interface CheckpointServerOptions {
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
   /** Accept without appending to the chain (a lying 2xx server — the §12-10 (3) check). */
   readonly acceptWithoutAppending?: boolean;
+  /** The first chain fetch serves only this many entries (a checkpoint landing after the opening view). */
+  readonly firstFetchEntries?: number;
 }
 
 interface AppendBody {
@@ -136,17 +138,25 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   const appends: AppendBody[] = [];
   let appendCalls = 0;
   let auditHeadCalls = 0;
+  let chainCalls = 0;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/chain`, () => {
+      const served =
+        chainCalls === 0 && options.firstFetchEntries !== undefined
+          ? options.firstFetchEntries
+          : entries.length;
+      chainCalls += 1;
+      return {
+        status: 200,
+        json: {
+          projectId,
+          entries: entries.slice(0, served),
+          headSeq: served,
+          headHashHex: hashes[served - 1],
+          attestations: [],
+        },
+      };
+    }),
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
       status: 200,
       json: {
@@ -804,6 +814,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
             verified,
             signerUserId: testUserId(signerUserId),
             nowMs: Date.now(),
+            afterWrite: false,
           }),
         ),
       );
@@ -819,7 +830,13 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
       verifiedOf(built).then((verified) =>
         Effect.runPromise(
-          checkpointProposal({ client, verified, signerUserId: testUserId(signerUserId), nowMs }),
+          checkpointProposal({
+            client,
+            verified,
+            signerUserId: testUserId(signerUserId),
+            nowMs,
+            afterWrite: false,
+          }),
         ),
       );
     const day = 24 * 60 * 60 * 1000;
@@ -1099,11 +1116,66 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
     expect(state.appends).toHaveLength(0);
   });
 
+  it("compares against the latest view: a baseline landing after the opening view counts", async () => {
+    const project = await unchangedProject({});
+    const state = makeCheckpointServer({
+      built: project.built,
+      environments: [project.environment],
+      me: {
+        userId: owner.userId,
+        tokenScopes: [{ project: project.built.projectId, permission: "admin" }],
+      },
+      auditHeadHashHex: "cd".repeat(32),
+      firstFetchEntries: project.built.entries.length - 1,
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, project.built.projectId, owner);
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    expect(state.appends).toHaveLength(1);
+    expect(state.appends[0]!.entry.payload.environments).toEqual([]);
+  });
+
   it("nothing changed in a listed scope: no tuple-less entry, since the view misses an environment", async () => {
     const project = await unchangedProject({ member: "listed" });
     const { exit, state, env } = await runCheckpoint({ ...project, signer: member });
     expect(exit).toBe(0);
     expect(state.appends).toHaveLength(0);
     expect(env.errors.join("\n")).toContain(`environment ${ENV_B} outside your scope`);
+    expect(env.logs.join("\n")).toContain(
+      "the 7-day checkpoint suggestion is not reset; it stops once a member whose scope covers every environment",
+    );
+  });
+
+  it("trigger (iii) suggests to a listed-scope member only after its own write (no repeat it cannot clear)", async () => {
+    const { built } = await unchangedProject({ member: "listed" });
+    const server = await MockServer.start(
+      makeCheckpointServer({ built, environments: [], me: { userId: member.userId } }).handlers,
+    );
+    servers.push(server);
+    const client = await Effect.runPromise(
+      makeApiClient({ baseUrl: server.origin }).pipe(Effect.provide(FetchHttpClient.layer)),
+    );
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: testProjectId(built.projectId),
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      }),
+    );
+    const propose = (afterWrite: boolean) =>
+      Effect.runPromise(
+        checkpointProposal({
+          client,
+          verified,
+          signerUserId: testUserId(member.userId),
+          nowMs: Date.now(),
+          afterWrite,
+        }),
+      );
+    // The baseline is older than 7 days either way
+    expect(await propose(false)).toBeNull();
+    expect(await propose(true)).toContain("maruhi project checkpoint");
   });
 });

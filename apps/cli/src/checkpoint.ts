@@ -50,6 +50,7 @@ import type {
   ChainEntry,
   CheckpointEnvironmentEntry,
   EnvValuesDigestEntry,
+  MemberScope,
   SigningKeyPair,
 } from "@maruhi/crypto";
 import {
@@ -109,6 +110,8 @@ interface CheckpointSummary {
   readonly unchangedEnvironmentIds: readonly EnvironmentId[];
   /** The changed environments left out (non-empty only for a subset issuance). */
   readonly skippedEnvironmentIds: readonly string[];
+  /** The active environments outside the issuer's scope (never built — §6.2). */
+  readonly outOfScopeEnvironmentIds: readonly string[];
   /** Whether the audit head was notarized (effective admin only — §16-2). */
   readonly attestedAuditHead: boolean;
   /** The accepted entry's seq, or null when nothing was issued (every baseline current). */
@@ -230,25 +233,32 @@ const resolveTargets = Effect.fn("checkpoint.resolveTargets")(function* (
     }
     return { targets: input.environmentIds, outOfScope: [] };
   }
-  const all = chainEnvironmentIds(input.verified);
-  if (all.length === 0) {
+  if (chainEnvironmentIds(input.verified).length === 0) {
     return { targets: [], outOfScope: [] };
   }
   const self = input.verified.state.members.get(input.signerUserId);
   if (self === undefined) {
     return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  const deleted = chainDeletedEnvironments(input.verified);
-  const active = all.filter((environmentId) => !deleted.has(environmentId));
+  return splitByScope(input.verified, self.scope);
+});
+
+/** The active (not chain-deleted) environments, split by a member's scope (byte order). */
+function splitByScope(
+  verified: VerifiedProject,
+  scope: MemberScope,
+): { readonly targets: readonly EnvironmentId[]; readonly outOfScope: readonly string[] } {
+  const deleted = chainDeletedEnvironments(verified);
+  const active = chainEnvironmentIds(verified).filter((id) => !deleted.has(id));
   return {
     targets: active
-      .filter((environmentId) => scopeIncludesEnvironment(self.scope, environmentId))
+      .filter((environmentId) => scopeIncludesEnvironment(scope, environmentId))
       .toSorted(compareUtf8Bytes) as readonly EnvironmentId[],
     outOfScope: active
-      .filter((environmentId) => !scopeIncludesEnvironment(self.scope, environmentId))
+      .filter((environmentId) => !scopeIncludesEnvironment(scope, environmentId))
       .toSorted(compareUtf8Bytes),
   };
-});
+}
 
 /**
  * Building the verified view: verified-pull each target environment in
@@ -637,6 +647,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
     if (attempt.outcome.kind === "accepted" || attempt.outcome.kind === "current") {
       return summarize({
         targets,
+        outOfScope,
         built: attempt.built,
         attest,
         headSeq: attempt.outcome.kind === "accepted" ? attempt.outcome.accepted.headSeq : null,
@@ -724,6 +735,7 @@ const absorbSendFailure = Effect.fn("checkpoint.absorbSendFailure")(function* (i
 /** The run's summary (for a subset issuance, skipped makes the changed environments it missed explicit). */
 function summarize(input: {
   readonly targets: readonly EnvironmentId[];
+  readonly outOfScope: readonly string[];
   readonly built: BuiltView;
   readonly attest: boolean;
   readonly headSeq: number | null;
@@ -737,6 +749,7 @@ function summarize(input: {
     skippedEnvironmentIds: input.targets.filter(
       (id) => !covered.includes(id) && !unchanged.includes(id),
     ),
+    outOfScopeEnvironmentIds: input.outOfScope,
     attestedAuditHead: input.headSeq !== null && input.attest,
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
@@ -863,6 +876,8 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
   readonly nowMs: number;
+  /** The command wrote to an environment (a push family) rather than only pulled. */
+  readonly afterWrite: boolean;
 }): Effect.fn.Return<string | null, never> {
   const member = input.verified.state.members.get(input.signerUserId);
   if (member === undefined || member.role === "reader") {
@@ -872,9 +887,18 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   const plainBasis = latestCheckpointEntry(input.verified, false);
   const stale = (entry: ChainEntry | null): boolean =>
     baselineIsStale(entry, input.verified, input.nowMs);
+  // A non-notarizing issuer whose scope misses an environment cannot issue
+  // the tuple-less entry, so it is prompted only after its own write —
+  // after a pull its run may have nothing to notarize and the prompt would
+  // repeat (§6.3)
+  const plainProposal = (): string | null =>
+    stale(plainBasis) &&
+    (input.afterWrite || splitByScope(input.verified, member.scope).outOfScope.length === 0)
+      ? PLAIN_BASELINE_PROPOSAL
+      : null;
   const adminRole = member.role === "admin" || member.role === "owner";
   if (!adminRole) {
-    return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
+    return plainProposal();
   }
   const attestedBasis = latestCheckpointEntry(input.verified, true);
   if (!stale(attestedBasis)) {
@@ -889,7 +913,7 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   if (effectiveAdmin) {
     return ATTESTED_BASELINE_PROPOSAL;
   }
-  return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
+  return plainProposal();
 });
 
 /**

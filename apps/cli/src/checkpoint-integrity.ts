@@ -244,12 +244,13 @@ export async function checkCheckpointIntegrity(input: {
       );
     }
     // Baseline exists + no enumeration = refuse (MUST — omission must
-    // not slide into skipping rule 2). The shape where the server has no
-    // stored row (normally unreachable — storing is atomic with
-    // acceptance §16-2) gets its baseline and stored row re-aligned by
-    // issuing a fresh checkpoint
+    // not slide into skipping rule 2). A spec-conforming server stores the
+    // row atomically with the checkpoint's acceptance (§16-2), so the
+    // remedy is on the server side: a client cannot re-issue its way out
+    // (issuing pulls through this same check, and an unchanged environment
+    // is not re-notarized — §6.3)
     return rejected(
-      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). A project member can re-establish a distributable baseline by issuing a fresh checkpoint: \`maruhi project checkpoint\``,
+      `The server omitted the checkpoint value snapshot for environment ${displayText(environmentId)} although the verified chain carries a checkpoint baseline (seq ${baseline.seq}). Omission would disable rollback detection, so the response is rejected (CRYPTO_SPEC §6.3). A conforming server stores that snapshot together with the checkpoint, so report this to the server's operator — only a damaged project store or a misbehaving server produces it (re-issuing a checkpoint cannot repair it)`,
     );
   }
   if (baseline === undefined) {
