@@ -57,8 +57,9 @@ export const MAX_VALUE_CIPHERTEXT_BYTES = 64 * 1024;
  * lease carries. Those reads return as one DO RPC result, which workerd
  * refuses above 32 MiB serialized; values travel as hex, so a full
  * environment above ~15.9 MiB is unreadable. 8 MiB keeps such a response
- * near half the frame, leaving the rest to statements, DEK wraps and a
- * lease's chain. Raising it in self-hosting is free up to that ceiling.
+ * near half the frame, leaving the rest to statements and DEK wraps (a
+ * lease's chain is its own RPC result). Raising it in self-hosting is free
+ * up to that ceiling.
  */
 export const MAX_ENVIRONMENT_CIPHERTEXT_BYTES = 8 * 1024 * 1024;
 

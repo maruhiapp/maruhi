@@ -18,14 +18,16 @@
 // - lease-binding.test.ts: first-come binding (§14-1) and source-IP
 //   rate limits
 
-import { decryptVariable, encodeHex } from "@maruhi/crypto";
+import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { hexBytes } from "./support/data-crypto.ts";
 import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
+  appendOperation,
   createEnvironmentOk,
   MEMBER,
+  OWNER,
   projectId,
   rotateEnvironmentOk,
 } from "./support/data-fixture.ts";
@@ -252,6 +254,45 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     expect(body.declaredVariables?.map((statement) => statement.variableId)).toEqual([
       "var-declared-0001",
     ]);
+  });
+
+  it("reads the chain in a second RPC, cut at the head the issuance was judged against (§14-2 — Sc-3a)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    const outcome = await callProjectDo(projectId, async (instance) =>
+      instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
+        issuer: OIDC_ISSUER,
+        subject: LEASE_SUBJECT,
+        audiences: [LEASE_AUDIENCE],
+        claims: { iss: OIDC_ISSUER, sub: LEASE_SUBJECT, aud: LEASE_AUDIENCE },
+        claimsDigestHex: await claimsDigestOf(),
+        bindingKeyHex: "b2".repeat(32),
+        bindingExpiresAtMs: Date.now() + 600_000,
+      }),
+    );
+    if (outcome.kind !== "ok") {
+      throw new Error("lease not issued");
+    }
+    // The values result carries no chain — each half has its own frame
+    expect("chain" in outcome.value).toBe(false);
+    const judged = { seq: outcome.value.headSeq, hashHex: outcome.value.headHashHex };
+    expect(judged).toEqual(fixture.head);
+    // An entry landing between the two RPCs is not in the lease's chain
+    await appendOperation(fixture, OWNER, {
+      op: "checkpoint",
+      payload: { environments: [], auditHeadHashHex: "" },
+    });
+    const chain = await callProjectDo(projectId, (instance) =>
+      instance.leaseChain(judged.seq, judged.hashHex),
+    );
+    expect(chain.length).toBe(judged.seq);
+    expect(await computeChainEntryHash(requireFirst(chain.slice(-1), "entry"))).toBe(
+      judged.hashHex,
+    );
+    // A head that is not on the stored chain is a broken invariant (500)
+    await expect(
+      callProjectDo(projectId, (instance) => instance.leaseChain(judged.seq, "00".repeat(32))),
+    ).rejects.toThrow("the lease head is not on the stored chain");
   });
 });
 

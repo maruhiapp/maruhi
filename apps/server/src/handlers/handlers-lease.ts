@@ -11,7 +11,9 @@
 // limiting / unwrap / re-wrap / audit) is confined to one RPC on the
 // project DO (top of programs-lease.ts — audit atomicity). This split
 // structurally guarantees §14-3's "authentication failure alone is
-// 401 / authorization failure is uniformly 404".
+// 401 / authorization failure is uniformly 404". An issued lease's chain
+// is read by a second RPC (§14-2 — each RPC result has its own 32 MiB
+// frame).
 
 import {
   LeaseRateLimitedError,
@@ -23,7 +25,7 @@ import {
 } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
-import { computeLeaseClaimsDigest } from "@maruhi/crypto";
+import { type ChainEntry, computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -215,6 +217,10 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
           stub.issueLease(params.environmentId, payload.ephemeralPubHex, facts),
         );
         const leased = yield* unwrapLeaseOutcome(outcome, params.projectId);
+        const env = yield* WorkerEnv;
+        const chain = yield* rpcCall<readonly ChainEntry[]>(() =>
+          projectStub(env, params.projectId).leaseChain(leased.headSeq, leased.headHashHex),
+        ).pipe(Effect.orDie);
         // The value wire form is identical to the bulk pull (§12-7) —
         // they share the verification-material bundling discipline, so
         // the workload's client-side verification stays as §6.3
@@ -222,7 +228,7 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
           projectId: params.projectId,
           environmentId: leased.environmentId,
           currentEpoch: leased.currentEpoch,
-          chain: leased.chain,
+          chain,
           headSeq: leased.headSeq,
           headHashHex: leased.headHashHex,
           statement: leased.statement,

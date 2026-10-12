@@ -32,6 +32,7 @@ import {
 import {
   aadFor,
   activateVariableRequest,
+  cloneVariableRows,
   createVariableOk,
   declareVariableOk,
   deleteVariableRequest,
@@ -283,7 +284,12 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
   it("an environment at the cap answers its pull and lease in half the RPC frame, and a read is never refused for the cap", async () => {
     await readyProject();
     // VAR's own value puts the environment just above the cap: reads still answer
-    await cloneFullValues(CAP / MAX_VALUE_CIPHERTEXT_BYTES);
+    await cloneVariableRows({
+      source: VAR,
+      count: CAP / MAX_VALUE_CIPHERTEXT_BYTES,
+      prefix: "var-full",
+      valueBytes: MAX_VALUE_CIPHERTEXT_BYTES,
+    });
 
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(MEMBER));
     expect(pull.status).toBe(200);
@@ -321,47 +327,4 @@ async function creationBody(dek: Uint8Array) {
   const statement = await variableStatementFor(MEMBER, variableId, "CREATED");
   const { manifest } = await manifestForStatement(statement, MEMBER);
   return { statement, value, manifest };
-}
-
-/** Clones VAR into `count` variables of real 64 KiB ciphertexts (the rows a pull serializes). */
-async function cloneFullValues(count: number): Promise<void> {
-  for (let index = 0; index < count; index += 1) {
-    const variableId = `var-full-${String(index).padStart(4, "0")}`;
-    await queryProjectDo(
-      projectId,
-      `INSERT INTO variables SELECT environment_id, ?, name || ?, latest_meta_version,
-         latest_version, created_at + ?, deleted_at FROM variables
-       WHERE environment_id = ? AND variable_id = ?`,
-      variableId,
-      `_${index}`,
-      index + 1,
-      ENV,
-      VAR,
-    );
-    await queryProjectDo(
-      projectId,
-      `INSERT INTO variable_meta_statements SELECT environment_id, ?, meta_version, suite,
-         name || ?, status, prev_meta_sig_hash_hex, chain_head_hash_hex, chain_head_seq,
-         signature_hex, signed_bytes_hash_hex, author_user_id, author_key_fingerprint, created_at,
-         layout_version, var_type, required, description, max_age_days
-       FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?`,
-      variableId,
-      `_${index}`,
-      ENV,
-      VAR,
-    );
-    await queryProjectDo(
-      projectId,
-      `INSERT INTO variable_versions SELECT environment_id, ?, version, suite, epoch, nonce_hex,
-         lower(hex(randomblob(?))), ?, prev_value_sig_hash_hex, chain_head_hash_hex,
-         chain_head_seq, signature_hex, signed_bytes_hash_hex, writer_user_id,
-         writer_key_fingerprint, created_at
-       FROM variable_versions WHERE environment_id = ? AND variable_id = ?`,
-      variableId,
-      MAX_VALUE_CIPHERTEXT_BYTES,
-      MAX_VALUE_CIPHERTEXT_BYTES,
-      ENV,
-      VAR,
-    );
-  }
 }

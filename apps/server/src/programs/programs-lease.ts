@@ -94,15 +94,16 @@ export interface LeaseTokenFacts {
 
 /**
  * The lease response's RPC value. The bulk pull-with-values shape (§12-7)
- * minus `deks`, plus the whole chain (the §14-2 bundling — a non-member gets
- * 404 from the chain API, so this is the only distribution path) and the
- * lease wraps.
+ * minus `deks`, plus the lease wraps and the head the issuance was judged
+ * against. The chain the response bundles (§14-2 — a non-member gets 404
+ * from the chain API, so the lease is its only distribution path) is not
+ * here: the worker reads it with {@link leaseChainProgram} as its own RPC
+ * result, so the chain and the values never share the 32 MiB frame.
  */
 // The advisory bundling of schemaPolicy targets only the environment list and
 // the two pull responses (§12-7 / §12-11) — it is not carried on the lease
 // response
 export interface LeaseValue extends Omit<EnvironmentPullValue, "deks" | "schemaPolicy"> {
-  readonly chain: readonly ChainEntry[];
   readonly headSeq: number;
   readonly headHashHex: string;
   readonly leases: readonly LeaseWrapOutput[];
@@ -444,7 +445,6 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
   return {
     environmentId,
     currentEpoch,
-    chain: chain.entries,
     headSeq: chain.headSeq,
     headHashHex: chain.headHashHex,
     statement,
@@ -455,4 +455,23 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
     manifest,
     ...optionalCheckpointSnapshot(checkpointSnapshot),
   } satisfies LeaseValue;
+});
+
+/**
+ * The chain half of an issued lease (§14-2 — Sc-3a): the stored chain up to
+ * the head {@link leaseProgram} judged against. The chain is append-only (a
+ * mirror swap only extends it, a restore writes only into an empty DO), so
+ * this prefix is that chain however many entries landed since; a different
+ * hash at the head seq is a broken invariant, never a rejection.
+ */
+export const leaseChainProgram = Effect.fn("programs-lease.leaseChainProgram")(function* (
+  head: { readonly seq: number; readonly hashHex: string },
+  cache: StateCache,
+): Effect.fn.Return<readonly ChainEntry[], never, ChainStore> {
+  const chain = yield* loadInitializedChain.pipe(Effect.orDie);
+  const { history } = yield* deriveStoredState(chain, cache);
+  if (history.entryHashAt(head.seq) !== head.hashHex) {
+    return yield* Effect.die(new Error("the lease head is not on the stored chain"));
+  }
+  return chain.entries.slice(0, head.seq);
 });

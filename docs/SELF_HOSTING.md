@@ -289,8 +289,9 @@ workload lease returns all of them in one Durable Object RPC result, values
 travel as hex, and Workers refuses an RPC result above 32 MiB, so an
 environment holding more than about 15.9 MiB cannot be read at all. 8 MiB
 keeps such a response near half that frame, leaving the rest for the
-variables' statements and a lease's bundled chain. Raising it shrinks that
-room; raising it past about 15 MiB makes full environments unreadable.
+variables' statements (a lease returns the chain in a separate RPC result).
+Raising it shrinks that room; raising it past about 15 MiB makes full
+environments unreadable.
 
 The project chain has the same ceiling (CRYPTO_SPEC §6.4): at most 10,000
 entries and **12 MiB** of canonical bytes (`MAX_CHAIN_ENTRIES` /

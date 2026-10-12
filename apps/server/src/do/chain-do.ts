@@ -90,7 +90,7 @@ import {
   variableVersionValuesProgram,
 } from "../programs/programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "../programs/programs-lease.ts";
-import { leaseProgram } from "../programs/programs-lease.ts";
+import { leaseChainProgram, leaseProgram } from "../programs/programs-lease.ts";
 import type {
   MirrorPageRequest,
   MirrorPageValue,
@@ -1391,6 +1391,22 @@ export class ProjectChainDO extends DurableObject<Env> {
               onFailure: (rejection): LeaseOutcome => ({ kind: "rejected", rejection }),
             }),
           ),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * The chain half of a lease (programs-lease.ts — §14-2): the worker calls
+   * it only after issueLease answered ok, with the head that result carries,
+   * so the chain and the values each get their own RPC result.
+   */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  leaseChain(headSeq: number, headHashHex: string): Promise<readonly ChainEntry[]> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          leaseChainProgram({ seq: headSeq, hashHex: headHashHex }, this.#stateCache),
         ),
       ),
     );
