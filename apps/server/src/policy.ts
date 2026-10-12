@@ -14,8 +14,14 @@ export const MAX_ENTRY_CANONICAL_BYTES = 1 * 1024 * 1024;
 /** §6.4: acceptance limit on the number of entries in a whole chain. */
 export const MAX_CHAIN_ENTRIES = 10_000;
 
-/** §6.4: acceptance limit on cumulative canonical bytes across a whole chain. */
-export const MAX_CHAIN_TOTAL_CANONICAL_BYTES = 32 * 1024 * 1024;
+/**
+ * §6.4 (Sc-3a): acceptance limit on cumulative canonical bytes across a whole
+ * chain. The chain fetch and a lease each return the chain as one DO RPC
+ * result, which workerd refuses above 32 MiB serialized; a chain at 12 MiB
+ * serializes to at most ~14.6 MB. Lowering it freezes appends to a chain
+ * above it; raising it is free up to the frame.
+ */
+export const MAX_CHAIN_TOTAL_CANONICAL_BYTES = 12 * 1024 * 1024;
 
 /**
  * Raw body limit at the HTTP boundary (implementation detail; the spec only
