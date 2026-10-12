@@ -674,7 +674,9 @@ const issuePostRotationCheckpoint = Effect.fn("env-rotate.issuePostRotationCheck
       Effect.gen(function* () {
         warnings.push(...issued.warnings);
         yield* io.log(
-          `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
+          issued.environmentIds.length === 0
+            ? `Environment ${input.environmentId} matches its latest checkpoint, so the post-rotation periodic checkpoint has nothing to notarize${issued.attestedAuditHead ? " (issued for the audit head only)" : ""} — CRYPTO_SPEC §6.3 (i)`
+            : `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
         );
       }),
     ),

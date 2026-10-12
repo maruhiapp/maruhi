@@ -3,11 +3,17 @@
 //
 // - Refresh the view right before issuing → build the manifest reference
 //   and values_digest from the verified view (a verified pull) (never sign
-//   server-declared values as-is — §16-2). Coverage is every environment in
-//   the verified view (SHOULD; environments deleted on the verified chain
-//   — a delete_environment entry — are not included) — trigger (i) [after rotate + re-encryption
-//   completes] is a single tuple for that environment (the ruling is
-//   docs/notes/session-35.md)
+//   server-declared values as-is — §16-2). Every environment in the
+//   verified view is built (environments deleted on the verified chain — a
+//   delete_environment entry — are not included); the entry covers those
+//   whose tuple differs from their baseline, the latest checkpoint
+//   containing them, or that have none (SHOULD — Sc-3a). Trigger (i)
+//   [after rotate + re-encryption completes] builds that one environment
+//   (the ruling is docs/notes/session-35.md)
+// - Nothing changed: the entry carries no tuple. An audit-head notarization
+//   still issues it; otherwise it is issued only by a full-scope "all" run
+//   whose trigger-(iii) baseline is older than 7 days (it restarts the
+//   suggestion's clock), and nothing is issued in every other case
 // - Only effective-admin authority (min(token scope, chain role) — §9-2)
 //   notarizes the audit head. The scope comes from /auth/me's tokenScopes
 //   and the role is **decided up front** from the verified view (no fallback
@@ -52,7 +58,7 @@ import {
   scopeIncludesEnvironment,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect, Schedule } from "effect";
+import { Clock, Effect, Schedule } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
@@ -99,11 +105,14 @@ const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 interface CheckpointSummary {
   /** The notarized environment IDs (ascending byte order = payload order). */
   readonly environmentIds: readonly EnvironmentId[];
-  /** The environments left out of the all-environments coverage (SHOULD), with the reason (non-empty only for a subset issuance). */
+  /** The environments whose tuple equals their baseline (nothing to notarize — §6.3). */
+  readonly unchangedEnvironmentIds: readonly EnvironmentId[];
+  /** The changed environments left out (non-empty only for a subset issuance). */
   readonly skippedEnvironmentIds: readonly string[];
   /** Whether the audit head was notarized (effective admin only — §16-2). */
   readonly attestedAuditHead: boolean;
-  readonly headSeq: number;
+  /** The accepted entry's seq, or null when nothing was issued (every baseline current). */
+  readonly headSeq: number | null;
   readonly warnings: readonly string[];
 }
 
@@ -150,11 +159,16 @@ interface BuiltTuple {
 
 interface BuiltView {
   readonly view: VerifiedProject;
+  /** The tuples that differ from their baseline or have none — the entry's cover (§6.3). */
   readonly tuples: readonly BuiltTuple[];
+  /** The built environments whose tuple equals their baseline. */
+  readonly unchanged: readonly EnvironmentId[];
   readonly warnings: readonly string[];
 }
 
-function sameTuple(a: BuiltTuple, b: BuiltTuple | undefined): boolean {
+type TupleCoordinates = Omit<BuiltTuple, "environmentId">;
+
+function sameTuple(a: TupleCoordinates, b: TupleCoordinates | undefined): boolean {
   return (
     b !== undefined &&
     a.epoch === b.epoch &&
@@ -308,7 +322,17 @@ const buildTuples = Effect.fn("checkpoint.buildTuples")(function* (
       valuesDigestHex: digest,
     });
   }
-  return { view, tuples, warnings };
+  // Re-notarizing a tuple equal to its baseline would feed every
+  // consistency check the same inputs (§6.3), so only changes are covered
+  const unchanged = tuples.filter((tuple) =>
+    sameTuple(tuple, view.state.checkpoints.get(tuple.environmentId)),
+  );
+  return {
+    view,
+    tuples: tuples.filter((tuple) => !unchanged.includes(tuple)),
+    unchanged: unchanged.map((tuple) => tuple.environmentId),
+    warnings,
+  };
 });
 
 /**
@@ -510,6 +534,15 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
   const { targets, outOfScope } = yield* resolveTargets(input);
   const warnings: string[] = yield* scopeCoverageNotes(targets, outOfScope);
   const attest = yield* determineAuditAttestation(input);
+  const nowMs = yield* Clock.currentTimeMillis;
+  // A tuple-less entry by a non-notarizing issuer only restarts trigger
+  // (iii)'s clock, so it needs a view of every active environment and a
+  // stale baseline (§6.3)
+  const issuesTupleLess = (view: VerifiedProject): boolean =>
+    attest ||
+    (input.environmentIds === "all" &&
+      outOfScope.length === 0 &&
+      baselineIsStale(latestCheckpointEntry(view, false), view, nowMs));
   const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
   let previous: BuiltView | null = null;
   let subset: readonly EnvironmentId[] | null = null;
@@ -530,6 +563,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
         readonly baseline: BuiltView | null;
         readonly outcome:
           | { readonly kind: "accepted"; readonly accepted: { readonly headSeq: number } }
+          | { readonly kind: "current" }
           | { readonly kind: "head-conflict" }
           | { readonly kind: "state-mismatch"; readonly reason: string };
       },
@@ -543,6 +577,9 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
       // subset issuance is in flight — no fallback inside a subset)
       const baseline = subset === null ? previous : null;
       previous = built;
+      if (built.tuples.length === 0 && !issuesTupleLess(built.view)) {
+        return { built, baseline, outcome: { kind: "current" as const } };
+      }
       const auditHeadHashHex = attest
         ? yield* fetchAuditHead(input.client, input.verified.projectId)
         : "";
@@ -597,12 +634,12 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
         Effect.fail,
       ),
     );
-    if (attempt.outcome.kind === "accepted") {
-      return summarizeAccepted({
+    if (attempt.outcome.kind === "accepted" || attempt.outcome.kind === "current") {
+      return summarize({
         targets,
-        subset,
+        built: attempt.built,
         attest,
-        headSeq: attempt.outcome.accepted.headSeq,
+        headSeq: attempt.outcome.kind === "accepted" ? attempt.outcome.accepted.headSeq : null,
         warnings,
       });
     }
@@ -684,19 +721,23 @@ const absorbSendFailure = Effect.fn("checkpoint.absorbSendFailure")(function* (i
   return stableIds;
 });
 
-/** The post-acceptance summary (for a subset issuance, skipped makes the miss of the all-environments SHOULD explicit). */
-function summarizeAccepted(input: {
+/** The run's summary (for a subset issuance, skipped makes the changed environments it missed explicit). */
+function summarize(input: {
   readonly targets: readonly EnvironmentId[];
-  readonly subset: readonly EnvironmentId[] | null;
+  readonly built: BuiltView;
   readonly attest: boolean;
-  readonly headSeq: number;
+  readonly headSeq: number | null;
   readonly warnings: readonly string[];
 }): CheckpointSummary {
-  const covered = input.subset ?? input.targets;
+  const covered = input.built.tuples.map((tuple) => tuple.environmentId);
+  const unchanged = input.built.unchanged;
   return {
     environmentIds: covered,
-    skippedEnvironmentIds: input.targets.filter((id) => !covered.includes(id)),
-    attestedAuditHead: input.attest,
+    unchangedEnvironmentIds: unchanged,
+    skippedEnvironmentIds: input.targets.filter(
+      (id) => !covered.includes(id) && !unchanged.includes(id),
+    ),
+    attestedAuditHead: input.headSeq !== null && input.attest,
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
   };

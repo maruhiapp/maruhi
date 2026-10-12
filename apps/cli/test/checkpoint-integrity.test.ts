@@ -581,6 +581,78 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 });
 
+describe("an unchanged environment left out of a later checkpoint keeps its guarantee (§6.3 changed-only cover — Sc-3a)", () => {
+  const tupleLess: ChainOperation = {
+    op: "checkpoint",
+    payload: { environments: [], auditHeadHashHex: "" },
+  };
+
+  /**
+   * The baseline checkpoint (seq 4) followed by a later one (seq 5) that
+   * either re-notarizes ENV's identical tuple (the former all-environment
+   * cover) or leaves ENV out (the changed-only cover). The served
+   * enumeration names the latest checkpoint containing ENV.
+   */
+  async function laterCheckpoint(renotarize: boolean) {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+      { actor: owner, operation: checkpointOperation },
+      { actor: owner, operation: renotarize ? checkpointOperation : tupleLess },
+    ]);
+    expect(built.projectId).toBe(projectId);
+    const baselineSeq = renotarize ? CHECKPOINT_SEQ + 1 : CHECKPOINT_SEQ;
+    return {
+      built,
+      snapshot: {
+        ...snapshot,
+        chainSeq: baselineSeq,
+        entryHashHex: built.hashes[baselineSeq - 1] ?? "",
+      },
+    };
+  }
+
+  it.each([
+    ["left out", false],
+    ["re-notarized", true],
+  ])(
+    "%s: the current state is accepted and a rollback below the baseline is refused",
+    async (_label, renotarize) => {
+      const later = await laterCheckpoint(renotarize);
+      const accepted = await startEnv([
+        chainHandler(later.built),
+        pullHandler({ checkpointSnapshot: later.snapshot }),
+      ]);
+      expect(await runCli(["pull"], accepted.layer)).toBe(0);
+
+      const rolledBack = await encryptValueFor({
+        dek: dek2,
+        projectId,
+        environmentId: ENV_ID,
+        epoch: 2,
+        variableId: "va",
+        version: 1,
+        plaintext: "alpha-old",
+        writer: owner,
+        head: headOf(baseChain, 3),
+      });
+      const refused = await startEnv([
+        chainHandler(later.built),
+        pullHandler({
+          checkpointSnapshot: later.snapshot,
+          variables: [
+            { variableId: "va", statement: stmtA, value: rolledBack },
+            { variableId: testVariableId("vb"), statement: stmtB, value: valueB },
+          ],
+        }),
+      ]);
+      expect(await runCli(["pull"], refused.layer)).toBe(1);
+      expect(refused.errors.join("\n")).toContain("a value rollback below the checkpointed state");
+    },
+  );
+});
+
 describe("classifying a benign race (baseline advancing after the fetch view is not evidence)", () => {
   it("rejects an honest response where a second checkpoint landed inside the resync window as retriable, not evidence", async () => {
     // The view at fetch = baseChain (no checkpoint). The response carries
