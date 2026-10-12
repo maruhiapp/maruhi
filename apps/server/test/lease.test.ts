@@ -145,6 +145,23 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     ).rejects.toThrow("environment manifest row missing");
   });
 
+  it("answers a server fault, not a partial stream, when the response fails its schema (§14-2)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    // A stored value no response schema accepts (a corrupted row): the body
+    // is encoded whole before the stream starts, so the lease is a 500 with
+    // no lease material rather than a 200 cut off mid-body
+    await queryProjectDo(projectId, "UPDATE variable_versions SET nonce_hex = 'not-hex'");
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).not.toContain("not-hex");
+    expect(body).not.toContain(projectId);
+  });
+
   it("bundles the stored checkpoint-time value snapshot (§14-2)", async () => {
     await readyProject();
     const workload = await workloadKeyPair();

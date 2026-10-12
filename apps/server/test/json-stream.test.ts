@@ -25,6 +25,7 @@ describe("jsonStream (the lease body — AUTH_SPEC §14-2)", () => {
     ["undefined fields are dropped like JSON.stringify", { a: undefined, b: 2, c: undefined }],
     ["empty and nested arrays", { a: [], b: [[1], { c: [2] }], d: 'é\u2028"\\' }],
     ["arrays first and last", { a: [1, 2], b: { x: 1 }, c: ["y", null] }],
+    ["undefined and function array elements become null", { a: [undefined, () => 1, 3] }],
   ])("writes exactly JSON.stringify's text: %s", async (_label, value) => {
     expect([...jsonPieces(value)].join("")).toBe(JSON.stringify(value));
     const text = await new Response(jsonStream(value)).text();
