@@ -176,7 +176,7 @@ const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
   for (const line of describeRotation(result, context.environmentId, nowMs)) {
     yield* io.log(line);
   }
-  yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+  yield* proposeCheckpointRefresh(context, { afterWrite: true });
   if (syncSetup !== null && syncDecision !== null) {
     yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
   }
@@ -319,7 +319,7 @@ export function makeVarCommands() {
           `The restored value was readable by the subject of ${countNoun(result.flagsIfCurrent, "rotation flag")} — see \`maruhi rotation list\``,
         );
       }
-      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      yield* proposeCheckpointRefresh(context, { afterWrite: true });
       if (syncSetup !== null && syncDecision !== null) {
         yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
       }

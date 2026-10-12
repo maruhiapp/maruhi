@@ -14,8 +14,16 @@ export const MAX_ENTRY_CANONICAL_BYTES = 1 * 1024 * 1024;
 /** §6.4: acceptance limit on the number of entries in a whole chain. */
 export const MAX_CHAIN_ENTRIES = 10_000;
 
-/** §6.4: acceptance limit on cumulative canonical bytes across a whole chain. */
-export const MAX_CHAIN_TOTAL_CANONICAL_BYTES = 32 * 1024 * 1024;
+/**
+ * §6.4 (Sc-3a): acceptance limit on cumulative canonical bytes across a whole
+ * chain. The chain fetch and a lease each return the chain as one DO RPC
+ * result, which workerd refuses above 32 MiB serialized; a chain at 12 MiB
+ * serializes to about 14.6 MB. A lease holds the chain and the values in
+ * the worker isolate while it writes them (~39 MB live with both caps reached, of the isolate's 128 MB).
+ * Lowering it freezes appends to a chain above it; raising it costs frame
+ * room and worker memory.
+ */
+export const MAX_CHAIN_TOTAL_CANONICAL_BYTES = 12 * 1024 * 1024;
 
 /**
  * Raw body limit at the HTTP boundary (implementation detail; the spec only
@@ -51,8 +59,9 @@ export const MAX_VALUE_CIPHERTEXT_BYTES = 64 * 1024;
  * lease carries. Those reads return as one DO RPC result, which workerd
  * refuses above 32 MiB serialized; values travel as hex, so a full
  * environment above ~15.9 MiB is unreadable. 8 MiB keeps such a response
- * near half the frame, leaving the rest to statements, DEK wraps and a
- * lease's chain. Raising it in self-hosting is free up to that ceiling.
+ * near half the frame, leaving the rest to statements and DEK wraps (a
+ * lease's chain is its own RPC result). Raising it in self-hosting is free
+ * up to that ceiling.
  */
 export const MAX_ENVIRONMENT_CIPHERTEXT_BYTES = 8 * 1024 * 1024;
 

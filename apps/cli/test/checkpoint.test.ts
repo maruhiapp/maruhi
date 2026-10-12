@@ -14,8 +14,16 @@
 //     the stable subset (§6.3 fallback). 409 (CAS) = resync + re-sign
 //  4. Post-acceptance check (§12-10 (3)): even on 2xx, if the synced chain
 //     doesn't show our own entry, do not report success
+//  5. Changed-only cover (§6.3 — Sc-3a): every environment is built, only
+//     those differing from their baseline (or without one) are notarized,
+//     and a run with nothing changed issues a tuple-less entry only to
+//     notarize the audit head or to restart trigger (iii)'s clock
 
-import type { ChainEntry } from "@maruhi/crypto";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
   computeEnvValuesDigest,
@@ -28,12 +36,15 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeApiClient } from "../src/api.ts";
 import { verifyChainSnapshot } from "../src/chain-sync.ts";
-import { checkpointProposal } from "../src/checkpoint.ts";
+import { checkpointProposal, issueCheckpoint } from "../src/checkpoint.ts";
 import { runCli } from "../src/cli.ts";
+import { makeFloorHandle } from "../src/floor-check.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
 import {
   addMemberOp,
   addScopedMemberOp,
   buildChain,
+  checkpointSnapshotValuesOf,
   createEnvironmentOp,
   encryptValueFor,
   environmentStatementFor,
@@ -43,9 +54,12 @@ import {
   manifestFor,
   manifestHashOf,
   statementFor,
+  testEnvironmentId,
+  testProjectId,
   testUserId,
   type BuiltChain,
   type TestUser,
+  type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
@@ -85,6 +99,8 @@ interface MockEnvironment {
   }[];
   /** Swap the value on each pull (the "busy environment" of the subset-fallback test). */
   nextValues?: WireDistributedValue[];
+  /** The enumeration of the latest checkpoint containing the environment (§12-7 — required once it has a baseline). */
+  checkpointSnapshot?: WireCheckpointSnapshot;
 }
 
 interface CheckpointServerOptions {
@@ -98,6 +114,8 @@ interface CheckpointServerOptions {
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
   /** Accept without appending to the chain (a lying 2xx server — the §12-10 (3) check). */
   readonly acceptWithoutAppending?: boolean;
+  /** The first chain fetch serves only this many entries (a checkpoint landing after the opening view). */
+  readonly firstFetchEntries?: number;
 }
 
 interface AppendBody {
@@ -120,17 +138,25 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   const appends: AppendBody[] = [];
   let appendCalls = 0;
   let auditHeadCalls = 0;
+  let chainCalls = 0;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
-    })),
+    onRequest("GET", `/projects/${projectId}/chain`, () => {
+      const served =
+        chainCalls === 0 && options.firstFetchEntries !== undefined
+          ? options.firstFetchEntries
+          : entries.length;
+      chainCalls += 1;
+      return {
+        status: 200,
+        json: {
+          projectId,
+          entries: entries.slice(0, served),
+          headSeq: served,
+          headHashHex: hashes[served - 1],
+          attestations: [],
+        },
+      };
+    }),
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
       status: 200,
       json: {
@@ -204,6 +230,9 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
           deletedVariables: [],
           deks: [],
           manifest: environment.manifest,
+          ...(environment.checkpointSnapshot === undefined
+            ? {}
+            : { checkpointSnapshot: environment.checkpointSnapshot }),
           schemaPolicy: "enabled" as const,
         },
       };
@@ -273,12 +302,12 @@ async function seededEnv(server: MockServer, projectId: string, user: TestUser):
   return env;
 }
 
-async function expectedValuesDigest(environment: MockEnvironment): Promise<string> {
+async function valuesDigestOf(values: readonly WireDistributedValue[]): Promise<string> {
   const entries = await Promise.all(
-    environment.variables.map(async (variable) => ({
-      variableId: testVariableId(variable.variableId),
-      version: variable.value.aad.version,
-      valueSigHashHex: await valueHashOf(variable.value, variable.value.writerUserId),
+    values.map(async (value) => ({
+      variableId: testVariableId(value.aad.variableId),
+      version: value.aad.version,
+      valueSigHashHex: await valueHashOf(value, value.writerUserId),
     })),
   );
   const digest = await computeEnvValuesDigest(SUITE_ID, entries);
@@ -286,6 +315,53 @@ async function expectedValuesDigest(environment: MockEnvironment): Promise<strin
     throw new Error("digest failed");
   }
   return digest.value;
+}
+
+async function expectedValuesDigest(environment: MockEnvironment): Promise<string> {
+  return valuesDigestOf(environment.variables.map((variable) => variable.value));
+}
+
+type CheckpointPayload = Extract<ChainOperation, { readonly op: "checkpoint" }>["payload"];
+
+/** The tuple the issuer builds for a fixture environment (what a checkpoint notarizes). */
+async function tupleOf(
+  projectId: string,
+  environment: MockEnvironment,
+  values: readonly WireDistributedValue[] = environment.variables.map((variable) => variable.value),
+): Promise<CheckpointPayload["environments"][number]> {
+  return {
+    environmentId: testEnvironmentId(environment.environmentId),
+    epoch: 1,
+    manifestVersion: environment.manifest.manifestVersion,
+    manifestSigHashHex: await manifestHashOf(projectId, environment.manifest),
+    valuesDigestHex: await valuesDigestOf(values),
+  };
+}
+
+/** Appends an owner-signed checkpoint at a chosen time (buildChain's timestamps all lie past the 7-day line). */
+async function appendSignedCheckpoint(
+  built: BuiltChain,
+  payload: CheckpointPayload,
+  timestampMs: number,
+): Promise<BuiltChain> {
+  const signed = await signChainEntry({
+    entry: {
+      suite: SUITE_ID,
+      seq: built.entries.length + 1,
+      prevHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      op: "checkpoint",
+      actor: { userId: owner.userId, keyFingerprintHex: owner.fingerprintHex },
+      payload,
+      timestampMs,
+    },
+    signingKey: owner.sigKeyPair.privateKey,
+  });
+  if (!signed.ok) throw new Error("sign failed");
+  return {
+    ...built,
+    entries: [...built.entries, signed.value],
+    hashes: [...built.hashes, await computeChainEntryHash(signed.value)],
+  };
 }
 
 describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_SPEC §16-2)", () => {
@@ -614,31 +690,49 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
   it("once retries are exhausted, issues against the subset of environments unchanged across the last 2 builds (§6.3 fallback)", async () => {
     const dekA = crypto.getRandomValues(new Uint8Array(32));
     const dekB = crypto.getRandomValues(new Uint8Array(32));
-    const built = await buildChain([
+    const dekC = crypto.getRandomValues(new Uint8Array(32));
+    const steps = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
       { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+      { actor: owner, operation: createEnvironmentOp("ops", dekC) },
+    ];
+    const base = await buildChain(steps);
+    const fixtureOf = (environmentId: string, dek: Uint8Array) =>
+      makeEnvironment({
+        built: base,
+        environmentId,
+        dek,
+        headSeq: 4,
+        issuer: owner,
+        variableId: `var-${environmentId}`,
+      });
+    const stable = await fixtureOf(ENV_A, dekA);
+    const busy = await fixtureOf(ENV_B, dekB);
+    // ops matches its baseline: neither covered nor reported as skipped
+    const unchanged = await fixtureOf("ops", dekC);
+    const built = await buildChain([
+      ...steps,
+      {
+        actor: owner,
+        operation: {
+          op: "checkpoint",
+          payload: {
+            environments: [await tupleOf(base.projectId, unchanged)],
+            auditHeadHashHex: "",
+          },
+        },
+      },
     ]);
-    const stable = await makeEnvironment({
-      built,
-      environmentId: ENV_A,
-      dek: dekA,
-      headSeq: 3,
-      issuer: owner,
-      variableId: "var-a",
-    });
-    const busy = await makeEnvironment({
-      built,
-      environmentId: ENV_B,
-      dek: dekB,
-      headSeq: 3,
-      issuer: owner,
-      variableId: "var-b",
-    });
+    unchanged.checkpointSnapshot = {
+      chainSeq: 5,
+      entryHashHex: built.hashes[4] ?? "",
+      values: await checkpointSnapshotValuesOf(unchanged.variables.map((v) => v.value)),
+    };
     // ENV_B's version advances on every pull (models a concurrent push).
     // prev chains to the self-computed hash of the immediately preceding
     // version (§4.1)
-    const head = headOf(built, 3);
+    const head = headOf(base, 4);
     const nextValues: WireDistributedValue[] = [];
     let previous = busy.variables[0]!.value;
     for (let version = 2; version <= 6; version += 1) {
@@ -647,7 +741,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         projectId: built.projectId,
         environmentId: ENV_B,
         epoch: 1,
-        variableId: "var-b",
+        variableId: `var-${ENV_B}`,
         version,
         plaintext: `secret-v${version}`,
         writer: owner,
@@ -660,7 +754,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     busy.nextValues = nextValues;
     const state = makeCheckpointServer({
       built,
-      environments: [stable, busy],
+      environments: [stable, busy, unchanged],
       me: {
         userId: owner.userId,
         tokenScopes: [{ project: built.projectId, permission: "admin" }],
@@ -687,7 +781,10 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     ]);
     const output = [...env.logs, ...env.errors].join("\n");
     expect(output).toContain("partial checkpoint");
-    expect(output).toContain(ENV_B);
+    expect(output).toContain(`1 environment could not be covered (${ENV_B})`);
+    expect(output).toContain(
+      "covering 1 changed environment (1 unchanged since the latest checkpoint)",
+    );
   });
 
   it("the trigger-(iii) proposal (checkpointProposal): branches on baseline presence / freshness / effective permission", async () => {
@@ -710,29 +807,15 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
           claimedHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
         }),
       );
-    const appendCheckpoint = async (
+    const appendCheckpoint = (
       built: BuiltChain,
       input: { readonly timestampMs: number; readonly auditHeadHashHex: string },
-    ): Promise<BuiltChain> => {
-      const signed = await signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: built.entries.length + 1,
-          prevHashHex: built.hashes[built.hashes.length - 1] ?? "",
-          op: "checkpoint",
-          actor: { userId: owner.userId, keyFingerprintHex: owner.fingerprintHex },
-          payload: { environments: [], auditHeadHashHex: input.auditHeadHashHex },
-          timestampMs: input.timestampMs,
-        },
-        signingKey: owner.sigKeyPair.privateKey,
-      });
-      if (!signed.ok) throw new Error("sign failed");
-      return {
-        ...built,
-        entries: [...built.entries, signed.value],
-        hashes: [...built.hashes, await computeChainEntryHash(signed.value)],
-      };
-    };
+    ): Promise<BuiltChain> =>
+      appendSignedCheckpoint(
+        built,
+        { environments: [], auditHeadHashHex: input.auditHeadHashHex },
+        input.timestampMs,
+      );
     // A mock with only /auth/me (used to judge admin's effective permission)
     const state = makeCheckpointServer({
       built: base,
@@ -752,6 +835,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
             verified,
             signerUserId: testUserId(signerUserId),
             nowMs: Date.now(),
+            afterWrite: false,
           }),
         ),
       );
@@ -767,7 +851,13 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
       verifiedOf(built).then((verified) =>
         Effect.runPromise(
-          checkpointProposal({ client, verified, signerUserId: testUserId(signerUserId), nowMs }),
+          checkpointProposal({
+            client,
+            verified,
+            signerUserId: testUserId(signerUserId),
+            nowMs,
+            afterWrite: false,
+          }),
         ),
       );
     const day = 24 * 60 * 60 * 1000;
@@ -825,5 +915,288 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
 
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not contain this checkpoint entry");
+  });
+});
+
+describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
+  const ENV_C = "ops";
+
+  it("builds every environment but notarizes only those changed since their baseline or without one", async () => {
+    const dekA = crypto.getRandomValues(new Uint8Array(32));
+    const dekB = crypto.getRandomValues(new Uint8Array(32));
+    const dekC = crypto.getRandomValues(new Uint8Array(32));
+    const steps = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
+      { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+      { actor: owner, operation: createEnvironmentOp(ENV_C, dekC) },
+    ];
+    const base = await buildChain(steps);
+    const fixtureOf = (environmentId: string, dek: Uint8Array) =>
+      makeEnvironment({
+        built: base,
+        environmentId,
+        dek,
+        headSeq: 4,
+        issuer: owner,
+        variableId: `var-${environmentId}`,
+      });
+    // alpha: unchanged since its baseline. dev: no baseline. ops: its
+    // value landed after its baseline (an empty value set)
+    const unchanged = await fixtureOf(ENV_A, dekA);
+    const unbased = await fixtureOf(ENV_B, dekB);
+    const changed = await fixtureOf(ENV_C, dekC);
+    const built = await buildChain([
+      ...steps,
+      {
+        actor: owner,
+        operation: {
+          op: "checkpoint",
+          payload: {
+            environments: [
+              await tupleOf(base.projectId, unchanged),
+              await tupleOf(base.projectId, changed, []),
+            ],
+            auditHeadHashHex: "",
+          },
+        },
+      },
+    ]);
+    const baseline = { chainSeq: 5, entryHashHex: built.hashes[4] ?? "" };
+    unchanged.checkpointSnapshot = {
+      ...baseline,
+      values: await checkpointSnapshotValuesOf(unchanged.variables.map((v) => v.value)),
+    };
+    changed.checkpointSnapshot = { ...baseline, values: [] };
+    const state = makeCheckpointServer({
+      built,
+      environments: [unchanged, unbased, changed],
+      me: {
+        userId: owner.userId,
+        tokenScopes: [{ project: built.projectId, permission: "admin" }],
+      },
+      auditHeadHashHex: "ab".repeat(32),
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, built.projectId, owner);
+
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    expect(state.appends.length).toBe(1);
+    const payload = state.appends[0]!.entry.payload;
+    expect(payload.environments).toEqual([
+      await tupleOf(built.projectId, unbased),
+      await tupleOf(built.projectId, changed),
+    ]);
+    expect(payload.auditHeadHashHex).toBe("ab".repeat(32));
+    // The unchanged environment was still pulled: only its verified tuple
+    // shows that it equals the baseline
+    expect(
+      server.requests.filter((request) => request.path.endsWith(`/environments/${ENV_A}/pull`)),
+    ).toHaveLength(1);
+    expect(env.logs.join("\n")).toContain(
+      "covering 2 changed environments (1 unchanged since the latest checkpoint)",
+    );
+  });
+
+  /** One environment whose baseline equals its current tuple; `freshMs` signs that baseline at a chosen time. */
+  async function unchangedProject(input: {
+    readonly member?: "full" | "listed";
+    readonly freshMs?: number;
+  }) {
+    const dekA = crypto.getRandomValues(new Uint8Array(32));
+    const dekB = crypto.getRandomValues(new Uint8Array(32));
+    const steps = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
+      ...(input.member === "listed"
+        ? [
+            { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+            { actor: owner, operation: addScopedMemberOp(member, "member", [ENV_A]) },
+          ]
+        : [{ actor: owner, operation: addMemberOp(member, "member") }]),
+    ];
+    const base = await buildChain(steps);
+    const environment = await makeEnvironment({
+      built: base,
+      environmentId: ENV_A,
+      dek: dekA,
+      headSeq: steps.length,
+      issuer: owner,
+      variableId: "var-a",
+    });
+    const payload: CheckpointPayload = {
+      environments: [await tupleOf(base.projectId, environment)],
+      auditHeadHashHex: "",
+    };
+    const built =
+      input.freshMs === undefined
+        ? await buildChain([...steps, { actor: owner, operation: { op: "checkpoint", payload } }])
+        : await appendSignedCheckpoint(base, payload, input.freshMs);
+    environment.checkpointSnapshot = {
+      chainSeq: built.entries.length,
+      entryHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      values: await checkpointSnapshotValuesOf(environment.variables.map((v) => v.value)),
+    };
+    return { built, environment };
+  }
+
+  async function runCheckpoint(input: {
+    readonly built: BuiltChain;
+    readonly environment: MockEnvironment;
+    readonly signer: TestUser;
+    readonly admin?: boolean;
+  }) {
+    const state = makeCheckpointServer({
+      built: input.built,
+      environments: [input.environment],
+      me:
+        input.admin === true
+          ? {
+              userId: input.signer.userId,
+              tokenScopes: [{ project: input.built.projectId, permission: "admin" }],
+            }
+          : { userId: input.signer.userId },
+      auditHeadHashHex: "cd".repeat(32),
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, input.built.projectId, input.signer);
+    const exit = await runCli(["project", "checkpoint"], env.layer);
+    return { exit, state, env };
+  }
+
+  it("nothing changed and a baseline younger than 7 days: a member issues nothing", async () => {
+    const project = await unchangedProject({ freshMs: Date.now() });
+    const { exit, state, env } = await runCheckpoint({ ...project, signer: member });
+    expect(exit).toBe(0);
+    expect(state.appends).toHaveLength(0);
+    expect(env.logs.join("\n")).toContain(
+      "Nothing to notarize: the environment matches its latest checkpoint",
+    );
+  });
+
+  it("nothing changed and a baseline older than 7 days: a member's tuple-less entry restarts trigger (iii)'s clock", async () => {
+    const project = await unchangedProject({});
+    const { exit, state } = await runCheckpoint({ ...project, signer: member });
+    expect(exit).toBe(0);
+    expect(state.appends).toHaveLength(1);
+    expect(state.appends[0]!.entry.payload).toEqual({ environments: [], auditHeadHashHex: "" });
+  });
+
+  it("nothing changed: an effective admin still notarizes the audit head in a tuple-less entry", async () => {
+    const project = await unchangedProject({ freshMs: Date.now() });
+    const { exit, state } = await runCheckpoint({ ...project, signer: owner, admin: true });
+    expect(exit).toBe(0);
+    expect(state.appends).toHaveLength(1);
+    expect(state.appends[0]!.entry.payload).toEqual({
+      environments: [],
+      auditHeadHashHex: "cd".repeat(32),
+    });
+  });
+
+  it("nothing changed under trigger (i): no tuple-less entry, since the build covers one environment, not the view", async () => {
+    const project = await unchangedProject({});
+    const state = makeCheckpointServer({
+      built: project.built,
+      environments: [project.environment],
+      me: { userId: member.userId },
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, project.built.projectId, member);
+    const client = await Effect.runPromise(
+      makeApiClient({ baseUrl: server.origin }).pipe(Effect.provide(FetchHttpClient.layer)),
+    );
+    const projectId = testProjectId(project.built.projectId);
+    const resync = verifyChainSnapshot({
+      projectId,
+      entries: state.entries,
+      claimedHeadSeq: state.entries.length,
+      claimedHeadHashHex: project.built.hashes[project.built.hashes.length - 1] ?? "",
+    });
+    const floor = makeFloorHandle({
+      store: makeFileFloorStore(await mkdtemp(join(tmpdir(), "maruhi-checkpoint-i-"))),
+      projectId,
+      environmentId: testEnvironmentId(ENV_A),
+      initial: null,
+    });
+    const summary = await Effect.runPromise(
+      issueCheckpoint({
+        client,
+        verified: await Effect.runPromise(resync),
+        resync,
+        environmentIds: [testEnvironmentId(ENV_A)],
+        signerUserId: testUserId(member.userId),
+        signingKeyPair: member.sigKeyPair,
+        floorFor: () => Effect.succeed(floor),
+      }).pipe(Effect.provide(env.layer)),
+    );
+    expect(summary.headSeq).toBeNull();
+    expect(summary.unchangedEnvironmentIds).toEqual([ENV_A]);
+    expect(state.appends).toHaveLength(0);
+  });
+
+  it("compares against the latest view: a baseline landing after the opening view counts", async () => {
+    const project = await unchangedProject({});
+    const state = makeCheckpointServer({
+      built: project.built,
+      environments: [project.environment],
+      me: {
+        userId: owner.userId,
+        tokenScopes: [{ project: project.built.projectId, permission: "admin" }],
+      },
+      auditHeadHashHex: "cd".repeat(32),
+      firstFetchEntries: project.built.entries.length - 1,
+    });
+    const server = await MockServer.start(state.handlers);
+    servers.push(server);
+    const env = await seededEnv(server, project.built.projectId, owner);
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
+    expect(state.appends).toHaveLength(1);
+    expect(state.appends[0]!.entry.payload.environments).toEqual([]);
+  });
+
+  it("nothing changed in a listed scope: no tuple-less entry, since the view misses an environment", async () => {
+    const project = await unchangedProject({ member: "listed" });
+    const { exit, state, env } = await runCheckpoint({ ...project, signer: member });
+    expect(exit).toBe(0);
+    expect(state.appends).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(`environment ${ENV_B} outside your scope`);
+    expect(env.logs.join("\n")).toContain(
+      "the 7-day checkpoint suggestion is not reset; it stops once a member whose scope covers every environment",
+    );
+  });
+
+  it("trigger (iii) suggests to a listed-scope member only after its own write (no repeat it cannot clear)", async () => {
+    const { built } = await unchangedProject({ member: "listed" });
+    const server = await MockServer.start(
+      makeCheckpointServer({ built, environments: [], me: { userId: member.userId } }).handlers,
+    );
+    servers.push(server);
+    const client = await Effect.runPromise(
+      makeApiClient({ baseUrl: server.origin }).pipe(Effect.provide(FetchHttpClient.layer)),
+    );
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: testProjectId(built.projectId),
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      }),
+    );
+    const propose = (afterWrite: boolean) =>
+      Effect.runPromise(
+        checkpointProposal({
+          client,
+          verified,
+          signerUserId: testUserId(member.userId),
+          nowMs: Date.now(),
+          afterWrite,
+        }),
+      );
+    // The baseline is older than 7 days either way
+    expect(await propose(false)).toBeNull();
+    expect(await propose(true)).toContain("maruhi project checkpoint");
   });
 });

@@ -90,7 +90,7 @@ import {
   variableVersionValuesProgram,
 } from "../programs/programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "../programs/programs-lease.ts";
-import { leaseProgram } from "../programs/programs-lease.ts";
+import { leaseChainProgram, leaseProgram } from "../programs/programs-lease.ts";
 import type {
   MirrorPageRequest,
   MirrorPageValue,
@@ -167,6 +167,7 @@ import {
   snapshotObjectKey,
   writeSnapshot,
 } from "./do-snapshot.ts";
+import { LeaseChainGrants } from "./lease-chain-grants.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
@@ -711,6 +712,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   readonly #opLock = Semaphore.makeUnsafe(1);
   // Cache of the chain-derived state + the parsed chain (see chain-store.ts)
   readonly #stateCache: StateCache = { current: null, chain: null };
+  // Issued leases' heads awaiting their chain read (lease-chain-grants.ts)
+  readonly #leaseChainGrants = new LeaseChainGrants();
   // Whether this DO's tables exist. A fresh DO holds no storage until a
   // genesis is accepted (Sc-7 / A-4, owner approval 2026-10-11 — AUTH_SPEC
   // §14-3 / §11-3): materialized by init (genesis) or opsRestore. Reads and
@@ -1386,12 +1389,45 @@ export class ProjectChainDO extends DurableObject<Env> {
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
           leaseProgram(environmentId, ephemeralPubHex, facts, this.#stateCache).pipe(
-            Effect.match({
-              onSuccess: (value: LeaseValue): LeaseOutcome => ({ kind: "ok", value }),
-              onFailure: (rejection): LeaseOutcome => ({ kind: "rejected", rejection }),
+            Effect.matchEffect({
+              onSuccess: (value: LeaseValue) =>
+                Effect.map(Clock.currentTimeMillis, (nowMs): LeaseOutcome => ({
+                  kind: "ok",
+                  value,
+                  chainToken: this.#leaseChainGrants.grant(
+                    { seq: value.headSeq, hashHex: value.headHashHex },
+                    nowMs,
+                  ),
+                })),
+              onFailure: (rejection) =>
+                Effect.succeed<LeaseOutcome>({ kind: "rejected", rejection }),
             }),
           ),
         ),
+      ),
+    );
+  }
+
+  /**
+   * The chain half of a lease (programs-lease.ts — §14-2), so the chain and
+   * the values each get their own RPC result. It takes the single-use token
+   * issueLease returned with an ok outcome — the authorization stays in the
+   * DO (a stub holder cannot read a chain without an authorized issuance) —
+   * and returns the chain up to the head that issuance was judged against.
+   * An unknown, spent or expired token is a defect (500).
+   */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  leaseChain(chainToken: string): Promise<readonly ChainEntry[]> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        Effect.flatMap(Clock.currentTimeMillis, (nowMs) => {
+          // A token miss is checked before the defect guard: it touches no
+          // state, so it must not drop the caches
+          const head = this.#leaseChainGrants.take(chainToken, nowMs);
+          return head === undefined
+            ? Effect.die(new Error("unknown, spent or expired lease chain token"))
+            : this.#invalidateCachesOnDefect(leaseChainProgram(head, this.#stateCache));
+        }),
       ),
     );
   }

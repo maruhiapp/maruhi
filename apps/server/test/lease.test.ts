@@ -18,19 +18,27 @@
 // - lease-binding.test.ts: first-come binding (§14-1) and source-IP
 //   rate limits
 
-import { decryptVariable, encodeHex } from "@maruhi/crypto";
+import { LeaseResponseSchema } from "@maruhi/api-schema";
+import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
+import { env, runInDurableObject } from "cloudflare:test";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { chainStoreLayer, type StateCache } from "../src/do/chain-store.ts";
+import { leaseChainProgram } from "../src/programs/programs-lease.ts";
 import { hexBytes } from "./support/data-crypto.ts";
 import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
+  appendOperation,
   createEnvironmentOk,
   MEMBER,
+  OWNER,
   projectId,
   rotateEnvironmentOk,
 } from "./support/data-fixture.ts";
 import {
   createVariableOk,
+  declareVariableOk,
   ENV,
   fixture,
   registerDataScenario,
@@ -62,7 +70,12 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       ephemeralPubHex: workload.publicKeyHex,
     });
     expect(response.status).toBe(200);
+    // Written in chunks (handlers/json-stream.ts — no single buffer of the
+    // whole body), and still a valid §14-2 response
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("content-length")).toBeNull();
     const body = (await response.json()) as LeaseBody;
+    expect(() => Schema.decodeUnknownSync(LeaseResponseSchema)(body)).not.toThrow();
 
     // The response bundles the chain (non-members get a 404 from the
     // chain API — §11-2). The length is exactly determined by the
@@ -133,6 +146,23 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
         }),
       ),
     ).rejects.toThrow("environment manifest row missing");
+  });
+
+  it("answers a server fault, not a partial stream, when the response fails its schema (§14-2)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    // A stored value no response schema accepts (a corrupted row): the body
+    // is encoded whole before the stream starts, so the lease is a 500 with
+    // no lease material rather than a 200 cut off mid-body
+    await queryProjectDo(projectId, "UPDATE variable_versions SET nonce_hex = 'not-hex'");
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).not.toContain("not-hex");
+    expect(body).not.toContain(projectId);
   });
 
   it("bundles the stored checkpoint-time value snapshot (§14-2)", async () => {
@@ -232,6 +262,98 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     expect(response.status).toBe(200);
     const body = (await response.json()) as LeaseBody;
     expect(body.leases.map((lease) => lease.epoch).toSorted()).toEqual([1, 2]);
+  });
+
+  it("bundles the statements of declared variables (§14-2 — §12-7's distribution rules)", async () => {
+    await readyProject();
+    await declareVariableOk({ variableId: "var-declared-0001", name: "DECLARED" });
+    const workload = await workloadKeyPair();
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LeaseBody & {
+      readonly declaredVariables?: readonly { readonly variableId: string }[];
+    };
+    // The manifest digest covers the declared statement, so a workload
+    // refuses a lease that leaves it out (CRYPTO_SPEC §6.3)
+    expect(body.declaredVariables?.map((statement) => statement.variableId)).toEqual([
+      "var-declared-0001",
+    ]);
+  });
+
+  it("reads the chain in a second RPC, cut at the head the issuance was judged against (§14-2 — Sc-3a)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    const issue = async (bindingKeyHex: string) => {
+      const outcome = await callProjectDo(projectId, async (instance) =>
+        instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
+          issuer: OIDC_ISSUER,
+          subject: LEASE_SUBJECT,
+          audiences: [LEASE_AUDIENCE],
+          claims: { iss: OIDC_ISSUER, sub: LEASE_SUBJECT, aud: LEASE_AUDIENCE },
+          claimsDigestHex: await claimsDigestOf(),
+          bindingKeyHex,
+          bindingExpiresAtMs: Date.now() + 600_000,
+        }),
+      );
+      if (outcome.kind !== "ok") {
+        throw new Error("lease not issued");
+      }
+      // The values result carries no chain — each half has its own frame
+      expect("chain" in outcome.value).toBe(false);
+      return {
+        token: outcome.chainToken,
+        head: { seq: outcome.value.headSeq, hashHex: outcome.value.headHashHex },
+      };
+    };
+    const readChain = (token: string) =>
+      callProjectDo(projectId, (instance) => instance.leaseChain(token));
+    const tupleLess = {
+      op: "checkpoint" as const,
+      payload: { environments: [], auditHeadHashHex: "" },
+    };
+    // Lease A, an append, lease B: both grants are open at once
+    const a = await issue("b2".repeat(32));
+    expect(a.head).toEqual(fixture.head);
+    await appendOperation(fixture, OWNER, tupleLess);
+    const b = await issue("b3".repeat(32));
+    expect(b.head.seq).toBe(a.head.seq + 1);
+    // An entry landing after B is in neither lease's chain
+    await appendOperation(fixture, OWNER, tupleLess);
+    // A made-up token opens nothing, even with grants open (500 — no chain
+    // leaves the DO)
+    await expect(readChain("00".repeat(32))).rejects.toThrow(
+      "unknown, spent or expired lease chain token",
+    );
+    // Each token opens exactly its own issuance's head, once
+    for (const lease of [a, b]) {
+      const chain = await readChain(lease.token);
+      expect(chain.length).toBe(lease.head.seq);
+      expect(await computeChainEntryHash(requireFirst(chain.slice(-1), "entry"))).toBe(
+        lease.head.hashHex,
+      );
+      await expect(readChain(lease.token)).rejects.toThrow(
+        "unknown, spent or expired lease chain token",
+      );
+    }
+  });
+
+  it("refuses a lease head that is not on the stored chain as a broken invariant (§14-2)", async () => {
+    await readyProject();
+    const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    const exit = await runInDurableObject(stub, (_instance, state) => {
+      const cache: StateCache = { current: null, chain: null };
+      return Effect.runPromiseExit(
+        leaseChainProgram({ seq: fixture.head.seq, hashHex: "00".repeat(32) }, cache).pipe(
+          Effect.provide(chainStoreLayer(state.storage.sql, cache)),
+        ),
+      );
+    });
+    expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+      "the lease head is not on the stored chain",
+    );
   });
 });
 

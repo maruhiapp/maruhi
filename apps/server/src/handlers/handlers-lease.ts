@@ -11,10 +11,13 @@
 // limiting / unwrap / re-wrap / audit) is confined to one RPC on the
 // project DO (top of programs-lease.ts — audit atomicity). This split
 // structurally guarantees §14-3's "authentication failure alone is
-// 401 / authorization failure is uniformly 404".
+// 401 / authorization failure is uniformly 404". An issued lease's chain
+// is read by a second RPC (§14-2 — each RPC result has its own 32 MiB
+// frame).
 
 import {
   LeaseRateLimitedError,
+  LeaseResponseSchema,
   LeaseUnauthorizedError,
   LeaseUnavailableError,
   maruhiApi,
@@ -23,8 +26,9 @@ import {
 } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
-import { computeLeaseClaimsDigest } from "@maruhi/crypto";
-import { Clock, Effect } from "effect";
+import { type ChainEntry, computeLeaseClaimsDigest } from "@maruhi/crypto";
+import { Clock, Effect, Schema } from "effect";
+import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { toWireVariable } from "../data/data-http.ts";
@@ -43,6 +47,7 @@ import {
   rpcCall,
   WorkerEnv,
 } from "../worker-env.ts";
+import { jsonStream } from "./json-stream.ts";
 
 /**
  * claims_digest (CRYPTO_SPEC §9.1) is computed from the **verified**
@@ -110,7 +115,7 @@ function leaseRejectionError(rejection: LeaseRejection, projectId: ProjectId) {
 
 function unwrapLeaseOutcome(outcome: LeaseOutcome, projectId: ProjectId) {
   return outcome.kind === "ok"
-    ? Effect.succeed(outcome.value)
+    ? Effect.succeed(outcome)
     : Effect.fail(leaseRejectionError(outcome.rejection, projectId));
 }
 
@@ -214,15 +219,19 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
         const outcome = yield* workloadRpc<LeaseOutcome>(params, payload, request, (stub, facts) =>
           stub.issueLease(params.environmentId, payload.ephemeralPubHex, facts),
         );
-        const leased = yield* unwrapLeaseOutcome(outcome, params.projectId);
+        const { value: leased, chainToken } = yield* unwrapLeaseOutcome(outcome, params.projectId);
+        const env = yield* WorkerEnv;
+        const chain = yield* rpcCall<readonly ChainEntry[]>(() =>
+          projectStub(env, params.projectId).leaseChain(chainToken),
+        ).pipe(Effect.orDie);
         // The value wire form is identical to the bulk pull (§12-7) —
         // they share the verification-material bundling discipline, so
         // the workload's client-side verification stays as §6.3
-        return {
+        const response: typeof LeaseResponseSchema.Type = {
           projectId: params.projectId,
           environmentId: leased.environmentId,
           currentEpoch: leased.currentEpoch,
-          chain: leased.chain,
+          chain,
           headSeq: leased.headSeq,
           headHashHex: leased.headHashHex,
           statement: leased.statement,
@@ -230,6 +239,9 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deletedVariables: leased.deletedVariables,
+          ...(leased.declaredVariables === undefined
+            ? {}
+            : { declaredVariables: leased.declaredVariables }),
           leases: leased.leases,
           // The latest manifest (§14-2 — material for the workload's
           // verification duty §9.1 (5); required since 0.28-draft)
@@ -241,6 +253,14 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             ? {}
             : { checkpointSnapshot: leased.checkpointSnapshot }),
         };
+        // Encoded up front (an invalid body is still a 500 before any
+        // byte is sent), then written in chunks: the default path would
+        // hold the serialized text and its bytes together beside the
+        // value — three copies of a body up to ~36 MB (§12-8)
+        const encoded = yield* Schema.encodeEffect(LeaseResponseSchema)(response).pipe(
+          Effect.orDie,
+        );
+        return HttpServerResponse.raw(jsonStream(encoded), { contentType: "application/json" });
       }),
     )
     // The mint's pre-flight (§14-5 — O-4): the same credential and

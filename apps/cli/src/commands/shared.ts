@@ -143,7 +143,7 @@ function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<vo
 export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckpointRefresh")(
   function* (
     context: Pick<ProjectContext, "client" | "verified" | "session">,
-    options: { readonly includeAnchor: boolean },
+    options: { readonly afterWrite: boolean },
   ): Effect.fn.Return<void, never, CliServices> {
     const { ANCHOR_REFRESH_PROPOSAL, checkpointProposal } = yield* Effect.promise(() =>
       import("../checkpoint.ts").then((m) => ({
@@ -156,11 +156,12 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
       verified: context.verified,
       signerUserId: context.session.userId,
       nowMs: yield* Clock.currentTimeMillis,
+      afterWrite: options.afterWrite,
     });
     if (proposal === null) {
       return;
     }
-    yield* logNote(options.includeAnchor ? `${proposal}. ${ANCHOR_REFRESH_PROPOSAL}` : proposal);
+    yield* logNote(options.afterWrite ? `${proposal}. ${ANCHOR_REFRESH_PROPOSAL}` : proposal);
   },
 );
 

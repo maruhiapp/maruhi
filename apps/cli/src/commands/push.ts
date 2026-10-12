@@ -106,7 +106,7 @@ export function makePushCommand() {
       // checkpoint's staleness on a successful push. The anchor-update
       // proposal rides the same route (the ruling is
       // docs/notes/session-35.md)
-      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      yield* proposeCheckpointRefresh(context, { afterWrite: true });
       if (syncSetup !== null && syncDecision !== null) {
         // Cleanup: apply directly to targets carrying `onPush`, or launch
         // CI. A failure stays a warning and the exit code stays push's

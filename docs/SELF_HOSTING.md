@@ -289,8 +289,23 @@ workload lease returns all of them in one Durable Object RPC result, values
 travel as hex, and Workers refuses an RPC result above 32 MiB, so an
 environment holding more than about 15.9 MiB cannot be read at all. 8 MiB
 keeps such a response near half that frame, leaving the rest for the
-variables' statements and a lease's bundled chain. Raising it shrinks that
-room; raising it past about 15 MiB makes full environments unreadable.
+variables' statements (a lease returns the chain in a separate RPC result).
+Raising it shrinks that room; raising it past about 15 MiB makes full
+environments unreadable.
+
+The project chain has the same ceiling (CRYPTO_SPEC §6.4): at most 10,000
+entries and **12 MiB** of canonical bytes (`MAX_CHAIN_ENTRIES` /
+`MAX_CHAIN_TOTAL_CANONICAL_BYTES`; an append past either fails with 422
+`ChainCapacityExceeded`). The chain fetch and a lease each return the whole
+chain in one RPC result, and a chain at 12 MiB serializes to about 14.6 MB.
+Raising either cap has two costs. The frame: a chain of small entries stops
+fitting one RPC result from about 26 MiB. The memory: a lease holds the chain
+and the environment's values in the worker while it writes the response — about
+39 MB with both default caps reached (measured), out of a 128 MB isolate that
+concurrent requests share — so raising the byte cap or the 8 MiB environment
+cap grows every large lease's footprint. Lowering it never invalidates a
+chain, but a chain already above the new value accepts no further append —
+not even a member removal or a rotation.
 
 ### Projects per organization
 
@@ -964,6 +979,13 @@ or newer.
   the environment no longer needs or move some to another environment;
   replacing a value with one of the same size or smaller is never refused by
   this limit (the 9 GB storage guard and the 1 GiB cumulative cap still apply)
+- **Every chain change fails with `ChainCapacityExceeded` (422)**: the
+  project's chain holds 10,000 entries or 12 MiB of canonical bytes ("Tenant
+  quotas"). Entries are never removed, so the project stays readable but
+  takes no further member, device, environment or rotation change. Raise
+  `MAX_CHAIN_TOTAL_CANONICAL_BYTES` (mind the frame and memory costs in
+  "Tenant quotas") or
+  `MAX_CHAIN_ENTRIES` in `apps/server/src/policy.ts` and redeploy
 - **Pushes / creates fail with `DataLimitExceeded` and
   `resource: "project-storage-bytes"` while pulls still work**: the project's
   Durable Object storage crossed the 9 GB guard ("Tenant quotas"). This is

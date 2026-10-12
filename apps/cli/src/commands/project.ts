@@ -566,9 +566,21 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
         },
       });
       yield* logWarnings(summary.warnings);
-      yield* io.log(
-        `Checkpoint accepted at chain seq ${summary.headSeq}, covering ${countNoun(summary.environmentIds.length, "environment")}${summary.attestedAuditHead ? " (audit head attested)" : ""}`,
-      );
+      const unchanged = summary.unchangedEnvironmentIds.length;
+      if (summary.headSeq === null) {
+        yield* io.log(
+          `Nothing to notarize: ${unchanged === 0 ? "no environment in your scope was built" : unchanged === 1 ? "the environment matches its latest checkpoint" : `all ${unchanged} environments in your scope match their latest checkpoint`} (CRYPTO_SPEC §6.3)`,
+        );
+        if (summary.outOfScopeEnvironmentIds.length > 0) {
+          yield* io.log(
+            "Your scope does not cover every environment, so no checkpoint was recorded and the 7-day checkpoint suggestion is not reset; it stops once a member whose scope covers every environment, or an admin, runs `maruhi project checkpoint` (you are suggested one only after your own writes)",
+          );
+        }
+      } else {
+        yield* io.log(
+          `Checkpoint accepted at chain seq ${summary.headSeq}, covering ${countNoun(summary.environmentIds.length, "changed environment")}${unchanged > 0 ? ` (${unchanged} unchanged since the latest checkpoint)` : ""}${summary.attestedAuditHead ? " (audit head attested)" : ""}`,
+        );
+      }
       if (summary.skippedEnvironmentIds.length > 0) {
         yield* logWarning(
           `${countNoun(summary.skippedEnvironmentIds.length, "environment")} could not be covered (${summary.skippedEnvironmentIds.map(displayText).join(", ")}). Re-run \`maruhi project checkpoint\` later to cover them`,

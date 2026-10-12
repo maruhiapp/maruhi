@@ -224,7 +224,7 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       // Issuance trigger (iii) (CRYPTO_SPEC §6.3): detecting the baseline
       // checkpoint's staleness on a successful pull. Proposal only (never
       // auto-issued)
-      yield* proposeCheckpointRefresh(context, { includeAnchor: false });
+      yield* proposeCheckpointRefresh(context, { afterWrite: false });
     }),
   ).pipe(
     Command.withDescription(

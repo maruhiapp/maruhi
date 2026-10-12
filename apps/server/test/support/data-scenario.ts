@@ -544,3 +544,59 @@ export async function hashOf(seq: number): Promise<string> {
   );
   return String(rows[0]?.["entry_hash_hex"]);
 }
+
+/**
+ * Clones `source` (of ENV) into `count` variables by direct SQL — the rows a
+ * pull or a lease serializes, without signing each one (reads re-verify
+ * nothing). With `valueBytes`, every clone's versions carry a fresh random
+ * ciphertext of that size; without, only the variable and its statements are
+ * cloned (a declared source stays declared).
+ */
+export async function cloneVariableRows(input: {
+  readonly source: string;
+  readonly count: number;
+  readonly prefix: string;
+  readonly valueBytes?: number;
+}): Promise<void> {
+  for (let index = 0; index < input.count; index += 1) {
+    const variableId = `${input.prefix}-${String(index).padStart(4, "0")}`;
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO variables SELECT environment_id, ?, name || ?, latest_meta_version,
+         latest_version, created_at + ?, deleted_at FROM variables
+       WHERE environment_id = ? AND variable_id = ?`,
+      variableId,
+      `_${index}`,
+      index + 1,
+      ENV,
+      input.source,
+    );
+    await queryProjectDo(
+      projectId,
+      `INSERT INTO variable_meta_statements SELECT environment_id, ?, meta_version, suite,
+         name || ?, status, prev_meta_sig_hash_hex, chain_head_hash_hex, chain_head_seq,
+         signature_hex, signed_bytes_hash_hex, author_user_id, author_key_fingerprint, created_at,
+         layout_version, var_type, required, description, max_age_days
+       FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?`,
+      variableId,
+      `_${index}`,
+      ENV,
+      input.source,
+    );
+    if (input.valueBytes !== undefined) {
+      await queryProjectDo(
+        projectId,
+        `INSERT INTO variable_versions SELECT environment_id, ?, version, suite, epoch, nonce_hex,
+           lower(hex(randomblob(?))), ?, prev_value_sig_hash_hex, chain_head_hash_hex,
+           chain_head_seq, signature_hex, signed_bytes_hash_hex, writer_user_id,
+           writer_key_fingerprint, created_at
+         FROM variable_versions WHERE environment_id = ? AND variable_id = ?`,
+        variableId,
+        input.valueBytes,
+        input.valueBytes,
+        ENV,
+        input.source,
+      );
+    }
+  }
+}

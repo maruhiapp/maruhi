@@ -122,7 +122,7 @@ export class ChainEntryTooLargeError extends Schema.TaggedError<ChainEntryTooLar
 
 /**
  * 422: accepting the entry would exceed the §6.4 chain-wide acceptance policy
- * (10,000 entries / 32 MiB cumulative canonical bytes).
+ * (10,000 entries / 12 MiB cumulative canonical bytes).
  */
 export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacityExceededError>()(
   "ChainCapacityExceeded",

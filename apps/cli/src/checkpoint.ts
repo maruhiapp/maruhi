@@ -3,11 +3,17 @@
 //
 // - Refresh the view right before issuing → build the manifest reference
 //   and values_digest from the verified view (a verified pull) (never sign
-//   server-declared values as-is — §16-2). Coverage is every environment in
-//   the verified view (SHOULD; environments deleted on the verified chain
-//   — a delete_environment entry — are not included) — trigger (i) [after rotate + re-encryption
-//   completes] is a single tuple for that environment (the ruling is
-//   docs/notes/session-35.md)
+//   server-declared values as-is — §16-2). Every environment in the
+//   verified view is built (environments deleted on the verified chain — a
+//   delete_environment entry — are not included); the entry covers those
+//   whose tuple differs from their baseline, the latest checkpoint
+//   containing them, or that have none (SHOULD — Sc-3a). Trigger (i)
+//   [after rotate + re-encryption completes] builds that one environment
+//   (the ruling is docs/notes/session-35.md)
+// - Nothing changed: the entry carries no tuple. An audit-head notarization
+//   still issues it; otherwise it is issued only by a full-scope "all" run
+//   whose trigger-(iii) baseline is older than 7 days (it restarts the
+//   suggestion's clock), and nothing is issued in every other case
 // - Only effective-admin authority (min(token scope, chain role) — §9-2)
 //   notarizes the audit head. The scope comes from /auth/me's tokenScopes
 //   and the role is **decided up front** from the verified view (no fallback
@@ -44,6 +50,7 @@ import type {
   ChainEntry,
   CheckpointEnvironmentEntry,
   EnvValuesDigestEntry,
+  MemberScope,
   SigningKeyPair,
 } from "@maruhi/crypto";
 import {
@@ -52,7 +59,7 @@ import {
   scopeIncludesEnvironment,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect, Schedule } from "effect";
+import { Clock, Effect, Schedule } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
@@ -99,11 +106,16 @@ const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 interface CheckpointSummary {
   /** The notarized environment IDs (ascending byte order = payload order). */
   readonly environmentIds: readonly EnvironmentId[];
-  /** The environments left out of the all-environments coverage (SHOULD), with the reason (non-empty only for a subset issuance). */
+  /** The environments whose tuple equals their baseline (nothing to notarize — §6.3). */
+  readonly unchangedEnvironmentIds: readonly EnvironmentId[];
+  /** The changed environments left out (non-empty only for a subset issuance). */
   readonly skippedEnvironmentIds: readonly string[];
+  /** The active environments outside the issuer's scope (never built — §6.2). */
+  readonly outOfScopeEnvironmentIds: readonly string[];
   /** Whether the audit head was notarized (effective admin only — §16-2). */
   readonly attestedAuditHead: boolean;
-  readonly headSeq: number;
+  /** The accepted entry's seq, or null when nothing was issued (every baseline current). */
+  readonly headSeq: number | null;
   readonly warnings: readonly string[];
 }
 
@@ -150,11 +162,16 @@ interface BuiltTuple {
 
 interface BuiltView {
   readonly view: VerifiedProject;
+  /** The tuples that differ from their baseline or have none — the entry's cover (§6.3). */
   readonly tuples: readonly BuiltTuple[];
+  /** The built environments whose tuple equals their baseline. */
+  readonly unchanged: readonly EnvironmentId[];
   readonly warnings: readonly string[];
 }
 
-function sameTuple(a: BuiltTuple, b: BuiltTuple | undefined): boolean {
+type TupleCoordinates = Omit<BuiltTuple, "environmentId">;
+
+function sameTuple(a: TupleCoordinates, b: TupleCoordinates | undefined): boolean {
   return (
     b !== undefined &&
     a.epoch === b.epoch &&
@@ -216,25 +233,32 @@ const resolveTargets = Effect.fn("checkpoint.resolveTargets")(function* (
     }
     return { targets: input.environmentIds, outOfScope: [] };
   }
-  const all = chainEnvironmentIds(input.verified);
-  if (all.length === 0) {
+  if (chainEnvironmentIds(input.verified).length === 0) {
     return { targets: [], outOfScope: [] };
   }
   const self = input.verified.state.members.get(input.signerUserId);
   if (self === undefined) {
     return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  const deleted = chainDeletedEnvironments(input.verified);
-  const active = all.filter((environmentId) => !deleted.has(environmentId));
+  return splitByScope(input.verified, self.scope);
+});
+
+/** The active (not chain-deleted) environments, split by a member's scope (byte order). */
+function splitByScope(
+  verified: VerifiedProject,
+  scope: MemberScope,
+): { readonly targets: readonly EnvironmentId[]; readonly outOfScope: readonly string[] } {
+  const deleted = chainDeletedEnvironments(verified);
+  const active = chainEnvironmentIds(verified).filter((id) => !deleted.has(id));
   return {
     targets: active
-      .filter((environmentId) => scopeIncludesEnvironment(self.scope, environmentId))
+      .filter((environmentId) => scopeIncludesEnvironment(scope, environmentId))
       .toSorted(compareUtf8Bytes) as readonly EnvironmentId[],
     outOfScope: active
-      .filter((environmentId) => !scopeIncludesEnvironment(self.scope, environmentId))
+      .filter((environmentId) => !scopeIncludesEnvironment(scope, environmentId))
       .toSorted(compareUtf8Bytes),
   };
-});
+}
 
 /**
  * Building the verified view: verified-pull each target environment in
@@ -308,7 +332,17 @@ const buildTuples = Effect.fn("checkpoint.buildTuples")(function* (
       valuesDigestHex: digest,
     });
   }
-  return { view, tuples, warnings };
+  // Re-notarizing a tuple equal to its baseline would feed every
+  // consistency check the same inputs (§6.3), so only changes are covered
+  const unchanged = tuples.filter((tuple) =>
+    sameTuple(tuple, view.state.checkpoints.get(tuple.environmentId)),
+  );
+  return {
+    view,
+    tuples: tuples.filter((tuple) => !unchanged.includes(tuple)),
+    unchanged: unchanged.map((tuple) => tuple.environmentId),
+    warnings,
+  };
 });
 
 /**
@@ -510,9 +544,21 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
   const { targets, outOfScope } = yield* resolveTargets(input);
   const warnings: string[] = yield* scopeCoverageNotes(targets, outOfScope);
   const attest = yield* determineAuditAttestation(input);
+  const nowMs = yield* Clock.currentTimeMillis;
+  // A tuple-less entry by a non-notarizing issuer only restarts trigger
+  // (iii)'s clock, so it needs a view of every active environment and a
+  // stale baseline (§6.3)
+  const issuesTupleLess = (view: VerifiedProject): boolean =>
+    attest ||
+    (input.environmentIds === "all" &&
+      outOfScope.length === 0 &&
+      baselineIsStale(latestCheckpointEntry(view, false), view, nowMs));
   const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
   let previous: BuiltView | null = null;
   let subset: readonly EnvironmentId[] | null = null;
+  // A subset rebuild pulls only the subset, so the environments the last
+  // full build found unchanged are carried into the summary
+  let unchangedBeforeSubset: readonly EnvironmentId[] = [];
   for (;;) {
     // The retried unit of §12-10 (3): rebuild the view, refetch the
     // attestation (fetched after the CAS parent — the chain head the
@@ -530,6 +576,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
         readonly baseline: BuiltView | null;
         readonly outcome:
           | { readonly kind: "accepted"; readonly accepted: { readonly headSeq: number } }
+          | { readonly kind: "current" }
           | { readonly kind: "head-conflict" }
           | { readonly kind: "state-mismatch"; readonly reason: string };
       },
@@ -543,6 +590,9 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
       // subset issuance is in flight — no fallback inside a subset)
       const baseline = subset === null ? previous : null;
       previous = built;
+      if (built.tuples.length === 0 && !issuesTupleLess(built.view)) {
+        return { built, baseline, outcome: { kind: "current" as const } };
+      }
       const auditHeadHashHex = attest
         ? yield* fetchAuditHead(input.client, input.verified.projectId)
         : "";
@@ -597,12 +647,14 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
         Effect.fail,
       ),
     );
-    if (attempt.outcome.kind === "accepted") {
-      return summarizeAccepted({
+    if (attempt.outcome.kind === "accepted" || attempt.outcome.kind === "current") {
+      return summarize({
         targets,
-        subset,
+        outOfScope,
+        built: attempt.built,
+        unchangedBeforeSubset,
         attest,
-        headSeq: attempt.outcome.accepted.headSeq,
+        headSeq: attempt.outcome.kind === "accepted" ? attempt.outcome.accepted.headSeq : null,
         warnings,
       });
     }
@@ -617,6 +669,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
     });
     if (nextSubset !== null) {
       subset = nextSubset;
+      unchangedBeforeSubset = attempt.built.unchanged;
     }
   }
 });
@@ -684,19 +737,26 @@ const absorbSendFailure = Effect.fn("checkpoint.absorbSendFailure")(function* (i
   return stableIds;
 });
 
-/** The post-acceptance summary (for a subset issuance, skipped makes the miss of the all-environments SHOULD explicit). */
-function summarizeAccepted(input: {
+/** The run's summary (for a subset issuance, skipped makes the changed environments it missed explicit). */
+function summarize(input: {
   readonly targets: readonly EnvironmentId[];
-  readonly subset: readonly EnvironmentId[] | null;
+  readonly outOfScope: readonly string[];
+  readonly built: BuiltView;
+  readonly unchangedBeforeSubset: readonly EnvironmentId[];
   readonly attest: boolean;
-  readonly headSeq: number;
+  readonly headSeq: number | null;
   readonly warnings: readonly string[];
 }): CheckpointSummary {
-  const covered = input.subset ?? input.targets;
+  const covered = input.built.tuples.map((tuple) => tuple.environmentId);
+  const unchanged = [...new Set([...input.unchangedBeforeSubset, ...input.built.unchanged])];
   return {
     environmentIds: covered,
-    skippedEnvironmentIds: input.targets.filter((id) => !covered.includes(id)),
-    attestedAuditHead: input.attest,
+    unchangedEnvironmentIds: unchanged,
+    skippedEnvironmentIds: input.targets.filter(
+      (id) => !covered.includes(id) && !unchanged.includes(id),
+    ),
+    outOfScopeEnvironmentIds: input.outOfScope,
+    attestedAuditHead: input.headSeq !== null && input.attest,
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
   };
@@ -822,6 +882,8 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
   readonly nowMs: number;
+  /** The command wrote to an environment (a push family) rather than only pulled. */
+  readonly afterWrite: boolean;
 }): Effect.fn.Return<string | null, never> {
   const member = input.verified.state.members.get(input.signerUserId);
   if (member === undefined || member.role === "reader") {
@@ -831,9 +893,18 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   const plainBasis = latestCheckpointEntry(input.verified, false);
   const stale = (entry: ChainEntry | null): boolean =>
     baselineIsStale(entry, input.verified, input.nowMs);
+  // A non-notarizing issuer whose scope misses an environment cannot issue
+  // the tuple-less entry, so it is prompted only after its own write —
+  // after a pull its run may have nothing to notarize and the prompt would
+  // repeat (§6.3)
+  const plainProposal = (): string | null =>
+    stale(plainBasis) &&
+    (input.afterWrite || splitByScope(input.verified, member.scope).outOfScope.length === 0)
+      ? PLAIN_BASELINE_PROPOSAL
+      : null;
   const adminRole = member.role === "admin" || member.role === "owner";
   if (!adminRole) {
-    return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
+    return plainProposal();
   }
   const attestedBasis = latestCheckpointEntry(input.verified, true);
   if (!stale(attestedBasis)) {
@@ -848,7 +919,7 @@ export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(fun
   if (effectiveAdmin) {
     return ATTESTED_BASELINE_PROPOSAL;
   }
-  return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
+  return plainProposal();
 });
 
 /**

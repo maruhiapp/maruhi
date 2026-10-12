@@ -253,7 +253,7 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       for (const line of describeAcceptance(result, context.environmentId)) {
         yield* io.log(line);
       }
-      yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      yield* proposeCheckpointRefresh(context, { afterWrite: true });
     }),
   ).pipe(
     Command.withDescription(
