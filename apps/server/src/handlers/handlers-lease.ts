@@ -230,6 +230,9 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deletedVariables: leased.deletedVariables,
+          ...(leased.declaredVariables === undefined
+            ? {}
+            : { declaredVariables: leased.declaredVariables }),
           leases: leased.leases,
           // The latest manifest (§14-2 — material for the workload's
           // verification duty §9.1 (5); required since 0.28-draft)

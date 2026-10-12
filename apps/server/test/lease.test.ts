@@ -31,6 +31,7 @@ import {
 } from "./support/data-fixture.ts";
 import {
   createVariableOk,
+  declareVariableOk,
   ENV,
   fixture,
   registerDataScenario,
@@ -232,6 +233,25 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     expect(response.status).toBe(200);
     const body = (await response.json()) as LeaseBody;
     expect(body.leases.map((lease) => lease.epoch).toSorted()).toEqual([1, 2]);
+  });
+
+  it("bundles the statements of declared variables (§14-2 — §12-7's distribution rules)", async () => {
+    await readyProject();
+    await declareVariableOk({ variableId: "var-declared-0001", name: "DECLARED" });
+    const workload = await workloadKeyPair();
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LeaseBody & {
+      readonly declaredVariables?: readonly { readonly variableId: string }[];
+    };
+    // The manifest digest covers the declared statement, so a workload
+    // refuses a lease that leaves it out (CRYPTO_SPEC §6.3)
+    expect(body.declaredVariables?.map((statement) => statement.variableId)).toEqual([
+      "var-declared-0001",
+    ]);
   });
 });
 
