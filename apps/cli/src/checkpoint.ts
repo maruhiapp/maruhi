@@ -556,6 +556,9 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
   const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
   let previous: BuiltView | null = null;
   let subset: readonly EnvironmentId[] | null = null;
+  // A subset rebuild pulls only the subset, so the environments the last
+  // full build found unchanged are carried into the summary
+  let unchangedBeforeSubset: readonly EnvironmentId[] = [];
   for (;;) {
     // The retried unit of §12-10 (3): rebuild the view, refetch the
     // attestation (fetched after the CAS parent — the chain head the
@@ -649,6 +652,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
         targets,
         outOfScope,
         built: attempt.built,
+        unchangedBeforeSubset,
         attest,
         headSeq: attempt.outcome.kind === "accepted" ? attempt.outcome.accepted.headSeq : null,
         warnings,
@@ -665,6 +669,7 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
     });
     if (nextSubset !== null) {
       subset = nextSubset;
+      unchangedBeforeSubset = attempt.built.unchanged;
     }
   }
 });
@@ -737,12 +742,13 @@ function summarize(input: {
   readonly targets: readonly EnvironmentId[];
   readonly outOfScope: readonly string[];
   readonly built: BuiltView;
+  readonly unchangedBeforeSubset: readonly EnvironmentId[];
   readonly attest: boolean;
   readonly headSeq: number | null;
   readonly warnings: readonly string[];
 }): CheckpointSummary {
   const covered = input.built.tuples.map((tuple) => tuple.environmentId);
-  const unchanged = input.built.unchanged;
+  const unchanged = [...new Set([...input.unchangedBeforeSubset, ...input.built.unchanged])];
   return {
     environmentIds: covered,
     unchangedEnvironmentIds: unchanged,

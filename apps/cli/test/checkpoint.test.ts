@@ -690,31 +690,49 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
   it("once retries are exhausted, issues against the subset of environments unchanged across the last 2 builds (§6.3 fallback)", async () => {
     const dekA = crypto.getRandomValues(new Uint8Array(32));
     const dekB = crypto.getRandomValues(new Uint8Array(32));
-    const built = await buildChain([
+    const dekC = crypto.getRandomValues(new Uint8Array(32));
+    const steps = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
       { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
+      { actor: owner, operation: createEnvironmentOp("ops", dekC) },
+    ];
+    const base = await buildChain(steps);
+    const fixtureOf = (environmentId: string, dek: Uint8Array) =>
+      makeEnvironment({
+        built: base,
+        environmentId,
+        dek,
+        headSeq: 4,
+        issuer: owner,
+        variableId: `var-${environmentId}`,
+      });
+    const stable = await fixtureOf(ENV_A, dekA);
+    const busy = await fixtureOf(ENV_B, dekB);
+    // ops matches its baseline: neither covered nor reported as skipped
+    const unchanged = await fixtureOf("ops", dekC);
+    const built = await buildChain([
+      ...steps,
+      {
+        actor: owner,
+        operation: {
+          op: "checkpoint",
+          payload: {
+            environments: [await tupleOf(base.projectId, unchanged)],
+            auditHeadHashHex: "",
+          },
+        },
+      },
     ]);
-    const stable = await makeEnvironment({
-      built,
-      environmentId: ENV_A,
-      dek: dekA,
-      headSeq: 3,
-      issuer: owner,
-      variableId: "var-a",
-    });
-    const busy = await makeEnvironment({
-      built,
-      environmentId: ENV_B,
-      dek: dekB,
-      headSeq: 3,
-      issuer: owner,
-      variableId: "var-b",
-    });
+    unchanged.checkpointSnapshot = {
+      chainSeq: 5,
+      entryHashHex: built.hashes[4] ?? "",
+      values: await checkpointSnapshotValuesOf(unchanged.variables.map((v) => v.value)),
+    };
     // ENV_B's version advances on every pull (models a concurrent push).
     // prev chains to the self-computed hash of the immediately preceding
     // version (§4.1)
-    const head = headOf(built, 3);
+    const head = headOf(base, 4);
     const nextValues: WireDistributedValue[] = [];
     let previous = busy.variables[0]!.value;
     for (let version = 2; version <= 6; version += 1) {
@@ -723,7 +741,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         projectId: built.projectId,
         environmentId: ENV_B,
         epoch: 1,
-        variableId: "var-b",
+        variableId: `var-${ENV_B}`,
         version,
         plaintext: `secret-v${version}`,
         writer: owner,
@@ -736,7 +754,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     busy.nextValues = nextValues;
     const state = makeCheckpointServer({
       built,
-      environments: [stable, busy],
+      environments: [stable, busy, unchanged],
       me: {
         userId: owner.userId,
         tokenScopes: [{ project: built.projectId, permission: "admin" }],
@@ -763,7 +781,10 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     ]);
     const output = [...env.logs, ...env.errors].join("\n");
     expect(output).toContain("partial checkpoint");
-    expect(output).toContain(ENV_B);
+    expect(output).toContain(`1 environment could not be covered (${ENV_B})`);
+    expect(output).toContain(
+      "covering 1 changed environment (1 unchanged since the latest checkpoint)",
+    );
   });
 
   it("the trigger-(iii) proposal (checkpointProposal): branches on baseline presence / freshness / effective permission", async () => {
