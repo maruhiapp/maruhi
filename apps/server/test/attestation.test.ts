@@ -160,14 +160,22 @@ async function fetchAttestations(asUserId: string = OWNER): Promise<readonly Wir
 }
 
 beforeEach(async () => {
-  await resetProjectDo(vectorProjectId);
-  await resetAuthDb();
-  tokens = {};
-  for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
-    await seedUser(userId, githubId);
-    tokens[userId] = await cliToken(githubId);
-  }
-  await seedOrgMember(ORG, OWNER, "member");
+  // The DO reset is independent of the D1-side reset + reseed, and each
+  // user's seed → real-PAT issuance is independent of the other users' —
+  // run them concurrently (same shape as registerMembershipScenario)
+  const auth = (async () => {
+    await resetAuthDb();
+    const issued = await Promise.all(
+      Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
+        await seedUser(userId, githubId);
+        return [userId, await cliToken(githubId)] as const;
+      }),
+    );
+    await seedOrgMember(ORG, OWNER, "member");
+    return issued;
+  })();
+  const [issued] = await Promise.all([auth, resetProjectDo(vectorProjectId)]);
+  tokens = Object.fromEntries(issued);
 });
 
 describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16-1)", () => {
