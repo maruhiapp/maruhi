@@ -454,6 +454,9 @@ jobs:
       # Trusted publishing requires npm >= 11.5.1. If unmet, stop earlier with
       # a clearer message than publish's authentication error
       - name: Ensure npm >= 11.5.1
+        # The single quotes are the point: `${v}` inside is node's template
+        # literal, not a shell expansion (shellcheck SC2016 false positive)
+        # jactionlint ignore=shellcheck
         run: |
           node -e '
             const v = require("child_process").execSync("npm --version").toString().trim();
