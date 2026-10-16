@@ -510,13 +510,24 @@ export async function replayNegativePrefix(negative: {
  */
 export function registerMembershipScenario(): void {
   beforeEach(async () => {
-    await resetProjectDo(vectorProjectId);
-    await resetAuthDb();
-    tokens = {};
-    for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
-      await seedUser(userId, githubId);
-      tokens[userId] = await cliToken(githubId);
-    }
-    await seedOrgMember(VECTOR_ORG, "user-owner-0001", "member");
+    // The DO reset is independent of the D1-side reset + reseed, and
+    // each user's seed → real-PAT issuance (the ~5-RT CLI login
+    // handoff) is independent of the other users' — running them
+    // concurrently removes ~15-20 sequential round-trips per test.
+    // Every test still gets fresh state and real issued PATs; only
+    // the sequential order is dropped
+    const auth = (async () => {
+      await resetAuthDb();
+      const issued = await Promise.all(
+        Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
+          await seedUser(userId, githubId);
+          return [userId, await cliToken(githubId)] as const;
+        }),
+      );
+      await seedOrgMember(VECTOR_ORG, "user-owner-0001", "member");
+      return issued;
+    })();
+    const [issued] = await Promise.all([auth, resetProjectDo(vectorProjectId)]);
+    tokens = Object.fromEntries(issued);
   });
 }
