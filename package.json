@@ -19,6 +19,10 @@
     "lint": "oxlint",
     "lint:effect": "bun scripts/effect-diagnostics.mjs",
     "test": "vitest run",
+    "test:app-unit": "vitest run --project web-unit --project site-unit",
+    "test:cli": "vitest run --project cli",
+    "test:packages": "vitest run --project crypto --project core --project api-schema",
+    "test:server": "vitest run --project server",
     "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
