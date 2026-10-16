@@ -14,8 +14,8 @@
 #     (11 members — one queues on the 10-step cap)
 #   parallel group B (tests + builds): steps 7, 7b–7d, 8 (web dist), 8d
 #     (site dist)
-#   parallel group C (build dependents): 8b/8c (server dry-runs read
-#     ../web/dist/public), 8d2/8e (site dist)
+#   parallel group C (build dependents): 8b/8c server dry-runs (one step —
+#     cf builds share apps/server/.cloudflare) + 8d2/8e (site dist)
 #   `wait: headless-shell`
 #   parallel group D (e2e): 9, 9b, 11 — Playwright + crypto 3-environment
 name: ci
@@ -321,25 +321,26 @@ jobs:
 
       # Group C — dependents of the group-B builds: the server dry-runs read
       # apps/web/dist/public (assets.directory in apps/server/wrangler.jsonc),
-      # the site steps read apps/site/dist.
+      # the site steps read apps/site/dist. 8b/8c stay one step: every
+      # `cf deploy` build writes apps/server/.cloudflare/output, so the three
+      # dry-runs cannot run concurrently with each other (the site steps touch
+      # apps/site/.cloudflare — a different directory — and run in parallel)
       - parallel:
           # Config validity check for the combined serving layout (W2 ruling BM —
           # server bundles the web assets). A credential-free local verification
           # that follows the same path as a deploy to confirm the assets directory
           # exists and cloudflare.config.ts is consistent (path-space coverage is
           # checked by apps/server/test/serving-topology.test.ts in step 7)
-          - name: 8b. Server deploy dry-run (combined assets config)
-            run: bunx cf deploy --dry-run
-            working-directory: apps/server
-
+          #
           # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
           # environment and the restore worker through the same path, and confirm
           # via scripts/check-hosted-config.ts that the hosted environment has not
           # drifted from the outermost bindings. The environments wrangler's
           # `--env` selected are cf `--mode`s of one cloudflare.config.ts
-          - name: 8c. Hosted / restore config dry-run + drift check
+          - name: 8b/8c. Server deploy dry-runs + drift check (combined / hosted / restore)
             working-directory: apps/server
             run: |
+              bunx cf deploy --dry-run
               bunx cf deploy --dry-run --mode hosted
               bunx cf deploy --dry-run --mode restore
               bun scripts/check-hosted-config.ts
