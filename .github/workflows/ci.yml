@@ -1,10 +1,23 @@
-# Quality gate (same order as the steps in CLAUDE.md) + web integration steps
-# 0. English source check → 1. oxfmt → 2. oxlint (type-aware) → 3. tsc
-# (3b. Effect diagnostics) → 4. ImportLint →
-# 5. fallow (5a stale baselines, 5b dupes shrink-only) → 6. React Doctor →
-# 7. tests → 8. web build (8d/8e = apex site)
-# → 9. web e2e / 9b. site e2e (cf dev + Playwright) → 10. astryx doctor
-# → 11. crypto 3-environment tests (workerd / browser / Bun — CRYPTO_SPEC §11)
+# Quality gate — the same gates as `bun run check` (CLAUDE.md's numbered
+# list; the numbers in step names keep that order) run as parallel groups
+# inside this one job via the step-level `background:` / `wait:` /
+# `parallel:` keywords:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+#
+# Layout (members of each `parallel:` block run concurrently — each is a
+# background step, capped at 10 running at once with the rest queued):
+#   sequential prefix: checkout → Chrome Headless Shell (background step
+#     `headless-shell`; its $GITHUB_ENV write becomes visible at the `wait:`
+#     before the e2e group) → install-bun → 0. English → bun install →
+#     apt (zsh, pyca)
+#   parallel group A (static gates): audit + steps 1–6 + 10
+#     (11 members — one queues on the 10-step cap)
+#   parallel group B (tests + builds): steps 7, 7b–7d, 8 (web dist), 8d
+#     (site dist)
+#   parallel group C (build dependents): 8b/8c server dry-runs (one step —
+#     cf builds share apps/server/.cloudflare) + 8d2/8e (site dist)
+#   `wait: headless-shell`
+#   parallel group D (e2e): 9, 9b, 11 — Playwright + crypto 3-environment
 name: ci
 
 on:
@@ -42,8 +55,8 @@ env:
   # is invoked) goes to this unresolvable host and fails before anything is
   # unpacked: playwright-core replaces all its mirrors, Chrome for Testing's
   # included, with this one. The only browser is the verified headless shell
-  # installed before step 9, which scripts/install-headless-shell.sh fetches
-  # with curl directly
+  # installed by the headless-shell background step, which
+  # scripts/install-headless-shell.sh fetches with curl directly
   PLAYWRIGHT_DOWNLOAD_HOST: "https://playwright-download.invalid"
 
 jobs:
@@ -65,222 +78,6 @@ jobs:
           # runs dependencies and test code
           persist-credentials: false
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
-      - uses: ./.github/actions/install-bun
-
-      # ADR-0019: no tracked file may contain CJK text (exemptions:
-      # scripts/english-exemptions.txt + inline `english-exempt` markers).
-      # Whole-tree mode since the migration finished. Runs before install —
-      # the script has no dependencies
-      - name: 0. English source check (whole tree)
-        run: bun run check:english
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
-      # installed shell (sh / bash / zsh / dash). ubuntu-26.04 has no zsh, so
-      # install it (the page promises zsh by name, and the check asserts its
-      # presence in CI — PR #153 revision 5).
-      # python3-cryptography (pyca) runs the vector generator in step 7c. It
-      # comes from the Ubuntu archive this step already trusts (no new
-      # package source, no hash list to maintain); the generator's output is
-      # version-independent (packages/crypto/test-vectors/README.md)
-      - name: Install apt packages (zsh for the docs recipe checks, pyca for 7c)
-        run: >-
-          sudo apt-get update -qq &&
-          sudo apt-get install -y --no-install-recommends zsh python3-cryptography
-
-      # Known-vulnerability audit (GHSA advisory matching). The strict-pinning
-      # policy intentionally does not chase every update, so CI continuously
-      # detects known CVEs left in place instead.
-      # --ignore covers transitive deps of maintainer-side toolchains that only
-      # run at build/test time and can't be fixed by an in-range update
-      # (ignores are per-ID; new advisories still get detected):
-      #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0 (ReDoS) — a strict pin via
-      #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
-      #     no execution path. A name-scoped override to 6.3.0 would drag in
-      #     router (express 5 line, ^8), so it is not taken (same source)
-      #   GHSA-vfj7-8cjw-p6xm: braces@3.0.3 (stack exhaustion on deeply nested
-      #     glob patterns) via @stylexjs/eslint-plugin > micromatch and
-      #     @astryxdesign/build > fast-glob > micromatch — lint and build time
-      #     only, over the repository's own glob patterns. No published fix
-      #     at the time of the ignore (2026-10-03); `bun audit fix` finds none
-      #   GHSA-238p-pmpm-9mq7: katex@0.16.47 (prototype pollution bypassing
-      #     trust restrictions; low) via blume > mermaid, which pins
-      #     katex@^0.16.47 — the docs site renders only the repository's own
-      #     Markdown at build time and deploys static assets only
-      #     (apps/site/cloudflare.config.ts has no worker script)
-      #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
-      #     selector parsing) via blume > @tailwindcss/typography, which pins
-      #     6.0.10 — build-time CSS over the repository's own stylesheets
-      #   GHSA-hp3w-g68c-fv3c: sprintf-js@1.0.3 (unbounded precision
-      #     specifiers) via blume > gray-matter > js-yaml@3 > argparse and
-      #     blume > @asyncapi/converter > js-yaml@3 > argparse — build-time
-      #     front-matter / spec parsing only. No published fix at the time of
-      #     the ignore (2026-10-06)
-      # Removed as stale (2026-10-06): the http-cache-semantics@4.2.0 ignore
-      # (GHSA-ch52-4w7c-c8xp) — every copy is 4.3.0 since `bun audit fix`.
-      # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
-      # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — image-size left the tree
-      # with a Blume update) and the sharp@0.35.2 ignore (GHSA-rgj7-g3m4-5g8c —
-      # every sharp is 0.35.4 since the miniflare update). An ignore for a
-      # package no longer present would silently pass the same advisory if it
-      # came back
-      - name: Audit (bun audit)
-        run: >-
-          bun audit
-          --ignore GHSA-9wv6-86v2-598j
-          --ignore GHSA-vfj7-8cjw-p6xm
-          --ignore GHSA-238p-pmpm-9mq7
-          --ignore GHSA-rj75-hqrm-r3gf
-          --ignore GHSA-hp3w-g68c-fv3c
-
-      - name: 1. Format (oxfmt)
-        run: bun run fmt:check
-
-      # Type-aware (oxlint-tsgolint, `options.typeAware` in .oxlintrc.json)
-      - name: 2. Lint (oxlint, type-aware)
-        run: bun run lint
-
-      - name: 3. Typecheck (tsc)
-        run: bun run typecheck
-
-      # Effect-aware diagnostics (@effect/tsgo) over the programs that use
-      # Effect: a dropped Effect, an unhandled error or requirement, a bare
-      # `yield` in a generator (scripts/effect-diagnostics.mjs)
-      - name: 3b. Effect diagnostics (@effect/tsgo)
-        run: bun run lint:effect
-
-      - name: 4. ImportLint
-        run: bunx import-lint --format github
-
-      # fallow 3.22: run the analysis once and render two CI-facing formats from
-      # the same JSON. The annotations / summary formats render even on fork PRs
-      # with no write token, so they are used instead of the PR-comment format
-      # (which needs one). The gate verdict (exit code) is the audit's own,
-      # returned last
-      - name: 5. fallow (baseline audit)
-        run: |
-          set +e
-          bunx fallow audit --format json > "$RUNNER_TEMP/fallow-results.json"
-          audit_status=$?
-          set -e
-          bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-annotations
-          bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
-          exit "$audit_status"
-
-      # fallow audit (step 5) analyzes only the changed files, so it never
-      # judges whether a baseline entry is stale. This whole-project run
-      # (dead-code + health + dupes in one combined pass, each against its
-      # committed baseline) fails when a baseline still lists a finding that
-      # no longer exists, so a fix lands together with its baseline shrink
-      - name: 5a. fallow whole-project baselines (stale-baseline gate)
-        run: bun run fallow:baselines
-
-      # The duplication baseline is shrink-only: it lists accepted clone debt
-      # and may lose entries, never gain them, relative to the merge-base with
-      # the PR's base branch (a push to main compares main with itself).
-      # fallow's own --fail-on-baseline-growth does not replace this: in
-      # fallow 3.32 it compares dupes by normalized_clone_fingerprints, which
-      # measured identical for unrelated two-copy clones, so it passed a
-      # baselined clone swapped for a new one and a clone grown in place
-      # (both fail here)
-      - name: 5b. fallow dupes baseline (shrink-only)
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: bun scripts/check-dupes-baseline.mjs "origin/${BASE_REF:-main}"
-
-      # Whole web tree, warnings block (no baseline: the tree is clean, so
-      # any new diagnostic fails)
-      - name: 6. React Doctor (web, full scan)
-        run: bun run doctor
-
-      - name: 7. Test (Vitest)
-        run: bun run test
-
-      # Keeps the cross-check between the main implementation (WebCrypto /
-      # panva hpke) and the independent implementation line (pyca-generated +
-      # reference verifier scripts) running in CI (consideration 7 — it used to
-      # be manual-only, so a joint degradation of impl and vectors could not be
-      # detected). tools is an independent project outside the workspace
-      # (bunfig.toml), so it gets its own frozen install here (a few packages,
-      # sub-second; under 1s including verify in measurement)
-      - name: 7b. Crypto vectors cross-check (independent reference verifier)
-        working-directory: packages/crypto/test-vectors/tools
-        run: |
-          bun install --frozen-lockfile
-          bun run verify
-
-      # The committed vectors must be exactly what the generator in the same
-      # commit produces (formatting ignored). Runs in a scratch copy, so the
-      # checkout stays untouched. Every event, not only PRs: it is as cheap
-      # as 7b (about a second) and also gates releases
-      - name: 7c. Crypto vectors regeneration check
-        working-directory: packages/crypto/test-vectors/tools
-        run: bun run regen-check
-
-      # Review aid for the owner (decision 1): the vector delta, the changed
-      # domain strings and SUPPORTED_* sets, and a conservative risk class
-      # R0–R3 against the merge-base, in the job summary. It approves
-      # nothing and only fails when the tool itself breaks (fail-closed:
-      # a PR is not reviewed without its summary). Classes and usage:
-      # packages/crypto/test-vectors/README.md "Reviewing a crypto change"
-      - name: 7d. Crypto change review aid (PR only, job summary)
-        if: github.event_name == 'pull_request'
-        working-directory: packages/crypto/test-vectors/tools
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bun run delta -- --base "$BASE_SHA" --head HEAD >> "$GITHUB_STEP_SUMMARY"
-
-      # The web e2e assumes build artifacts (dist/public + _headers), so it is
-      # not in the root vitest.config.ts projects and runs as its own step
-      # after the build. The port is OS-assigned so
-      # parallel runs don't collide.
-      - name: 8. Web build (vite + CSP headers)
-        run: bun run --filter @maruhi/web build
-
-      # Config validity check for the combined serving layout (W2 ruling BM —
-      # server bundles the web assets). A credential-free local verification
-      # that follows the same path as a deploy to confirm the assets directory
-      # exists and cloudflare.config.ts is consistent (path-space coverage is
-      # checked by apps/server/test/serving-topology.test.ts in step 7)
-      - name: 8b. Server deploy dry-run (combined assets config)
-        run: bunx cf deploy --dry-run
-        working-directory: apps/server
-
-      # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
-      # environment and the restore worker through the same path, and confirm
-      # via scripts/check-hosted-config.ts that the hosted environment has not
-      # drifted from the outermost bindings. The environments wrangler's
-      # `--env` selected are cf `--mode`s of one cloudflare.config.ts
-      - name: 8c. Hosted / restore config dry-run + drift check
-        working-directory: apps/server
-        run: |
-          bunx cf deploy --dry-run --mode hosted
-          bunx cf deploy --dry-run --mode restore
-          bun scripts/check-hosted-config.ts
-
-      # apex site (apps/site — Blume. LP + docs, DP2). Runs blume build +
-      # scripts/postbuild.ts (style-attribute externalization, inline-hash CSP,
-      # zero-external-reference mechanical checks, _headers) through the build
-      # path, then validates the standalone cf config (maruhi-site —
-      # Static Assets only) with the same dry-run as the product Worker (8b).
-      # Blume runs on Bun via bunx --bun (avoids depending on the CI's Node
-      # version for its Node 22.12+ requirement — web-design-pass.md §4 ruling J)
-      - name: 8d. Site build (Blume + CSP headers)
-        run: bun run --filter @maruhi/site build
-
-      # Validates internal links / anchors / asset references (Blume's
-      # validate. --external is not passed and external URLs are never hit —
-      # "say nothing" applies to CI too). --strict also fails on warnings
-      - name: 8d2. Site link validation (blume validate)
-        run: bun run --filter @maruhi/site validate
-
-      - name: 8e. Site deploy dry-run (static assets config)
-        run: bunx cf deploy --dry-run
-        working-directory: apps/site
-
       # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
       # headless shell that the pinned Playwright expects, downloaded on every
       # run by scripts/install-headless-shell.sh, which holds the version and
@@ -288,6 +85,11 @@ jobs:
       # the archive before it is unpacked (why not `playwright install`, and
       # the bump procedure, are in the script). The tests take the binary
       # through PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH.
+      # Runs as a background step right after checkout — the script is pure
+      # bash + curl, so it needs neither Bun nor installed dependencies, and
+      # its ~3 s of work overlap the whole prefix. Its $GITHUB_ENV write only
+      # becomes visible to steps after the `wait: headless-shell` ahead of
+      # the e2e group, which is why the wait is placed there.
       # No Actions cache, in this or any workflow: actions/cache restores by
       # untarring the entry with absolute paths allowed (`tar -P`) and no
       # member filter, so an entry seeded by any default-branch run can
@@ -304,6 +106,8 @@ jobs:
       # The headless shell alone is enough for chromium.launch and the vitest
       # browser provider (both headless), and is about half of full Chromium.
       - name: Install Chrome Headless Shell (pinned SHA-256, no cache)
+        id: headless-shell
+        background: true
         timeout-minutes: 5
         run: |
           set -euo pipefail
@@ -312,32 +116,276 @@ jobs:
           fi
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${executable}" >> "${GITHUB_ENV}"
 
-      # Per-step timeout: on a hang (actual incident on 2026-08-19, run
-      # 32217317312), fail fast on the step limit rather than the 30-minute job
-      # limit (set to measured time + headroom)
-      - name: 9. Web e2e (cf dev + Playwright)
-        timeout-minutes: 5
-        run: bun run --filter @maruhi/web e2e
+      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
+      - uses: ./.github/actions/install-bun
 
-      # apex site e2e (cf dev + Playwright): every request same-origin,
-      # zero CSP violations, self-hosted fonts, light/dark accent, /docs
-      # reachable, trailing-slash / 404 (assumes the dist from step 8d)
-      - name: 9b. Site e2e (cf dev + Playwright)
-        timeout-minutes: 5
-        run: bun run --filter @maruhi/site e2e
+      # ADR-0019: no tracked file may contain CJK text (exemptions:
+      # scripts/english-exemptions.txt + inline `english-exempt` markers).
+      # Whole-tree mode since the migration finished. Runs before install —
+      # the script has no dependencies
+      - name: 0. English source check (whole tree)
+        run: bun run check:english
 
-      - name: 10. Astryx doctor (web)
-        run: bun run --filter @maruhi/web doctor:astryx
-
-      # crypto's 3-environment runs (CRYPTO_SPEC §11). The root
-      # vitest.config.ts (step 7) only picks up node projects via the
-      # packages/*/vitest.config.ts glob. workerd / browser need out-of-build
-      # dependencies (the workerd binary / a Chromium), so they run as their
-      # own step. browser uses the verified headless shell installed above
-      # (the same binary as step 9).
-      - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
-        timeout-minutes: 10
+      # The crypto-vector tools are an independent project outside the
+      # workspace (bunfig.toml). Installing them here lets the 7b/7c/7d
+      # group members share the result read-only in parallel — three
+      # concurrent installs in the same directory would race
+      - name: Install dependencies
         run: |
-          bun run --filter @maruhi/crypto test:workerd
-          bun run --filter @maruhi/crypto test:browser
-          bun run --filter @maruhi/crypto test:bun
+          bun install --frozen-lockfile
+          (cd packages/crypto/test-vectors/tools && bun install --frozen-lockfile)
+
+      # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
+      # installed shell (sh / bash / zsh / dash). ubuntu-26.04 has no zsh, so
+      # install it (the page promises zsh by name, and the check asserts its
+      # presence in CI — PR #153 revision 5).
+      # python3-cryptography (pyca) runs the vector generator in step 7c. It
+      # comes from the Ubuntu archive this step already trusts (no new
+      # package source, no hash list to maintain); the generator's output is
+      # version-independent (packages/crypto/test-vectors/README.md)
+      - name: Install apt packages (zsh for the docs recipe checks, pyca for 7c)
+        run: >-
+          sudo apt-get update -qq &&
+          sudo apt-get install -y --no-install-recommends zsh python3-cryptography
+
+      # Group A — static gates. Every member reads the checkout and
+      # node_modules only; none writes state another member reads (the fallow
+      # audit writes $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for itself). 11
+      # members, so one queues on the 10-concurrent-background-step cap.
+      - parallel:
+          # Known-vulnerability audit (GHSA advisory matching). The strict-pinning
+          # policy intentionally does not chase every update, so CI continuously
+          # detects known CVEs left in place instead.
+          # --ignore covers transitive deps of maintainer-side toolchains that only
+          # run at build/test time and can't be fixed by an in-range update
+          # (ignores are per-ID; new advisories still get detected):
+          #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0 (ReDoS) — a strict pin via
+          #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
+          #     no execution path. A name-scoped override to 6.3.0 would drag in
+          #     router (express 5 line, ^8), so it is not taken (same source)
+          #   GHSA-vfj7-8cjw-p6xm: braces@3.0.3 (stack exhaustion on deeply nested
+          #     glob patterns) via @stylexjs/eslint-plugin > micromatch and
+          #     @astryxdesign/build > fast-glob > micromatch — lint and build time
+          #     only, over the repository's own glob patterns. No published fix
+          #     at the time of the ignore (2026-10-03); `bun audit fix` finds none
+          #   GHSA-238p-pmpm-9mq7: katex@0.16.47 (prototype pollution bypassing
+          #     trust restrictions; low) via blume > mermaid, which pins
+          #     katex@^0.16.47 — the docs site renders only the repository's own
+          #     Markdown at build time and deploys static assets only
+          #     (apps/site/cloudflare.config.ts has no worker script)
+          #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
+          #     selector parsing) via blume > @tailwindcss/typography, which pins
+          #     6.0.10 — build-time CSS over the repository's own stylesheets
+          #   GHSA-hp3w-g68c-fv3c: sprintf-js@1.0.3 (unbounded precision
+          #     specifiers) via blume > gray-matter > js-yaml@3 > argparse and
+          #     blume > @asyncapi/converter > js-yaml@3 > argparse — build-time
+          #     front-matter / spec parsing only. No published fix at the time of
+          #     the ignore (2026-10-06)
+          # Removed as stale (2026-10-06): the http-cache-semantics@4.2.0 ignore
+          # (GHSA-ch52-4w7c-c8xp) — every copy is 4.3.0 since `bun audit fix`.
+          # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
+          # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — image-size left the tree
+          # with a Blume update) and the sharp@0.35.2 ignore (GHSA-rgj7-g3m4-5g8c —
+          # every sharp is 0.35.4 since the miniflare update). An ignore for a
+          # package no longer present would silently pass the same advisory if it
+          # came back
+          - name: Audit (bun audit)
+            run: >-
+              bun audit
+              --ignore GHSA-9wv6-86v2-598j
+              --ignore GHSA-vfj7-8cjw-p6xm
+              --ignore GHSA-238p-pmpm-9mq7
+              --ignore GHSA-rj75-hqrm-r3gf
+              --ignore GHSA-hp3w-g68c-fv3c
+
+          - name: 1. Format (oxfmt)
+            run: bun run fmt:check
+
+          # Type-aware (oxlint-tsgolint, `options.typeAware` in .oxlintrc.json)
+          - name: 2. Lint (oxlint, type-aware)
+            run: bun run lint
+
+          - name: 3. Typecheck (tsc)
+            run: bun run typecheck
+
+          # Effect-aware diagnostics (@effect/tsgo) over the programs that use
+          # Effect: a dropped Effect, an unhandled error or requirement, a bare
+          # `yield` in a generator (scripts/effect-diagnostics.mjs)
+          - name: 3b. Effect diagnostics (@effect/tsgo)
+            run: bun run lint:effect
+
+          - name: 4. ImportLint
+            run: bunx import-lint --format github
+
+          # fallow 3.22: run the analysis once and render two CI-facing formats from
+          # the same JSON. The annotations / summary formats render even on fork PRs
+          # with no write token, so they are used instead of the PR-comment format
+          # (which needs one). The gate verdict (exit code) is the audit's own,
+          # returned last
+          - name: 5. fallow (baseline audit)
+            run: |
+              set +e
+              bunx fallow audit --format json > "$RUNNER_TEMP/fallow-results.json"
+              audit_status=$?
+              set -e
+              bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-annotations
+              bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
+              exit "$audit_status"
+
+          # fallow audit (step 5) analyzes only the changed files, so it never
+          # judges whether a baseline entry is stale. This whole-project run
+          # (dead-code + health + dupes in one combined pass, each against its
+          # committed baseline) fails when a baseline still lists a finding that
+          # no longer exists, so a fix lands together with its baseline shrink
+          - name: 5a. fallow whole-project baselines (stale-baseline gate)
+            run: bun run fallow:baselines
+
+          # The duplication baseline is shrink-only: it lists accepted clone debt
+          # and may lose entries, never gain them, relative to the merge-base with
+          # the PR's base branch (a push to main compares main with itself).
+          # fallow's own --fail-on-baseline-growth does not replace this: in
+          # fallow 3.32 it compares dupes by normalized_clone_fingerprints, which
+          # measured identical for unrelated two-copy clones, so it passed a
+          # baselined clone swapped for a new one and a clone grown in place
+          # (both fail here)
+          - name: 5b. fallow dupes baseline (shrink-only)
+            env:
+              BASE_REF: ${{ github.base_ref }}
+            run: bun scripts/check-dupes-baseline.mjs "origin/${BASE_REF:-main}"
+
+          # Whole web tree, warnings block (no baseline: the tree is clean, so
+          # any new diagnostic fails)
+          - name: 6. React Doctor (web, full scan)
+            run: bun run doctor
+
+          # astryx doctor runs read-only health checks on the web project's
+          # setup (component / theme integration) — source-level, no dist —
+          # so it sits with the static gates, not the build dependents
+          - name: 10. Astryx doctor (web)
+            run: bun run --filter @maruhi/web doctor:astryx
+
+      # Group B — tests + builds. 7b/7c/7d read the tools project's
+      # node_modules installed once by the prefix (see Install dependencies),
+      # so they run in parallel read-only. The builds produce
+      # apps/web/dist (8) and apps/site/dist (8d) for groups C and D.
+      - parallel:
+          - name: 7. Test (Vitest)
+            run: bun run test
+
+          # Keeps the cross-check between the main implementation (WebCrypto /
+          # panva hpke) and the independent implementation line (pyca-generated +
+          # reference verifier scripts) running in CI (consideration 7 — it used to
+          # be manual-only, so a joint degradation of impl and vectors could not be
+          # detected). tools is an independent project outside the workspace
+          # (bunfig.toml) — the prefix's Install dependencies step covers its
+          # install, so this step only runs the verifier
+          - name: 7b. Crypto vectors cross-check (independent reference verifier)
+            working-directory: packages/crypto/test-vectors/tools
+            run: bun run verify
+
+          # The committed vectors must be exactly what the generator in the same
+          # commit produces (formatting ignored). Runs in a scratch copy, so the
+          # checkout stays untouched. Every event, not only PRs: it is as cheap
+          # as 7b (about a second) and also gates releases
+          - name: 7c. Crypto vectors regeneration check
+            working-directory: packages/crypto/test-vectors/tools
+            run: bun run regen-check
+
+          # Review aid for the owner (decision 1): the vector delta, the changed
+          # domain strings and SUPPORTED_* sets, and a conservative risk class
+          # R0–R3 against the merge-base, in the job summary. It approves
+          # nothing and only fails when the tool itself breaks (fail-closed:
+          # a PR is not reviewed without its summary). Classes and usage:
+          # packages/crypto/test-vectors/README.md "Reviewing a crypto change"
+          - name: 7d. Crypto change review aid (PR only, job summary)
+            if: github.event_name == 'pull_request'
+            working-directory: packages/crypto/test-vectors/tools
+            env:
+              BASE_SHA: ${{ github.event.pull_request.base.sha }}
+            run: bun run delta -- --base "$BASE_SHA" --head HEAD >> "$GITHUB_STEP_SUMMARY"
+
+          # The web e2e assumes build artifacts (dist/public + _headers), so it is
+          # not in the root vitest.config.ts projects and runs in group D.
+          - name: 8. Web build (vite + CSP headers)
+            run: bun run --filter @maruhi/web build
+
+          # apex site (apps/site — Blume. LP + docs, DP2). Runs blume build +
+          # scripts/postbuild.ts (style-attribute externalization, inline-hash CSP,
+          # zero-external-reference mechanical checks, _headers) through the build
+          # path, then group C validates the standalone cf config (maruhi-site —
+          # Static Assets only) with the same dry-run as the product Worker (8b).
+          # Blume runs on Bun via bunx --bun (avoids depending on the CI's Node
+          # version for its Node 22.12+ requirement — web-design-pass.md §4 ruling J)
+          - name: 8d. Site build (Blume + CSP headers)
+            run: bun run --filter @maruhi/site build
+
+      # Group C — dependents of the group-B builds: the server dry-runs read
+      # apps/web/dist/public (assets.directory in apps/server/wrangler.jsonc),
+      # the site steps read apps/site/dist. 8b/8c stay one step: every
+      # `cf deploy` build writes apps/server/.cloudflare/output, so the three
+      # dry-runs cannot run concurrently with each other (the site steps touch
+      # apps/site/.cloudflare — a different directory — and run in parallel)
+      - parallel:
+          # Config validity check for the combined serving layout (W2 ruling BM —
+          # server bundles the web assets). A credential-free local verification
+          # that follows the same path as a deploy to confirm the assets directory
+          # exists and cloudflare.config.ts is consistent (path-space coverage is
+          # checked by apps/server/test/serving-topology.test.ts in step 7)
+          #
+          # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
+          # environment and the restore worker through the same path, and confirm
+          # via scripts/check-hosted-config.ts that the hosted environment has not
+          # drifted from the outermost bindings. The environments wrangler's
+          # `--env` selected are cf `--mode`s of one cloudflare.config.ts
+          - name: 8b/8c. Server deploy dry-runs + drift check (combined / hosted / restore)
+            working-directory: apps/server
+            run: |
+              bunx cf deploy --dry-run
+              bunx cf deploy --dry-run --mode hosted
+              bunx cf deploy --dry-run --mode restore
+              bun scripts/check-hosted-config.ts
+
+          # Validates internal links / anchors / asset references (Blume's
+          # validate. --external is not passed and external URLs are never hit —
+          # "say nothing" applies to CI too). --strict also fails on warnings
+          - name: 8d2. Site link validation (blume validate)
+            run: bun run --filter @maruhi/site validate
+
+          - name: 8e. Site deploy dry-run (static assets config)
+            run: bunx cf deploy --dry-run
+            working-directory: apps/site
+
+      # Publishes the background install's $GITHUB_ENV write
+      # (PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) to the e2e group and fails the
+      # job here if the install itself failed
+      - wait: headless-shell
+
+      # Group D — e2e. Each step spawns its own `cf dev` on an OS-assigned
+      # port, so parallel runs don't collide. Per-step timeouts: on a hang
+      # (actual incident on 2026-08-19, run 32217317312), fail fast on the
+      # step limit rather than the 30-minute job limit (each set to measured
+      # time + headroom)
+      - parallel:
+          - name: 9. Web e2e (cf dev + Playwright)
+            timeout-minutes: 5
+            run: bun run --filter @maruhi/web e2e
+
+          # apex site e2e (cf dev + Playwright): every request same-origin,
+          # zero CSP violations, self-hosted fonts, light/dark accent, /docs
+          # reachable, trailing-slash / 404 (assumes the dist from step 8d)
+          - name: 9b. Site e2e (cf dev + Playwright)
+            timeout-minutes: 5
+            run: bun run --filter @maruhi/site e2e
+
+          # crypto's 3-environment runs (CRYPTO_SPEC §11). The root
+          # vitest.config.ts (step 7) only picks up node projects via the
+          # packages/*/vitest.config.ts glob. workerd / browser need out-of-build
+          # dependencies (the workerd binary / a Chromium), so they run as their
+          # own step. browser uses the verified headless shell installed by the
+          # headless-shell background step (the same binary as step 9).
+          - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
+            timeout-minutes: 10
+            run: |
+              bun run --filter @maruhi/crypto test:workerd
+              bun run --filter @maruhi/crypto test:browser
+              bun run --filter @maruhi/crypto test:bun
