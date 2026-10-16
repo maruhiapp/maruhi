@@ -1,0 +1,41 @@
+# jactionlint configuration (https://jactionlint.jdx.dev — the maintained
+# actionlint fork). The `check` job in ci.yml runs the pinned binary on every
+# change via scripts/install-jactionlint.sh (verify-then-unpack, same shape
+# as install-bun / install-headless-shell). Profile is the default
+# (`default`).
+
+# All workflows run on GitHub-hosted `ubuntu-26.04` (a builtin label to
+# jactionlint 2.2.0 — no self-hosted declaration needed, and declaring one
+# would misclassify the pool as self-hosted under the pedantic profile).
+# `${{ matrix.runner }}` in installer.yml / release.yml is an expression and
+# skips the label check.
+
+# Repository variables referenced from the workflows (ops-backup.yml).
+# Declaring them makes `vars.X` references strict — a typo fails lint
+# instead of silently expanding to "".
+config-variables:
+  - OPS_BACKUP_AGE_RECIPIENT
+  - OPS_BACKUP_BUCKET
+  - OPS_BACKUP_ENABLED
+
+# Secrets referenced from the workflows. pullfrog.yml holds the LLM provider
+# keys the Pullfrog agent dispatches; ops-backup.yml holds the Cloudflare
+# backup credentials. Declaring them makes `secrets.X` references strict.
+config-secrets:
+  - ANTHROPIC_API_KEY
+  - AWS_ACCESS_KEY_ID
+  - AWS_BEARER_TOKEN_BEDROCK
+  - AWS_SECRET_ACCESS_KEY
+  - CLAUDE_CODE_OAUTH_TOKEN
+  - CLOUDFLARE_ACCOUNT_ID
+  - CLOUDFLARE_API_TOKEN
+  - DEEPSEEK_API_KEY
+  - GEMINI_API_KEY
+  - GOOGLE_GENERATIVE_AI_API_KEY
+  - MOONSHOT_API_KEY
+  - OPENAI_API_KEY
+  - OPENAI_COMPATIBLE_API_KEY
+  - OPENCODE_API_KEY
+  - OPENROUTER_API_KEY
+  - VERTEX_SERVICE_ACCOUNT_JSON
+  - XAI_API_KEY

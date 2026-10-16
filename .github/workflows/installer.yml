@@ -72,6 +72,7 @@ jobs:
       - name: Export unix install matrix (single source = scripts/shared.ts)
         id: matrix
         run: |
+          set -o pipefail
           MATRIX=$(bun apps/cli/scripts/print-smoke-matrix.ts |
             jq -c '[.[] | select(.target | startswith("windows") | not)]')
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"

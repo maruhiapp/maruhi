@@ -105,6 +105,7 @@ jobs:
           # wrangler 4.124 renamed the API's file_size to database_size; accept
           # either name in cf d1 get's JSON (and a wrapped {result: {...}} shape
           # if cf ever prints the raw API envelope)
+          set -o pipefail
           size=$(bunx cf d1 get "$(bun scripts/d1-id.ts hosted)" | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); const v = o.database_size ?? o.file_size ?? o.result?.database_size ?? o.result?.file_size; v === undefined ? "" : v')
           case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from cf d1 get"; exit 1 ;; esac
           echo "D1 database_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"
