@@ -126,8 +126,14 @@ jobs:
       - name: 0. English source check (whole tree)
         run: bun run check:english
 
+      # The crypto-vector tools are an independent project outside the
+      # workspace (bunfig.toml). Installing them here lets the 7b/7c/7d
+      # group members share the result read-only in parallel — three
+      # concurrent installs in the same directory would race
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: |
+          bun install --frozen-lockfile
+          (cd packages/crypto/test-vectors/tools && bun install --frozen-lockfile)
 
       # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
       # installed shell (sh / bash / zsh / dash). ubuntu-26.04 has no zsh, so
@@ -258,9 +264,9 @@ jobs:
           - name: 10. Astryx doctor (web)
             run: bun run --filter @maruhi/web doctor:astryx
 
-      # Group B — tests + builds. 7b/7c run their own `bun install` inside
-      # packages/crypto/test-vectors/tools (an independent bunfig project),
-      # which never races the workspace's node_modules. The builds produce
+      # Group B — tests + builds. 7b/7c/7d read the tools project's
+      # node_modules installed once by the prefix (see Install dependencies),
+      # so they run in parallel read-only. The builds produce
       # apps/web/dist (8) and apps/site/dist (8d) for groups C and D.
       - parallel:
           - name: 7. Test (Vitest)
@@ -271,13 +277,11 @@ jobs:
           # reference verifier scripts) running in CI (consideration 7 — it used to
           # be manual-only, so a joint degradation of impl and vectors could not be
           # detected). tools is an independent project outside the workspace
-          # (bunfig.toml), so it gets its own frozen install here (a few packages,
-          # sub-second; under 1s including verify in measurement)
+          # (bunfig.toml) — the prefix's Install dependencies step covers its
+          # install, so this step only runs the verifier
           - name: 7b. Crypto vectors cross-check (independent reference verifier)
             working-directory: packages/crypto/test-vectors/tools
-            run: |
-              bun install --frozen-lockfile
-              bun run verify
+            run: bun run verify
 
           # The committed vectors must be exactly what the generator in the same
           # commit produces (formatting ignored). Runs in a scratch copy, so the
