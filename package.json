@@ -19,10 +19,10 @@
     "lint": "oxlint",
     "lint:effect": "bun scripts/effect-diagnostics.mjs",
     "test": "vitest run",
-    "test:app-unit": "vitest run --project web-unit --project site-unit",
-    "test:cli": "vitest run --project cli",
-    "test:packages": "vitest run --project crypto --project core --project api-schema",
-    "test:server": "vitest run --project server",
+    "test:app-unit": "bun scripts/test-suite.mjs run app-unit",
+    "test:cli": "bun scripts/test-suite.mjs run cli",
+    "test:packages": "bun scripts/test-suite.mjs run packages",
+    "test:server": "bun scripts/test-suite.mjs run server",
     "typecheck": "bun run --filter '*' typecheck"
   },
   "devDependencies": {
