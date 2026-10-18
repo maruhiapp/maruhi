@@ -263,11 +263,13 @@ jobs:
           # The duplication baseline is shrink-only: it lists accepted clone debt
           # and may lose entries, never gain them, relative to the merge-base with
           # the PR's base branch (a push to main compares main with itself).
-          # fallow's own --fail-on-baseline-growth does not replace this: in
-          # fallow 3.32 it compares dupes by normalized_clone_fingerprints, which
-          # measured identical for unrelated two-copy clones, so it passed a
-          # baselined clone swapped for a new one and a clone grown in place
-          # (both fail here)
+          # fallow's own --fail-on-baseline-growth does not replace this. Up to
+          # fallow 3.32 it passed a baselined clone swapped for a new one and a
+          # clone grown in place (normalized_clone_fingerprints measured
+          # identical for unrelated two-copy clones). Since the content
+          # fingerprints of 3.33.0 it fails both, as this check does, but it
+          # also fails a baselined clone trimmed in place (a smaller clone is a
+          # new key), which this check accepts as a shrink
           - name: 5b. fallow dupes baseline (shrink-only)
             env:
               BASE_REF: ${{ github.base_ref }}
