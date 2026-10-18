@@ -165,7 +165,8 @@ jobs:
 
       # Group A — static gates. Every member reads the checkout and
       # node_modules only; none writes state another member reads (the fallow
-      # audit writes $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for itself). 11
+      # audit writes $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for itself), except
+      # the .fallow/ cache that steps 5 and 5a share safely (see 5a). 11
       # members, so one queues on the 10-concurrent-background-step cap.
       - parallel:
           # Known-vulnerability audit (GHSA advisory matching). The strict-pinning
@@ -251,14 +252,12 @@ jobs:
           # judges whether a baseline entry is stale. This whole-project run
           # (dead-code + health + dupes in one combined pass, each against its
           # committed baseline) fails when a baseline still lists a finding that
-          # no longer exists, so a fix lands together with its baseline shrink
-          # Its own cache directory: step 5 runs fallow concurrently, and
-          # fallow 3.32 writes .fallow/cache.bin and graph-cache.bin through a
-          # fixed `<name>.tmp` file, so two concurrent writers can interleave
-          # bytes in one temp file or fail on the other's rename
+          # no longer exists, so a fix lands together with its baseline shrink.
+          # It shares .fallow/ with step 5, which runs concurrently: since
+          # fallow 3.34.0 each cache save writes through a uniquely named temp
+          # file and renames it into place, so concurrent runs share the cache
+          # safely
           - name: 5a. fallow whole-project baselines (stale-baseline gate)
-            env:
-              FALLOW_CACHE_DIR: ${{ runner.temp }}/fallow-cache-5a
             run: bun run fallow:baselines
 
           # The duplication baseline is shrink-only: it lists accepted clone debt
