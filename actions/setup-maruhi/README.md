@@ -42,7 +42,7 @@ jobs:
       id-token: write # required: maruhi ci run authenticates via OIDC
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pin the action to a tag or commit SHA — it installs the binary that
       # will hold your decrypted secrets in memory. Do not use a mutable ref.
