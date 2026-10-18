@@ -78,6 +78,21 @@ jobs:
           # runs dependencies and test code
           persist-credentials: false
 
+      # Workflow lint: only needs the checkout, so a broken workflow fails
+      # fast here instead of after the Bun install. The binary comes from
+      # scripts/install-jactionlint.sh (size + archive/binary SHA-256 pins,
+      # verify-then-unpack — the same shape as install-bun /
+      # install-headless-shell), and .github/jactionlint.yaml declares the
+      # referenced vars/secrets names. shellcheck covers the run: scripts:
+      # ubuntu images ship it, and the apt fallback keeps it from being
+      # silently skipped on an image change
+      - name: Lint GitHub Actions workflows (jactionlint, pinned SHA-256)
+        run: |
+          set -euo pipefail
+          bash scripts/install-jactionlint.sh linux-x64 "${RUNNER_TEMP}/jactionlint-bin"
+          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck; }
+          "${RUNNER_TEMP}/jactionlint-bin/jactionlint"
+
       # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
       # headless shell that the pinned Playwright expects, downloaded on every
       # run by scripts/install-headless-shell.sh, which holds the version and
