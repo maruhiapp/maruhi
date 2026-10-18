@@ -135,5 +135,8 @@ describe("writeLine (synchronous writes and closed pipes)", () => {
     expect(result.stdout, result.stderr).toContain("line0");
     expect(result.stdout, result.stderr).toContain("writer-exit=0");
     expect(result.stderr).not.toContain("EPIPE");
-  });
+    // A real bun process plus 200k swallowed EPIPE writes: 1.3-2 s on the
+    // 2-core CI runner, 5.6 s once beside CI's other parallel test suites
+    // and builds. Same headroom as the other live-*.test.ts process tests
+  }, 60_000);
 });

@@ -104,14 +104,23 @@ export interface DataFixture {
 
 /** Reset DO / D1 + seed users and PATs + replay the base chain through the API. */
 export async function setupDataProject(): Promise<DataFixture> {
-  await resetProjectDo(projectId);
-  await resetAuthDb();
-  const tokens: Record<string, string> = {};
-  for (const [userId, githubId] of Object.entries(GITHUB_IDS)) {
-    await seedUser(userId, githubId);
-    tokens[userId] = await cliToken(githubId);
-  }
-  await seedOrgMember(DATA_ORG, OWNER, "member");
+  // The DO reset is independent of the D1-side reset + reseed, and each
+  // user's seed → real-PAT issuance (the ~5-RT CLI login handoff) is
+  // independent of the other users' — running them concurrently removes
+  // ~15-20 sequential round-trips per call. Fresh state and real issued
+  // PATs as before; only the sequential order is dropped
+  const auth = (async () => {
+    await resetAuthDb();
+    const issued = await Promise.all(
+      Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
+        await seedUser(userId, githubId);
+        return [userId, await cliToken(githubId)] as const;
+      }),
+    );
+    await seedOrgMember(DATA_ORG, OWNER, "member");
+    return Object.fromEntries(issued);
+  })();
+  const [tokens] = await Promise.all([auth, resetProjectDo(projectId)]);
 
   const [genesis, ...rest] = baseChain.entries;
   const init = await SELF.fetch(`${BASE}/projects`, {

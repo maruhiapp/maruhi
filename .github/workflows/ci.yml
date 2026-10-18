@@ -12,8 +12,8 @@
 #     apt (zsh, pyca)
 #   parallel group A (static gates): audit + steps 1–6 + 10
 #     (11 members — one queues on the 10-step cap)
-#   parallel group B (tests + builds): steps 7, 7b–7d, 8 (web dist), 8d
-#     (site dist)
+#   parallel group B (tests + builds): steps 7b–7d + the per-suite vitest
+#     members 7e–7h, 8 (web dist), 8d (site dist)
 #   parallel group C (build dependents): 8b/8c server dry-runs (one step —
 #     cf builds share apps/server/.cloudflare) + 8d2/8e (site dist)
 #   `wait: headless-shell`
@@ -270,17 +270,18 @@ jobs:
           - name: 10. Astryx doctor (web)
             run: bun run --filter @maruhi/web doctor:astryx
 
-      # Group B — tests + builds. 7b/7c/7d read the tools project's
-      # node_modules installed once by the prefix (see Install dependencies),
-      # so they run in parallel read-only. The builds produce
-      # apps/web/dist (8) and apps/site/dist (8d) for groups C and D, and
-      # write apps/site/.blume and node_modules caches while the tests run:
-      # a test that walks the tree must skip build output (brand-casts.test.ts
-      # prunes node_modules, dist and dot-directories).
+      # Group B — tests + builds. The vitest gate runs as per-suite members
+      # (7e–7h): the workerd-backed server suite — most of the old monolithic
+      # step's wall time — overlaps the plain-node projects instead of sharing
+      # one vitest process's worker cap with them (and a failure is attributed
+      # to its suite). 7b/7c/7d read the tools project's node_modules installed
+      # once by the prefix (see Install dependencies), so they run in parallel
+      # read-only. The builds produce apps/web/dist (8) and apps/site/dist (8d)
+      # for groups C and D, and write apps/site/.blume and node_modules caches
+      # while the tests run: a test that walks the tree must skip build output
+      # (brand-casts.test.ts prunes node_modules, dist and dot-directories).
+      # Nine members — under the 10-step cap.
       - parallel:
-          - name: 7. Test (Vitest)
-            run: bun run test
-
           # Keeps the cross-check between the main implementation (WebCrypto /
           # panva hpke) and the independent implementation line (pyca-generated +
           # reference verifier scripts) running in CI (consideration 7 — it used to
@@ -313,6 +314,20 @@ jobs:
               BASE_SHA: ${{ github.event.pull_request.base.sha }}
             run: bun run delta -- --base "$BASE_SHA" --head HEAD >> "$GITHUB_STEP_SUMMARY"
 
+          - name: 7e. Test — packages (Vitest)
+            run: bun run test:packages
+
+          - name: 7f. Test — app unit (Vitest)
+            run: bun run test:app-unit
+
+          - name: 7g. Test — cli (Vitest)
+            run: bun run test:cli
+
+          # The workerd pool (@cloudflare/vitest-plugin): the suite that
+          # dominated the old single test step
+          - name: 7h. Test — server (Vitest, workerd)
+            run: bun run test:server
+
           # The web e2e assumes build artifacts (dist/public + _headers), so it is
           # not in the root vitest.config.ts projects and runs in group D.
           - name: 8. Web build (vite + CSP headers)
@@ -339,7 +354,7 @@ jobs:
           # server bundles the web assets). A credential-free local verification
           # that follows the same path as a deploy to confirm the assets directory
           # exists and cloudflare.config.ts is consistent (path-space coverage is
-          # checked by apps/server/test/serving-topology.test.ts in step 7)
+          # checked by apps/server/test/serving-topology.test.ts in step 7h)
           #
           # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
           # environment and the restore worker through the same path, and confirm
@@ -387,7 +402,7 @@ jobs:
             run: bun run --filter @maruhi/site e2e
 
           # crypto's 3-environment runs (CRYPTO_SPEC §11). The root
-          # vitest.config.ts (step 7) only picks up node projects via the
+          # vitest.config.ts (steps 7e–7h) only picks up node projects via the
           # packages/*/vitest.config.ts glob. workerd / browser need out-of-build
           # dependencies (the workerd binary / a Chromium), so they run as their
           # own step. browser uses the verified headless shell installed by the
