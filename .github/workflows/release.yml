@@ -83,7 +83,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The main-ancestry check (below) needs history
           fetch-depth: 0
@@ -153,7 +153,7 @@ jobs:
       npm-package-digest: ${{ steps.digests.outputs.npm-package }}
     steps:
       # Leave no token on jobs that run dependency code (bun install / build)
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -206,7 +206,7 @@ jobs:
           echo "binaries=${binaries}" >> "$GITHUB_OUTPUT"
           echo "npm-package=${npm_package}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binaries
           path: apps/cli/dist/
@@ -221,7 +221,7 @@ jobs:
           # an rc
           overwrite: true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-package
           path: apps/cli/dist-npm/
@@ -244,13 +244,13 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     steps:
-      # Download all archives (~150MB) and use just one. download-artifact v4
+      # Download all archives (~150MB) and use just one. download-artifact
       # cannot fetch part of an artifact, and splitting into per-target
       # artifacts pushes a duplicate of the target list back into the upload
       # side and breaks the single source (shared.ts TARGETS). At 5 targets ×
       # infrequent releases the transfer cost is cheaper (revisit if the
       # target count grows)
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: binaries
 
@@ -315,7 +315,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: binaries
           path: binaries
@@ -334,7 +334,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: npm-package
           path: npm-package
@@ -395,7 +395,7 @@ jobs:
       # Required for npm trusted publishing (OIDC) and provenance generation
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: npm-package
           path: dist-npm
