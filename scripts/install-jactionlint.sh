@@ -12,8 +12,10 @@
 # archive SHA-256 and extracted-binary SHA-256 are all pinned below — version
 # alone cannot catch a re-tagged release asset, and the binary pin catches a
 # corrupted unpack. Bumping jactionlint changes the three values per
-# platform; the hashes come from the release's checksums.txt
-# (curl -fsSL https://github.com/jdx/jactionlint/releases/download/v<ver>/checksums.txt).
+# platform; the hashes come from the release's jactionlint_<ver>_checksums.txt
+# (curl -fsSL https://github.com/jdx/jactionlint/releases/download/v<ver>/jactionlint_<ver>_checksums.txt),
+# and each archive's build provenance is checked before pinning with
+# `gh attestation verify <archive> --repo jdx/jactionlint`.
 #
 # linux-x64 is what CI runs (ubuntu-26.04); darwin-arm64 is for local use on
 # the maintainer's Mac. Another platform is refused rather than guessed: add
@@ -38,6 +40,8 @@ fi
 
 readonly platform="$1"
 readonly destination="$2"
+# The destination is wiped before the unpack, so an empty one is refused
+[ -n "$destination" ] || die "the destination must not be empty"
 readonly release_base="https://github.com/jdx/jactionlint/releases/download/v2.2.0"
 
 case "$platform" in
@@ -63,7 +67,7 @@ trap 'rm -rf "$temporary"' EXIT
 archive="$temporary/$archive_name"
 
 curl --fail --silent --show-error --location \
-  --proto '=https' --tlsv1.2 \
+  --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --retry-all-errors \
   "$release_base/$archive_name" \
   --output "$archive" || die "jactionlint archive download failed"
 

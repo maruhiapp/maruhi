@@ -90,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/install-jactionlint.sh linux-x64 "${RUNNER_TEMP}/jactionlint-bin"
-          command -v shellcheck >/dev/null || sudo apt-get install -y shellcheck
+          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck; }
           "${RUNNER_TEMP}/jactionlint-bin/jactionlint"
 
       # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
