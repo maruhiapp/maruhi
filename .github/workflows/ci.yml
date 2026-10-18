@@ -237,7 +237,13 @@ jobs:
           # (dead-code + health + dupes in one combined pass, each against its
           # committed baseline) fails when a baseline still lists a finding that
           # no longer exists, so a fix lands together with its baseline shrink
+          # Its own cache directory: step 5 runs fallow concurrently, and
+          # fallow 3.32 writes .fallow/cache.bin and graph-cache.bin through a
+          # fixed `<name>.tmp` file, so two concurrent writers can interleave
+          # bytes in one temp file or fail on the other's rename
           - name: 5a. fallow whole-project baselines (stale-baseline gate)
+            env:
+              FALLOW_CACHE_DIR: ${{ runner.temp }}/fallow-cache-5a
             run: bun run fallow:baselines
 
           # The duplication baseline is shrink-only: it lists accepted clone debt
@@ -267,7 +273,10 @@ jobs:
       # Group B — tests + builds. 7b/7c/7d read the tools project's
       # node_modules installed once by the prefix (see Install dependencies),
       # so they run in parallel read-only. The builds produce
-      # apps/web/dist (8) and apps/site/dist (8d) for groups C and D.
+      # apps/web/dist (8) and apps/site/dist (8d) for groups C and D, and
+      # write apps/site/.blume and node_modules caches while the tests run:
+      # a test that walks the tree must skip build output (brand-casts.test.ts
+      # prunes node_modules, dist and dot-directories).
       - parallel:
           - name: 7. Test (Vitest)
             run: bun run test
