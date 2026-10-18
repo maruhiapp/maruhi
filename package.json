@@ -28,7 +28,7 @@
   "devDependencies": {
     "@effect/tsgo": "0.51.1",
     "@import-lint/cli": "0.1.10",
-    "fallow": "3.32.0",
+    "fallow": "3.34.1",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
     "oxlint-plugin-eslint": "1.87.0",
