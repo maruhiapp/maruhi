@@ -47,17 +47,28 @@ const ALLOWED_COUNTS: Readonly<Record<string, number>> = {
   "packages/crypto/src/internal.package/chain-verify.ts": 5,
 };
 
+/**
+ * Every file under `dir` (repo-relative), never descending into
+ * node_modules, dist or a dot-directory (.blume, .cloudflare, .wrangler, …).
+ * Those hold installed or generated files only, and CI's parallel group B
+ * builds into them while this test runs (apps/site/.blume/src is generated
+ * TypeScript), so walking them would race the build.
+ */
+function walk(dir: string): string[] {
+  return readdirSync(join(REPO_ROOT, dir), { withFileTypes: true }).flatMap((entry) => {
+    const path = `${dir}/${entry.name}`;
+    if (!entry.isDirectory()) {
+      return [path];
+    }
+    return entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")
+      ? []
+      : walk(path);
+  });
+}
+
 function shippedSources(): readonly string[] {
-  return SOURCE_ROOTS.flatMap((root) =>
-    readdirSync(join(REPO_ROOT, root), { recursive: true, encoding: "utf8" })
-      .map((path) => `${root}/${path}`)
-      .filter(
-        (path) =>
-          /\/src\//.test(path) &&
-          /\.(?:ts|tsx)$/.test(path) &&
-          !path.includes("node_modules") &&
-          !path.includes("/dist/"),
-      ),
+  return SOURCE_ROOTS.flatMap(walk).filter(
+    (path) => /\/src\//.test(path) && /\.(?:ts|tsx)$/.test(path),
   );
 }
 
