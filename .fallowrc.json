@@ -1,8 +1,8 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  // failOnParseError needs fallow 3.29 or later; an older binary names the
-  // upgrade instead of failing on an unknown key
-  "minimumVersion": "3.29.0",
+  // The newest keys below (the 3.34 rules) need fallow 3.34 or later; an
+  // older binary names the upgrade instead of failing on an unknown key
+  "minimumVersion": "3.34.0",
   // A file fallow cannot parse drops out of every detector, the boundaries
   // below included, so a parse failure fails the run instead of only warning
   "failOnParseError": true,
