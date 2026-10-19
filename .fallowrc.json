@@ -1,8 +1,8 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  // failOnParseError needs fallow 3.29 or later; an older binary names the
-  // upgrade instead of failing on an unknown key
-  "minimumVersion": "3.29.0",
+  // The newest keys below (the 3.34 rules) need fallow 3.34 or later; an
+  // older binary names the upgrade instead of failing on an unknown key
+  "minimumVersion": "3.34.0",
   // A file fallow cannot parse drops out of every detector, the boundaries
   // below included, so a parse failure fails the run instead of only warning
   "failOnParseError": true,
@@ -189,7 +189,19 @@
   // unused export). Revisit at the first public release, when deprecating
   // before removal becomes legitimate
   "rules": {
-    "deprecated-exports-in-use": "error"
+    "deprecated-exports-in-use": "error",
+    // Rules new in fallow 3.34 that default to warn, promoted so they gate.
+    // The Effect dead-code rules run in every dead-code pass. The audit
+    // diff-risk rules read only the diff against the base, so main never has
+    // findings; a deliberate change acknowledges one with a reasoned line
+    // above it, e.g. `// fallow-ignore-next-line added-suppression -- <why>`
+    // before a new suppression comment
+    "unused-effect-layers": "error",
+    "unused-tagged-errors": "error",
+    "unproduced-catch-tags": "error",
+    "weakened-tests": "error",
+    "added-suppression": "error",
+    "test-only-branch": "error"
   },
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
