@@ -287,6 +287,11 @@ export function describeError(
   if (error instanceof CliError.UserError) {
     return userErrorMessage(error);
   }
+  // A `Command.validate` rule of maruhi's own (schema set's contradictory
+  // flags): the message is fixed text written in this repository
+  if (error instanceof CliError.ValidationError) {
+    return error.message;
+  }
   return "Invalid command-line arguments";
 }
 

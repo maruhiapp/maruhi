@@ -432,6 +432,17 @@ describe("the diagnostic mapping (rebuilt from structured fields)", () => {
     expect(message).not.toContain("SECRET_A");
     expect(message).not.toContain("SECRET_B");
   });
+
+  it("ValidationError (a Command.validate rule) shows the rule's own fixed message", () => {
+    const message = describeError(
+      new EffectCliError.ValidationError({
+        message: "--required and --optional are mutually exclusive (specify at most one)",
+      }),
+      "schema set",
+      { "schema set": { flags: ["required", "optional"], positionals: ["name"] } },
+    );
+    expect(message).toBe("--required and --optional are mutually exclusive (specify at most one)");
+  });
 });
 
 describe("exit codes ride Effect's mechanism", () => {
