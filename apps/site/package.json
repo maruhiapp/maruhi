@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "bunx --bun blume build && bun run scripts/postbuild.ts",
-    "deploy": "bun run build && cf deploy --no-provision",
+    "deploy": "bun run build && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision",
     "dev": "bunx --bun blume dev",
     "e2e": "vitest run",
     "preview": "cf dev --port 8789",
@@ -19,9 +19,9 @@
   },
   "devDependencies": {
     "@types/node": "26.6.5",
-    "cf": "1.0.0-beta.13",
+    "cf": "1.0.0-beta.20",
     "playwright": "1.64.1",
     "vitest": "4.1.12",
-    "wrangler": "4.148.0"
+    "wrangler": "4.152.0"
   }
 }

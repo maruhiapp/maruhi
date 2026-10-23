@@ -11,7 +11,8 @@ self-hosting is an advanced path, and the verified copy-pasteable runbook is the
 minimal form). The steps were verified with a real deploy on 2026-08-10
 (session 19) against wrangler 4.120; the commands were re-expressed against cf
 1.0.0-beta (2026-09-30) without a fresh real deploy — see the PR for the
-verification level of each command.
+verification level of each command. On 2026-10-23 every `cf` command here was
+checked against the help of cf 1.0.0-beta.20, again without a real deploy.
 
 ## What comes up
 
@@ -29,6 +30,10 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 - A Cloudflare account (the free plan is enough)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
 - Bun 1.4.2 (pinned in the repository `engines`. `cf` is a dependency)
+- Node.js 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x
+  (the range cf 1.0.0-beta.20 supports). `bunx cf` runs cf on the `node` it
+  finds on `PATH`. With Bun alone, `cf deploy` stops with "cloudflare.config.ts
+  loading is not supported on Bun"
 
 ## Steps
 
@@ -44,6 +49,12 @@ bunx cf auth login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / C
 If you do not want cf to send telemetry, set `CF_SEND_TELEMETRY=false`
 in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing").
 
+Apart from telemetry, `cf deploy` attaches a dependency list to every Worker
+it uploads: the name, requested version and installed version of each package
+in the app's `package.json`. The repository's `deploy` scripts turn this off
+with `CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false`, and every `cf deploy`
+command in this guide sets the same variable.
+
 ### 2. Create the D1 database
 
 ```sh
@@ -56,7 +67,7 @@ binding's `id` (placeholder `00000000-0000-4000-8000-…`).
 ### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
-bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy --no-provision
+bun run deploy   # = bun run db:migrate && (web dashboard build) && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision
 ```
 
 The deploy script always applies D1 migrations first (it resolves the database
@@ -506,7 +517,7 @@ To enable both on your deployment:
 #    (the bucket also comes with a default 7-day "abort incomplete multipart" rule)
 bunx cf r2 buckets create-by-name maruhi-ops-backup
 bunx cf r2 buckets lifecycle update maruhi-ops-backup --rules '[{"id":"retain-35d","enabled":true,"expire_objects":{"days":35},"abort_multipart_uploads":{"days":1}}]' -f
-bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say public access is disabled
+bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must say public access is disabled
 
 # 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see `case "hosted"` in
@@ -522,7 +533,7 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 #    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
 bun run db:migrate:hosted
-bunx cf deploy --mode hosted --no-provision
+CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode hosted --no-provision
 bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server-hosted
 bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server-hosted
 bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --type secret_text --worker maruhi-server-hosted   # optional
@@ -542,7 +553,7 @@ live project.
 
 ```sh
 # Deploy the restore worker only for the duration of the operation
-bunx cf deploy --mode restore --no-provision
+CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode restore --no-provision
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
 bunx cf r2 objects put restore/jobs/job-1.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
@@ -613,7 +624,7 @@ chain id is really that person.
 ```sh
 bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
 bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
-bunx cf deploy --mode restore --no-provision
+CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode restore --no-provision
 echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
 bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
 bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
