@@ -17,7 +17,7 @@
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "drizzle-orm": "1.0.0-rc.4",
+    "drizzle-orm": "1.0.0-rc.5",
     "effect": "4.0.6"
   },
   "devDependencies": {
@@ -25,7 +25,7 @@
     "@cloudflare/workers-types": "5.20261008.1",
     "@types/bun": "1.4.2",
     "cf": "1.0.0-beta.13",
-    "drizzle-kit": "1.0.0-rc.4",
+    "drizzle-kit": "1.0.0-rc.5",
     "wrangler": "4.148.0"
   }
 }
