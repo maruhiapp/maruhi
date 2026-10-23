@@ -49,11 +49,13 @@ always lowercase `maruhi`.
 ### The web dashboard is the Trusted Computing Base
 Under E2EE, decryption happens on the client, so an XSS in the web frontend
 leaks every secret. Therefore:
-- A strict CSP is mandatory (`script-src 'self'` baseline; no inline scripts or
-  eval). The single exception: the bootstrap script produced by our own build,
-  individually allowed by a SHA-256 hash computed at build time (owner approval
-  2026-08-01; see `apps/web/scripts/write-headers.ts`). `'unsafe-inline'` is
-  forbidden in all cases
+- A strict CSP is mandatory (`script-src 'self'` and `style-src 'self'`
+  baseline; no inline scripts or eval). Two exceptions, each allowed only by
+  the SHA-256 of its exact text (see `apps/web/scripts/write-headers.ts`): the
+  bootstrap script produced by our own build, hashed at build time (owner
+  approval 2026-08-01), and the fixed `@position-try` stylesheet that Astryx's
+  layers insert at runtime, pinned in `style-src` and re-checked by the web
+  e2e (owner approval 2026-10-23). `'unsafe-inline'` is forbidden in all cases
 - No third-party scripts, CDNs, or analytics are ever loaded. All assets are
   self-hosted (Workers Static Assets)
 - `dangerouslySetInnerHTML` and equivalent raw-HTML injection are forbidden

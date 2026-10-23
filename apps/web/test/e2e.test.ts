@@ -202,7 +202,9 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     // (mocked — ruling BS). Interaction under CSP is covered by the
     // dashboard tests below (tabs, revocations, Load more)
     await routeProjectOverview(page);
-    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    const response = await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, {
+      waitUntil: "networkidle",
+    });
     const projectId = page.getByTestId("project-id");
     await expect(projectId.textContent()).resolves.toBe(PROJECT_1);
 
@@ -241,6 +243,31 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
     expect(accent.toLowerCase()).not.toContain("#0064e0");
     const themeCss = readFileSync(new URL("../theme/maruhi.css", import.meta.url), "utf8");
     expect(themeCss.toLowerCase()).toContain(accent.toLowerCase());
+
+    // Astryx's layers insert their slide rules as one runtime <style>
+    // (core 0.6.6 and later). style-src allows exactly that text by its
+    // SHA-256 (scripts/write-headers.ts, owner approval 2026-10-23): the
+    // sheet is applied (a refused <style> has no sheet), and the hash of
+    // the live text is the only one style-src carries, so an Astryx
+    // upgrade that changes the rules fails here
+    await page.locator("style#astryx-layer-slide-rules").waitFor({ state: "attached" });
+    const slideRules = await page.evaluate(async () => {
+      const el = document.querySelector<HTMLStyleElement>("style#astryx-layer-slide-rules");
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(el?.textContent ?? ""),
+      );
+      return {
+        applied: el?.sheet !== null && el?.sheet !== undefined,
+        hash: btoa(String.fromCharCode(...new Uint8Array(digest))),
+      };
+    });
+    expect(slideRules.applied).toBe(true);
+    const styleSrc = (response?.headers()["content-security-policy"] ?? "")
+      .split(";")
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith("style-src "));
+    expect(styleSrc).toBe(`style-src 'self' 'sha256-${slideRules.hash}'`);
 
     expect(violations).toEqual([]);
     await page.close();
@@ -666,6 +693,11 @@ describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", ()
     release?.();
     await expect.poll(() => page.title()).toBe("Session check failed — maruhi");
     await expect(page.getByRole("main").count()).resolves.toBe(1);
+    // The error Banner is announced as an alert. Banner derives no
+    // live-region role from its status, so the role is passed explicitly
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Could not reach the server" }).count(),
+    ).resolves.toBe(1);
     expect(violations).toEqual([]);
     await page.close();
   });

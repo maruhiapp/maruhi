@@ -309,7 +309,7 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
               </Text>
             </VStack>
             {signedOutNow ? (
-              <Banner status="info" title="You are signed out." container="card" />
+              <Banner role="status" status="info" title="You are signed out." container="card" />
             ) : null}
             {/* The return marker (ruling BU): after OAuth completes, returns to /dashboard via S1 */}
             <Button

@@ -220,14 +220,14 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   if (listed === null) return null;
   // The aggregated var.read (AUDIT_SPEC §3.3): the payload holds the
   // variable enumeration. The enumeration is sorted by variableId with
-  // no duplicates — usable as keys. edgeCompensation cancels the items'
+  // no duplicates — usable as keys. edge="outset" cancels the items'
   // inline inset against the Collapsible panel's padding, so the rows
   // line up with the heading above (and the Payload heading) instead of
   // sitting 8px in
   return (
     <VStack gap={2}>
       <Text weight="semibold">{readSummaryLabel(listed)}</Text>
-      <List density="compact" edgeCompensation="inline">
+      <List density="compact" edge="outset">
         {listed.map((variable) => (
           <ListItem
             key={`${variable.variableId}:${variable.version}`}
@@ -247,7 +247,7 @@ function FlagsList({ event }: { event: AuditEvent }): ReactNode {
   return (
     <VStack gap={2}>
       <Text weight="semibold">{flagSummaryLabel(flagged)}</Text>
-      <List density="compact" edgeCompensation="inline">
+      <List density="compact" edge="outset">
         {flagged.map((variable) => (
           <ListItem key={variable.variableId} label={flaggedVariableLabel(variable)} />
         ))}
