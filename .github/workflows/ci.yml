@@ -192,11 +192,9 @@ jobs:
           #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
           #     selector parsing) via blume > @tailwindcss/typography, which pins
           #     6.0.10 — build-time CSS over the repository's own stylesheets
-          #   GHSA-hp3w-g68c-fv3c: sprintf-js@1.0.3 (unbounded precision
-          #     specifiers) via blume > gray-matter > js-yaml@3 > argparse and
-          #     blume > @asyncapi/converter > js-yaml@3 > argparse — build-time
-          #     front-matter / spec parsing only. No published fix at the time of
-          #     the ignore (2026-10-06)
+          # Removed as stale (2026-10-23): the sprintf-js@1.0.3 ignore
+          # (GHSA-hp3w-g68c-fv3c) — GitHub withdrew the advisory on 2026-10-22,
+          # so bun audit no longer reports it.
           # Removed as stale (2026-10-06): the http-cache-semantics@4.2.0 ignore
           # (GHSA-ch52-4w7c-c8xp) — every copy is 4.3.0 since `bun audit fix`.
           # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
@@ -212,7 +210,6 @@ jobs:
               --ignore GHSA-vfj7-8cjw-p6xm
               --ignore GHSA-238p-pmpm-9mq7
               --ignore GHSA-rj75-hqrm-r3gf
-              --ignore GHSA-hp3w-g68c-fv3c
 
           - name: 1. Format (oxfmt)
             run: bun run fmt:check
