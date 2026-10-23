@@ -1,8 +1,8 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  // The newest keys below (the 3.34 rules) need fallow 3.34 or later; an
+  // The newest key below (audit.worsened) needs fallow 3.35 or later; an
   // older binary names the upgrade instead of failing on an unknown key
-  "minimumVersion": "3.34.0",
+  "minimumVersion": "3.35.0",
   // A file fallow cannot parse drops out of every detector, the boundaries
   // below included, so a parse failure fails the run instead of only warning
   "failOnParseError": true,
@@ -206,6 +206,12 @@
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
-    "dupesBaseline": "fallow-baselines/dupes.json"
+    "dupesBaseline": "fallow-baselines/dupes.json",
+    // A complexity finding the base already has and the change makes worse
+    // (a higher cyclomatic, cognitive or CRAP value, or 5 or more added
+    // lines) fails the audit like a new finding. fallow 3.35 made such
+    // growth a warning by default (exit 0); before that, growth of an
+    // exceeded metric failed
+    "worsened": "error"
   }
 }

@@ -8,8 +8,10 @@
 // One rule configuration for every program (passed as --lspconfig, so no
 // tsconfig carries it): the correctness rules fail the run, the
 // unstable-API notice is off (effect v4's http modules are marked
-// unstable and the repo pins effect exactly), and --strict makes any
-// remaining warning fail too. Messages (style suggestions) never fail.
+// unstable and the repo pins effect exactly), the missing-brand
+// suggestion is off (CLAUDE.md brands a type only where it carries an
+// invariant), and --strict makes any remaining warning fail too.
+// Messages (style suggestions) never fail.
 // The web bundle and packages/crypto are Effect-free by contract (CLAUDE.md
 // "Effect fence"), so they are not checked here.
 
@@ -28,11 +30,13 @@ const PROJECTS = [
 
 // The correctness preset minus anyUnknownInErrorContext, which is off by
 // default and flags deliberate `unknown` error channels (test helpers, the
-// CLI's API client seam)
+// CLI's API client seam), and the two rules configured below
+// (unstableApiUsage, schemaClassMissingBrand)
 const CORRECTNESS = [
   "classSelfMismatch",
   "duplicatePackage",
   "effectFnImplicitAny",
+  "errorPayloadShadowsName",
   "experimentalApiUsage",
   "floatingEffect",
   "floatingEffectInVitest",
@@ -48,6 +52,7 @@ const CORRECTNESS = [
   "outdatedApi",
   "overriddenSchemaConstructor",
   "promiseInEffectSuccess",
+  "schemaClassObjectLiteral",
   "schemaLiteralNonFinite",
   "schemaOpaqueInstanceMember",
   "unsafeEffectTypeAssertion",
@@ -57,6 +62,7 @@ const lspConfig = JSON.stringify({
   diagnosticSeverity: {
     ...Object.fromEntries(CORRECTNESS.map((rule) => [rule, "error"])),
     unstableApiUsage: "off",
+    schemaClassMissingBrand: "off",
   },
 });
 

@@ -127,6 +127,10 @@ export default defineConfig({
     catalog: true,
   },
   seo: {
+    // schema.org `datePublished` for each docs page, from the commit that
+    // added its source file (a local `git log` that follows renames, like
+    // `lastModified` above, so it needs the same full clone)
+    datePublished: "git",
     // OG cards are rendered locally at build time (no external calls). The
     // LP uses og.png
     og: {
