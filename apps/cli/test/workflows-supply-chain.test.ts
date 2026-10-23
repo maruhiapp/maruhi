@@ -335,6 +335,31 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       expect(script.match(/"--compile"/g)).toHaveLength(1);
     });
 
+    it("compiles every binary in strict mode, without the working directory's bunfig.toml, proven by a probe on the host's target", () => {
+      const script = read("apps/cli/scripts/build-binaries.ts");
+      expect(script).toContain(
+        'const COMPILE_EXEC_ARGV = "--disallow-code-generation-from-strings=strict";',
+      );
+      expect(script).toContain("`--compile-exec-argv=${COMPILE_EXEC_ARGV}`");
+      expect(script).toContain('"--no-compile-autoload-bunfig",');
+      // bun ignores a misspelled flag, so the probe goes through the same compile call
+      expect(script).toContain("compile(target, executable, probeEntry, probe);");
+      expect(script).toContain(
+        'compile(target, executable, "src/bin.ts", join(workDir, target.bin));',
+      );
+      // The probe's directory has a bunfig.toml whose preload exits 1
+      expect(script).toContain(
+        `await writeFile(join(probeDir, "bunfig.toml"), 'preload = ["./preload.ts"]\\n');`,
+      );
+      expect(script).toContain(
+        'await writeFile(join(probeDir, "preload.ts"), "process.exit(1);\\n");',
+      );
+      // An inherited BUN_OPTIONS or BUN_BE_BUN would let a probe that runs code pass
+      expect(script).toContain('.filter(([name]) => !name.toUpperCase().startsWith("BUN_")),');
+      expect(script).toContain("run(probe, [], probeDir, probeEnv);");
+      expect(script).toContain("if (error instanceof EvalError) process.exit(0);");
+    });
+
     it("downloadVerified returns only bytes matching the pin", async () => {
       const url = "https://runtime.invalid/bun.zip";
       const pin = createHash("sha256").update("runtime").digest("hex");

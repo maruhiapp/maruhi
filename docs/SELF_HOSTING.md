@@ -29,7 +29,7 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 
 - A Cloudflare account (the free plan is enough)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
-- Bun 1.4.2 (pinned in the repository `engines`. `cf` is a dependency)
+- Bun 1.4.4 (pinned in the repository `engines`. `cf` is a dependency)
 - Node.js 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x
   (the range cf 1.0.0-beta.20 supports). `bunx cf` runs cf on the `node` it
   finds on `PATH`. With Bun alone, `cf deploy` stops with "cloudflare.config.ts

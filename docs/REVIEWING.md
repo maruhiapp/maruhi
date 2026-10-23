@@ -205,7 +205,19 @@ What exists today:
   The Bun runtime embedded in each of the five binaries is the official
   release zip for that target, verified against a SHA-256 pinned in
   `apps/cli/scripts/bun-runtimes.ts` and passed to
-  `bun build --compile-executable-path`.
+  `bun build --compile-executable-path`. Each binary is compiled with
+  `--disallow-code-generation-from-strings=strict`, so it runs only the code
+  compiled into it: `eval()`, `new Function()`, `node:vm`, `import()` of
+  JavaScript from a `data:` URL, and JavaScript or TypeScript files on disk,
+  including a `--preload` in `BUN_OPTIONS`, throw `EvalError`. The exception
+  is `BUN_BE_BUN=1` in the process environment, which makes any Bun
+  executable act as the bun CLI, without the flag. The binaries are also
+  compiled with `--no-compile-autoload-bunfig`, so they do not read the
+  `bunfig.toml` of the directory they run in (a strict binary would exit
+  with `EvalError` on its `preload`). `bun build` ignores a misspelled flag,
+  so before it builds the host's own binary, `build-binaries.ts` compiles a
+  probe the same way, runs it in a directory whose `bunfig.toml` preloads a
+  file that exits 1, and fails unless the probe's `new Function()` throws.
 - The publish jobs refuse an artifact unless its digest (every file's path
   and SHA-256) matches the one the build job set as a job output. Any job of
   the release run can overwrite an artifact, but only the build job can set
