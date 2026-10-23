@@ -135,12 +135,14 @@ const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
 function ForbiddenNotice({ reason }: { reason: string | undefined }): ReactNode {
   return reason === SESSION_NOT_ALLOWED ? (
     <Banner
+      role="alert"
       status="warning"
       title="Not available to browser sessions"
       description="This data is not exposed to browser sessions. Use the maruhi CLI instead."
     />
   ) : (
     <Banner
+      role="status"
       status="info"
       title="Not available to your role"
       description="Not available to your role in this project, as reported by the server."
@@ -151,6 +153,7 @@ function ForbiddenNotice({ reason }: { reason: string | undefined }): ReactNode 
 function UnreachableNotice({ onRetry }: { onRetry: (() => void) | undefined }): ReactNode {
   return (
     <Banner
+      role="alert"
       status="error"
       title="Could not reach the server"
       endContent={onRetry ? <Button label="Retry" variant="secondary" onClick={onRetry} /> : null}
@@ -175,6 +178,7 @@ function GoneNotice({
 }): ReactNode {
   return (
     <Banner
+      role="status"
       status="info"
       title="No longer active"
       description={
@@ -196,11 +200,19 @@ function StatusNotice({
   subject: FailureSubject;
 }): ReactNode {
   if (failure.kind === "not-found") {
-    return <Banner status="info" title="Not found" description={NOT_FOUND_DESCRIPTION[subject]} />;
+    return (
+      <Banner
+        role="status"
+        status="info"
+        title="Not found"
+        description={NOT_FOUND_DESCRIPTION[subject]}
+      />
+    );
   }
   if (failure.kind === "unauthorized") {
     return (
       <Banner
+        role="alert"
         status="warning"
         title="Signed out"
         description="Your session has ended. Sign in again to continue."
@@ -490,12 +502,11 @@ function RevokeDialog({
 }
 
 /**
- * The announcement of a successful revocation (Banner
- * status="success" = role="status"). Because the revoked row
- * disappears and loses its button on re-fetch, the focus the dialog
- * returned is lost with the row. On appearance focus moves to the
- * Banner itself (tabIndex -1), which becomes the base for the
- * announcement and the next action.
+ * The announcement of a successful revocation (a role="status"
+ * Banner). Because the revoked row disappears and loses its button on
+ * re-fetch, the focus the dialog returned is lost with the row. On
+ * appearance focus moves to the Banner itself (tabIndex -1), which
+ * becomes the base for the announcement and the next action.
  */
 function RevocationSuccess({ message }: { message: string }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
@@ -506,6 +517,7 @@ function RevocationSuccess({ message }: { message: string }): ReactNode {
     <Banner
       ref={ref}
       tabIndex={-1}
+      role="status"
       status="success"
       title={message}
       data-testid="revocation-success"

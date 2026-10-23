@@ -4,6 +4,8 @@
 // Because its contents change every build (it embeds the payload's
 // content hash), the CSP permits only that script's SHA-256 hash instead
 // of 'unsafe-inline'. This keeps "effectively script-src 'self'".
+// style-src likewise allows one fixed stylesheet that Astryx inserts at
+// runtime, by its hash (astryxLayerSlideRulesHash below).
 //
 // It also fixes /invite (the invite-link landing page — AUTH_SPEC §15-3 /
 // ADR-0018 amendment 2, item 5) structurally on its invariant "carries no
@@ -56,10 +58,23 @@ const hashes = inlineScripts.map(
   (body) => `'sha256-${createHash("sha256").update(body, "utf8").digest("base64")}'`,
 );
 
+// Astryx's anchored layers (Tooltip, Popover, menus — core 0.6.6 and
+// later, spec AST-059 FR4) install their `@position-try` slide rules at
+// runtime as one <style id="astryx-layer-slide-rules"> in the document
+// head. The rules are not in Astryx's prebuilt CSS and take no nonce (a
+// static shell has no per-response nonce anyway), but their text is fixed
+// for an Astryx release, so style-src allows exactly that text by its
+// SHA-256 — the second exception after the bootstrap script (owner
+// approval 2026-10-23), and still no 'unsafe-inline'. It is pinned here
+// because the text exists only at runtime: the web e2e hashes the live
+// element and requires this value, so an Astryx upgrade that changes the
+// rules fails there instead of shipping a refused stylesheet.
+const astryxLayerSlideRulesHash = "'sha256-6SjltZZHbimwo1Hbgahxv8D9b/3lyMZxSgBbD6dRcUQ='";
+
 const csp = [
   "default-src 'none'",
   `script-src 'self' ${hashes.join(" ")}`,
-  "style-src 'self'",
+  `style-src 'self' ${astryxLayerSlideRulesHash}`,
   "img-src 'self' data:",
   "font-src 'self'",
   "connect-src 'self'",
@@ -329,7 +344,7 @@ if (
 }
 
 console.log(
-  `_headers written (${hashes.length} inline script hash + /invite per-path CSP), ` +
+  `_headers written (${hashes.length} inline script hash + 1 pinned style hash + /invite per-path CSP), ` +
     `_redirects written (${inviteRedirectRules.length} rules), ` +
     `pages.css tokens resolved against theme.css (${visited.size} reached, 0 unresolved)`,
 );

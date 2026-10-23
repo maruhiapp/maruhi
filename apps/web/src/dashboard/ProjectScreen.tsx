@@ -170,6 +170,7 @@ function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
       intro={<HexText testId="project-id">{projectId}</HexText>}
     >
       <Banner
+        role="alert"
         status="warning"
         title="Not a project ID"
         description="A project ID is 64 lowercase hex characters. Nothing was requested from the server."

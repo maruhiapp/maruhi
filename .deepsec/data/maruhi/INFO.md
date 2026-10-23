@@ -45,8 +45,9 @@ plaintext to disk. Hosted web (`apps/web`) is metadata-only (ADR-0018)
 - New crypto outside WebCrypto + `hpke` (panva), or a new suite id
   without a CRYPTO_SPEC change.
 - `dangerouslySetInnerHTML`, `'unsafe-inline'`, or third-party scripts
-  in `apps/web`. Exception: `write-headers.ts` SHA-256-hashes the
-  single bootstrap script.
+  in `apps/web`. Exceptions: `write-headers.ts` SHA-256-hashes the
+  single bootstrap script and pins the SHA-256 of Astryx's fixed
+  `astryx-layer-slide-rules` stylesheet in `style-src`.
 
 ## Known false-positives
 
@@ -55,6 +56,6 @@ plaintext to disk. Hosted web (`apps/web`) is metadata-only (ADR-0018)
   `ensureValueDisplayAllowed` — plaintext on a human terminal is
   intended.
 - `apps/cli/src/run.ts` / `ci-run.ts` — in-memory env inject, not export.
-- `apps/web/scripts/write-headers.ts` — hashed bootstrap CSP, not
-  `'unsafe-inline'`.
+- `apps/web/scripts/write-headers.ts` — hashed bootstrap script and
+  pinned Astryx stylesheet hash in the CSP, not `'unsafe-inline'`.
 - `.dev.vars` placeholders and documented dummy secrets.
