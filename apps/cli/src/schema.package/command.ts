@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 import { MAX_META_MAX_AGE_DAYS, type MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { Argument, Command, Flag } from "effect/cli";
+import { Argument, Command, CliError as EffectCliError, Flag } from "effect/cli";
 
 import { NonBlank, commonFlags, singleFlag, singleValued } from "../commands/flags.ts";
 import type { CliServices } from "../context.ts";
@@ -178,10 +178,39 @@ function parseMaxAgeFlag(
 }
 
 /**
+ * `schema set`'s contradictory specifications (--required with --optional,
+ * --description with --clear-description). Run by `Command.validate` before
+ * the handler, so they are reported like a parse error: the usage line plus
+ * the message, exit 2. The messages are fixed text (no typed value).
+ */
+function rejectContradictorySchemaFlags(values: {
+  readonly required: boolean;
+  readonly optional: boolean;
+  readonly description?: string | undefined;
+  readonly "clear-description": boolean;
+}): Effect.Effect<void, EffectCliError.ValidationError> {
+  if (values.required && values.optional) {
+    return Effect.fail(
+      new EffectCliError.ValidationError({
+        message: "--required and --optional are mutually exclusive (specify at most one)",
+      }),
+    );
+  }
+  if (values.description !== undefined && values["clear-description"]) {
+    return Effect.fail(
+      new EffectCliError.ValidationError({
+        message: "--description and --clear-description are mutually exclusive",
+      }),
+    );
+  }
+  return Effect.void;
+}
+
+/**
  * Interpreting `schema set`'s column specifications (partial update §1-2
- * — unspecified = keep, only an explicit flag returns to empty). A
- * contradictory specification (--required and --optional etc.) is a usage
- * error.
+ * — unspecified = keep, only an explicit flag returns to empty). The
+ * contradictory pairs were already rejected by
+ * {@link rejectContradictorySchemaFlags}.
  */
 const parseSchemaFieldUpdates = Effect.fn("schema-command.parseSchemaFieldUpdates")(
   function* (values: {
@@ -194,21 +223,11 @@ const parseSchemaFieldUpdates = Effect.fn("schema-command.parseSchemaFieldUpdate
   }): Effect.fn.Return<SchemaFieldUpdates, CliError> {
     const varType = yield* parseSchemaTypeFlag(values.type);
     const maxAgeDays = yield* parseMaxAgeFlag(values["max-age"]);
-    if (values.required && values.optional) {
-      return yield* Effect.fail(
-        usageError("--required and --optional are mutually exclusive (specify at most one)"),
-      );
-    }
     const required: FieldUpdate<boolean> = values.required
       ? { kind: "set", value: true }
       : values.optional
         ? { kind: "set", value: false }
         : { kind: "keep" };
-    if (values.description !== undefined && values["clear-description"]) {
-      return yield* Effect.fail(
-        usageError("--description and --clear-description are mutually exclusive"),
-      );
-    }
     const description: FieldUpdate<string> = values["clear-description"]
       ? { kind: "set", value: "" }
       : values.description !== undefined
@@ -278,6 +297,7 @@ export function makeSchemaCommands() {
     Command.withDescription(
       "Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds",
     ),
+    Command.validate((values) => rejectContradictorySchemaFlags(values)),
   );
 
   const schemaImport = Command.make(

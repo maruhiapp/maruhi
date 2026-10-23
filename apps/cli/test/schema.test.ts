@@ -802,9 +802,28 @@ describe("maruhi schema set (§1-2)", () => {
     expect(lastServer().requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("--required combined with --optional is a usage error", async () => {
+  it("--required combined with --optional is a usage error (rejected before the handler runs)", async () => {
     const env = await startEnv([chainHandler()]);
     expect(await runCli(["schema", "set", "X", "--required", "--optional"], env.layer)).toBe(2);
+    expect(env.errors).toEqual([
+      "Usage: maruhi schema set [flags] <name>",
+      "maruhi: --required and --optional are mutually exclusive (specify at most one)",
+    ]);
+    expect(lastServer().requests).toHaveLength(0);
+  });
+
+  it("--description combined with --clear-description is a usage error", async () => {
+    const env = await startEnv([chainHandler()]);
+    expect(
+      await runCli(
+        ["schema", "set", "X", "--description", "New words", "--clear-description"],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors).toEqual([
+      "Usage: maruhi schema set [flags] <name>",
+      "maruhi: --description and --clear-description are mutually exclusive",
+    ]);
     expect(lastServer().requests).toHaveLength(0);
   });
 });

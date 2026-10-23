@@ -137,10 +137,10 @@ describe("syncProject (§6.3)", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     const failure = JSON.parse(failureMessage(exit)) as {
       readonly cause: {
-        readonly failures: readonly [{ readonly error: { readonly message: string } }];
+        readonly reasons: readonly [{ readonly error: { readonly message: string } }];
       };
     };
-    expect(failure.cause.failures[0].error.message).toBe(
+    expect(failure.cause.reasons[0].error.message).toBe(
       "Chain verification failed (seq=2, reason=bad-signature). The server may be distributing an invalid chain",
     );
   });
