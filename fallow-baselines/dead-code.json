@@ -6,7 +6,8 @@
     "capabilities": [],
     "project_config_hash": "",
     "backend_family": "",
-    "completeness": "complete"
+    "completeness": "complete",
+    "node_modules": "present"
   },
   "identity": "dc1",
   "unused_files": [],
@@ -31,6 +32,9 @@
   "unused_component_inputs": [],
   "unused_component_outputs": [],
   "unused_svelte_events": [],
+  "unused_effect_layers": [],
+  "unused_tagged_errors": [],
+  "unproduced_catch_tags": [],
   "unused_server_actions": [],
   "unused_load_data_keys": [],
   "unresolved_imports": [],
@@ -53,5 +57,6 @@
   "mixed_client_server_barrels": [],
   "misplaced_directives": [],
   "route_collisions": [],
-  "dynamic_segment_name_conflicts": []
+  "dynamic_segment_name_conflicts": [],
+  "prop_drilling_chains": []
 }
