@@ -37,11 +37,8 @@
     "vitest": "4.1.12"
   },
   "overrides": {
-    "@scalar/json-magic>undici": "7.29.1",
     "@types/node": "26.6.5",
-    "lodash-es": "4.18.1",
-    "miniflare>undici": "7.29.1",
-    "sharp": "0.35.5"
+    "lodash-es": "4.18.1"
   },
   "engines": {
     "bun": "1.4.2"

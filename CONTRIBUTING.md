@@ -6,6 +6,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 
 - The runtime is Bun, pinned exactly by `.bun-version` (currently 1.4.2, the 1.4 series decided in ADR-0004). A Bun bump also updates the version and SHA-256s pinned in `scripts/install-bun.sh`, which CI and the Claude Code / Cursor Cloud environments install from (`bash scripts/install-bun.sh` installs it into `~/.bun/bin` on linux-x64), and the version and per-target SHA-256s in `apps/cli/scripts/bun-runtimes.ts`, the runtimes embedded in the release binaries
 - A Playwright bump also updates the Chrome Headless Shell version and SHA-256 pinned in `scripts/install-headless-shell.sh`, which CI and the Cursor Cloud environment install the tests' browser from (the procedure is in the script). `bun run check` fails until the version is the one the new Playwright expects; a stale SHA-256 fails the script
+- `cf`, the Cloudflare CLI behind `cf dev`, the deploys and the e2e suites, runs on Node.js: 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x. `bunx cf` uses the `node` on `PATH`; with Bun alone, `cf dev` and `cf deploy` stop with "cloudflare.config.ts loading is not supported on Bun"
 - Install dependencies with `bun install`
 - Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → Effect diagnostics → ImportLint → fallow → React Doctor → tests)
 
