@@ -27,7 +27,6 @@ packaging/homebrew/maruhi.rb
 # Dashboard screenshots (output of apps/web/test/screenshots.ts — temporary
 # files for attaching to PRs)
 apps/web/screenshots/
-# vitest browser-mode failure captures (a local-run byproduct — the suite does
-# not consume them)
-.vitest-attachments/
-**/__screenshots__/
+# Vitest's artifact directory: browser-mode failure screenshots and any report
+# a local run writes (a byproduct — the suite does not consume them)
+.vitest/

@@ -65,6 +65,18 @@ export default defineConfig({
   ],
   test: {
     name: "server",
+    // Off for this project. With Vitest 5's fsModuleCache (default
+    // on), each worker first asks for the cached modules of its test
+    // files' import graphs (fetchWarmModules), and
+    // @cloudflare/vitest-plugin 1.4.7 inlines all of their code into
+    // one WebSocket message to workerd. For this suite that message
+    // measured 34-40 MiB, over workerd's 32 MiB limit, so test files
+    // failed with 1009 "Message is too large"
+    // (cloudflare/workers-sdk#16349). Off, the snapshot is empty and
+    // workerd fetches each module with its own request (largest
+    // message measured: 6.1 MiB). Remove once the plugin bounds that
+    // message
+    fsModuleCache: false,
     // Tests with many HTTP round-trips through the real workerd
     // environment (10+ requests per test) can exceed the default 5s
     // depending on suite-wide load (measured flakes). On slow CI
@@ -98,7 +110,7 @@ export default defineConfig({
     // shuffling the file order (audit T-2). The seed is random per
     // run and printed as "Running tests with seed N". CI runs this
     // suite as a project under the repo-root vitest.config.ts, and
-    // Vitest 4.1.x derives file order from the root sequencer alone —
+    // Vitest 5.0 derives file order from the root sequencer alone —
     // a project's own `sequence.shuffle` is ignored in that path — so
     // the enforcing setting lives at the root. The `sequence` block
     // below re-declares it for a direct `cd apps/server && vitest`

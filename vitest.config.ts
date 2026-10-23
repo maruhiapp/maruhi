@@ -8,7 +8,7 @@ export default defineConfig({
   test: {
     sequence: {
       // File-order shuffle that enforces order independence in the server
-      // suite (audit T-2). It lives at the root because Vitest 4.1.x derives
+      // suite (audit T-2). It lives at the root because Vitest 5.0 derives
       // file order from this root sequencer alone — a project's own
       // sequence.shuffle is ignored when it runs as a project here. The
       // rationale, reproduction steps, and cost are documented at the canonical
