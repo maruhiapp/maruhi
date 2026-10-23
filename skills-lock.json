@@ -19,18 +19,6 @@
       "skillPath": "SKILL.md",
       "computedHash": "d20c126cc0b5c4b1bdd1fa73093548649063b770bc40a7052994ab6c5bd2a6b0"
     },
-    "funstack-router-knowledge": {
-      "source": "uhyo/funstack-router",
-      "sourceType": "github",
-      "skillPath": "packages/router/skills/funstack-router-knowledge/SKILL.md",
-      "computedHash": "218701aa3ea354e68ca164bbe8583b17c8513a82e83b76540c4264a481ed066f"
-    },
-    "funstack-static-knowledge": {
-      "source": "uhyo/funstack-static",
-      "sourceType": "github",
-      "skillPath": "packages/static/skills/funstack-static-knowledge/SKILL.md",
-      "computedHash": "bc27ba01a58040094e332829364057559187e9e9d0eb797d0c39b1d841ee9053"
-    },
     "import-lint": {
       "source": "uhyo/import-lint",
       "sourceType": "github",
