@@ -122,7 +122,6 @@
       "files": [
         "packages/api-schema/src/**",
         "apps/cli/src/commands/flags.ts",
-        "apps/cli/src/commands/audit.ts",
         "apps/cli/src/commands/ci.ts",
         "apps/cli/src/commands/device.ts",
         "apps/cli/src/commands/env.ts",
@@ -132,7 +131,8 @@
         "apps/cli/src/keychain.ts",
         "apps/cli/src/context.ts",
         "apps/cli/src/anchor.ts",
-        "apps/cli/src/audit.ts",
+        "apps/cli/src/audit.package/audit-list.ts",
+        "apps/cli/src/audit.package/command.ts",
         "apps/cli/src/config-schema.ts",
         "apps/cli/src/device-revoke.ts",
         "apps/cli/src/floor-log.ts",

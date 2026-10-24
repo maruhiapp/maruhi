@@ -33,6 +33,14 @@
 
 import { Command, Param } from "effect/cli";
 
+import {
+  auditInvitesConfig,
+  auditListConfig,
+  auditReconcileConfig,
+  auditSelfConfig,
+  auditVerifyConfig,
+  makeAuditCommands,
+} from "../audit.package/command.ts";
 import type { CommandSpec } from "../cli-formatter.ts";
 import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
 import {
@@ -58,14 +66,6 @@ import {
   approvalWithdrawConfig,
   makeApprovalCommands,
 } from "./approval.ts";
-import {
-  auditInvitesConfig,
-  auditListConfig,
-  auditReconcileConfig,
-  auditSelfConfig,
-  auditVerifyConfig,
-  makeAuditCommands,
-} from "./audit.ts";
 import { ciRotateConfig, ciRunConfig, ciSyncConfig, makeCiCommands } from "./ci.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {

@@ -3,8 +3,9 @@
 // commands/index.ts directly — and by nothing else, not even the
 // package's own index.ts. A re-export there widens the surface back to a
 // second entry and, for schema and proxy, would close a real import cycle
-// (sync's matching edge is a type-only import — it follows the same shape
-// for consistency, so the check covers all three uniformly).
+// (sync's matching edge is a type-only import, and audit has no index.ts;
+// every package follows the same shape for consistency, so the check covers
+// them all uniformly).
 //
 // apps/cli/test/** is excluded from ImportLint by design (tests may
 // inspect package internals), so this pin is a mechanical walk: every
