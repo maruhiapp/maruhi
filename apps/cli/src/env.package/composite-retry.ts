@@ -12,9 +12,9 @@ import type { EnvironmentId } from "@maruhi/core";
 import type { ChainMember } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { sameWrapRecipientSet } from "./dek-wrap.ts";
-import type { CliError } from "./errors.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { sameWrapRecipientSet } from "../dek-wrap.ts";
+import type { CliError } from "../errors.ts";
 
 /** The CAS retry state: the verified view, own member row, and the epoch's wrap set. */
 export interface CompositeState {

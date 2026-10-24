@@ -20,18 +20,18 @@ import type { SigningKeyPair } from "@maruhi/crypto";
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { requireWritingMember } from "./dek-wrap.ts";
-import { requireChainEnvironment } from "./deks.ts";
-import { usageError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedEnvironmentStatement } from "./floor-check.ts";
-import { signStatementAndHash } from "./meta-statement.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { requireWritingMember } from "../dek-wrap.ts";
+import { requireChainEnvironment } from "../deks.ts";
+import { usageError, type CliError } from "../errors.ts";
+import type { FloorHandle, VerifiedEnvironmentStatement } from "../floor-check.ts";
+import { signStatementAndHash } from "../meta-statement.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironmentMetadata,
-} from "./values.ts";
+} from "../values.ts";
 
 /** The display-name cap of a meta statement (§12-8 — the wire Schema's limit, in UTF-16 code units). */
 const MAX_NAME_LENGTH = 256;

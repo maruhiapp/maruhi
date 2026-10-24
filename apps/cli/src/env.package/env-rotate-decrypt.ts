@@ -5,12 +5,12 @@
 import { type EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
-import type { VerifiedProject } from "./chain-sync.ts";
-import { countNoun } from "./display.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { countNoun } from "../display.ts";
+import { CliError, cliError } from "../errors.ts";
+import { decryptVerifiedValue, missingWrapReason } from "../pull.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
 import type { ReencryptTarget } from "./env-rotate-shared.ts";
-import { CliError, cliError } from "./errors.ts";
-import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
 
 /**
  * Preparing the re-encryption material (decryption + warning for the values that could not be opened).

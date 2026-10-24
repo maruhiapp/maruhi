@@ -4,6 +4,22 @@ import { type EnvironmentId, EnvironmentIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
+import {
+  invalidFlagCombination,
+  NonBlank,
+  projectFlags,
+  singleFlag,
+  singleValued,
+} from "../commands/flags.ts";
+import {
+  commitVerifiedHead,
+  floorHandleFor,
+  loadMasterKeys,
+  openEnvironment,
+  openMetadataEnvironmentPair,
+  openMetadataProject,
+  openProject,
+} from "../commands/lazy.ts";
 import type { CliServices, CommonFlags } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
@@ -15,22 +31,6 @@ import {
   advanceReceiptsAfterRotation,
   checkRotateConfigProject,
 } from "../sync.package/index.ts";
-import {
-  invalidFlagCombination,
-  NonBlank,
-  projectFlags,
-  singleFlag,
-  singleValued,
-} from "./flags.ts";
-import {
-  commitVerifiedHead,
-  floorHandleFor,
-  loadMasterKeys,
-  openEnvironment,
-  openMetadataEnvironmentPair,
-  openMetadataProject,
-  openProject,
-} from "./lazy.ts";
 
 /**
  * The environment ID positional (shared by env's subcommands. The key is
@@ -43,6 +43,7 @@ const environmentIdArgument = (name: string, description: string) =>
     Argument.withSchema(EnvironmentIdSchema),
   );
 
+/** @public */
 export const envCreateConfig = {
   ...projectFlags(),
   name: singleValued("name", "Display name (defaults to the environment ID)"),
@@ -50,6 +51,7 @@ export const envCreateConfig = {
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
 
+/** @public */
 export const envRotateConfig = {
   ...projectFlags(),
   reason: singleValued(
@@ -70,6 +72,7 @@ export const envRotateConfig = {
   "environment-id": environmentIdArgument("environment-id", "Environment ID (e.g. dev / prod)"),
 };
 
+/** @public */
 export const envDiffConfig = {
   ...projectFlags(),
   "environment-id": environmentIdArgument("environment-id", "First environment ID to compare"),
@@ -80,6 +83,7 @@ export const envDiffConfig = {
   ),
 };
 
+/** @public */
 export const envRenameConfig = {
   ...projectFlags(),
   "environment-id": environmentIdArgument(
@@ -94,6 +98,7 @@ export const envRenameConfig = {
   ),
 };
 
+/** @public */
 export const envListConfig = {
   ...projectFlags(),
   all: singleFlag("all", "Also list deleted environments (recorded on the project chain)"),
@@ -103,6 +108,7 @@ export const envListConfig = {
   ),
 };
 
+/** @public */
 export const envRmConfig = {
   ...projectFlags(),
   force: singleFlag(
@@ -115,12 +121,12 @@ export const envRmConfig = {
 /**
  * `maruhi env create <id>`'s body (the composite request — §12-4).
  */
-const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
+const envCreateCommand = Effect.fn("env-command.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { envCreateOp } = yield* Effect.promise(() =>
-    import("../env-create.ts").then((m) => ({ envCreateOp: m.envCreateOp })),
+    import("./env-create.ts").then((m) => ({ envCreateOp: m.envCreateOp })),
   );
 
   const io = yield* CliIo;
@@ -145,7 +151,7 @@ const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
 });
 
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]` (§7 / §12-4). */
-const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
+const envRotateCommand = Effect.fn("env-command.envRotateCommand")(function* (
   flags: CommonFlags & {
     readonly reason?: string | undefined;
     readonly newEpoch?: boolean | undefined;
@@ -154,12 +160,12 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   environmentId: EnvironmentId,
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
-    import("../checkpoint.ts").then((m) => ({
+    import("../checkpoint.package/index.ts").then((m) => ({
       ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
     })),
   );
   const { envRotateOp } = yield* Effect.promise(() =>
-    import("../env-rotate.ts").then((m) => ({ envRotateOp: m.envRotateOp })),
+    import("./env-rotate.ts").then((m) => ({ envRotateOp: m.envRotateOp })),
   );
 
   // The sync config (M1) is read **before any network**: detecting a
@@ -245,13 +251,13 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
 });
 
 /** `maruhi env rename <id> <new-name>` (the environment's own meta statement + manifest — §12-4). */
-const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
+const envRenameCommand = Effect.fn("env-command.envRenameCommand")(function* (
   flags: CommonFlags,
   environmentId: EnvironmentId,
   newName: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { envRenameOp } = yield* Effect.promise(() =>
-    import("../env-rename.ts").then((m) => ({ envRenameOp: m.envRenameOp })),
+    import("./env-rename.ts").then((m) => ({ envRenameOp: m.envRenameOp })),
   );
 
   const io = yield* CliIo;
@@ -273,12 +279,12 @@ const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
 });
 
 /** `maruhi env rm <id> [--force]` (the delete_environment chain entry — §12-4 / CRYPTO_SPEC §6.2). */
-const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
+const envRmCommand = Effect.fn("env-command.envRmCommand")(function* (
   flags: CommonFlags & { readonly force: boolean },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { envRmOp } = yield* Effect.promise(() =>
-    import("../env-rm.ts").then((m) => ({ envRmOp: m.envRmOp })),
+    import("./env-rm.ts").then((m) => ({ envRmOp: m.envRmOp })),
   );
 
   const io = yield* CliIo;
@@ -308,12 +314,12 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
  * when there is one, only narrows the scope column to the device's cap, and
  * without it the column falls back to the member scope with a Note.
  */
-const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
+const envListCommand = Effect.fn("env-command.envListCommand")(function* (
   flags: CommonFlags & { readonly all: boolean; readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } = yield* Effect.promise(
     () =>
-      import("../env-list.ts").then((m) => ({
+      import("./env-list.ts").then((m) => ({
         envListJson: m.envListJson,
         envListOp: m.envListOp,
         formatEnvListRow: m.formatEnvListRow,
@@ -361,13 +367,13 @@ const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
  * indistinguishable from a verification failure / floor violation (=
  * evidence of a malicious server) or a communication failure.
  */
-const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
+const envDiffCommand = Effect.fn("env-command.envDiffCommand")(function* (
   flags: CommonFlags,
   environmentId: EnvironmentId,
   otherEnvironmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { envDiffOp, reportEnvironmentDiff } = yield* Effect.promise(() =>
-    import("../env-diff.ts").then((m) => ({
+    import("./env-diff.ts").then((m) => ({
       envDiffOp: m.envDiffOp,
       reportEnvironmentDiff: m.reportEnvironmentDiff,
     })),
@@ -391,11 +397,12 @@ const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
   yield* reportEnvironmentDiff(diff);
 });
 
+/** @public */
 export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envCreate = Command.make(
     "create",
     envCreateConfig,
-    Effect.fn("commands-env.envCreate")(function* (values) {
+    Effect.fn("env-command.envCreate")(function* (values) {
       yield* envCreateCommand(values, values["environment-id"]);
     }),
   ).pipe(Command.withDescription("Create an environment"));
@@ -403,7 +410,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envRotate = Command.make(
     "rotate",
     envRotateConfig,
-    Effect.fn("commands-env.envRotate")(function* (values) {
+    Effect.fn("env-command.envRotate")(function* (values) {
       const { reason, "new-epoch": newEpoch, config: syncConfig, ...flags } = values;
       onExitCode(
         yield* envRotateCommand(
@@ -433,7 +440,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envDiff = Command.make(
     "diff",
     envDiffConfig,
-    Effect.fn("commands-env.envDiff")(function* (values) {
+    Effect.fn("env-command.envDiff")(function* (values) {
       const environmentId = values["environment-id"];
       const otherEnvironmentId = values["other-environment-id"];
       if (otherEnvironmentId === environmentId) {
@@ -457,7 +464,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envRename = Command.make(
     "rename",
     envRenameConfig,
-    Effect.fn("commands-env.envRename")(function* (values) {
+    Effect.fn("env-command.envRename")(function* (values) {
       yield* envRenameCommand(values, values["environment-id"], values["new-name"]);
     }),
   ).pipe(
@@ -469,7 +476,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envList = Command.make(
     "list",
     envListConfig,
-    Effect.fn("commands-env.envList")(function* (values) {
+    Effect.fn("env-command.envList")(function* (values) {
       yield* envListCommand(values);
     }),
   ).pipe(
@@ -481,7 +488,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   const envRm = Command.make(
     "rm",
     envRmConfig,
-    Effect.fn("commands-env.envRm")(function* (values) {
+    Effect.fn("env-command.envRm")(function* (values) {
       yield* envRmCommand(values, values["environment-id"]);
     }),
   ).pipe(

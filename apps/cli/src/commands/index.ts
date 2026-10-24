@@ -56,6 +56,15 @@ import {
 } from "../ci.package/command.ts";
 import type { CommandSpec } from "../cli-formatter.ts";
 import {
+  envCreateConfig,
+  envDiffConfig,
+  envListConfig,
+  envRenameConfig,
+  envRmConfig,
+  envRotateConfig,
+  makeEnvCommands,
+} from "../env.package/command.ts";
+import {
   guardianAddConfig,
   guardianApproveConfig,
   guardianListConfig,
@@ -126,15 +135,6 @@ import {
   deviceRevokeConfig,
   makeDeviceCommands,
 } from "./device.ts";
-import {
-  envCreateConfig,
-  envDiffConfig,
-  envListConfig,
-  envRenameConfig,
-  envRmConfig,
-  envRotateConfig,
-  makeEnvCommands,
-} from "./env.ts";
 import { specOf } from "./flags.ts";
 import {
   inviteAcceptConfig,

@@ -30,7 +30,7 @@ import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { observeValue, parseEnvFile } from "../src/env-file.ts";
+import { observeValue, parseEnvFile } from "../src/schema.package/env-file.ts";
 import {
   buildChain,
   type BuiltChain,

@@ -47,7 +47,7 @@ import type { MaruhiClient } from "../api.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
 import type { DekRecipient } from "../deks.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
-import type { ReencryptedVariable } from "../env-rotate.ts";
+import type { ReencryptedVariable } from "../env.package/index.ts";
 import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";
 import { CliIo } from "../io.ts";

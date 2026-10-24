@@ -1,6 +1,6 @@
 // Reporting of rotation results and exit-code derivation (shared
 // by the sweeps of env rotate / server revoke / member remove /
-// change-role). The consumers are commands/env.ts and
+// change-role). The consumers are env.package/command.ts and
 // commands/shared.ts. Text is English per ADR-0017 (all user-facing
 // wording is English).
 
@@ -8,7 +8,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { countNoun, logWarnings } from "./display.ts";
-import type { RotationSummary } from "./env-rotate.ts";
+import type { RotationSummary } from "./env.package/index.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";

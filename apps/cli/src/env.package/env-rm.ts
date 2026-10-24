@@ -32,24 +32,24 @@
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { Effect, Stdio } from "effect";
 
-import { signEntryAtHead } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
-import { displayText } from "./display.ts";
+import { signEntryAtHead } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { confirmPermanentDeletion, noteConcurrentRename } from "../deletion-confirm.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { rejectIntentOnServerRejection } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
+import { retryOnConflict } from "../retry.ts";
+import { flaggedVariablesOf } from "../rotation.ts";
+import { deletedEnvironmentMessage } from "../scope.ts";
 import {
   type EnvironmentMetaInput,
   type EnvironmentMetaState,
   requireEnvironmentMetaAuthor,
   resolveEnvironmentMeta,
 } from "./env-meta.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { rejectIntentOnServerRejection } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
-import { retryOnConflict } from "./retry.ts";
-import { flaggedVariablesOf } from "./rotation.ts";
-import { deletedEnvironmentMessage } from "./scope.ts";
 
 const MAX_ATTEMPTS = 5;
 

@@ -44,7 +44,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { chainDeletedEnvironments } from "./deks.ts";
 import { displayText } from "./display.ts";
-import type { RotationSummary } from "./env-rotate.ts";
+import type { RotationSummary } from "./env.package/index.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";

@@ -510,7 +510,9 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectCheckpointConfig,
     Effect.fn("project-command.projectCheckpoint")(function* (values) {
       const { issueCheckpoint } = yield* Effect.promise(() =>
-        import("../checkpoint.ts").then((m) => ({ issueCheckpoint: m.issueCheckpoint })),
+        import("../checkpoint.package/index.ts").then((m) => ({
+          issueCheckpoint: m.issueCheckpoint,
+        })),
       );
 
       const io = yield* CliIo;

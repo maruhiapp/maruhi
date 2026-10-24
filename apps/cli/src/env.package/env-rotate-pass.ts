@@ -6,8 +6,11 @@ import { type VariableId } from "@maruhi/core";
 import type { ChainDevice } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { VerifiedProject } from "./chain-sync.ts";
-import { countNoun, displayText } from "./display.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { countNoun, displayText } from "../display.ts";
+import { CliError, cliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
 import { pushReencrypted, rescanEnvironment } from "./env-rotate-push.ts";
 import {
   type ConflictedTarget,
@@ -18,9 +21,6 @@ import {
   asOutcome,
 } from "./env-rotate-shared.ts";
 import type { ReencryptedVariable } from "./env-rotate.ts";
-import { CliError, cliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
 
 interface ReencryptOutcome {
   readonly reencrypted: number;

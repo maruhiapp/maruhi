@@ -25,11 +25,17 @@ import { cryptoEffect, type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { VerifiedProject } from "./chain-sync.ts";
-import { issueCheckpoint } from "./checkpoint.ts";
-import { environmentKeysFor } from "./deks.ts";
-import { ownDeviceBySigningKey } from "./device-key.ts";
-import { countNoun, displayText, logWarnings } from "./display.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { issueCheckpoint } from "../checkpoint.package/index.ts";
+import { environmentKeysFor } from "../deks.ts";
+import { ownDeviceBySigningKey } from "../device-key.ts";
+import { countNoun, displayText, logWarnings } from "../display.ts";
+import { CliError, cliError, usageError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import type { ManifestDigestEntry } from "../manifest.ts";
+import { logWarning } from "../notice.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 import {
   nothingDecryptable,
   decryptForRotation,
@@ -38,12 +44,6 @@ import {
 import { reencryptContext, reencryptCurrentValues } from "./env-rotate-pass.ts";
 import { appendRotation, type RotateValuesConflictError } from "./env-rotate-send.ts";
 import { ensureRotatable, type RotateInput, dedupeWarnings } from "./env-rotate-shared.ts";
-import { CliError, cliError, usageError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import type { ManifestDigestEntry } from "./manifest.ts";
-import { logWarning } from "./notice.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
-import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 
 /** The consensus-rule bound of the chain's free-text field (CRYPTO_SPEC §6.1). */
 const MAX_REASON_BYTES = 1024;
@@ -110,7 +110,7 @@ export interface ReencryptedVariable {
  * refuse a recovery from a broken state on the absence of a field that
  * would not be written. A reason is what selects the rotate path
  * (rotatePathOf), and --new-epoch, which always signs, is refused without
- * one before any network (commands/env.ts's validate rule).
+ * one before any network (the validate rule in this package's command.ts).
  */
 function checkReasonLength(reason: string | undefined): Effect.Effect<string | null, CliError> {
   if (reason === undefined) {
@@ -143,10 +143,10 @@ function checkReasonLength(reason: string | undefined): Effect.Effect<string | n
  * payload). That path always has one: without --new-epoch it is taken only
  * when a reason was given (rotatePathOf), and every caller that forces a
  * new epoch passes one — `maruhi env rotate` refuses --new-epoch without
- * --reason before any network (commands/env.ts's validate rule), and
- * sweepRotateFor forces one only with the reason its caller hands it
- * (sweep-rotate.ts). So a missing reason here is a defect, not a usage
- * error.
+ * --reason before any network (the validate rule in this package's
+ * command.ts), and sweepRotateFor forces one only with the reason its
+ * caller hands it (sweep-rotate.ts). So a missing reason here is a
+ * defect, not a usage error.
  */
 function requireReason(reason: string | null): Effect.Effect<string> {
   return reason === null
