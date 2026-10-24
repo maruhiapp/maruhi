@@ -42,6 +42,20 @@ import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { VerifiedProject } from "../chain-sync.ts";
+import {
+  companionsOf,
+  type CredentialValues,
+  describeShape,
+  describeValueShapes,
+  planRotation,
+  type RotateConfig,
+  type RotateInputs,
+  rotateCredential,
+  type RotateRule,
+  type RotationOutcome,
+  ruleFor,
+  type SqlRunner,
+} from "../connector.package/index.ts";
 import { cryptoErrorKind } from "../crypto-error-kind.ts";
 import { memberDevicesInOrder, ROLE_RANK } from "../dek-wrap.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "../display.ts";
@@ -51,18 +65,6 @@ import { CliIo } from "../io.ts";
 import type { VerifiedLeaseMaterial } from "../lease.package/index.ts";
 import { fetchGitHubOidcToken, issuanceBoundFor, tokenExpiresAtMs } from "../oidc-github.ts";
 import type { DecryptedVariable } from "../pull.ts";
-import { type RotateConfig, type RotateRule, ruleFor } from "../rotate-config.ts";
-import {
-  companionsOf,
-  type CredentialValues,
-  describeShape,
-  describeValueShapes,
-  planRotation,
-  type RotateInputs,
-  rotateCredential,
-  type RotationOutcome,
-  type SqlRunner,
-} from "../rotate-connector.ts";
 import type { ProcessRunner } from "../run.ts";
 import { callConnector, connectorFailure } from "../var.package/index.ts";
 import {

@@ -1,5 +1,5 @@
 // The Schema machinery shared by the user-edited config files
-// (sync.package/sync-config.ts, rotate-config.ts,
+// (sync.package/sync-config.ts, connector.package/rotate-config.ts,
 // proxy.package/proxy-config.ts). Each config reads its document in one
 // pass of steps over Schema-decoded leaves, in the same order the
 // hand-written validators ran — the first failure's reason is the one the

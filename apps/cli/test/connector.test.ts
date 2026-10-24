@@ -1,4 +1,4 @@
-// Tests for the rotation connector frame (rotate-connector.ts — PF6
+// Tests for the rotation connector frame (connector.package — PF6
 // rulings R2–R4): each connector creates the new credential the way its
 // issuer allows a grace period, finalize invalidates exactly the previous
 // one, failures name the connector and the issuer's answer but never a
@@ -18,22 +18,26 @@ import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
-import type { RotateRule } from "../src/rotate-config.ts";
+import {
+  ConnectorError,
+  type CredentialValues,
+  describeValueShapes,
+  IssuerEndpoints,
+} from "../src/connector.package/connector-shared.ts";
 import {
   ConnectorCrypto,
-  ConnectorError,
-  type ConnectorServices,
-  type CredentialValues,
-  describeFinalize,
-  describeValueShapes,
-  finalizeCredential,
   generatePassword,
-  IssuerEndpoints,
-  planRotation,
-  rotateCredential,
   SqlRunner,
   type SqlRunnerShape,
-} from "../src/rotate-connector.ts";
+} from "../src/connector.package/connector-sql.ts";
+import {
+  type ConnectorServices,
+  describeFinalize,
+  finalizeCredential,
+  planRotation,
+  rotateCredential,
+} from "../src/connector.package/connector.ts";
+import type { RotateRule } from "../src/connector.package/rotate-config.ts";
 import {
   type CaptureInput,
   type CaptureOutcome,

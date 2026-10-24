@@ -52,15 +52,15 @@ import {
   refuse,
   stringLeaf,
   undefinedOr,
-} from "./config-schema.ts";
-import type { CliError } from "./errors.ts";
-import { loadIfPresent, unknownKeys } from "./json-record.ts";
-import { isDeniedEnvName, SAFE_ENV_NAME } from "./run.ts";
+} from "../config-schema.ts";
+import type { CliError } from "../errors.ts";
+import { loadIfPresent, unknownKeys } from "../json-record.ts";
+import { isDeniedEnvName, SAFE_ENV_NAME } from "../run.ts";
 
 /** Default location of the rotation config, relative to the working directory. */
 export const DEFAULT_ROTATE_CONFIG_PATH = "maruhi.rotate.json";
 
-/** The connectors (rotate-connector.ts implements them). */
+/** The connectors (connector.ts runs each from its file; postgres and mysql share connector-sql.ts). */
 type RotateConnectorKind =
   | "aws-iam-access-key"
   | "cloudflare-api-token"
@@ -79,7 +79,7 @@ const ROTATE_CONNECTOR_KINDS: readonly RotateConnectorKind[] = [
 /**
  * The prefix of the control variables the `exec` connector adds to a
  * script's environment (`MH_ROTATE_VARIABLE` / `_ENVIRONMENT` / `_PHASE` /
- * `_CURRENT` / `_PREVIOUS` — rotate-connector.ts). Outside the `MARUHI_`
+ * `_CURRENT` / `_PREVIOUS` — connector-exec.ts). Outside the `MARUHI_`
  * namespace on purpose: that namespace never reaches a child
  * (run.ts's buildChildEnvironment), and nothing in maruhi reads these.
  * Input and companion names may not start with it.
