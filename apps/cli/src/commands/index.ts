@@ -42,6 +42,13 @@ import {
   makeAuditCommands,
 } from "../audit.package/command.ts";
 import type { CommandSpec } from "../cli-formatter.ts";
+import {
+  mirrorMarkConfig,
+  mirrorPromoteConfig,
+  mirrorStatusConfig,
+  mirrorSyncConfig,
+  makeMirrorCommands,
+} from "../mirror.package/command.ts";
 import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
 import {
   schemaExportConfig,
@@ -121,8 +128,6 @@ import {
   memberRemoveConfig,
   makeMemberCommands,
 } from "./member.ts";
-import { mirrorMarkConfig, mirrorPromoteConfig } from "./mirror-write.ts";
-import { mirrorStatusConfig, mirrorSyncConfig, makeMirrorCommands } from "./mirror.ts";
 import {
   projectAnchorConfig,
   projectCheckpointConfig,

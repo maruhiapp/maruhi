@@ -41,6 +41,7 @@ export const configSetConfig = {
   ),
 };
 
+/** Validating a config key passed as a positional (**the given value itself never appears in the error**). */
 function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
   const key = asConfigKey(value);
   return key === null

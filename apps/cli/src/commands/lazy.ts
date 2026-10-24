@@ -128,16 +128,6 @@ const lazyOpenSession = (
     ({ openSession }) => openSession(...args),
   );
 
-const lazyOpenSessionWith = (
-  ...args: Parameters<typeof Context.openSessionWith>
-): ReturnType<typeof Context.openSessionWith> =>
-  Effect.flatMap(
-    Effect.promise(() =>
-      import("../context.ts").then((m) => ({ openSessionWith: m.openSessionWith })),
-    ),
-    ({ openSessionWith }) => openSessionWith(...args),
-  );
-
 const lazyReconcileGossip = (
   ...args: Parameters<typeof Context.reconcileGossip>
 ): ReturnType<typeof Context.reconcileGossip> =>
@@ -146,16 +136,6 @@ const lazyReconcileGossip = (
       import("../context.ts").then((m) => ({ reconcileGossip: m.reconcileGossip })),
     ),
     ({ reconcileGossip }) => reconcileGossip(...args),
-  );
-
-const lazyResolveMirrorOrigin = (
-  ...args: Parameters<typeof Context.resolveMirrorOrigin>
-): ReturnType<typeof Context.resolveMirrorOrigin> =>
-  Effect.flatMap(
-    Effect.promise(() =>
-      import("../context.ts").then((m) => ({ resolveMirrorOrigin: m.resolveMirrorOrigin })),
-    ),
-    ({ resolveMirrorOrigin }) => resolveMirrorOrigin(...args),
   );
 
 const lazyResolveProjectId = (
@@ -254,9 +234,7 @@ export {
   lazyOpenMetadataProject as openMetadataProject,
   lazyOpenProject as openProject,
   lazyOpenSession as openSession,
-  lazyOpenSessionWith as openSessionWith,
   lazyReconcileGossip as reconcileGossip,
-  lazyResolveMirrorOrigin as resolveMirrorOrigin,
   lazyResolveProjectId as resolveProjectId,
   lazyWithMirrorFallback as withMirrorFallback,
   lazyLoadMasterKeys as loadMasterKeys,

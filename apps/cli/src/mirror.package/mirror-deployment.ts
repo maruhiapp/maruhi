@@ -1,12 +1,12 @@
-// Helpers shared by the mirror status/sync and mark/promote halves (discipline: see commands/index.ts).
+// Whether two origins are one deployment: the same origin, or the same
+// server key fingerprint on their public `/auth/config` (mirror status
+// tells a recorded source apart with it; mark and promote refuse or name a
+// way out with it).
 
 import { Duration, Effect } from "effect";
 
+import { makeApiClient } from "../api.ts";
 import type { CliServices } from "../context.ts";
-
-// P-6: api.ts (the HttpApi client) is loaded lazily inside the probe body so
-// help / version never pay the client graph (discipline: see
-// commands/shared.ts's P-6 note).
 
 /**
  * Whether two origins publish one server key: equal strings, or equal
@@ -32,12 +32,9 @@ export function sameDeployment(a: string, b: string): Effect.Effect<boolean, nev
 }
 
 /** The server key fingerprint a deployment publishes (null = none, or no answer within the probe's bound). */
-const deploymentFingerprint = Effect.fn("commands-mirror-core.deploymentFingerprint")(function* (
+const deploymentFingerprint = Effect.fn("mirror-deployment.deploymentFingerprint")(function* (
   origin: string,
 ): Effect.fn.Return<string | null, never, CliServices> {
-  const { makeApiClient } = yield* Effect.promise(() =>
-    import("../api.ts").then((m) => ({ makeApiClient: m.makeApiClient })),
-  );
   const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(
     Effect.map((config) => config.serverKeyFingerprintHex ?? null),

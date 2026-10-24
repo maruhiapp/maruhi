@@ -1,8 +1,8 @@
-// `maruhi mirror sync` / `status` (AUTH_SPEC §11-7 — PF2,
-// docs/notes/pf2-design.md rulings D / H): a member replicates the project
-// from the server to a mirror by paging the owner's export and uploading
-// the pages in order; the mirror commits when the page carrying the
-// trailer arrives, and only if the replica extends what it already holds.
+// `maruhi mirror sync` (AUTH_SPEC §11-7 — PF2, docs/notes/pf2-design.md
+// rulings D / H): a member replicates the project from the server to a
+// mirror by paging the owner's export and uploading the pages in order;
+// the mirror commits when the page carrying the trailer arrives, and only
+// if the replica extends what it already holds.
 //
 // Two sessions take part: the server's (the export needs the owner role)
 // and the mirror's (the pages need admin or above there). From a cron
@@ -13,17 +13,28 @@
 // export`); row content never reaches the output.
 
 import type { MirrorStatus, MirrorSyncRecord } from "@maruhi/api-schema";
-import { type ProjectId } from "@maruhi/core";
+import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { countNoun, formatUtcMinutes } from "./display.ts";
-import { CliError, cliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
+import { BODY_TIMEOUT, makeApiClient, type MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { type CliServices, openSession } from "../context.ts";
+import { countNoun } from "../display.ts";
+import { CliError, cliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { FloorStore } from "../floor.ts";
+import { CliIo } from "../io.ts";
+import { forkNote, headNote, headOnChain } from "./mirror-heads.ts";
+import {
+  describeLastSync,
+  openMirrorTarget,
+  readMirrorStatus,
+  verifiedViewOf,
+} from "./mirror-target.ts";
 
 /** How many times a changed project restarts the replication before giving up. */
 const MAX_RESTARTS = 3;
+
 /** The bound on pages of one replication (far above any project the storage guard admits). */
 const MAX_PAGES = 100_000;
 
@@ -59,7 +70,7 @@ interface MirrorSyncInput<R = never> {
   readonly verified: Effect.Effect<VerifiedProject, CliError, R>;
 }
 
-export type MirrorSyncResult =
+type MirrorSyncResult =
   | {
       readonly kind: "replicated";
       readonly pages: number;
@@ -76,14 +87,61 @@ export type MirrorSyncResult =
   /** The source's three marks are the last replication's: nothing to upload (ruling H revision). */
   | { readonly kind: "current"; readonly before: MirrorStatus };
 
-export function mirrorStatusOp(input: {
-  readonly client: MaruhiClient;
-  readonly projectId: ProjectId;
-}): Effect.Effect<MirrorStatus, CliError> {
-  return input.client.mirror
-    .status({ params: { projectId: input.projectId } })
-    .pipe(Effect.mapError(toCliError));
-}
+/**
+ * `maruhi mirror sync`: the export's pages uploaded to the mirror in
+ * order. The two sessions are opened first (the server's for the export,
+ * the mirror's for the pages); the server's chain is fetched and verified
+ * only when something is uploaded — a cron's "current" tick is the two
+ * status reads (ruling H revision, round 4).
+ */
+export const mirrorSyncOp = Effect.fn("mirror-sync.mirrorSyncOp")(function* (flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+  readonly force?: boolean | undefined;
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const target = yield* openMirrorTarget(flags);
+  const source = yield* openSession(flags.server);
+  // The pages go through the mirror under the body bound on their
+  // headers (a full page on a slow uplink is not "did not answer" — H-10);
+  // the status reads keep the usual bound (H-12)
+  const pages = yield* makeApiClient({
+    baseUrl: target.mirrorOrigin,
+    token: target.mirror.session.token,
+    timeout: BODY_TIMEOUT,
+  });
+  const floor = yield* (yield* FloorStore).load(target.projectId);
+  const result = yield* replicateProject({
+    source: source.client,
+    mirror: target.mirror.client,
+    pages,
+    projectId: target.projectId,
+    sourceOrigin: source.origin,
+    mirrorOrigin: target.mirrorOrigin,
+    ...(flags.force === true ? { force: true } : {}),
+    floorHead: floor.floor?.chainHead ?? null,
+    verified: verifiedViewOf(source, target.projectId),
+  });
+  for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
+    yield* io.log(line);
+  }
+  // A replica behind the view taken before the export, past the one
+  // taken after the commit, or off either's chain is evidence against
+  // the server, reported above; the sync fails so a cron notices (ruling
+  // H revision, rounds 8 and 9)
+  const verdict =
+    result.kind === "replicated"
+      ? replicaVerdict(result.committed, result.viewBefore, result.verified)
+      : null;
+  if (verdict !== null) {
+    return yield* Effect.fail(
+      cliError(
+        `The replica ${target.mirrorOrigin} now holds is ${verdict} — against ${source.origin} and against the mirror`,
+      ),
+    );
+  }
+});
 
 type Attempt =
   | {
@@ -95,7 +153,7 @@ type Attempt =
   | { readonly kind: "changed" };
 
 /** One pass over the export's pages into the mirror; "changed" = the project moved (the caller restarts at sequence 0). */
-const replicateOnce = Effect.fn("mirror.replicateOnce")(function* (
+const replicateOnce = Effect.fn("mirror-sync.replicateOnce")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<Attempt, CliError> {
   const params = { projectId: input.projectId };
@@ -157,7 +215,7 @@ const replicateOnce = Effect.fn("mirror.replicateOnce")(function* (
 });
 
 /** Replicates the whole project (restarting when it changes) into a mirror that is marked. */
-export const mirrorSyncOp = Effect.fn("mirror.mirrorSyncOp")(function* <R>(
+const replicateProject = Effect.fn("mirror-sync.replicateProject")(function* <R>(
   input: MirrorSyncInput<R>,
 ): Effect.fn.Return<MirrorSyncResult, CliError, R> {
   const before = yield* markedMirrorStatus(input);
@@ -171,10 +229,10 @@ export const mirrorSyncOp = Effect.fn("mirror.mirrorSyncOp")(function* <R>(
 });
 
 /** The mirror's status: it must be marked, and marked as a mirror of the server the sync exports from (H-15). */
-const markedMirrorStatus = Effect.fn("mirror.markedMirrorStatus")(function* (
+const markedMirrorStatus = Effect.fn("mirror-sync.markedMirrorStatus")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<MirrorStatus, CliError> {
-  const before = yield* mirrorStatusOp({ client: input.mirror, projectId: input.projectId });
+  const before = yield* readMirrorStatus({ client: input.mirror, projectId: input.projectId });
   if (!before.mirror) {
     return yield* Effect.fail(
       cliError(
@@ -208,7 +266,7 @@ const markedMirrorStatus = Effect.fn("mirror.markedMirrorStatus")(function* (
  * (the planned failover's last sync, or a sibling re-pointed here) goes
  * through. `force` overrides (ruling H revision, rounds 8 and 9).
  */
-const starSource = Effect.fn("mirror.starSource")(function* (
+const starSource = Effect.fn("mirror-sync.starSource")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<MirrorStatus, CliError> {
   const source = yield* input.source.mirror
@@ -243,7 +301,7 @@ const starSource = Effect.fn("mirror.starSource")(function* (
  * entry is on the source's chain (H-14); the view is handed on to the
  * replication otherwise.
  */
-const syncVerdict = Effect.fn("mirror.syncVerdict")(function* <R>(
+const syncVerdict = Effect.fn("mirror-sync.syncVerdict")(function* <R>(
   input: MirrorSyncInput<R>,
   before: MirrorStatus,
   source: MirrorStatus,
@@ -260,7 +318,7 @@ const syncVerdict = Effect.fn("mirror.syncVerdict")(function* <R>(
 });
 
 /** The passes over the export (restarting when the project changed, the view rebuilt before each — H-13). */
-const replicateWithRestarts = Effect.fn("mirror.replicateWithRestarts")(function* <R>(
+const replicateWithRestarts = Effect.fn("mirror-sync.replicateWithRestarts")(function* <R>(
   input: MirrorSyncInput<R>,
   firstView: VerifiedProject,
 ): Effect.fn.Return<
@@ -330,22 +388,6 @@ function secondViewFailure(
   });
 }
 
-/** The fork evidence a mirror's reported head carries against the verified view (`maruhi mirror status` fails on it — round 11); null = none. */
-export function statusEvidence(status: MirrorStatus, verified: VerifiedProject): string | null {
-  return forkNote(status.head, verified);
-}
-
-/** Whether a head is an entry of a verified chain (its head, or an earlier entry). */
-export function headOnChain(
-  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
-  chain: VerifiedProject,
-): boolean {
-  return head.chainHeadSeq === chain.state.headSeq
-    ? head.chainHeadHashHex === chain.state.headHashHex
-    : head.chainHeadSeq < chain.state.headSeq &&
-        chain.history.entryHashAt(head.chainHeadSeq) === head.chainHeadHashHex;
-}
-
 /**
  * Why a committed replica fails the sync (null = it stands): behind the
  * view taken before the export is a rollback at the server, never a race
@@ -354,7 +396,7 @@ export function headOnChain(
  * view's chain is a fork. Only an equivocating server produces any of
  * them, so a cron must see exit 1 (ruling H revision, rounds 8 and 9).
  */
-export function replicaVerdict(
+function replicaVerdict(
   committed: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   viewBefore: VerifiedProject,
   verified: VerifiedProject,
@@ -412,49 +454,6 @@ function floorAhead(
   );
 }
 
-/** How a head stands against the verified view of the server (the same cross-check as `project export`). */
-function headNote(
-  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
-  verified: VerifiedProject,
-): string {
-  const fork = forkNote(head, verified);
-  if (fork !== null) {
-    return fork;
-  }
-  if (head.chainHeadHashHex === verified.state.headHashHex) {
-    return "in sync with the verified view";
-  }
-  if (head.chainHeadSeq < verified.state.headSeq) {
-    return `behind the verified view by ${countNoun(verified.state.headSeq - head.chainHeadSeq, "chain entry")} (seq ${head.chainHeadSeq} of ${verified.state.headSeq})`;
-  }
-  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the mirror was promoted and written to, the server rolled back, the mirror's recorded source is not this server, or a replication was forced from another server; run \`maruhi project verify\``;
-}
-
-/**
- * A head that is not on the verified view's chain and not past it: the
- * view and the head are both signature-verified, so only an equivocating
- * server produces this (never an honest race — "behind" and "ahead" are
- * those). A sync whose replica shows it fails after the commit (ruling H
- * revision, round 8: a cron must notice). null = no fork evidence.
- */
-function forkNote(
-  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
-  verified: VerifiedProject,
-): string | null {
-  if (head.chainHeadHashHex === verified.state.headHashHex) {
-    return null;
-  }
-  if (head.chainHeadSeq < verified.state.headSeq) {
-    return verified.history.entryHashAt(head.chainHeadSeq) === head.chainHeadHashHex
-      ? null
-      : `on a different chain (its seq ${head.chainHeadSeq} is not the verified view's entry) — evidence of a fork (CRYPTO_SPEC §6.3); do not promote it and run \`maruhi project verify\``;
-  }
-  if (head.chainHeadSeq === verified.state.headSeq) {
-    return `a different chain at the same height as the verified view (head ${verified.state.headHashHex}) — evidence of a fork (CRYPTO_SPEC §6.3); do not promote it and run \`maruhi project verify\``;
-  }
-  return null;
-}
-
 /** The sync's own note on the committed head: on the sync path an "ahead" past the view taken after the commit has one cause (rounds 11 and 12 — the replica and the view are of the same server). */
 function syncHeadNote(
   head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
@@ -465,14 +464,8 @@ function syncHeadNote(
     : headNote(head, verified);
 }
 
-function describeLastSync(status: MirrorStatus): string {
-  return status.lastSync === undefined
-    ? "No replication recorded since the mark (the replication history is shown to admins and owners)"
-    : `Last replication: chain head seq=${status.lastSync.chainHeadSeq}, audit seq=${status.lastSync.auditMaxSeq}, at ${formatUtcMinutes(status.lastSync.atMs)} (UTC)`;
-}
-
 /** The report of a replication (heads and counts only). */
-export function describeMirrorSync(
+function describeMirrorSync(
   result: MirrorSyncResult,
   projectId: ProjectId,
   mirrorOrigin: string,
@@ -495,35 +488,5 @@ export function describeMirrorSync(
   return [
     `Replicated project ${projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${syncHeadNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
     `Before this run: ${describeLastSync(result.before)}`,
-  ];
-}
-
-/** The two heads side by side (`maruhi mirror status`); without the server's view (it did not answer) the mirror's head stands alone. */
-export function describeMirrorStatus(
-  status: MirrorStatus,
-  verified: VerifiedProject | null,
-  mirrorOrigin: string,
-): string[] {
-  const mirrorHead =
-    verified === null
-      ? `chain head seq=${status.head.chainHeadSeq} (head ${status.head.chainHeadHashHex}; the server did not answer, so it is not compared with a verified view)`
-      : `chain head seq=${status.head.chainHeadSeq} — ${headNote(status.head, verified)}`;
-  if (!status.mirror) {
-    return [
-      `${mirrorOrigin}: the project is not marked as a mirror there (its ${mirrorHead}). An owner marks it with \`maruhi mirror mark --server ${mirrorOrigin} --source <server url>\``,
-    ];
-  }
-  const inProgress =
-    status.nextSequence === undefined
-      ? []
-      : [`A replication is in progress (the next page is sequence ${status.nextSequence})`];
-  return [
-    `Mirror ${mirrorOrigin} of ${status.sourceOrigin ?? "an unknown source"} (marked ${status.markedAtMs === undefined ? "at an unknown time" : `${formatUtcMinutes(status.markedAtMs)} UTC`})`,
-    verified === null
-      ? "Server: unreachable (no verified view)"
-      : `Server: chain head seq=${verified.state.headSeq} (the verified view)`,
-    `Mirror: ${mirrorHead}${status.head.auditMaxSeq === undefined ? "" : `; audit seq=${status.head.auditMaxSeq}`}`,
-    describeLastSync(status),
-    ...inProgress,
   ];
 }
