@@ -73,6 +73,25 @@ import {
   makeGuardianCommands,
 } from "../guardian.package/command.ts";
 import {
+  inviteAcceptConfig,
+  inviteCreateConfig,
+  inviteListConfig,
+  inviteRevokeConfig,
+  makeInviteCommands,
+} from "../invite.package/command.ts";
+import {
+  keyGenerateConfig,
+  keyPublishConfig,
+  keyRecoverConfig,
+  keyRecoveryConfig,
+  keyReserveRotateConfig,
+  keySealListConfig,
+  keySealPasskeyConfig,
+  keySealRemoveConfig,
+  keyShowConfig,
+  makeKeyCommands,
+} from "../key.package/command.ts";
+import {
   memberAddConfig,
   memberChangeRoleConfig,
   memberListConfig,
@@ -136,25 +155,6 @@ import {
   makeDeviceCommands,
 } from "./device.ts";
 import { specOf } from "./flags.ts";
-import {
-  inviteAcceptConfig,
-  inviteCreateConfig,
-  inviteListConfig,
-  inviteRevokeConfig,
-  makeInviteCommands,
-} from "./invite.ts";
-import {
-  keyGenerateConfig,
-  keyPublishConfig,
-  keyRecoverConfig,
-  keyRecoveryConfig,
-  keyReserveRotateConfig,
-  keySealListConfig,
-  keySealPasskeyConfig,
-  keySealRemoveConfig,
-  keyShowConfig,
-  makeKeyCommands,
-} from "./key.ts";
 import { loginConfig, logoutConfig, makeLoginLogoutCommands } from "./login-logout.ts";
 import { mcpConfig, makeMcpCommand } from "./mcp.ts";
 import { pullConfig, runConfig, makePullRunCommands } from "./pull-run.ts";

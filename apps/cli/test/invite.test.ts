@@ -28,7 +28,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
-import { verifyAcceptanceBlock } from "../src/invite.ts";
+import { verifyAcceptanceBlock } from "../src/invite.package/invite.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
 import {
   addScopedMemberOp,

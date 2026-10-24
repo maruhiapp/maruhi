@@ -28,13 +28,13 @@ import { decodeHex, encodeOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { cliError, type CliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import type { Keychain } from "./keychain.ts";
-import { logNote } from "./notice.ts";
-import { ProcessRunner } from "./run.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
-import { GH_ENV } from "./sync.package/index.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import type { Keychain } from "../keychain.ts";
+import { logNote } from "../notice.ts";
+import { ProcessRunner } from "../run.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
+import { GH_ENV } from "../sync.package/index.ts";
 
 /** The manual registration destination (GitHub's settings page). */
 const GITHUB_SSH_SETTINGS_URL = "https://github.com/settings/ssh/new";

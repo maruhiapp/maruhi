@@ -13,7 +13,7 @@ import { displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
 import { checkSigningKeyBacking, describeBackingFallback } from "../github-signing-keys.ts";
-import type { InvitationRow, InviteAcceptance } from "../invite.ts";
+import type { InvitationRow, InviteAcceptance } from "../invite.package/index.ts";
 import { CliIo } from "../io.ts";
 import {
   confirmKnownFingerprint,

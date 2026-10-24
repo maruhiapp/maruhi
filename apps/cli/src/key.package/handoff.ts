@@ -37,15 +37,15 @@ import {
 import { Clock, Duration, Effect, Schedule, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
-import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
-import { decodeWrapped } from "./master-ops.ts";
-import type { CliSession } from "./session.ts";
+import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import { parseStoredMasterKey, type StoredMasterKey } from "../keychain.ts";
+import { decodeWrapped } from "../master-ops.ts";
+import type { CliSession } from "../session.ts";
 
 /** Polling interval while waiting for approvals. */
 const POLL_INTERVAL = Duration.seconds(3);

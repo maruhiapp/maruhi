@@ -23,29 +23,29 @@ import {
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { MaruhiClient } from "./api.ts";
-import type { IdentityBacking } from "./config.ts";
-import type { CliServices } from "./context.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { checkSigningKeyBacking, describeBackingFallback } from "./github-signing-keys.ts";
-import type { InviteLinkData, InviteRole } from "./invite-link.ts";
-import { resolveLinkKey } from "./invite.ts";
-import { CliIo } from "./io.ts";
-import { offerGithubRegistration } from "./key-publish.ts";
-import { Keychain, masterKeyEntryName } from "./keychain.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { IdentityBacking } from "../config.ts";
+import type { CliServices } from "../context.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
+import { checkSigningKeyBacking, describeBackingFallback } from "../github-signing-keys.ts";
+import type { InviteLinkData, InviteRole } from "../invite-link.ts";
+import { CliIo } from "../io.ts";
+import { offerGithubRegistration } from "../key.package/index.ts";
+import { Keychain, masterKeyEntryName } from "../keychain.ts";
 import {
   confirmKnownFingerprint,
   consultFingerprintBook,
   type FingerprintBook,
   usableBookHit,
-} from "./known-fingerprints.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { PinStore } from "./pins.ts";
-import { describeScope, sameScope } from "./scope.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
+} from "../known-fingerprints.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { PinStore } from "../pins.ts";
+import { describeScope, sameScope } from "../scope.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
+import { resolveLinkKey } from "./invite.ts";
 
 // ---------------------------------------------------------------------------
 // invite accept
@@ -397,7 +397,7 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
   /** `--from <login>` (the non-interactive declaration of sufficiency form 4 via the backing source). */
   readonly expectedFromLogin: string | null;
   readonly identityBacking: IdentityBacking;
-  /** keyGenerateOp itself (generation → recovery ceremony) (wired by cli.ts). */
+  /** keyGenerateOp itself (generation → recovery ceremony) (wired by invite.package/command.ts). */
   readonly keyGenerate: Effect.Effect<void, CliError, CliServices>;
 }): Effect.fn.Return<InviteAcceptSummary, CliError, CliServices> {
   const { link } = input;

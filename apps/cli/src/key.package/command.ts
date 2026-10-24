@@ -5,11 +5,17 @@ import { Effect, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { PASSKEY_LABEL_MESSAGE } from "../cli-formatter.ts";
+import {
+  NonBlank,
+  invalidFlagCombination,
+  serverOnlyFlags,
+  singleFlag,
+} from "../commands/flags.ts";
+import { openSession } from "../commands/lazy.ts";
 import { identityBackingOf } from "../config.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "../passkey.package/index.ts";
-import { NonBlank, invalidFlagCombination, serverOnlyFlags, singleFlag } from "./flags.ts";
-import { openSession } from "./lazy.ts";
 
+/** @public */
 export const keyGenerateConfig = {
   ...serverOnlyFlags(),
   "new-identity": singleFlag(
@@ -17,7 +23,9 @@ export const keyGenerateConfig = {
     "Create a new identity even though your account already has a reserve key in the recovery ledger (only when every device and every recovery path is lost)",
   ),
 };
+/** @public */
 export const keyShowConfig = serverOnlyFlags();
+/** @public */
 export const keyPublishConfig = {
   ...serverOnlyFlags(),
   gh: singleFlag(
@@ -25,6 +33,7 @@ export const keyPublishConfig = {
     "Add the key to your GitHub account through the gh CLI (`gh ssh-key add --type signing`) instead of printing it",
   ),
 };
+/** @public */
 export const keyRecoverConfig = {
   ...serverOnlyFlags(),
   handoff: singleFlag(
@@ -44,6 +53,7 @@ export const keyRecoverConfig = {
 const PasskeyLabel = Schema.String.check(
   Schema.isPattern(PASSKEY_LABEL_PATTERN, { message: PASSKEY_LABEL_MESSAGE }),
 );
+/** @public */
 export const keySealPasskeyConfig = {
   ...serverOnlyFlags(),
   passkey: singleFlag(
@@ -59,7 +69,9 @@ export const keySealPasskeyConfig = {
     Flag.map((values) => values[0]),
   ),
 };
+/** @public */
 export const keySealListConfig = serverOnlyFlags();
+/** @public */
 export const keySealRemoveConfig = {
   ...serverOnlyFlags(),
   "wrap-id": Argument.String("wrap-id").pipe(
@@ -67,6 +79,7 @@ export const keySealRemoveConfig = {
     Argument.withSchema(NonBlank),
   ),
 };
+/** @public */
 export const keyRecoveryConfig = {
   ...serverOnlyFlags(),
   passkey: singleFlag(
@@ -78,6 +91,7 @@ export const keyRecoveryConfig = {
     "Replace the reserve key with a new one without opening the ledger (when the recovery code is lost or may be compromised); the reserve keys recorded on this machine are revoked on every project the server lists for you once those chains confirm each is not a device key",
   ),
 };
+/** @public */
 export const keyReserveRotateConfig = {
   ...serverOnlyFlags(),
   passkey: singleFlag(
@@ -86,13 +100,14 @@ export const keyReserveRotateConfig = {
   ),
 };
 
+/** @public */
 export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyGenerate = Command.make(
     "generate",
     keyGenerateConfig,
-    Effect.fn("commands-key.keyGenerate")(function* (values) {
+    Effect.fn("key-command.keyGenerate")(function* (values) {
       const { keyGenerateOp } = yield* Effect.promise(() =>
-        import("../keygen.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
+        import("./keygen.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -112,9 +127,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyShow = Command.make(
     "show",
     keyShowConfig,
-    Effect.fn("commands-key.keyShow")(function* (values) {
+    Effect.fn("key-command.keyShow")(function* (values) {
       const { keyShowOp } = yield* Effect.promise(() =>
-        import("../keygen.ts").then((m) => ({ keyShowOp: m.keyShowOp })),
+        import("./keygen.ts").then((m) => ({ keyShowOp: m.keyShowOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -129,9 +144,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyPublish = Command.make(
     "publish",
     keyPublishConfig,
-    Effect.fn("commands-key.keyPublish")(function* (values) {
+    Effect.fn("key-command.keyPublish")(function* (values) {
       const { keyPublishOp } = yield* Effect.promise(() =>
-        import("../key-publish.ts").then((m) => ({ keyPublishOp: m.keyPublishOp })),
+        import("./key-publish.ts").then((m) => ({ keyPublishOp: m.keyPublishOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -146,9 +161,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyRecover = Command.make(
     "recover",
     keyRecoverConfig,
-    Effect.fn("commands-key.keyRecover")(function* (values) {
+    Effect.fn("key-command.keyRecover")(function* (values) {
       const { keyRecoverOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then((m) => ({ keyRecoverOp: m.keyRecoverOp })),
+        import("./key-recover.ts").then((m) => ({ keyRecoverOp: m.keyRecoverOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -173,7 +188,7 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keySealPasskey = Command.make(
     "passkey",
     keySealPasskeyConfig,
-    Effect.fn("commands-key.keySealPasskey")(function* (values) {
+    Effect.fn("key-command.keySealPasskey")(function* (values) {
       const { openLedgerReserveForChange } = yield* Effect.promise(() =>
         import("../ledger-open.ts").then((m) => ({
           openLedgerReserveForChange: m.openLedgerReserveForChange,
@@ -203,7 +218,7 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keySealList = Command.make(
     "list",
     keySealListConfig,
-    Effect.fn("commands-key.keySealList")(function* (values) {
+    Effect.fn("key-command.keySealList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* listPasskeysOp({ client: context.client });
     }),
@@ -212,7 +227,7 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keySealRemove = Command.make(
     "remove",
     keySealRemoveConfig,
-    Effect.fn("commands-key.keySealRemove")(function* (values) {
+    Effect.fn("key-command.keySealRemove")(function* (values) {
       const context = yield* openSession(values.server);
       yield* removePasskeyOp({ client: context.client, wrapId: values["wrap-id"] });
     }),
@@ -226,9 +241,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyReserveRotate = Command.make(
     "rotate",
     keyReserveRotateConfig,
-    Effect.fn("commands-key.keyReserveRotate")(function* (values) {
+    Effect.fn("key-command.keyReserveRotate")(function* (values) {
       const { keyReserveRotateOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then((m) => ({ keyReserveRotateOp: m.keyReserveRotateOp })),
+        import("./key-recover.ts").then((m) => ({ keyReserveRotateOp: m.keyReserveRotateOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -254,9 +269,9 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   const keyRecovery = Command.make(
     "recovery",
     keyRecoveryConfig,
-    Effect.fn("commands-key.keyRecovery")(function* (values) {
+    Effect.fn("key-command.keyRecovery")(function* (values) {
       const { keyRecoveryOp } = yield* Effect.promise(() =>
-        import("../key-recover.ts").then((m) => ({ keyRecoveryOp: m.keyRecoveryOp })),
+        import("./key-recover.ts").then((m) => ({ keyRecoveryOp: m.keyRecoveryOp })),
       );
 
       const context = yield* openSession(values.server);

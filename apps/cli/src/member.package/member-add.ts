@@ -41,7 +41,7 @@ import {
   pinMismatchOf,
   verifyAcceptanceBlock,
   verifyIssuance,
-} from "../invite.ts";
+} from "../invite.package/index.ts";
 import { CliIo } from "../io.ts";
 import type { FingerprintBook } from "../known-fingerprints.ts";
 import { logNote, logWarning } from "../notice.ts";

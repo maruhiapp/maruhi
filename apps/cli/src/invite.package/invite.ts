@@ -46,16 +46,16 @@ import {
 } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { devicesOf } from "./device-key.ts";
-import { displayText, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import type { InviteLinkData, InviteRole } from "./invite-link.ts";
-import { CliIo } from "./io.ts";
-import { type InvitePins, issuedPinOf } from "./pins.ts";
-import { describeScope, sameScope } from "./scope.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { devicesOf } from "../device-key.ts";
+import { displayText, formatUtcMinutes } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import type { InviteLinkData, InviteRole } from "../invite-link.ts";
+import { CliIo } from "../io.ts";
+import { type InvitePins, issuedPinOf } from "../pins.ts";
+import { describeScope, sameScope } from "../scope.ts";
 
 /** The issuance (a listing response row — §15-1). */
 export interface InviteIssuance {
