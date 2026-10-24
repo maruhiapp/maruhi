@@ -101,7 +101,7 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
  * ["variables"][0]["version"]`). A response body can carry variable names
  * and ciphertexts, so if this ever became value-containing formatting,
  * diagnostics would become a leak path — that property is pinned by
- * units.test.ts's **negative check** (it fails if upstream changes it).
+ * failure.test.ts's **negative check** (it fails if upstream changes it).
  *
  * Newlines are folded into one line before neutralizing (`displayText`
  * also replaces newlines with the replacement character — unfolded it

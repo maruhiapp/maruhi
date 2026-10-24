@@ -8,7 +8,8 @@
 // hand-rolled mechanism is needed to refuse "an option that does not apply
 // to that operation". The property "a flag the operation lacks is a usage
 // error (exit 2)" is upheld by the declaration + teardown (pinned by
-// effect-cli.test.ts).
+// env-command.test.ts, server-command.test.ts, invite-command.test.ts and
+// member-command.test.ts).
 //
 // The discipline (ADR-0016's decisions):
 // 1. **Never write a hand-rolled scan for argument checks**. Everything is
@@ -175,7 +176,7 @@ import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.t
  * it. Holding the parents' stages as a hand-written copy would leave only
  * the dispatch and diagnostics stale when a subcommand is added.
  * makeRootCommand's `Command.make(name)` uses the same spelling as this
- * key (a disagreement falls in effect-cli.test.ts's conformity check).
+ * key (a disagreement fails command-specs.test.ts's tree walk).
  */
 const GROUP_CONFIGS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, Param.Any>>>>>
