@@ -8,6 +8,7 @@ import {
   type ChainDevice,
   type ChainEntry,
   type ChainMember,
+  deviceReceivesEnvironment,
   isApprovalTarget,
   memberScopeOf,
   type ProposableOperation,
@@ -26,7 +27,7 @@ import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "
 import { signEntryAtHead } from "../chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
 import type { IdentityBacking } from "../config.ts";
-import { deviceReceivesEnvironment, ROLE_RANK } from "../dek-wrap.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
 import type { DekRecipient } from "../deks.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "../deks.ts";
 import { devicesOf, memberHasKeys } from "../device-key.ts";

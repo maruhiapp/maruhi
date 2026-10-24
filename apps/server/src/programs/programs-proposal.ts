@@ -20,18 +20,17 @@
 import type { EnvironmentId, UserId, VariableId } from "@maruhi/core";
 import { ROTATION_CONNECTORS } from "@maruhi/core";
 import type { ChainState } from "@maruhi/crypto";
-import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
+import { proposalRecipientsOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import { dataEvent } from "../data/data-events.ts";
-import { requireMemberState, roleAtLeast } from "../data/data-guards.ts";
+import { requireMemberState } from "../data/data-guards.ts";
 import type { DataActor } from "../data/data-plane.ts";
 import type { DataRejectedError, RotationProposalRejectReason } from "../data/data-rejection.ts";
 import { rejectData } from "../data/data-rejection.ts";
 import type { DataStoreShape, StoredProposal, StoredProposalVariable } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
-import { deviceReceivesEnvironment } from "../dek-wraps.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import type { ChainStore } from "../do/chain-store.ts";
 import { MAX_PENDING_ROTATION_PROPOSALS, MAX_ROTATION_PROPOSALS_PER_WINDOW } from "../policy.ts";
@@ -95,30 +94,21 @@ export interface ProposalResolutionInput {
 }
 
 /**
- * The recipient set W(E) (CRYPTO_SPEC §5.3): every device of each current
- * member with role member or above whose effective scope includes E —
- * R(E) minus readers and server keys. Keyed like the wrap store
- * (`user_id:enc_pub_hex`).
+ * The recipient set W(E) (CRYPTO_SPEC §5.3 — proposalRecipientsOf in
+ * @maruhi/crypto, the definition the minting client seals to): every device
+ * of each current member whose effective permission has role member or
+ * above and E in scope — R(E) minus readers, reader-capped devices and
+ * server keys. Keyed like the wrap store (`user_id:enc_pub_hex`).
  */
 function proposalRecipientKeys(
   state: ChainState,
   environmentId: EnvironmentId,
 ): ReadonlySet<string> {
-  const keys = new Set<string>();
-  for (const [userId, member] of state.members) {
-    for (const device of member.devices.values()) {
-      // The device's effective permission (person ∩ device — §6.2): a
-      // reader-capped device of a member could open the value but never
-      // push it, so it is not a recipient
-      if (
-        roleAtLeast(effectivePermissionOf(member, device).role, "member") &&
-        deviceReceivesEnvironment(member, device, environmentId)
-      ) {
-        keys.add(`${userId}:${device.encPubHex}`);
-      }
-    }
-  }
-  return keys;
+  return new Set(
+    proposalRecipientsOf(state, environmentId).map(
+      ({ member, device }) => `${member.userId}:${device.encPubHex}`,
+    ),
+  );
 }
 
 /** The stored connector name narrowed to the vocabulary (anything else is storage corruption — a defect, never re-read as a default). */
