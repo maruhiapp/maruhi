@@ -1,5 +1,6 @@
 // `maruhi member list`: verified-chain-derived member rows (user id, role,
-// scope, devices — zero values. The group's overview lives in member.ts).
+// scope, devices — zero values. The group's overview lives in
+// member.package/member.ts).
 
 import { type UserId } from "@maruhi/core";
 import type { ChainDevice, MemberScope, Role } from "@maruhi/crypto";

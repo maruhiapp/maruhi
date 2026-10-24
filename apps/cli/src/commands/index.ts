@@ -34,6 +34,13 @@
 import { Command, Param } from "effect/cli";
 
 import {
+  approvalApproveConfig,
+  approvalListConfig,
+  approvalShowConfig,
+  approvalWithdrawConfig,
+  makeApprovalCommands,
+} from "../approval.package/command.ts";
+import {
   auditInvitesConfig,
   auditListConfig,
   auditReconcileConfig,
@@ -57,6 +64,13 @@ import {
   makeGuardianCommands,
 } from "../guardian.package/command.ts";
 import {
+  memberAddConfig,
+  memberChangeRoleConfig,
+  memberListConfig,
+  memberRemoveConfig,
+  makeMemberCommands,
+} from "../member.package/command.ts";
+import {
   mirrorMarkConfig,
   mirrorPromoteConfig,
   mirrorStatusConfig,
@@ -74,19 +88,17 @@ import {
   makeSchemaCommands,
 } from "../schema.package/command.ts";
 import {
+  serverGrantConfig,
+  serverRevokeConfig,
+  makeServerCommands,
+} from "../server.package/command.ts";
+import {
   syncApplyConfig,
   syncInitConfig,
   syncPlanConfig,
   makeSyncCommands,
 } from "../sync.package/command.ts";
 import { agentConfig, agentStatusConfig, makeAgentCommands } from "./agent.ts";
-import {
-  approvalApproveConfig,
-  approvalListConfig,
-  approvalShowConfig,
-  approvalWithdrawConfig,
-  makeApprovalCommands,
-} from "./approval.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {
   deviceAddConfig,
@@ -127,13 +139,6 @@ import {
 import { loginConfig, logoutConfig, makeLoginLogoutCommands } from "./login-logout.ts";
 import { mcpConfig, makeMcpCommand } from "./mcp.ts";
 import {
-  memberAddConfig,
-  memberChangeRoleConfig,
-  memberListConfig,
-  memberRemoveConfig,
-  makeMemberCommands,
-} from "./member.ts";
-import {
   projectAnchorConfig,
   projectCheckpointConfig,
   projectExportConfig,
@@ -154,7 +159,6 @@ import {
   rotationRejectConfig,
   makeRotationCommands,
 } from "./rotation.ts";
-import { serverGrantConfig, serverRevokeConfig, makeServerCommands } from "./server.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
 import {
   varHistoryConfig,

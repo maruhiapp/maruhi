@@ -126,7 +126,7 @@
         "apps/cli/src/commands/device.ts",
         "apps/cli/src/commands/env.ts",
         "apps/cli/src/commands/rotation.ts",
-        "apps/cli/src/commands/server.ts",
+        "apps/cli/src/server.package/command.ts",
         "apps/cli/src/commands/pull-run.ts",
         "apps/cli/src/keychain.ts",
         "apps/cli/src/context.ts",

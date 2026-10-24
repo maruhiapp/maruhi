@@ -41,22 +41,22 @@ import type {
 import { decodeHex, isApprovalTarget } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   ensureStillTarget,
   type ProposalInput,
   proposeOperation,
   proposeRecheck,
   type ProposedSummary,
-} from "./approval.ts";
-import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
-import { appendOperationWithRetry } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import type { DekRecipient } from "./deks.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo } from "./io.ts";
+} from "../approval.package/index.ts";
+import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "../backfill.ts";
+import { appendOperationWithRetry } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import type { DekRecipient } from "../deks.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo } from "../io.ts";
 
 /** The server key's public face (`/auth/config` — AUTH_SPEC §4). */
 interface ServerKeyConfig {

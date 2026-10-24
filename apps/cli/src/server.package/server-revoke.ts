@@ -27,25 +27,25 @@ import { type EnvironmentId, type KeyFingerprintHex, type UserId } from "@maruhi
 import { isApprovalTarget, type ProposableOperation, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   ensureStillTarget,
   type ProposalInput,
   proposeOperation,
   type ProposedSummary,
-} from "./approval.ts";
-import { appendOperationWithRetry } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
-import { cliError, type CliError } from "./errors.ts";
+} from "../approval.package/index.ts";
+import { appendOperationWithRetry } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "../deks.ts";
+import { cliError, type CliError } from "../errors.ts";
 import {
   baselinesOf,
   rotationMandates,
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
-} from "./rotation-sweep.ts";
-import { compareCodePoints } from "./scope.ts";
+} from "../rotation-sweep.ts";
+import { compareCodePoints } from "../scope.ts";
 
 /** The reason recorded on the chain by the post-revoke whole-environment rotation (§6.2 payload). */
 export const REVOKE_ROTATION_REASON = "server-revoked";

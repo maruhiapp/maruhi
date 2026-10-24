@@ -4,7 +4,6 @@ import { type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import type { Fulfilment } from "../approval-approve.ts";
 import {
   type ProposalView,
   describeInnerOperation,
@@ -18,16 +17,26 @@ import {
   resolveProposalRef,
   voteEligibility,
 } from "../approval-rules.ts";
+import { NonBlank, projectFlags, singleFlag } from "../commands/flags.ts";
+import {
+  loadMasterKeys,
+  openMetadataProject,
+  openProject,
+  sweepRotateFor,
+} from "../commands/lazy.ts";
+import {
+  describeNeeded,
+  reportMemberAdd,
+  reportRoleChangeFulfilment,
+  reportSweepOutcome,
+} from "../commands/shared.ts";
 import type { CliServices, CommonFlags } from "../context.ts";
 import { displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import type { SweepOutcome } from "../rotation-sweep.ts";
-import { NonBlank, projectFlags, singleFlag } from "./flags.ts";
-import { loadMasterKeys, openMetadataProject, openProject, sweepRotateFor } from "./lazy.ts";
-import { reportMemberAdd, reportRoleChangeFulfilment } from "./member.ts";
-import { describeNeeded, reportSweepOutcome } from "./shared.ts";
+import type { Fulfilment } from "./approval-approve.ts";
 
 /** The proposal id positional (`maruhi approval show / approve / withdraw` — approval item 23). */
 const proposalIdArgument = () =>
@@ -38,6 +47,7 @@ const proposalIdArgument = () =>
     Argument.withSchema(NonBlank),
   );
 
+/** @public */
 export const approvalListConfig = {
   ...projectFlags(),
   json: singleFlag(
@@ -46,10 +56,13 @@ export const approvalListConfig = {
   ),
 };
 
+/** @public */
 export const approvalShowConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
 
+/** @public */
 export const approvalApproveConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
 
+/** @public */
 export const approvalWithdrawConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
 
 /* -------------------------------------------------------------------------- */
@@ -118,7 +131,7 @@ function readyNote(view: ProposalView): string | null {
 }
 
 /** `maruhi approval list [--json]` (the verified chain's pending — K5-M. Vote counts are re-tallied). */
-const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(function* (
+const approvalListCommand = Effect.fn("approval-command.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
@@ -144,7 +157,7 @@ const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(f
 });
 
 /** `maruhi approval show <id>` (the proposer, the inner op, the expiry, the voters, whether I can approve). */
-const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(function* (
+const approvalShowCommand = Effect.fn("approval-command.approvalShowCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
@@ -241,7 +254,7 @@ function eligibilityLine(
 }
 
 /** Reporting the sweep part of the approver's fulfillment (remove / revoke) (preamble → sweep → the completion line). */
-const reportFulfilledSweep = Effect.fn("commands-approval.reportFulfilledSweep")(function* (
+const reportFulfilledSweep = Effect.fn("approval-command.reportFulfilledSweep")(function* (
   io: CliIoShape,
   input: {
     readonly intro: string;
@@ -327,11 +340,11 @@ function reportFulfilment(
 }
 
 /** `maruhi approval approve <id>` (sign → fulfill if complete — K6-B / approval item 22). */
-const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveCommand")(function* (
+const approvalApproveCommand = Effect.fn("approval-command.approvalApproveCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { approveProposalOp } = yield* Effect.promise(() =>
-    import("../approval-approve.ts").then((m) => ({ approveProposalOp: m.approveProposalOp })),
+    import("./approval-approve.ts").then((m) => ({ approveProposalOp: m.approveProposalOp })),
   );
 
   const io = yield* CliIo;
@@ -370,11 +383,11 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
 });
 
 /** `maruhi approval withdraw <id>` (the proposer or an owner — K6-L). */
-const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCommand")(function* (
+const approvalWithdrawCommand = Effect.fn("approval-command.approvalWithdrawCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { withdrawProposalOp } = yield* Effect.promise(() =>
-    import("../approval.ts").then((m) => ({ withdrawProposalOp: m.withdrawProposalOp })),
+    import("./approval.ts").then((m) => ({ withdrawProposalOp: m.withdrawProposalOp })),
   );
 
   const io = yield* CliIo;
@@ -397,6 +410,7 @@ const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCom
   );
 });
 
+/** @public */
 export function makeApprovalCommands(onExitCode: (code: number) => void) {
   const approvalList = Command.make("list", approvalListConfig, (values) =>
     approvalListCommand({ server: values.server, project: values.project, json: values.json }),
@@ -421,7 +435,7 @@ export function makeApprovalCommands(onExitCode: (code: number) => void) {
   const approvalApprove = Command.make(
     "approve",
     approvalApproveConfig,
-    Effect.fn("commands-approval.approvalApprove")(function* (values) {
+    Effect.fn("approval-command.approvalApprove")(function* (values) {
       onExitCode(
         yield* approvalApproveCommand({
           server: values.server,

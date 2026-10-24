@@ -18,20 +18,30 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   type ProposalInput,
   type ProposeContext,
   type ProposedSummary,
   proposeOperation,
   proposeRecheck,
-} from "./approval.ts";
-import { signEntryAtHead } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import type { DekRecipient } from "./deks.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
+} from "../approval.package/index.ts";
+import { signEntryAtHead } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
+import type { DekRecipient } from "../deks.ts";
+import { chainDeletedEnvironments } from "../deks.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
+import type { SweepRotate } from "../rotation-sweep.ts";
+import {
+  compareCodePoints,
+  describeScope,
+  environmentsOfScopeAt,
+  requireScopeEnvironmentsExist,
+  sameScope,
+  scopeChangeAt,
+  scopeContains,
+} from "../scope.ts";
 import { backfillAllEnvironments, type MemberAddSummary } from "./member-add.ts";
 import {
   actorAuthority,
@@ -45,16 +55,6 @@ import {
   sweepAfterMandate,
   targetedOpRejection,
 } from "./member.ts";
-import type { SweepRotate } from "./rotation-sweep.ts";
-import {
-  compareCodePoints,
-  describeScope,
-  environmentsOfScopeAt,
-  requireScopeEnvironmentsExist,
-  sameScope,
-  scopeChangeAt,
-  scopeContains,
-} from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // member change-role

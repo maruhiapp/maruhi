@@ -34,14 +34,14 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { ensureStillTarget, type ProposedSummary } from "./approval.ts";
-import { appendWithRetry } from "./chain-append.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import { chainDeletedEnvironments } from "./deks.ts";
-import { ownDeviceBySigningKey } from "./device-key.ts";
-import { cliError, type CliError } from "./errors.ts";
+import type { MaruhiClient } from "../api.ts";
+import { ensureStillTarget, type ProposedSummary } from "../approval.package/index.ts";
+import { appendWithRetry } from "../chain-append.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
+import { chainDeletedEnvironments } from "../deks.ts";
+import { ownDeviceBySigningKey } from "../device-key.ts";
+import { cliError, type CliError } from "../errors.ts";
 import {
   baselinesOf,
   partitionSweepBaselines,
@@ -50,7 +50,7 @@ import {
   type SweepOutcome,
   type SweepRotate,
   sweepRotations,
-} from "./rotation-sweep.ts";
+} from "../rotation-sweep.ts";
 
 /**
  * Each op's result under four-eyes (K6): if the policy targets the inner
