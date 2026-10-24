@@ -138,7 +138,7 @@ export type DataRejection =
       readonly reason: EnvironmentConflictReason;
     }
   // Chain-acceptance family (shared by the composite request §12-4 and
-  // the generic chain API — chain-do.ts. The worker maps them onto
+  // the generic chain API — programs-chain.ts. The worker maps them onto
   // api-schema's ChainHeadConflict / ChainEntryInvalid /
   // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired)
   | {

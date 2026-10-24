@@ -32,8 +32,9 @@ import type {
   ImportProvisionResult,
 } from "./db.package/index.ts";
 import { classifyImportedProject, provisionImportedProject } from "./db.package/index.ts";
-import type { OpsRestoreOutcome, ProjectChainDO } from "./do/chain-do.ts";
+import type { ProjectChainDO } from "./do/chain-do.ts";
 import { ProjectChainDO as ProjectChainDOClass } from "./do/chain-do.ts";
+import type { OpsRestoreOutcome } from "./do/do-ops.ts";
 import {
   chainOwners,
   identitiesOnChain,

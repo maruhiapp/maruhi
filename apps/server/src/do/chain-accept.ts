@@ -1,6 +1,6 @@
 // Shared implementation of chain-entry acceptance (CRYPTO_SPEC §6.4).
 //
-// Every path — the generic chain API (init / append in chain-do.ts) and
+// Every path — the generic chain API (init / append in programs-chain.ts) and
 // composite requests (create / rotate in composite-programs.ts) — passes
 // through the same 4-step acceptance: "canonical-size check → chain
 // capacity → verifyChain re-run → insert + audit mirror". This

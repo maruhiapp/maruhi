@@ -1,7 +1,7 @@
 // Shared parts of the project DO's chain storage (ChainStore) and derived
 // state (ChainState).
 //
-// Used by both chain-do.ts (the chain API's programs) and the data-plane
+// Used by both programs-chain.ts (the chain API's programs) and the data-plane
 // programs (programs-environment.ts / programs-variable.ts /
 // programs-dek.ts): the authorization source of truth is the chain-derived
 // current member set (CRYPTO_SPEC §6.4), and data operations are also

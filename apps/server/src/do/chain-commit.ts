@@ -1,5 +1,5 @@
 // Shared write phase that records §3.4 mirror events alongside acceptance
-// of a chain append (generic append = chain-do.ts / standalone checkpoint
+// of a chain append (generic append = programs-chain.ts / standalone checkpoint
 // = checkpoint-accept.ts). A single synchronous block (= one event-loop
 // task) writes the chain insert, mirror append, and acceptance side
 // effects (+ path-specific extra synchronous writes), so a crash cannot

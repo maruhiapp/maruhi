@@ -23,7 +23,8 @@ import { Clock, Effect, Ref } from "effect";
 
 import type { OpsBackupAttempt } from "../db.package/index.ts";
 import { OpsRepo } from "../db.package/index.ts";
-import type { Env, OpsBackupOutcome } from "../do/chain-do.ts";
+import type { Env } from "../do/chain-do.ts";
+import type { OpsBackupOutcome } from "../do/do-ops.ts";
 import { projectStub, rpcCall } from "../worker-env.ts";
 import {
   OPS_BACKUP_MAX_BYTES,

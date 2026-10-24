@@ -62,9 +62,9 @@ import type { DataActor } from "../src/data/data-plane.ts";
 import type { DataRejection } from "../src/data/data-rejection.ts";
 import type { DataStore } from "../src/data/data-store.ts";
 import { dataStoreLayer } from "../src/data/data-store.ts";
-import { appendProgram, restoreProgram, snapshotProgram } from "../src/do/chain-do.ts";
 import type { ChainStore, StateCache } from "../src/do/chain-store.ts";
 import { chainStoreLayer } from "../src/do/chain-store.ts";
+import { restoreProgram } from "../src/do/do-ops.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "../src/policy.ts";
 import {
   createEnvironmentCompositeProgram,
@@ -72,6 +72,7 @@ import {
   rotateEpochCompositeProgram,
 } from "../src/programs/composite-programs.ts";
 import { auditHeadProgram } from "../src/programs/programs-audit.ts";
+import { appendProgram, snapshotProgram } from "../src/programs/programs-chain.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
