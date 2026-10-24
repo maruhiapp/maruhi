@@ -33,7 +33,7 @@ const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // Wire boundary: the lease request's oidcToken field (A3 — AUTH_SPEC §14-2)
   "ci-lease.ts": 1,
-  // ci rotate (PF7b): the leased credential and admin inputs handed to the connector in memory, and the lease token on the mint request
+  // ci rotate (PF7b): the leased credential and admin inputs handed to the connector in memory, and the lease token on the pre-flight and mint requests
   "ci-rotate.ts": 5,
   "rotation-proposals.ts": 1,
   // Input to the HPKE wrap (a cryptographic boundary)

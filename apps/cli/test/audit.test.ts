@@ -6,7 +6,7 @@
 //     is shown distinctly as the "record" and never promoted to the display
 //     name position (TCB discipline — AUDIT_SPEC §7)
 //  2. chain.* mirror rows are cross-checked against the verified chain (the
-//     shared mapping chainMirrorEvent): a match is mirror=OK, a mismatch is a
+//     shared mapping chainMirrorEvents): a match is mirror=OK, a mismatch is a
 //     warning + exit code 1. A row outside chain.* claiming a chain_seq is
 //     likewise shown with a label and counts as an integrity violation
 //     (evidence of tampering — §6)
@@ -943,6 +943,22 @@ describe("argument-shape checks (before any communication)", () => {
     const env = await makeTestEnv();
     expect(await runCli(["audit", "self", "--project", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown flag");
+  });
+
+  it("an unknown flag lists the accepted flags as they are typed (--expand-reads)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["audit", "--no-such-flag"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "flags this command accepts: --server --project --limit --before --event --actor --target --env --var --expand-reads --help --version",
+    );
+  });
+
+  it("a subcommand's flag typed before the subcommand is pointed after it (--expand-reads)", async () => {
+    const env = await makeTestEnv();
+    expect(await runCli(["audit", "--expand-reads", "list"], env.layer)).toBe(2);
+    expect(env.errors.join("\n")).toContain(
+      "--expand-reads belongs after the subcommand — e.g. maruhi audit list --expand-reads",
+    );
   });
 
   it("out-of-range limit and unknown operations are usage errors (exit 2)", async () => {

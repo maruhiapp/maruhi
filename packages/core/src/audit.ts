@@ -10,7 +10,7 @@
 // (DataActor in apps/server data-plane.ts) and for D1 (D1AuditActor in
 // db.package/audit.ts) derive from this type.
 //
-// The chain-mirror mapping (chainMirrorEvent) lives here because **the
+// The chain-mirror mapping (chainMirrorEvents) lives here because **the
 // server's mirror append and the CLI's mirror verification (`maruhi
 // audit verify` — AUDIT_SPEC §1-5 / §6 mitigation) share one
 // implementation**. If the mapping were maintained in two places,
