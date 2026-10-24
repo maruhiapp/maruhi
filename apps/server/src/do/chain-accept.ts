@@ -20,8 +20,8 @@ import { Effect } from "effect";
 
 import type { AuditRotationRead } from "../audit-store-rotation-read.ts";
 import type { AuditEventInput } from "../audit-store.ts";
-import type { DataRejectedError } from "../data/data-plane.ts";
-import { rejectData } from "../data/data-plane.ts";
+import type { DataRejectedError } from "../data/data-rejection.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { StaleWrapRef } from "../data/data-store.ts";
 import {
   MAX_CHAIN_ENTRIES,

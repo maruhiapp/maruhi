@@ -15,13 +15,10 @@ import { Effect } from "effect";
 import { catchCryptoErrors } from "../crypto-catch.ts";
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
 import { metaVersionsExceeded } from "../quotas.ts";
-import type {
-  DataRejectedError,
-  MemberWithDevice,
-  MetaStatementInput,
-  MetaStatementRejectReason,
-} from "./data-plane.ts";
-import { rejectData } from "./data-plane.ts";
+import type { MemberWithDevice } from "./data-guards.ts";
+import type { MetaStatementInput } from "./data-plane.ts";
+import type { DataRejectedError, MetaStatementRejectReason } from "./data-rejection.ts";
+import { rejectData } from "./data-rejection.ts";
 import type { MetaAnchor } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 

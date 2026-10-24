@@ -106,11 +106,10 @@ export const KeyFingerprintHexSchema = Schema.String.pipe(
 
 /**
  * Mints a {@link KeyFingerprintHex} where no Schema field does the decoding.
- * Its one shipped user is the DEK recipient class in
- * apps/server/src/data/data-plane.ts (`dekRecipientTarget`: a server
- * recipient's position holds a server key fingerprint); a new caller is a new
- * mint site for `.oxlintrc.json`. Also the format check behind the computed
- * mints below. Throws on a malformed value.
+ * Its shipped users are the server's stored-row decoders (the data store's
+ * and the audit store's reads); a new caller is a new mint site for
+ * `.oxlintrc.json`. Also the format check behind the computed mints below.
+ * Throws on a malformed value.
  */
 export const decodeKeyFingerprintHex: (value: string) => KeyFingerprintHex =
   Schema.decodeSync(KeyFingerprintHexSchema);

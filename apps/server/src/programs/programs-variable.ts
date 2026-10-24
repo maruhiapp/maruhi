@@ -11,24 +11,24 @@ import { Clock, Effect } from "effect";
 
 import type { AuditEventInput } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
+import { dataEvent } from "../data/data-events.ts";
+import type { MemberWithDevice } from "../data/data-guards.ts";
+import {
+  currentEpochOf,
+  ensureDevicePermission,
+  requireEnvironmentAccess,
+  withSigningDevice,
+} from "../data/data-guards.ts";
 import type {
   DataActor,
-  DataRejection,
   EnvManifestInput,
-  MemberWithDevice,
   MetaStatementInput,
   SchemaPolicy,
   ValueInput,
   VariableVersionValue,
 } from "../data/data-plane.ts";
-import {
-  currentEpochOf,
-  dataEvent,
-  ensureDevicePermission,
-  rejectData,
-  requireEnvironmentAccess,
-  withSigningDevice,
-} from "../data/data-plane.ts";
+import type { DataRejection } from "../data/data-rejection.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { DataWriteOps, VariableRow } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";

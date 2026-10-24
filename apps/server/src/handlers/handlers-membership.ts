@@ -35,7 +35,7 @@ import {
   tokenScopeAllowsForProject,
 } from "../authz.ts";
 import { callProjectData, noContent, unwrapDataOutcome } from "../data/data-http.ts";
-import type { DataOutcome } from "../data/data-plane.ts";
+import type { DataOutcome } from "../data/data-rejection.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "../db.package/index.ts";
 import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "../do/chain-do.ts";
 import {
@@ -48,7 +48,7 @@ import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
 
 // Mapping of outcomes at the RPC boundary onto the api-schema typed errors /
 // success responses. A chain-RPC rejection arrives as a DataRejection
-// (data-plane.ts), and the same unwrapDataOutcome (data-http.ts) as the data
+// (data-rejection.ts), and the same unwrapDataOutcome (data-http.ts) as the data
 // plane picks and maps it against the set derived from the endpoint's
 // contract declaration (no double-tracking of chain-error mappings).
 // "project-id-mismatch" cannot happen as long as the worker passes the ID it

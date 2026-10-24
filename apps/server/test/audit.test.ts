@@ -13,7 +13,7 @@ import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:te
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
-import { dataEvent } from "../src/data/data-plane.ts";
+import { dataEvent } from "../src/data/data-events.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {

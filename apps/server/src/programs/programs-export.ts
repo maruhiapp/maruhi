@@ -17,8 +17,11 @@ import type { UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import type { DataActor, DataRejectedError } from "../data/data-plane.ts";
-import { dataEvent, rejectData, requireMemberState } from "../data/data-plane.ts";
+import { dataEvent } from "../data/data-events.ts";
+import { requireMemberState } from "../data/data-guards.ts";
+import type { DataActor } from "../data/data-plane.ts";
+import type { DataRejectedError } from "../data/data-rejection.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import { DataStore } from "../data/data-store.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import type { ChainStore } from "../do/chain-store.ts";

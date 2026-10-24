@@ -58,7 +58,8 @@ import {
   toValueInput,
   unwrapDataOutcome,
 } from "../src/data/data-http.ts";
-import type { DataActor, DataRejection } from "../src/data/data-plane.ts";
+import type { DataActor } from "../src/data/data-plane.ts";
+import type { DataRejection } from "../src/data/data-rejection.ts";
 import type { DataStore } from "../src/data/data-store.ts";
 import { dataStoreLayer } from "../src/data/data-store.ts";
 import { appendProgram, restoreProgram, snapshotProgram } from "../src/do/chain-do.ts";

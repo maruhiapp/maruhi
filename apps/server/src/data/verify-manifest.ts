@@ -41,8 +41,10 @@ import { verifyDistributedEnvManifest } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { catchCryptoErrors } from "../crypto-catch.ts";
-import type { EnvManifestInput, ManifestRejectReason, MemberWithDevice } from "./data-plane.ts";
-import { rejectData } from "./data-plane.ts";
+import type { MemberWithDevice } from "./data-guards.ts";
+import type { EnvManifestInput } from "./data-plane.ts";
+import type { ManifestRejectReason } from "./data-rejection.ts";
+import { rejectData } from "./data-rejection.ts";
 import { DataStore } from "./data-store.ts";
 
 /**

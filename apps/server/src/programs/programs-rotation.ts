@@ -18,8 +18,10 @@ import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
+import { dataEvent } from "../data/data-events.ts";
+import { requireMemberState } from "../data/data-guards.ts";
 import type { DataActor } from "../data/data-plane.ts";
-import { dataEvent, rejectData, requireMemberState } from "../data/data-plane.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { MAX_ROTATION_DISMISSALS_PER_REQUEST } from "../policy.ts";
 import type { EffectiveRotationFlag } from "../rotation-detect.ts";
