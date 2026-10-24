@@ -113,7 +113,7 @@ leaks every secret. Therefore:
 
 | Layer | Technology |
 |---|---|
-| Runtime (dev/CLI) | Bun 1.4.2 (strictly pinned via `.bun-version`. Reached the 1.4 line per ADR-0004) |
+| Runtime (dev/CLI) | Bun 1.4.4 (strictly pinned via `.bun-version`. Reached the 1.4 line per ADR-0004) |
 | Server runtime | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | Server HTTP layer | Effect v4 `effect/http-api` HttpApi (no Hono) |
 | App foundation | Effect v4 line (pinned. Current `4.0.6`) |
