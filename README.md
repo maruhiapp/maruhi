@@ -98,14 +98,22 @@ If you want the `mh` alias, link it next to the binary: `ln -s maruhi mh`
 
 </details>
 
-### npm (Bun runtime required)
+### npm (Linux / macOS. Bun runtime required)
 
 The CLI depends on Bun-specific APIs such as the OS keychain (`Bun.secrets`), so the npm package
 needs [Bun](https://bun.sh). The minimum version matches the repository [`.bun-version`](.bun-version);
 the published package's `engines.bun` is derived from the same file. Without Bun:
-starting under Node.js prints a hint and exits; invoking `maruhi` directly on Unix fails at shebang
-resolution as `env: bun: No such file or directory` (wording varies with the OS `env` implementation.
-Either way, installing Bun fixes it):
+starting under Node.js prints a hint and exits; invoking `maruhi` directly fails with
+`exec: bun: not found` (wording varies with the shell. Either way, installing Bun fixes it).
+
+The package's `maruhi` command starts as a `/bin/sh` launcher that runs the bundle as
+`bun --no-env-file --env-file=/dev/null --config=/dev/null`, so Bun reads no `.env` file and no
+`bunfig.toml` from the directory you run it in (a `.env` there could hand the CLI variables such as
+`NODE_TLS_REJECT_UNAUTHORIZED`, and a `bunfig.toml` `preload` would run its code inside the CLI).
+`--env-file=/dev/null` is for Bun before 1.3.3, which ignores `--no-env-file` (npm and bun install
+the package there despite its `engines.bun`). The package is for Linux and macOS: Windows has no
+launcher that does this (Bun on Windows cannot read `--config=/dev/null`), so on Windows use the
+prebuilt binary above.
 
 ```sh
 # During the pre-release period (until v0.1.0), pass the dist-tag `next`.

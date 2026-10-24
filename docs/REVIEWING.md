@@ -212,23 +212,37 @@ What exists today:
   including a `--preload` in `BUN_OPTIONS`, throw `EvalError`. The exception
   is `BUN_BE_BUN=1` in the process environment, which makes any Bun
   executable act as the bun CLI, without the flag. The binaries are also
-  compiled with `--no-compile-autoload-bunfig`, so they do not read the
-  `bunfig.toml` of the directory they run in (a strict binary would exit
-  with `EvalError` on its `preload`). `bun build` ignores a misspelled flag,
-  so before it builds the host's own binary, `build-binaries.ts` compiles a
-  probe the same way, runs it in a directory whose `bunfig.toml` preloads a
-  file that exits 1, and fails unless the probe's `new Function()` throws.
+  compiled with `--no-compile-autoload-dotenv` and
+  `--no-compile-autoload-bunfig`, so they read neither the `.env` files nor
+  the `bunfig.toml` of the directory they run in (a `.env` there could hand
+  the CLI variables such as `NODE_TLS_REJECT_UNAUTHORIZED` or
+  `MARUHI_AGENT_SOCK`, and a strict binary would exit with `EvalError` on a
+  `bunfig.toml` `preload`). `bun build` ignores a misspelled flag, so before
+  it builds the host's own binary, `build-binaries.ts` compiles a probe the
+  same way and runs it in a directory whose `.env` sets a variable and whose
+  `bunfig.toml` preloads a file that exits 1. The build fails unless the
+  probe sees no such variable and its `new Function()` throws.
 - The publish jobs refuse an artifact unless its digest (every file's path
   and SHA-256) matches the one the build job set as a job output. Any job of
   the release run can overwrite an artifact, but only the build job can set
   its own outputs.
 - The npm package is published with `npm publish --provenance` through
   trusted publishing (OIDC, no long-lived token), with lifecycle scripts
-  off. No reviewer approval gates the publish jobs yet: that gate is
-  enabled before the first public release ([RELEASING.md](RELEASING.md),
-  "Before the first public release"). Until then the workflow ships no
-  stable version: a stable version fails `bun run check` and a stable tag
-  is refused by the release workflow.
+  off. Its `maruhi` command starts with a `/bin/sh` launcher that runs the
+  bundle as `bun --no-env-file --env-file=/dev/null --config=/dev/null`, so
+  the npm CLI does not read the working directory's `.env` files or
+  `bunfig.toml` either (`apps/cli/scripts/build-npm.ts`;
+  `apps/cli/test/npm-dist.test.ts` runs it in a directory with both).
+  `--env-file=/dev/null` is for Bun before 1.3.3, which ignores
+  `--no-env-file`: npm and bun install the package there despite its
+  `engines.bun`. The package declares `"os": ["darwin", "linux"]`: npm and
+  bun build their Windows launchers from the bundle's first line, and Bun
+  on Windows cannot read `--config=/dev/null`.
+  No reviewer approval gates the publish jobs yet: that gate is enabled
+  before the first public release ([RELEASING.md](RELEASING.md), "Before
+  the first public release"). Until then the workflow ships no stable
+  version: a stable version fails `bun run check` and a stable tag is
+  refused by the release workflow.
 - `packaging/install.sh` refuses to install without a SHA-256 match against
   `checksums.txt`. That file is unsigned: integrity rests on TLS to
   github.com, and the script says so rather than claim signature verification.
