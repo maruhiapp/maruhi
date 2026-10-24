@@ -1,6 +1,6 @@
 // `maruhi env` (discipline: see commands/index.ts).
 
-import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruhi/core";
+import { type EnvironmentId, EnvironmentIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -32,9 +32,16 @@ import {
   openProject,
 } from "./lazy.ts";
 
-/** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */
+/**
+ * The environment ID positional (shared by env's subcommands. The key is
+ * the spelling typed). The format is checked here, before the network, and
+ * the refusal never shows the given value.
+ */
 const environmentIdArgument = (name: string, description: string) =>
-  Argument.String(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
+  Argument.String(name).pipe(
+    Argument.withDescription(description),
+    Argument.withSchema(EnvironmentIdSchema),
+  );
 
 export const envCreateConfig = {
   ...projectFlags(),
@@ -136,20 +143,6 @@ const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
     `Created environment ${environmentId} (epoch=${created.currentEpoch}, DEK wrapped for ${countNoun(created.memberCount, "current member")})`,
   );
 });
-
-/** Format validation of an environment ID passed as a positional (**the given value itself never appears in the error**). */
-function requireEnvironmentId(
-  value: string,
-  example: string,
-): Effect.Effect<EnvironmentId, CliError> {
-  return isEnvironmentId(value)
-    ? Effect.succeed(decodeEnvironmentId(value))
-    : Effect.fail(
-        usageError(
-          `Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: ${example})`,
-        ),
-      );
-}
 
 /** `maruhi env rotate <id> [--reason <text>] [--new-epoch]` (§7 / §12-4). */
 const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
@@ -403,12 +396,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     "create",
     envCreateConfig,
     Effect.fn("commands-env.envCreate")(function* (values) {
-      // The format is an additional check after the declaration (NonBlank). Seen before the network
-      const environmentId = yield* requireEnvironmentId(
-        values["environment-id"],
-        "`maruhi env create dev`",
-      );
-      yield* envCreateCommand(values, environmentId);
+      yield* envCreateCommand(values, values["environment-id"]);
     }),
   ).pipe(Command.withDescription("Create an environment"));
 
@@ -416,13 +404,12 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     "rotate",
     envRotateConfig,
     Effect.fn("commands-env.envRotate")(function* (values) {
-      const environmentId = yield* requireEnvironmentId(
-        values["environment-id"],
-        "`maruhi env rotate dev`",
-      );
       const { reason, "new-epoch": newEpoch, config: syncConfig, ...flags } = values;
       onExitCode(
-        yield* envRotateCommand({ ...flags, reason, newEpoch, config: syncConfig }, environmentId),
+        yield* envRotateCommand(
+          { ...flags, reason, newEpoch, config: syncConfig },
+          values["environment-id"],
+        ),
       );
     }),
   ).pipe(
@@ -447,14 +434,8 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     "diff",
     envDiffConfig,
     Effect.fn("commands-env.envDiff")(function* (values) {
-      const environmentId = yield* requireEnvironmentId(
-        values["environment-id"],
-        "`maruhi env diff dev prod`",
-      );
-      const otherEnvironmentId = yield* requireEnvironmentId(
-        values["other-environment-id"],
-        "`maruhi env diff dev prod`",
-      );
+      const environmentId = values["environment-id"];
+      const otherEnvironmentId = values["other-environment-id"];
       if (otherEnvironmentId === environmentId) {
         // Comparing an environment with itself is always empty = the
         // request itself is a misspelling. The given values are not shown
@@ -477,11 +458,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     "rename",
     envRenameConfig,
     Effect.fn("commands-env.envRename")(function* (values) {
-      const environmentId = yield* requireEnvironmentId(
-        values["environment-id"],
-        "`maruhi env rename dev Development`",
-      );
-      yield* envRenameCommand(values, environmentId, values["new-name"]);
+      yield* envRenameCommand(values, values["environment-id"], values["new-name"]);
     }),
   ).pipe(
     Command.withDescription(
@@ -505,11 +482,7 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
     "rm",
     envRmConfig,
     Effect.fn("commands-env.envRm")(function* (values) {
-      const environmentId = yield* requireEnvironmentId(
-        values["environment-id"],
-        "`maruhi env rm staging`",
-      );
-      yield* envRmCommand(values, environmentId);
+      yield* envRmCommand(values, values["environment-id"]);
     }),
   ).pipe(
     Command.withDescription(

@@ -610,7 +610,9 @@ describe("env's nested subcommands (ADR-0016 decision 6 — stage 2)", () => {
       const { env, server } = await startEnv();
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
       const errors = env.errors.join("\n");
-      expect(errors).toContain("Invalid environment ID");
+      expect(errors).toContain(
+        "Unacceptable value for positional argument environment-id (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+      );
       expect(errors).not.toContain("topsecret");
       expect(server.requests, argv.join(" ")).toHaveLength(0);
     }
@@ -1019,6 +1021,24 @@ describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("project verify / anchor / checkpoint / export refuse a malformed --project at its declaration, before login", async () => {
+    // Checked only where the project is resolved, a typo would hide behind
+    // "Not logged in" (verify and export open the session first). The
+    // value is never shown
+    for (const subcommand of ["verify", "anchor", "checkpoint", "export"]) {
+      const env = await makeTestEnv();
+      expect(
+        await runCli(["project", subcommand, "--project", "not-a-genesis"], env.layer),
+        subcommand,
+      ).toBe(2);
+      expect(env.errors.join("\n"), subcommand).toContain(
+        "Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
+      );
+      expect(env.errors.join("\n"), subcommand).not.toContain("Not logged in");
+      expectNoLeak(env, ["not-a-genesis"]);
+    }
+  });
+
   it("bare `maruhi key` / `maruhi project` is a usage error (2)", async () => {
     for (const command of ["key", "project"]) {
       const { env, server } = await startEnv();
@@ -1236,8 +1256,18 @@ describe("rotation / audit nested subcommands (ADR-0016 stage 3 ③)", () => {
   it("the audit list filter's format check fails before any communication", async () => {
     const { env, server } = await startEnv();
     expect(await runCli(["audit", "--env", "!bad"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
     expect(server.requests).toHaveLength(0);
+
+    const badVar = await startEnv();
+    expect(await runCli(["audit", "list", "--var", "sk-live-x!"], badVar.env.layer)).toBe(2);
+    expect(badVar.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --var (expected: variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
+    expectNoLeak(badVar.env, ["sk-live-x!"]);
+    expect(badVar.server.requests).toHaveLength(0);
   });
 
   it("bare `maruhi rotation` / an unknown operation is a usage error (2)", async () => {
@@ -1291,19 +1321,32 @@ describe("rotation / audit nested subcommands (ADR-0016 stage 3 ③)", () => {
     expect(missing.server.requests).toHaveLength(0);
   });
 
-  it("the rotation-dismiss target's format check fails before any communication (the value is never shown)", async () => {
+  it("rotation dismiss's and proposals' format checks fail before any communication (the value is never shown)", async () => {
     const env1 = await startEnv();
     expect(
       await runCli(["rotation", "dismiss", "sk-live-x!", "--env", "prod"], env1.env.layer),
     ).toBe(2);
-    expect(env1.env.errors.join("\n")).toContain("Invalid variableId");
+    expect(env1.env.errors.join("\n")).toContain(
+      "Unacceptable value for positional argument variable (expected: variable id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
     expectNoLeak(env1.env, ["sk-live-x!"]);
     expect(env1.server.requests).toHaveLength(0);
 
     const env2 = await startEnv();
     expect(await runCli(["rotation", "dismiss", "--all", "--env", "!bad"], env2.env.layer)).toBe(2);
-    expect(env2.env.errors.join("\n")).toContain("Invalid environment ID for --env");
+    expect(env2.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
+    expectNoLeak(env2.env, ["!bad"]);
     expect(env2.server.requests).toHaveLength(0);
+
+    const env3 = await startEnv();
+    expect(await runCli(["rotation", "proposals", "--env", "!bad"], env3.env.layer)).toBe(2);
+    expect(env3.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
+    expectNoLeak(env3.env, ["!bad"]);
+    expect(env3.server.requests).toHaveLength(0);
   });
 });
 

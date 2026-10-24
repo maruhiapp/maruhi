@@ -1,14 +1,20 @@
 // `maruhi proxy` (discipline: see commands/index.ts).
 
-import { decodeProjectId, isProjectId } from "@maruhi/core";
+import { decodeProjectId, isProjectId, ProjectIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
-import { commonFlags, runCommandArgument, singleFlag, singleValued } from "../commands/flags.ts";
+import {
+  commonFlags,
+  runCommandArgument,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "../commands/flags.ts";
 import { brokeredRun } from "../commands/pull-run.ts";
 import { commandAfterTerminator } from "../commands/shared.ts";
 import { loadCliConfig } from "../config.ts";
-import { usageError } from "../errors.ts";
+import { cliError, usageError } from "../errors.ts";
 import { logNote } from "../notice.ts";
 import { acceptProxyConfig } from "./proxy-accept.ts";
 import {
@@ -50,9 +56,10 @@ export const proxyAcceptConfig = {
     "config",
     `Path to the proxy config to accept (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
   ),
-  project: singleValued(
+  project: singleValuedAs(
     "project",
     "The project the config is for (default: the config's `project`, else the default project)",
+    ProjectIdSchema,
   ),
 };
 /** @public */
@@ -111,8 +118,13 @@ export function makeProxyCommands(onExitCode: (code: number) => void) {
           ),
         );
       }
+      // The flag and the config's `project` arrive decoded, so only the
+      // default project setting can be malformed here (context.ts's
+      // resolveProjectId words a malformed setting the same way)
       if (!isProjectId(projectId)) {
-        return yield* Effect.fail(usageError("Invalid project ID (64 hex digits)"));
+        return yield* Effect.fail(
+          cliError("Invalid project ID (64 hex digits) — fix defaultProject in your config"),
+        );
       }
       const outcome = yield* acceptProxyConfig({
         path: configPath,

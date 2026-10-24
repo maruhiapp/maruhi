@@ -169,6 +169,24 @@ describe("maruhi sync init", () => {
     expect(http.code).toBe(2);
     expect(http.stderr).toContain("targets.worker.token is required for the http driver");
   });
+  it("checks --env, --receipts and --token-env as environment IDs at their declarations (the value is never shown)", async () => {
+    // Left to the config's parser, a typo would read as a problem in the
+    // config ("The config would be invalid: targets.web.environment ..."),
+    // not in the flag
+    for (const [flag, args] of [
+      ["--env", ["--env", "!bad", "--receipts", "r"]],
+      ["--receipts", ["--env", "p", "--receipts", "!bad"]],
+      ["--token-env", ["--env", "p", "--receipts", "r", "--driver", "http", "--token-env", "!bad"]],
+    ] as const) {
+      const result = await init("web", "--preset", "vercel", ...args);
+      expect(result.code, flag).toBe(2);
+      expect(result.stdout, flag).toBe("");
+      expect(result.env.errors, flag).toEqual([
+        "Usage: maruhi sync init [flags] <target>",
+        `maruhi: Unacceptable value for flag ${flag} (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))`,
+      ]);
+    }
+  });
   it("netlify: --driver omitted assembles http (the only driver) explicitly, and --driver exec is a usage error with a reason", async () => {
     const result = await init(
       "site",

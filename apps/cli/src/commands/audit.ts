@@ -6,20 +6,25 @@ import {
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
 } from "@maruhi/api-schema";
 import {
-  decodeEnvironmentId,
   decodeUserId,
-  decodeVariableId,
-  isEnvironmentId,
-  isVariableId,
+  type EnvironmentId,
+  EnvironmentIdSchema,
+  type VariableId,
+  VariableIdSchema,
 } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
 import type { AuditListFilters, AuditPageOptions } from "../audit.ts";
 import { CliError, usageError } from "../errors.ts";
-import { projectFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  projectFlags,
+  serverOnlyFlags,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "./flags.ts";
 import { openMetadataProject, openSession } from "./lazy.ts";
-import { ENV_FLAG_SHAPE_MESSAGE } from "./shared.ts";
 
 /** audit's pagination flag (shared by list / invites / self). */
 const auditPageFlags = () => ({
@@ -52,8 +57,12 @@ export const auditListConfig = {
   ),
   actor: singleValued("actor", "Filter by actor user ID (below admin, only your own)"),
   target: singleValued("target", "Filter by target user ID"),
-  env: singleValued("env", "Filter by environment ID"),
-  var: singleValued("var", "Filter by variable ID (also matches var.read rows that list it)"),
+  env: singleValuedAs("env", "Filter by environment ID", EnvironmentIdSchema),
+  var: singleValuedAs(
+    "var",
+    "Filter by variable ID (also matches var.read rows that list it)",
+    VariableIdSchema,
+  ),
   expandReads: singleFlag(
     "expand-reads",
     "Print the variables listed by var.read rows, one line per variable (default: a count per row)",
@@ -106,8 +115,8 @@ interface AuditFilterFlags {
   readonly event: string | undefined;
   readonly actor: string | undefined;
   readonly target: string | undefined;
-  readonly env: string | undefined;
-  readonly var: string | undefined;
+  readonly env: EnvironmentId | undefined;
+  readonly var: VariableId | undefined;
 }
 
 /** Unspecified is allowed; when given, only non-empty within max chars passes. */
@@ -126,12 +135,6 @@ function auditFilterProblem(values: AuditFilterFlags): string | null {
   if (!boundedFlagValue(values.target, 1024)) {
     return "--target must be a user_id";
   }
-  if (values.env !== undefined && !isEnvironmentId(values.env)) {
-    return ENV_FLAG_SHAPE_MESSAGE;
-  }
-  if (values.var !== undefined && !isVariableId(values.var)) {
-    return "--var is not a valid variableId";
-  }
   return null;
 }
 
@@ -141,13 +144,13 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
   if (problem !== null) {
     return Effect.fail(usageError(problem));
   }
-  // Validated above: isEnvironmentId / isVariableId checks narrowed the raw flags
+  // --env / --var arrive decoded (their declarations check the format)
   return Effect.succeed({
     event: values.event ?? null,
     actorUserId: values.actor === undefined ? null : decodeUserId(values.actor),
     targetUserId: values.target === undefined ? null : decodeUserId(values.target),
-    environmentId: values.env === undefined ? null : decodeEnvironmentId(values.env),
-    variableId: values.var === undefined ? null : decodeVariableId(values.var),
+    environmentId: values.env ?? null,
+    variableId: values.var ?? null,
   });
 }
 
@@ -166,8 +169,8 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     readonly event?: string | undefined;
     readonly actor?: string | undefined;
     readonly target?: string | undefined;
-    readonly env?: string | undefined;
-    readonly var?: string | undefined;
+    readonly env?: EnvironmentId | undefined;
+    readonly var?: VariableId | undefined;
     readonly expandReads?: boolean | undefined;
   }) =>
     Effect.gen(function* () {

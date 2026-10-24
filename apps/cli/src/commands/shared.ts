@@ -74,10 +74,6 @@ export const commandAfterTerminator = Effect.fn("commands-shared.commandAfterTer
   },
 );
 
-/** The environment ID's shape (the wording for the --env flag. The given value itself never appears in the error). */
-export const ENV_FLAG_SHAPE_MESSAGE =
-  "Invalid environment ID for --env (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)";
-
 /**
  * After `config set mirror`: a fallback that needs a login while the server
  * is down is no fallback (ruling E revision), so the member is told now when

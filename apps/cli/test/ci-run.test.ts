@@ -1188,7 +1188,7 @@ describe("maruhi ci run (argument layer — ADR-0016)", () => {
     }
   });
 
-  it("checks the --project format (genesis hash) before the network", async () => {
+  it("checks the --project (genesis hash) and --env formats at their declarations, before the network", async () => {
     const { env, server } = await startCiEnv([leaseHandler()]);
     const args = [
       "ci",
@@ -1203,7 +1203,27 @@ describe("maruhi ci run (argument layer — ADR-0016)", () => {
       "true",
     ];
     expect(await runCli(args, env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("genesis hash");
+    expect(env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
+    );
+
+    const badEnv = await makeTestEnv();
+    const badEnvArgs = [
+      "ci",
+      "run",
+      "--server",
+      server.origin,
+      "--project",
+      "11".repeat(32),
+      "--env",
+      "!bad",
+      "--",
+      "true",
+    ];
+    expect(await runCli(badEnvArgs, badEnv.layer)).toBe(2);
+    expect(badEnv.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
     expect(server.requests).toHaveLength(0);
   });
 

@@ -576,6 +576,39 @@ describe("maruhi proxy run", () => {
     expect(env.runnerCalls).toHaveLength(0);
   });
 
+  it("proxy accept checks --project's format at its declaration, before the config read, and reports a malformed default project as the config's to fix", async () => {
+    // A malformed --project is refused while the command line is parsed
+    // (the usage line, exit 2): not taken for a mismatch with the config's
+    // `project`, and not hidden behind a missing file. The value is never shown
+    const { env, configPath, configDir } = await startEnv(
+      { ...BROKER_CONFIG, project: "b".repeat(64) },
+      { accepted: false },
+    );
+    for (const config of [configPath, join(configDir, "absent.json")]) {
+      env.errors.length = 0;
+      expect(
+        await runCli(
+          ["proxy", "accept", "--config", config, "--project", "not-a-genesis"],
+          env.layer,
+        ),
+        config,
+      ).toBe(2);
+      expect(env.errors, config).toEqual([
+        "Usage: maruhi proxy accept [flags]",
+        "maruhi: Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
+      ]);
+    }
+    // With neither the flag nor the config's `project`, the default project
+    // names the project, and a malformed setting is the config's to fix (1)
+    await writeFile(configPath, JSON.stringify(BROKER_CONFIG));
+    await seedConfig(env, { defaultProject: "not-a-genesis" });
+    env.errors.length = 0;
+    expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(1);
+    expect(env.errors).toEqual([
+      "maruhi: Invalid project ID (64 hex digits) — fix defaultProject in your config",
+    ]);
+  });
+
   it("`maruhi run` applies maruhi.proxy.json from the working directory, and --plain is allowed only to a person at a terminal (ADR-0016 decision 7 revision 2)", async () => {
     const { env, configDir } = await startEnv(BROKER_CONFIG);
     const originalCwd = cwd();

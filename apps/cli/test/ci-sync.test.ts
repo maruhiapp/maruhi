@@ -566,6 +566,35 @@ describe("maruhi ci sync", () => {
     expect(fixture.server.requests).toEqual([]);
   });
 
+  it("refuses a malformed --project at its declaration, before the config read and the network", async () => {
+    const fixture = await startCi({
+      environments: [SOURCE_ENV],
+      targets: {
+        worker: { preset: "cloudflare-workers", environment: SOURCE_ENV, variables: "all" },
+      },
+    });
+    expect(
+      await runCli(
+        [
+          "ci",
+          "sync",
+          "worker",
+          "--server",
+          fixture.server.origin,
+          "--project",
+          "not-a-genesis",
+          "--config",
+          join(tmpdir(), "maruhi-ci-sync-no-such-config.json"),
+        ],
+        fixture.env.layer,
+      ),
+    ).toBe(2);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
+    );
+    expect(fixture.server.requests).toEqual([]);
+  });
+
   it("a token environment outside the lease policy (uniform 404) stops with lease guidance and sends nothing", async () => {
     const fixture = await startCi({
       // The tokens environment's lease is a uniform 404 (the existence-
