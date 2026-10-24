@@ -50,12 +50,14 @@ import { OPS_RESTORE_BATCH_ROWS } from "../ops/ops-policy.ts";
 import {
   acceptColumns,
   acceptHeader,
-  CHAIN_TABLE,
-  decodeScalar,
   MAX_BOUND_PARAMETERS,
   parseLine,
-  readWatermarks,
   RestoreRefusedError,
+} from "./do-snapshot-restore.ts";
+import {
+  CHAIN_TABLE,
+  decodeScalar,
+  readWatermarks,
   type SnapshotLine,
   type SnapshotRowLine,
   type SnapshotScalar,

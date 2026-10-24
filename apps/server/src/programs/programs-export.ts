@@ -6,7 +6,8 @@
 //   the exported log records its own export) and takes the watermarks;
 //   every later page re-reads them and refuses with export-changed when
 //   the project moved (the client starts over). The lines are the
-//   evacuation's (do-snapshot.ts) — nothing is decrypted or re-encoded
+//   evacuation's (do-snapshot.ts), read a page at a time by
+//   do-snapshot-export.ts — nothing is decrypted or re-encoded
 // - members: the current chain members' user ids (the identities
 //   companion joins them with D1 on the worker side)
 //
@@ -33,7 +34,7 @@ import {
   type ExportCursorState,
   type ExportPageResult,
   exportSnapshotPage,
-} from "../do/do-snapshot.ts";
+} from "../do/do-snapshot-export.ts";
 import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } from "../policy.ts";
 import type { StorageMeter } from "../storage-guard.ts";
 import { observeStorageLevel } from "../storage-guard.ts";

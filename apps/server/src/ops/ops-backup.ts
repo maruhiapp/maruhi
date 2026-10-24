@@ -3,9 +3,9 @@
 //
 // Called from the hourly cron (index.ts); enumerates D1 `projects` in
 // id order and calls each project DO's `opsBackup` RPC. Reads and
-// writes are performed by the DO itself under the permit
-// (do-snapshot.ts); only aggregates come back here (identifiers stay
-// inside D1's ops records).
+// writes are performed by the DO itself under the permit (do-ops.ts,
+// do-snapshot-write.ts); only aggregates come back here (identifiers
+// stay inside D1's ops records).
 //
 // Bounding (§4-3): a wall-clock budget, a visit-count cap, and cursor
 // continuation. The skip rule (§2-D): a project whose watermarks

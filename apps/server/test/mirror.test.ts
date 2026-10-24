@@ -26,7 +26,7 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
-import { restoreSnapshot, type RestoreFailureCode } from "../src/do/do-snapshot.ts";
+import { restoreSnapshot, type RestoreFailureCode } from "../src/do/do-snapshot-restore.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
 import {

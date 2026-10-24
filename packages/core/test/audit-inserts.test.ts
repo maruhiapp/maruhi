@@ -13,8 +13,8 @@
 //   an append that ran `assertAppendable(` first.
 //
 // Out of scope by design: the replication and restore paths copy existing
-// rows table by table (do-mirror.ts / do-snapshot.ts — checked by the restore
-// reader, AUTH_SPEC §11-6); they write no new event.
+// rows table by table (do-mirror.ts / do-snapshot-restore.ts — checked by
+// the restore reader, AUTH_SPEC §11-6); they write no new event.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
