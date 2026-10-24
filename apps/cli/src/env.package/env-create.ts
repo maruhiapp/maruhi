@@ -28,24 +28,24 @@ import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
+import { signEntryAtHead } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { buildWrapCompleteSet, requireWritingMember } from "../dek-wrap.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { type FloorHandle, rejectIntentOnServerRejection } from "../floor-check.ts";
+import type { ManifestFloor } from "../floor.ts";
+import { signNextManifest } from "../manifest.ts";
+import { signCreateStatement } from "../meta-statement.ts";
+import { retryOnConflict } from "../retry.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
-import { signEntryAtHead } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import {
   classifyCompositeConflict,
   type CompositeState,
   compositeExhaustedMessage,
   recoverComposite,
 } from "./composite-retry.ts";
-import { buildWrapCompleteSet, requireWritingMember } from "./dek-wrap.ts";
 import { normalizeEnvironmentName } from "./env-meta.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
-import type { ManifestFloor } from "./floor.ts";
-import { signNextManifest } from "./manifest.ts";
-import { signCreateStatement } from "./meta-statement.ts";
-import { retryOnConflict } from "./retry.ts";
 
 const MAX_ATTEMPTS = 5;
 

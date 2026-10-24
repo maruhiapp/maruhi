@@ -9,7 +9,7 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
-import { fetchAuditHead } from "../src/checkpoint.ts";
+import { fetchAuditHead } from "../src/checkpoint.package/checkpoint.ts";
 import type { CliError } from "../src/errors.ts";
 import { CliIo } from "../src/io.ts";
 import { testProjectId } from "./support/crypto.ts";

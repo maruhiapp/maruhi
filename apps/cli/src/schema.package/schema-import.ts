@@ -42,19 +42,19 @@ import type { VerifiedProject } from "../chain-sync.ts";
 import type { DekRecipient } from "../deks.ts";
 import { countNoun, displayText, escapeText, logWarnings } from "../display.ts";
 import { findHighEntropySubstring } from "../entropy.ts";
-import {
-  type EnvFileEntry,
-  type EnvFileSkippedLine,
-  MAX_NAME_LENGTH,
-  observeValue,
-  parseEnvFile,
-} from "../env-file.ts";
 import { cliError, type CliError } from "../errors.ts";
 import type { FloorHandle, VerifiedSchemaFields } from "../floor-check.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { pushVariable } from "../push.package/index.ts";
 import { pullVerifiedEnvironmentMetadata } from "../values.ts";
+import {
+  type EnvFileEntry,
+  type EnvFileSkippedLine,
+  MAX_NAME_LENGTH,
+  observeValue,
+  parseEnvFile,
+} from "./env-file.ts";
 import { schemaSetOp } from "./schema.ts";
 
 /** The server's description acceptance cap (AUTH_SPEC §12-8 — used only for pre-filtering). */

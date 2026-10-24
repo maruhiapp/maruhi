@@ -599,8 +599,8 @@ describe("maruhi env rotate", () => {
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
     // --new-epoch always signs an entry = a reason is mandatory. The command
-    // refuses the pair before the session opens (commands/env.ts's validate
-    // rule), so it never fetches every variable's ciphertext for an
+    // refuses the pair before the session opens (env.package/command.ts's
+    // validate rule), so it never fetches every variable's ciphertext for an
     // unsatisfiable argument check and leaves no per-variable var.read in the
     // audit log. A usage mistake (the missing reason) is a usage error (2) —
     // so the same `--reason` mistake never splits by exit code

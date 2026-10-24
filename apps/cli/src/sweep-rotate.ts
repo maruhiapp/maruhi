@@ -9,8 +9,8 @@ import { Effect } from "effect";
 
 import type { CliServices, ProjectContext } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
-import type { RotationSummary } from "./env-rotate.ts";
-import { envRotateOp } from "./env-rotate.ts";
+import type { RotationSummary } from "./env.package/index.ts";
+import { envRotateOp } from "./env.package/index.ts";
 import { type CliError, usageError } from "./errors.ts";
 import type { SweepRotateMode } from "./rotation-sweep.ts";
 

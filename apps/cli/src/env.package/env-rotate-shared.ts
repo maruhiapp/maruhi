@@ -7,13 +7,13 @@ import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import type { ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { requireWritingMember } from "./dek-wrap.ts";
-import { type DekRecipient, requireChainEnvironment } from "./deks.ts";
-import { CliError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { requireWritingMember } from "../dek-wrap.ts";
+import { type DekRecipient, requireChainEnvironment } from "../deks.ts";
+import { CliError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
 
 /** The re-encryption pass limit (one pass = a push to every target + re-fetch / re-verify of the conflicts). */
 export const MAX_REENCRYPT_PASSES = 3;

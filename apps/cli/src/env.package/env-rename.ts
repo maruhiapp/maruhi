@@ -19,7 +19,16 @@
 import { EnvironmentConflictError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 
-import { displayText } from "./display.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { rejectIntentOnServerRejection } from "../floor-check.ts";
+import type { ManifestFloor } from "../floor.ts";
+import {
+  confirmAcceptedMetaMutation,
+  confirmsIssuedStatement,
+  issueManifestWithIntent,
+} from "../meta-confirm.ts";
+import { retryOnConflict } from "../retry.ts";
 import {
   type EnvironmentMetaInput,
   type EnvironmentMetaState,
@@ -29,15 +38,6 @@ import {
   resolveEnvironmentMeta,
   signNextEnvironmentStatement,
 } from "./env-meta.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { rejectIntentOnServerRejection } from "./floor-check.ts";
-import type { ManifestFloor } from "./floor.ts";
-import {
-  confirmAcceptedMetaMutation,
-  confirmsIssuedStatement,
-  issueManifestWithIntent,
-} from "./meta-confirm.ts";
-import { retryOnConflict } from "./retry.ts";
 
 const MAX_ATTEMPTS = 5;
 

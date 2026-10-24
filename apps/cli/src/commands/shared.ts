@@ -157,7 +157,7 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
     options: { readonly afterWrite: boolean },
   ): Effect.fn.Return<void, never, CliServices> {
     const { ANCHOR_REFRESH_PROPOSAL, checkpointProposal } = yield* Effect.promise(() =>
-      import("../checkpoint.ts").then((m) => ({
+      import("../checkpoint.package/index.ts").then((m) => ({
         ANCHOR_REFRESH_PROPOSAL: m.ANCHOR_REFRESH_PROPOSAL,
         checkpointProposal: m.checkpointProposal,
       })),
@@ -345,7 +345,7 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
     // The anchor-update proposal — emitted as one line across the whole sweep
     const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
-      import("../checkpoint.ts").then((m) => ({
+      import("../checkpoint.package/index.ts").then((m) => ({
         ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
       })),
     );

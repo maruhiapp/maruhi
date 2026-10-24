@@ -6,9 +6,15 @@
 import type { VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { requireChainEnvironment } from "./deks.ts";
-import { displayText } from "./display.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { requireChainEnvironment } from "../deks.ts";
+import { displayText } from "../display.ts";
+import { CliError, cliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { missingWrapReason } from "../pull.ts";
+import { encryptAndSignPayload, winnerInconsistency } from "../push.package/index.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
+import { pullVerifiedEnvironment } from "../values.ts";
 import { decryptTargets, undecryptableWarning } from "./env-rotate-decrypt.ts";
 import {
   type ConflictedTarget,
@@ -16,12 +22,6 @@ import {
   type ReencryptContext,
   asOutcome,
 } from "./env-rotate-shared.ts";
-import { CliError, cliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { missingWrapReason } from "./pull.ts";
-import { encryptAndSignPayload, winnerInconsistency } from "./push.package/index.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
-import { pullVerifiedEnvironment } from "./values.ts";
 
 /** The result of one variable's re-encryption push (a conflict carries back the 409's claimed version). */
 type PushAttempt =

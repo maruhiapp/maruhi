@@ -42,7 +42,7 @@ import type { AuditHeadRow, ChainEntry } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
-import { fetchAuditHead } from "../checkpoint.ts";
+import { fetchAuditHead } from "../checkpoint.package/index.ts";
 import type { CliServices, ProjectContextBase } from "../context.ts";
 import { cryptoErrorKind } from "../crypto-error-kind.ts";
 import { countNoun, displayText } from "../display.ts";

@@ -36,16 +36,16 @@ import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } fro
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError, evidenceError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import type { VerifiedEnvironmentStatement } from "./floor-check.ts";
-import { compareCodePoints } from "./scope.ts";
-import { serverDisclosures, serverKeysDisclosing } from "./server-disclosure.ts";
-import { verifyEnvironmentStatement } from "./values-verify.ts";
-import { pullWithBoundedResync } from "./values.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError, evidenceError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import type { VerifiedEnvironmentStatement } from "../floor-check.ts";
+import { compareCodePoints } from "../scope.ts";
+import { serverDisclosures, serverKeysDisclosing } from "../server-disclosure.ts";
+import { verifyEnvironmentStatement } from "../values-verify.ts";
+import { pullWithBoundedResync } from "../values.ts";
 
 /** An environment's lifecycle status. */
 export type EnvironmentStatus = "active" | "deleted";
