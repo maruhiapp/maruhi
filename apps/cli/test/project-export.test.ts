@@ -28,7 +28,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MaruhiClient } from "../src/api.ts";
 import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
-import { projectExportOp } from "../src/project-export.ts";
+import { projectExportOp } from "../src/project.package/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import {
   buildChain,

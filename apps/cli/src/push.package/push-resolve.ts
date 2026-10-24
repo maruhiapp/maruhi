@@ -7,19 +7,19 @@ import type { RecipientDek } from "@maruhi/api-schema";
 import { type EnvironmentId, type VariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedSchemaFields } from "./floor-check.ts";
-import { generateVariableId } from "./meta-statement.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle, VerifiedSchemaFields } from "../floor-check.ts";
+import { generateVariableId } from "../meta-statement.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironment,
   pullVerifiedEnvironmentMetadata,
-} from "./values.ts";
+} from "../values.ts";
 
 /** The predecessor-statement material of an activation (declared → active — §12-5). */
 interface ActivationPrev {

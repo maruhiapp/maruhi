@@ -53,7 +53,7 @@ import { cliError, type CliError } from "../errors.ts";
 import type { FloorHandle, VerifiedSchemaFields } from "../floor-check.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
-import { pushVariable } from "../push.ts";
+import { pushVariable } from "../push.package/index.ts";
 import { pullVerifiedEnvironmentMetadata } from "../values.ts";
 import { schemaSetOp } from "./schema.ts";
 

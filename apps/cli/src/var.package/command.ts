@@ -3,6 +3,16 @@
 import { Clock, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import {
+  NonBlank,
+  commonFlags,
+  invalidFlagCombination,
+  rejectNoSyncWithConfig,
+  singleFlag,
+  singleValued,
+} from "../commands/flags.ts";
+import { openEnvironment, openMetadataEnvironment } from "../commands/lazy.ts";
+import { decideWriteSync, finishWrite, openWriteEnvironment } from "../commands/shared.ts";
 import type { CliServices } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
@@ -18,19 +28,11 @@ import {
   type PushSyncSetup,
   loadPushSyncConfig,
 } from "../sync.package/index.ts";
-import type { VarFinalizeInput, VarRotateInput } from "../var-rotate.ts";
-import {
-  NonBlank,
-  commonFlags,
-  invalidFlagCombination,
-  rejectNoSyncWithConfig,
-  singleFlag,
-  singleValued,
-} from "./flags.ts";
-import { openEnvironment, openMetadataEnvironment } from "./lazy.ts";
-import { decideWriteSync, finishWrite, openWriteEnvironment } from "./shared.ts";
+import type { VarFinalizeInput, VarRotateInput } from "./var-rotate.ts";
 
-/** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5). */
+/** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5).
+ * @public
+ */
 export const varRmConfig = {
   ...commonFlags(),
   force: singleFlag(
@@ -43,7 +45,9 @@ export const varRmConfig = {
   ),
 };
 
-/** `maruhi var history <NAME>` (the version history — AUTH_SPEC §12-7, 2026-09-27 VH). */
+/** `maruhi var history <NAME>` (the version history — AUTH_SPEC §12-7, 2026-09-27 VH).
+ * @public
+ */
 export const varHistoryConfig = {
   ...commonFlags(),
   json: singleFlag(
@@ -56,7 +60,9 @@ export const varHistoryConfig = {
   ),
 };
 
-/** `maruhi var rollback <NAME> --to <VERSION>` (restoring an old value as a new version — VH). */
+/** `maruhi var rollback <NAME> --to <VERSION>` (restoring an old value as a new version — VH).
+ * @public
+ */
 export const varRollbackConfig = {
   ...commonFlags(),
   to: Flag.Int("to").pipe(
@@ -81,7 +87,9 @@ export const varRollbackConfig = {
   ),
 };
 
-/** `maruhi var rotate <NAME> [--finalize]` (upstream rotation through a connector — PF6). */
+/** `maruhi var rotate <NAME> [--finalize]` (upstream rotation through a connector — PF6).
+ * @public
+ */
 export const varRotateConfig = {
   ...commonFlags(),
   finalize: singleFlag(
@@ -132,12 +140,12 @@ function checkPreviousFlag(values: {
 }
 
 /** `maruhi var rotate <name> --finalize`: invalidates the previous credential and reports. */
-const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
+const runVarFinalize = Effect.fn("var-command.runVarFinalize")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const { describeFinalization, varFinalizeOp } = yield* Effect.promise(() =>
-    import("../var-rotate.ts").then((m) => ({
+    import("./var-rotate.ts").then((m) => ({
       describeFinalization: m.describeFinalization,
       varFinalizeOp: m.varFinalizeOp,
     })),
@@ -150,13 +158,13 @@ const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
 });
 
 /** `maruhi var rotate <name>`: the rotation, its report, the checkpoint proposal, and the onPush sync. */
-const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
+const runVarRotate = Effect.fn("var-command.runVarRotate")(function* (
   input: VarRotateInput,
   syncSetup: PushSyncSetup | null,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
   const { describeRotation, varRotateOp } = yield* Effect.promise(() =>
-    import("../var-rotate.ts").then((m) => ({
+    import("./var-rotate.ts").then((m) => ({
       describeRotation: m.describeRotation,
       varRotateOp: m.varRotateOp,
     })),
@@ -172,14 +180,15 @@ const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
   yield* finishWrite(context, sync);
 });
 
+/** @public */
 export function makeVarCommands() {
   const varRm = Command.make(
     "rm",
     varRmConfig,
-    Effect.fn("commands-var.varRm")(function* (values) {
+    Effect.fn("var-command.varRm")(function* (values) {
       const io = yield* CliIo;
       const { varRmOp } = yield* Effect.promise(() =>
-        import("../var-rm.ts").then((m) => ({ varRmOp: m.varRmOp })),
+        import("./var-rm.ts").then((m) => ({ varRmOp: m.varRmOp })),
       );
       const context = yield* openEnvironment(values);
       const summary = yield* varRmOp({
@@ -211,10 +220,10 @@ export function makeVarCommands() {
   const varHistory = Command.make(
     "history",
     varHistoryConfig,
-    Effect.fn("commands-var.varHistory")(function* (values) {
+    Effect.fn("var-command.varHistory")(function* (values) {
       const io = yield* CliIo;
       const { formatVarHistory, varHistoryJson, varHistoryOp } = yield* Effect.promise(() =>
-        import("../var-history.ts").then((m) => ({
+        import("./var-history.ts").then((m) => ({
           formatVarHistory: m.formatVarHistory,
           varHistoryJson: m.varHistoryJson,
           varHistoryOp: m.varHistoryOp,
@@ -249,10 +258,10 @@ export function makeVarCommands() {
   const varRollback = Command.make(
     "rollback",
     varRollbackConfig,
-    Effect.fn("commands-var.varRollback")(function* (values) {
+    Effect.fn("var-command.varRollback")(function* (values) {
       const io = yield* CliIo;
       const { varRollbackOp } = yield* Effect.promise(() =>
-        import("../var-history.ts").then((m) => ({ varRollbackOp: m.varRollbackOp })),
+        import("./var-history.ts").then((m) => ({ varRollbackOp: m.varRollbackOp })),
       );
       const toVersion = values.to;
       if (toVersion === undefined || toVersion < 1) {
@@ -297,7 +306,7 @@ export function makeVarCommands() {
   const varRotate = Command.make(
     "rotate",
     varRotateConfig,
-    Effect.fn("commands-var.varRotate")(function* (values) {
+    Effect.fn("var-command.varRotate")(function* (values) {
       yield* checkPreviousFlag(values);
       // Both configs are read before any network: a broken or absent rotation
       // config is a usage problem, not something to find after a pull

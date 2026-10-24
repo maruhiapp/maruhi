@@ -32,28 +32,28 @@ import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { confirmPermanentDeletion, noteConcurrentRename } from "./deletion-confirm.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
-import { rejectIntentOnServerRejection } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { confirmPermanentDeletion, noteConcurrentRename } from "../deletion-confirm.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle, VerifiedVariableStatement } from "../floor-check.ts";
+import { rejectIntentOnServerRejection } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
 import {
   confirmAcceptedMetaMutation,
   confirmsIssuedStatement,
   issueManifestWithIntent,
-} from "./meta-confirm.ts";
-import { signStatementAndHash } from "./meta-statement.ts";
-import { retryOnConflict } from "./retry.ts";
+} from "../meta-confirm.ts";
+import { signStatementAndHash } from "../meta-statement.ts";
+import { retryOnConflict } from "../retry.ts";
 import {
   signDeleteStatementV3,
   requireVerifiedEnvironment,
   resolveSchemaTarget,
   type SchemaSetState,
   type SchemaTargetKey,
-} from "./schema.package/index.ts";
+} from "../schema.package/index.ts";
 
 const MAX_ATTEMPTS = 5;
 

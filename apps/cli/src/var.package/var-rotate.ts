@@ -22,16 +22,16 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted, Stdio } from "effect";
 
-import type { CliServices, EnvironmentContext } from "./context.ts";
-import { floorHandleFor } from "./context.ts";
-import { environmentKeysFor } from "./deks.ts";
-import { countNoun, displayText, formatUtcDate } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import { logWarning } from "./notice.ts";
-import { decryptVerifiedValue } from "./pull.ts";
-import { type PushedVersion, pushVariable } from "./push.ts";
-import { type InputRefs, type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
+import type { CliServices, EnvironmentContext } from "../context.ts";
+import { floorHandleFor } from "../context.ts";
+import { environmentKeysFor } from "../deks.ts";
+import { countNoun, displayText, formatUtcDate } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import { logWarning } from "../notice.ts";
+import { decryptVerifiedValue } from "../pull.ts";
+import { type PushedVersion, pushVariable } from "../push.package/index.ts";
+import { type InputRefs, type RotateConfig, type RotateRule, ruleFor } from "../rotate-config.ts";
 import {
   companionsOf,
   type ConnectorError,
@@ -45,9 +45,9 @@ import {
   type RotateInputs,
   rotateCredential,
   type RotationOutcome,
-} from "./rotate-connector.ts";
-import { requireEnvironmentInScope } from "./scope.ts";
-import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
+} from "../rotate-connector.ts";
+import { requireEnvironmentInScope } from "../scope.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
 
 export interface VarRotateInput {

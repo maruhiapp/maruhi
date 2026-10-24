@@ -13,12 +13,12 @@
 import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { countNoun, displayText } from "./display.ts";
-import type { CliError } from "./errors.ts";
-import { cliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+import type { MaruhiClient } from "../api.ts";
+import { countNoun, displayText } from "../display.ts";
+import type { CliError } from "../errors.ts";
+import { cliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
 
 /**
  * Bounds the page chasing (server-fixed at 100 / page — §11-5). At

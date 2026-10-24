@@ -19,8 +19,7 @@ import {
 import { CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { missingWrapReason } from "./pull.ts";
-import { winnerInconsistency } from "./push-winner.ts";
-import { encryptAndSignPayload } from "./push.ts";
+import { encryptAndSignPayload, winnerInconsistency } from "./push.package/index.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 

@@ -40,7 +40,7 @@ import { cliError, type CliError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";
 import { parseJsonRecord } from "../json-record.ts";
 import { pullVariables } from "../pull.ts";
-import { pushVariable } from "../push.ts";
+import { pushVariable } from "../push.package/index.ts";
 import { PRESET_IDS, type PresetId } from "./sync-types.ts";
 
 /** What the last apply delivered to one target: variable name → version. */

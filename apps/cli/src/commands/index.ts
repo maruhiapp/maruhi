@@ -77,7 +77,19 @@ import {
   mirrorSyncConfig,
   makeMirrorCommands,
 } from "../mirror.package/command.ts";
+import {
+  projectAnchorConfig,
+  projectCheckpointConfig,
+  projectExportConfig,
+  projectInitConfig,
+  projectListConfig,
+  projectPolicyApprovalsConfig,
+  projectPolicySchemaConfig,
+  projectVerifyConfig,
+  makeProjectCommands,
+} from "../project.package/command.ts";
 import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
+import { pushConfig, makePushCommand } from "../push.package/command.ts";
 import {
   schemaExportConfig,
   schemaImportConfig,
@@ -98,6 +110,13 @@ import {
   syncPlanConfig,
   makeSyncCommands,
 } from "../sync.package/command.ts";
+import {
+  varHistoryConfig,
+  varRmConfig,
+  varRollbackConfig,
+  varRotateConfig,
+  makeVarCommands,
+} from "../var.package/command.ts";
 import { agentConfig, agentStatusConfig, makeAgentCommands } from "./agent.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {
@@ -138,19 +157,7 @@ import {
 } from "./key.ts";
 import { loginConfig, logoutConfig, makeLoginLogoutCommands } from "./login-logout.ts";
 import { mcpConfig, makeMcpCommand } from "./mcp.ts";
-import {
-  projectAnchorConfig,
-  projectCheckpointConfig,
-  projectExportConfig,
-  projectInitConfig,
-  projectListConfig,
-  projectPolicyApprovalsConfig,
-  projectPolicySchemaConfig,
-  projectVerifyConfig,
-  makeProjectCommands,
-} from "./project.ts";
 import { pullConfig, runConfig, makePullRunCommands } from "./pull-run.ts";
-import { PUSH_STDIN_HINT, pushConfig, makePushCommand } from "./push.ts";
 import {
   rotationAcceptConfig,
   rotationDismissConfig,
@@ -160,13 +167,6 @@ import {
   makeRotationCommands,
 } from "./rotation.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
-import {
-  varHistoryConfig,
-  varRmConfig,
-  varRollbackConfig,
-  varRotateConfig,
-  makeVarCommands,
-} from "./var.ts";
 
 /**
  * The nesting stage (group) → the subcommand name → the declaration.
@@ -311,6 +311,16 @@ const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Para
  * possible commands" (cli-formatter.ts's unknownSubcommandMessage).
  */
 export const ROOT_SPEC_KEY = "";
+
+/**
+ * `maruhi push`'s specific fix, attached to its extra positional
+ * arguments. `maruhi push API_KEY "$SECRET"` is the most likely
+ * misspelling. The refused argument's content is never shown (it may be
+ * plaintext), so "the value comes via stdin" is always attached instead —
+ * otherwise there is no way to fix it (cli-formatter.ts's strayHint).
+ */
+const PUSH_STDIN_HINT =
+  '. Values are read from stdin (example: `printf %s "$SECRET" | maruhi push API_KEY`)';
 
 const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
   login: specOf(loginConfig),

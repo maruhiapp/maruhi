@@ -4,7 +4,7 @@
 
 import { type VariableId } from "@maruhi/core";
 
-import type { VerifiedPulledValue } from "./values-verify.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
 
 /**
  * The winner's consistency check against the verified known latest (the

@@ -3,28 +3,19 @@
 import { Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { displayText, logWarnings } from "../display.ts";
-import { CliIo } from "../io.ts";
-import { DEFAULT_SYNC_CONFIG_PATH } from "../sync.package/index.ts";
 import {
   NonBlank,
   commonFlags,
   rejectNoSyncWithConfig,
   singleFlag,
   singleValued,
-} from "./flags.ts";
-import { finishWrite, openWriteEnvironment } from "./shared.ts";
+} from "../commands/flags.ts";
+import { finishWrite, openWriteEnvironment } from "../commands/shared.ts";
+import { displayText, logWarnings } from "../display.ts";
+import { CliIo } from "../io.ts";
+import { DEFAULT_SYNC_CONFIG_PATH } from "../sync.package/index.ts";
 
-/**
- * `maruhi push`'s specific fix, attached to its extra positional
- * arguments. `maruhi push API_KEY "$SECRET"` is the most likely
- * misspelling. The refused argument's content is never shown (it may be
- * plaintext), so "the value comes via stdin" is always attached instead —
- * otherwise there is no way to fix it (cli-formatter.ts's strayHint).
- */
-export const PUSH_STDIN_HINT =
-  '. Values are read from stdin (example: `printf %s "$SECRET" | maruhi push API_KEY`)';
-
+/** @public */
 export const pushConfig = {
   ...commonFlags(),
   config: singleValued(
@@ -43,13 +34,14 @@ export const pushConfig = {
   ),
 };
 
+/** @public */
 export function makePushCommand() {
   const push = Command.make(
     "push",
     pushConfig,
-    Effect.fn("commands-push.push")(function* (values) {
+    Effect.fn("push-command.push")(function* (values) {
       const { normalizeStdinValue, pushVariable } = yield* Effect.promise(() =>
-        import("../push.ts").then((m) => ({
+        import("./push.ts").then((m) => ({
           normalizeStdinValue: m.normalizeStdinValue,
           pushVariable: m.pushVariable,
         })),

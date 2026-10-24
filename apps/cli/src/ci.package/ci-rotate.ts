@@ -64,7 +64,7 @@ import {
   type SqlRunner,
 } from "../rotate-connector.ts";
 import type { ProcessRunner } from "../run.ts";
-import { callConnector, connectorFailure } from "../var-rotate.ts";
+import { callConnector, connectorFailure } from "../var.package/index.ts";
 import {
   type CiLeaseInput,
   LEASE_NOT_FOUND_MESSAGE,
