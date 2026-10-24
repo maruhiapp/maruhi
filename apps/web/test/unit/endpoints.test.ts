@@ -142,7 +142,7 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
     ).toEqual([]);
   });
 
-  it("keeps effect / api-schema imports type-only in bundle sources (rulings BR/CD)", () => {
+  it("keeps effect / @effect / api-schema / core imports type-only in bundle sources (rulings BR/CD)", () => {
     // Ruling BR — "no Effect / Schema executable code enters the
     // bundle (= the TCB)" — used to be a mere convention: a value
     // import passed both build and run silently while the bundle and
@@ -150,13 +150,21 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
     // type-only import is spelled `import type`, so a value import
     // mixing in is mechanically checkable. This is the web half of the
     // Effect fence (CLAUDE.md "Architecture"); the crypto half is the
-    // packages/crypto override of no-restricted-imports in .oxlintrc.json
+    // packages/crypto override of no-restricted-imports in .oxlintrc.json.
+    // @effect/* and @maruhi/core are Effect code too, and are swept for a
+    // second reason: the root config's outbound-HTTP and identity-mint
+    // bans (its `apps/*/src/**` override) do not reach this tree (see
+    // .oxlintrc.json), so this sweep refuses their value imports here,
+    // and the next test any @maruhi/crypto specifier, test-support
+    // included
     const srcRoot = join(import.meta.dirname, "../../src");
+    // effect with its subpaths (effect/schema etc. — this repository's
+    // mainstream form), any @effect/* package, and @maruhi/api-schema
+    // and @maruhi/core with their subpaths
+    const specifier = String.raw`["'](?:effect|@effect\/[^"'/]+|@maruhi\/(?:api-schema|core))(?:\/[^"']*)?["']`;
     expect(
       findSourceOffenders(
         srcRoot,
-        // Subpath imports (effect/schema etc. — this repository's
-        // mainstream form) are in scope.
         // The line-start anchor (m): an import statement is a
         // top-level declaration appearing at the start of a line —
         // without the anchor a match would bridge from the word
@@ -164,11 +172,17 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
         // false-positive (the ruling-CN note comment in api.ts was the
         // first trip). Re-exports (`export { X } from …` /
         // `export * from …`) pull the same executable code into the
-        // bundle, so they are in scope too
-        /^(?:import|export)\s+(?!type\b)[^;]*?from\s*["'](?:effect|@maruhi\/api-schema)(?:\/[^"']*)?["']/m,
+        // bundle, so they are in scope too, and so are a side-effect
+        // import (`import "effect"`), an import() and a require(), which
+        // name the module with no from clause (in bundle source a type
+        // is imported with `import type`, never as an import() type)
+        new RegExp(
+          String.raw`^(?:import|export)\s+(?!type\b)[^;]*?from\s*${specifier}|\b(?:import\s*\(?|require\s*\()\s*${specifier}`,
+          "m",
+        ),
         new Set(),
       ),
-      "value import of effect / @maruhi/api-schema in bundle source — use `import type` (ruling BR)",
+      "value import of effect / @effect/* / @maruhi/api-schema / @maruhi/core in bundle source — use `import type` (ruling BR)",
     ).toEqual([]);
   });
 
@@ -215,16 +229,18 @@ function queryKeys(registered: RegisteredEndpoint): PropertyKey[] {
 }
 
 /**
- * The tripwire's scan target: TS/TSX sources (exclusions are compared
- * by resolved path — a filename comparison would silently exempt a
- * same-named file in another directory).
+ * The tripwire's scan target: every JS / TS source (`.ts` / `.tsx` /
+ * `.js` / `.jsx`, and the `.m` / `.c` forms), so a module extension
+ * cannot step around a sweep (exclusions are compared by resolved path —
+ * a filename comparison would silently exempt a same-named file in
+ * another directory).
  */
 function isSweepTarget(
   entry: { isFile(): boolean; name: string },
   filePath: string,
   excluded: ReadonlySet<string>,
 ): boolean {
-  return entry.isFile() && /\.(ts|tsx)$/.test(entry.name) && !excluded.has(filePath);
+  return entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name) && !excluded.has(filePath);
 }
 
 /**
