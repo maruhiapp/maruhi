@@ -69,10 +69,12 @@ const compileEnv = {
 const COMPILE_EXEC_ARGV = "--disallow-code-generation-from-strings=strict";
 
 // The one `bun build --compile` call, so the probe below is compiled exactly
-// like the release binaries. By default a compiled executable reads the
-// bunfig.toml of the directory it runs in, and a strict one exits with
-// EvalError when that file has a preload, so --no-compile-autoload-bunfig
-// turns the reading off
+// like the release binaries. By default a compiled executable loads the .env
+// files and reads the bunfig.toml of the directory it runs in. A .env there
+// could hand the CLI variables such as NODE_TLS_REJECT_UNAUTHORIZED or
+// MARUHI_AGENT_SOCK, and a strict executable exits with EvalError when that
+// bunfig.toml has a preload, so --no-compile-autoload-dotenv and
+// --no-compile-autoload-bunfig turn both off
 const compile = (
   target: (typeof TARGETS)[number],
   executable: string,
@@ -87,6 +89,7 @@ const compile = (
       `--target=${target.bunTarget}`,
       `--compile-executable-path=${executable}`,
       `--compile-exec-argv=${COMPILE_EXEC_ARGV}`,
+      "--no-compile-autoload-dotenv",
       "--no-compile-autoload-bunfig",
       entry,
       "--outfile",
@@ -98,11 +101,13 @@ const compile = (
 };
 
 // bun also ignores a misspelled flag, which would ship binaries that still
-// run code from strings or read the working directory's bunfig.toml. So
-// before the host's own target is built, a probe compiled for it runs in a
-// directory whose bunfig.toml preloads a file that exits 1. The probe exits 0
-// only when that file is not read and new Function throws
-const STRICT_PROBE = `try {
+// run code from strings or read the working directory's .env or bunfig.toml.
+// So before the host's own target is built, a probe compiled for it runs in a
+// directory whose .env sets MARUHI_STRICT_PROBE_DOTENV and whose bunfig.toml
+// preloads a file that exits 1. The probe exits 0 only when neither file is
+// read and new Function throws
+const STRICT_PROBE = `if (process.env.MARUHI_STRICT_PROBE_DOTENV !== undefined) process.exit(1);
+try {
   new Function("");
 } catch (error) {
   if (error instanceof EvalError) process.exit(0);
@@ -111,9 +116,12 @@ process.exit(1);
 `;
 // The probe runs without this environment's BUN_* variables: BUN_OPTIONS
 // could switch strict mode on by itself, and BUN_BE_BUN would run the bun CLI
-// instead of the probe (its help exits 0)
+// instead of the probe (its help exits 0). MARUHI_STRICT_PROBE_DOTENV is left
+// out too, so only the probe's .env can set it
 const probeEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("BUN_")),
+  Object.entries(process.env).filter(
+    ([name]) => !name.toUpperCase().startsWith("BUN_") && name !== "MARUHI_STRICT_PROBE_DOTENV",
+  ),
 );
 
 const checksumLines: string[] = [];
@@ -129,6 +137,7 @@ try {
     if (target.bunTarget === hostTarget) {
       const probeDir = join(runtimesDir, "strict-probe");
       await mkdir(probeDir);
+      await writeFile(join(probeDir, ".env"), "MARUHI_STRICT_PROBE_DOTENV=read\n");
       await writeFile(join(probeDir, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
       await writeFile(join(probeDir, "preload.ts"), "process.exit(1);\n");
       const probeEntry = join(probeDir, "probe.ts");
@@ -139,7 +148,7 @@ try {
         run(probe, [], probeDir, probeEnv);
       } catch (error) {
         throw new Error(
-          `the strict-mode probe failed on ${target.name} (it exits 1 when new Function runs or its directory's bunfig.toml is read)`,
+          `the strict-mode probe failed on ${target.name} (it exits 1 when new Function runs, or when its directory's .env or bunfig.toml is read)`,
           { cause: error },
         );
       }
