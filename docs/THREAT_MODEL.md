@@ -39,7 +39,10 @@ the specs. Where the wording differs, the specs govern:
    epoch DEKs are wrapped to the deployment's public key. Whoever runs the
    deployment holds the matching private key — on a self-host it lives in the
    operator's own Workers Secret — so from that point the operator *can*
-   decrypt the granted environments. The disclosure is never silent: while
+   decrypt the granted environments. From the grant on, no member device
+   can hold that key (CRYPTO_SPEC §6.2), so no conforming client wraps
+   another environment's DEK to it; wraps made earlier to a member device
+   holding it stay readable (§14.3-6). The disclosure is never silent: while
    the verified chain carries an active grant, every CLI command that opens
    the project states it (project ID, server-key fingerprint, granted
    environments — §9's constant display; the dashboard lists granted servers
@@ -83,7 +86,10 @@ is not a new vulnerability (a way to widen one is):
    detected only for a floor-holding client via epoch rules; a floorless
    client reduces to item 3.
 6. **Leakage / un-revocation** — a member can leak the DEKs and plaintexts
-   they hold; cryptography can't un-read an already-read value.
+   they hold, also by putting another party's encryption key in a device of
+   their own (the deployment's own included while no grant has named it;
+   the constant display reports grants only); cryptography can't un-read an
+   already-read value.
 7. **Declaration–value agreement** — agreement between declared
    `var_type`/description and the actual value is advisory only; a signature
    proves "the author declared this type", never that a value was replaced
