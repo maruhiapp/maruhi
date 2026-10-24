@@ -10,7 +10,11 @@ import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 
-import { acceptAppendedEntry, servedChainResponse } from "./chain-handler.ts";
+import {
+  acceptAppendedEntry,
+  injectedAppendResponse,
+  servedChainResponse,
+} from "./chain-handler.ts";
 import {
   type BuiltChain,
   environmentStatementFor,
@@ -91,13 +95,9 @@ export async function makeFourEyesServer(input: {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
       }
-      const injected = input.onAppend?.(counters.appendAttempts);
+      const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
-        if (input.chainAfterConflict !== undefined) {
-          entries.splice(0, entries.length, ...input.chainAfterConflict.entries);
-          hashes.splice(0, hashes.length, ...input.chainAfterConflict.hashes);
-        }
         return injected;
       }
       const body = request.body as { readonly entry: ChainEntry };

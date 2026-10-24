@@ -20,7 +20,6 @@
 // completing it removes the fulfiller; the user is guided to ask another
 // owner to approve (K6-N).
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import type { PendingProposal, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
 import { memberScopeOf } from "@maruhi/crypto";
@@ -35,7 +34,7 @@ import {
   voteEligibility,
 } from "./approval-rules.ts";
 import { proposalStatusOf } from "./approval.ts";
-import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { appendOperationWithRetry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { displayText } from "./display.ts";
@@ -48,12 +47,9 @@ import {
   selfObligationReason,
 } from "./member-change-role.ts";
 import { type MemberSweepOutcome, sweepMemberMandates } from "./member.ts";
-import { retryOnConflict } from "./retry.ts";
 import type { SweepOutcome, SweepRotate } from "./rotation-sweep.ts";
 import { backfillServerGrant } from "./server-grant.ts";
 import { sweepAfterRevoke } from "./server-revoke.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /** What the completing approver's client did after the inner op was applied (approval item 22). */
 export type Fulfilment =
@@ -295,32 +291,13 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
     input.nowMs,
   );
   const proposal = first.proposal;
-  let mySeq: number | null = null;
   const initial: ApproveState = { verified: input.verified, closed: null };
-  const outcome = yield* retryOnConflict(initial, {
-    maxAttempts: MAX_ATTEMPTS,
-    attempt: (state) =>
-      state.closed !== null
-        ? Effect.succeed(state)
-        : Effect.gen(function* () {
-            const entry = yield* signEntryAtHead({
-              verified: state.verified,
-              signerUserId: input.signerUserId,
-              operation: {
-                op: "approve",
-                payload: { proposalHashHex: proposal.proposalHashHex },
-              },
-              signingKeyPair: input.signingKeyPair,
-              failureText: "Failed to sign the approve entry",
-            });
-            mySeq = entry.seq;
-            yield* appendEntry(input.client, state.verified, entry);
-            return state;
-          }),
-    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-    recover: (state) =>
+  const outcome = yield* appendOperationWithRetry(input, {
+    operation: { op: "approve", payload: { proposalHashHex: proposal.proposalHashHex } },
+    initial,
+    settled: (state) => state.closed !== null,
+    recheck: (resynced) =>
       Effect.gen(function* () {
-        const resynced = yield* resyncExtended(input.resync, state.verified);
         const status = proposalStatusOf(resynced, proposal.proposalHashHex);
         // Another owner completed / withdrew it first: re-signing and
         // sending anyway would only be rejected as unknown-proposal, so
@@ -337,16 +314,16 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
         );
         return { verified: resynced, closed: null };
       }),
-    exhaustedMessage: `approve's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
   });
-  if (outcome.closed !== null) {
-    return outcome.closed.kind === "completed"
-      ? { kind: "completed-by-other", proposal, completedAtSeq: outcome.closed.completedAtSeq }
+  const { closed } = outcome.state;
+  if (closed !== null) {
+    return closed.kind === "completed"
+      ? { kind: "completed-by-other", proposal, completedAtSeq: closed.completedAtSeq }
       : { kind: "withdrawn-concurrently", proposal };
   }
 
   // Learn the result from the post-acceptance resync (the server response does not carry whether it applied — K5-S)
-  const verified = yield* resyncExtended(input.resync, outcome.verified);
+  const verified = yield* resyncExtended(input.resync, outcome.state.verified);
   const status = proposalStatusOf(verified, proposal.proposalHashHex);
   if (status.kind === "pending") {
     const pending = verified.state.pendingProposals.get(proposal.proposalHashHex);
@@ -367,7 +344,7 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
       ),
     );
   }
-  const seq: number | null = mySeq;
+  const seq = outcome.entry?.seq ?? null;
   if (seq === null || status.completedAtSeq !== seq) {
     // Another owner's approve completed it after mine (my vote counted,
     // but that owner is the fulfiller)

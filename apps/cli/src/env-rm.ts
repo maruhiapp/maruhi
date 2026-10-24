@@ -173,7 +173,6 @@ const attemptDeletion = Effect.fn("env-rm.attemptDeletion")(function* (
     signerUserId: input.signerUserId,
     operation: { op: "delete_environment", payload: { environmentId: input.environmentId } },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the delete_environment entry",
   });
   if (entry.op !== "delete_environment") {
     return yield* Effect.fail(cliError("Failed to sign the delete_environment entry"));

@@ -1,7 +1,6 @@
 import {
   type ChainEntry,
   type ChainOperation,
-  computeChainEntryHash,
   computeUserKeyFingerprint,
   encodeHex,
 } from "@maruhi/crypto";
@@ -15,7 +14,11 @@ import {
   type OwnDeviceSource,
   ownDevicesPathOf,
 } from "../../src/own-devices.ts";
-import { appendableProjectHandlers } from "./chain-handler.ts";
+import {
+  acceptAppendedEntry,
+  appendableProjectHandlers,
+  injectedAppendResponse,
+} from "./chain-handler.ts";
 import {
   buildChain,
   createEnvironmentOp,
@@ -31,7 +34,13 @@ import {
   wrapDekFor,
 } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./server.ts";
+import {
+  type MockHandler,
+  type MockRequest,
+  type MockResponse,
+  MockServer,
+  onRequest,
+} from "./server.ts";
 
 export const ENV_ID = "env-app";
 export const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
@@ -175,6 +184,10 @@ export async function makeServer(input: {
    * named via `--project` — to assemble a device that synced before the hiding).
    */
   readonly unlistedProjects?: readonly BuiltChain[];
+  /** Injected response for the project's chain appends, by call (e.g. a 409). undefined = accept. */
+  readonly onAppend?: (call: number) => MockResponse | undefined;
+  /** When onAppend injects, replaces the subsequent chain with this shape (a concurrent append). */
+  readonly chainAfterConflict?: BuiltChain;
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -188,6 +201,7 @@ export async function makeServer(input: {
   const requestCancels: string[] = [];
   const tokenRevokes: string[] = [];
   const registryPutStatuses = [...(input.registryPutStatuses ?? [])];
+  let appendCalls = 0;
   const ownWrap: WireRecipientDek | null = input.withEnvironment
     ? await wrapDekFor({
         projectId,
@@ -222,15 +236,15 @@ export async function makeServer(input: {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
       }
+      const injected = injectedAppendResponse(input, appendCalls, entries, hashes);
+      appendCalls += 1;
+      if (injected !== undefined) {
+        return injected;
+      }
       const body = request.body as { readonly entry: ChainEntry };
       appended.push(body.entry);
       appendedTo.push({ projectId, entry: body.entry });
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      return {
-        status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
+      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
     onRequest("GET", `/projects/${projectId}/environments`, () =>
       input.environmentsStatus !== undefined && input.environmentsStatus !== 200

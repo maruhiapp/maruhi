@@ -15,15 +15,8 @@
 //   calls the post-stages of member / server-grant / server-revoke, so it
 //   is split off here to avoid circular imports)
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { cryptoPromise, type UserId } from "@maruhi/core";
-import type {
-  ApprovalTargetOp,
-  ChainEntry,
-  ProposableOperation,
-  Role,
-  SigningKeyPair,
-} from "@maruhi/crypto";
+import type { ApprovalTargetOp, ProposableOperation, Role, SigningKeyPair } from "@maruhi/crypto";
 import { computeChainEntryHash, effectivePermissionOf, isApprovalTarget } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -35,14 +28,11 @@ import {
   resolveProposalRef,
   sameOperation,
 } from "./approval-rules.ts";
-import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { appendOperationWithRetry } from "./chain-append.ts";
 import { proposalIndexOf } from "./chain-applied.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { retryOnConflict } from "./retry.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /** The outcome of proposing: a new proposal, or the one already pending for the same operation. */
 export interface ProposedSummary {
@@ -119,38 +109,21 @@ export const proposeOperation = Effect.fn("approval.proposeOperation")(function*
       headSeq: input.verified.state.headSeq,
     };
   }
-  let signed: ChainEntry | null = null;
   const initial: ProposeState = { verified: input.verified, existing: null };
-  const outcome = yield* retryOnConflict(initial, {
-    maxAttempts: MAX_ATTEMPTS,
-    attempt: (state) =>
-      state.existing !== null
-        ? Effect.succeed(state)
-        : Effect.gen(function* () {
-            const entry = yield* signEntryAtHead({
-              verified: state.verified,
-              signerUserId: input.signerUserId,
-              operation: { op: "propose", payload: { inner, expiresAtMs } },
-              signingKeyPair: input.signingKeyPair,
-              failureText: "Failed to sign the propose entry",
-            });
-            signed = entry;
-            yield* appendEntry(input.client, state.verified, entry);
-            return state;
-          }),
-    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-    recover: (state) =>
+  const outcome = yield* appendOperationWithRetry(input, {
+    operation: { op: "propose", payload: { inner, expiresAtMs } },
+    initial,
+    settled: (state) => state.existing !== null,
+    recheck: (resynced) =>
       Effect.gen(function* () {
-        const resynced = yield* resyncExtended(input.resync, state.verified);
         yield* ensureStillTarget(resynced, inner, true);
         yield* recheck(resynced);
         return { verified: resynced, existing: findPendingSame(resynced, inner) };
       }),
-    exhaustedMessage: `propose's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
   });
-  const verified = yield* resyncExtended(input.resync, outcome.verified);
-  if (outcome.existing !== null) {
-    const pending = verified.state.pendingProposals.get(outcome.existing.proposalHashHex);
+  const verified = yield* resyncExtended(input.resync, outcome.state.verified);
+  if (outcome.state.existing !== null) {
+    const pending = verified.state.pendingProposals.get(outcome.state.existing.proposalHashHex);
     if (pending === undefined) {
       return yield* Effect.fail(
         cliError(
@@ -164,7 +137,7 @@ export const proposeOperation = Effect.fn("approval.proposeOperation")(function*
       headSeq: verified.state.headSeq,
     };
   }
-  const entry: ChainEntry | null = signed;
+  const { entry } = outcome;
   if (entry === null) {
     return yield* Effect.fail(
       cliError("The propose entry was not signed (internal contradiction)"),
@@ -260,36 +233,22 @@ export const withdrawProposalOp = Effect.fn("approval.withdrawProposalOp")(funct
     input.signerUserId,
     input.signingKeyPair,
   );
-  const outcome = yield* retryOnConflict(input.verified, {
-    maxAttempts: MAX_ATTEMPTS,
-    attempt: (view) =>
-      Effect.gen(function* () {
-        const entry = yield* signEntryAtHead({
-          verified: view,
-          signerUserId: input.signerUserId,
-          operation: { op: "withdraw", payload: { proposalHashHex: first.proposalHashHex } },
-          signingKeyPair: input.signingKeyPair,
-          failureText: "Failed to sign the withdraw entry",
-        });
-        yield* appendEntry(input.client, view, entry);
-        return view;
-      }),
-    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-    recover: (view) =>
-      Effect.gen(function* () {
-        const resynced = yield* resyncExtended(input.resync, view);
-        // If it was concurrently completed / withdrawn, stop here with a typed outcome (do not send an unknown-proposal)
-        yield* ensureWithdrawable(
+  const outcome = yield* appendOperationWithRetry(input, {
+    operation: { op: "withdraw", payload: { proposalHashHex: first.proposalHashHex } },
+    initial: { verified: input.verified },
+    // If it was concurrently completed / withdrawn, stop here with a typed outcome (do not send an unknown-proposal)
+    recheck: (resynced) =>
+      Effect.as(
+        ensureWithdrawable(
           resynced,
           first.proposalHashHex,
           input.signerUserId,
           input.signingKeyPair,
-        );
-        return resynced;
-      }),
-    exhaustedMessage: `withdraw's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+        ),
+        { verified: resynced },
+      ),
   });
-  const verified = yield* resyncExtended(input.resync, outcome);
+  const verified = yield* resyncExtended(input.resync, outcome.state.verified);
   if (verified.state.pendingProposals.has(first.proposalHashHex)) {
     return yield* Effect.fail(
       cliError(
@@ -424,24 +383,11 @@ export const setApprovalPolicyOp = Effect.fn("approval.setApprovalPolicyOp")(fun
     );
     return { kind: "proposed", proposal };
   }
-  const appended = yield* retryOnConflict(input.verified, {
-    maxAttempts: MAX_ATTEMPTS,
-    attempt: (view) =>
+  const outcome = yield* appendOperationWithRetry(input, {
+    operation,
+    initial: { verified: input.verified },
+    recheck: (resynced) =>
       Effect.gen(function* () {
-        const entry = yield* signEntryAtHead({
-          verified: view,
-          signerUserId: input.signerUserId,
-          operation,
-          signingKeyPair: input.signingKeyPair,
-          failureText: "Failed to sign the set_approval_policy entry",
-        });
-        yield* appendEntry(input.client, view, entry);
-        return view;
-      }),
-    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-    recover: (view) =>
-      Effect.gen(function* () {
-        const resynced = yield* resyncExtended(input.resync, view);
         yield* ensureStillTarget(resynced, operation, false);
         const rechecked = yield* ensurePolicySettable(
           resynced,
@@ -456,11 +402,10 @@ export const setApprovalPolicyOp = Effect.fn("approval.setApprovalPolicyOp")(fun
             ),
           );
         }
-        return resynced;
+        return { verified: resynced };
       }),
-    exhaustedMessage: `set_approval_policy's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
   });
-  const verified = yield* resyncExtended(input.resync, appended);
+  const verified = yield* resyncExtended(input.resync, outcome.state.verified);
   const rechecked = yield* ensurePolicySettable(
     verified,
     input.request,

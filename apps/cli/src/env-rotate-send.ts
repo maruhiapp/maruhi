@@ -51,7 +51,6 @@ const signRotateEntry = Effect.fn("env-rotate-send.signRotateEntry")(function* (
       },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the rotate_epoch entry",
   });
   // Narrowing the op (signChainEntry persists the input's op)
   if (signed.op !== "rotate_epoch") {

@@ -1,12 +1,16 @@
 // Mock handlers for chain distribution (full length) and self-addressed DEKs.
-// Shared by meta-server.ts / value-env.ts. The appendable project
-// (`appendableProjectHandlers`) is shared by support/device.ts and the restore
-// path tests (passkey / handoff — DK K14).
+// The appendable project (`appendableProjectHandlers`) is shared by
+// support/device.ts and the restore path tests (passkey / handoff — DK K14).
+// The append injection (`injectedAppendResponse`) and the accepted append
+// (`acceptAppendedEntry`) are used together by support/device.ts,
+// four-eyes-server.ts and the member add / member remove / server revoke
+// tests' servers; meta-server.ts and mirror-server-grant.test.ts accept
+// appends through `acceptAppendedEntry` alone.
 
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
 
 import type { BuiltChain, WireRecipientDek } from "./crypto.ts";
-import { type MockHandler, onRequest } from "./server.ts";
+import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
 
 /** Returns self-addressed wraps for `GET /projects/:id/environments/:env/deks`. */
 export function deksHandlerOf(
@@ -67,6 +71,29 @@ export async function acceptAppendedEntry(
     status: 200,
     json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
   };
+}
+
+/** A test's injection into a mock's chain appends (e.g. a 409 head conflict). */
+interface AppendInjection {
+  /** The injected response for an append, by call (from 0). undefined = accept. */
+  readonly onAppend?: (call: number) => MockResponse | undefined;
+  /** When onAppend injects, the served chain is replaced with this one first (a concurrent append). */
+  readonly chainAfterConflict?: BuiltChain;
+}
+
+/** The response `injection` makes for an append's call (undefined = accept), replacing the entries and hashes first when it says to. */
+export function injectedAppendResponse(
+  injection: AppendInjection,
+  call: number,
+  entries: ChainEntry[],
+  hashes: string[],
+): MockResponse | undefined {
+  const injected = injection.onAppend?.(call);
+  if (injected !== undefined && injection.chainAfterConflict !== undefined) {
+    entries.splice(0, entries.length, ...injection.chainAfterConflict.entries);
+    hashes.splice(0, hashes.length, ...injection.chainAfterConflict.hashes);
+  }
+  return injected;
 }
 
 /**

@@ -204,6 +204,85 @@ describe("maruhi device revoke", () => {
     expect(env.prompts).toEqual([]);
   });
 
+  it("after a head conflict, re-signs revoke_device on the resynced head", async () => {
+    const steps = [
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ];
+    const built = await buildChain(steps);
+    // An unrelated concurrent append (another device of the same person)
+    const concurrent = await buildChain([
+      ...steps,
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      registryRows: [registryRowOf(dev2)],
+      tokensStatus: 403,
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(
+      await runCli(["device", "revoke", dev2.fingerprintHex, "--yes"], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(
+      state.paths().filter((path) => path === `POST /projects/${built.projectId}/chain/entries`),
+    ).toHaveLength(2);
+    expect(state.appended).toHaveLength(1);
+    const revoke = state.appended[0];
+    if (revoke?.op !== "revoke_device") throw new Error("revoke_device entry missing");
+    expect(revoke.seq).toBe(concurrent.entries.length + 1);
+    expect(revoke.prevHashHex).toBe(concurrent.hashes[concurrent.hashes.length - 1]);
+    expect(revoke.payload).toEqual({
+      targetUserId: owner.userId,
+      deviceFingerprintsHex: [dev2.fingerprintHex],
+    });
+  });
+
+  it("gives up after five head conflicts in a row, naming revoke_device, and leaves the registry alone", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(dev2) },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: false,
+      registryRows: [registryRowOf(dev2)],
+      tokensStatus: 403,
+      onAppend: () => ({
+        status: 409,
+        json: {
+          _tag: "ChainHeadConflict",
+          currentHeadSeq: built.entries.length,
+          currentHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+        },
+      }),
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "revoke", dev2.fingerprintHex, "--yes"], env.layer)).toBe(1);
+    expect(
+      state.paths().filter((path) => path === `POST /projects/${built.projectId}/chain/entries`),
+    ).toHaveLength(5);
+    expect(state.appended).toHaveLength(0);
+    expect(state.registryDeletes).toEqual([]);
+    expect(env.errors.join("\n")).toContain(
+      "revoke_device's chain-head conflict did not resolve (5 attempts). Wait a moment and re-run",
+    );
+  });
+
   it("the device can also be referenced by the registry display name; the confirmation table shows the FP alongside and waits for yes. Anything but yes sends nothing", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
