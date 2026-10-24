@@ -1,6 +1,6 @@
 // `maruhi rotation` (discipline: see commands/index.ts).
 
-import { decodeEnvironmentId, decodeVariableId, isEnvironmentId, isVariableId } from "@maruhi/core";
+import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -12,10 +12,10 @@ import {
   invalidFlagCombination,
   projectFlags,
   singleFlag,
-  singleValued,
+  singleValuedAs,
 } from "./flags.ts";
 import { openEnvironment, openMetadataProject } from "./lazy.ts";
-import { ENV_FLAG_SHAPE_MESSAGE, proposeCheckpointRefresh } from "./shared.ts";
+import { proposeCheckpointRefresh } from "./shared.ts";
 
 export const rotationListConfig = {
   ...projectFlags(),
@@ -42,15 +42,16 @@ export const rotationListConfig = {
 
 export const rotationDismissConfig = {
   ...projectFlags(),
-  env: singleValued(
+  env: singleValuedAs(
     "env",
     "Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)",
+    EnvironmentIdSchema,
   ),
   all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
   // Not taken on a --all run. atMost(1) expresses "omitted under --all" in the declaration
   variable: Argument.String("variable").pipe(
     Argument.withDescription("Variable ID to dismiss (omit with --all)"),
-    Argument.withSchema(NonBlank),
+    Argument.withSchema(VariableIdSchema),
     Argument.atMost(1),
     Argument.map((values) => values[0]),
   ),
@@ -58,7 +59,7 @@ export const rotationDismissConfig = {
 
 export const rotationProposalsConfig = {
   ...projectFlags(),
-  env: singleValued("env", "Only the proposals of this environment"),
+  env: singleValuedAs("env", "Only the proposals of this environment", EnvironmentIdSchema),
 };
 
 export const rotationAcceptConfig = {
@@ -133,22 +134,12 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
           })),
         );
 
-      // The targets' format is checked before any network
-      const environmentId = values.env;
-      if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
-        return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-      }
-      const variableId = values.variable;
-      if (variableId !== undefined && !isVariableId(variableId)) {
-        return yield* Effect.fail(
-          usageError("Invalid variableId (see `maruhi rotation list` for the current targets)"),
-        );
-      }
-      // The request's shape (a missing target) is settled before communication too
+      // The targets' format is checked by the declarations, and the
+      // request's shape (a missing target) is settled before communication too
       const request = yield* parseDismissRequest({
         all: values.all,
-        environmentId: environmentId === undefined ? null : decodeEnvironmentId(environmentId),
-        variableId: variableId === undefined ? null : decodeVariableId(variableId),
+        environmentId: values.env ?? null,
+        variableId: values.variable ?? null,
       });
       const context = yield* openMetadataProject({
         server: values.server,
@@ -209,14 +200,8 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
         })),
       );
 
-      const environmentId = values.env;
-      if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
-        return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-      }
       const context = yield* openMetadataProject(values);
-      yield* rotationProposalsOp(context, {
-        environmentId: environmentId === undefined ? undefined : decodeEnvironmentId(environmentId),
-      });
+      yield* rotationProposalsOp(context, { environmentId: values.env });
     }),
   ).pipe(
     Command.withDescription(

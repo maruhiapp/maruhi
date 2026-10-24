@@ -142,7 +142,8 @@ export const VariableIdSchema = Schema.String.pipe(
 
 /**
  * Mints a {@link VariableId} where no Schema field does the decoding — only
- * at a trust boundary: a validated command argument or a branded column
- * read. Throws on a malformed value.
+ * at a trust boundary: generating a new variable id, a hand-written parser
+ * of a wire or stored record, or a branded column read. Throws on a
+ * malformed value.
  */
 export const decodeVariableId: (value: string) => VariableId = Schema.decodeSync(VariableIdSchema);

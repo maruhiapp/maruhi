@@ -29,7 +29,7 @@
 // prompts and stdin reads fail, Effect's own logging is routed to stderr,
 // and stdin EOF (the host went away) is a clean exit 0.
 
-import { isEnvironmentId, isProjectId, EnvironmentIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema } from "@maruhi/core";
 import {
   Cause,
   Console,
@@ -47,7 +47,7 @@ import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";
-import { cliError, CliError, usageError } from "./errors.ts";
+import { cliError, CliError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
@@ -370,21 +370,6 @@ function serverLayer(
   );
 }
 
-/** Startup checks of the launch-time flags (static for the server's life — config is read per call). */
-function checkFlags(flags: CommonFlags): Effect.Effect<void, CliError> {
-  if (flags.project !== undefined && !isProjectId(flags.project)) {
-    return Effect.fail(usageError("Invalid project ID (64 hex digits)"));
-  }
-  if (flags.env !== undefined && !isEnvironmentId(flags.env)) {
-    return Effect.fail(
-      usageError(
-        "Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)",
-      ),
-    );
-  }
-  return Effect.void;
-}
-
 /** A failure's user-facing text: a CliError's message, anything else by type name only (failure.ts). */
 function describeFailure(failure: unknown): string {
   return failure instanceof CliError
@@ -399,7 +384,6 @@ function describeFailure(failure: unknown): string {
 export const mcpServeOp = Effect.fn("mcp.mcpServeOp")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  yield* checkFlags(flags);
   const stdio = yield* Stdio.Stdio;
   if (yield* stdio.stdinIsTerminal) {
     yield* logNote(

@@ -1,12 +1,10 @@
 // `maruhi ci` (discipline: see commands/index.ts).
 
 import {
-  decodeEnvironmentId,
-  decodeProjectId,
-  isEnvironmentId,
-  isProjectId,
   type EnvironmentId,
+  EnvironmentIdSchema,
   type ProjectId,
+  ProjectIdSchema,
 } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -28,21 +26,25 @@ import {
   loadSyncConfig,
   requireSyncTarget,
 } from "../sync.package/index.ts";
-import { NonBlank, runCommandArgument, singleFlag, singleValued } from "./flags.ts";
+import { NonBlank, runCommandArgument, singleFlag, singleValued, singleValuedAs } from "./flags.ts";
 import { normalizeHttpOrigin } from "./lazy.ts";
-import { ENV_FLAG_SHAPE_MESSAGE, commandAfterTerminator } from "./shared.ts";
+import { commandAfterTerminator } from "./shared.ts";
 
 /**
  * `maruhi ci run`'s declaration: unlike an ordinary run it reads no
  * config file, so server / project / env are **mandatory as flags**. On
- * the declaration they are optional (singleValued), and a missing one is
- * diagnosed by the body side with the CI-specific fix ("write the flag",
- * not "set it in config").
+ * the declaration they are optional (the ids' formats are checked there),
+ * and a missing one is diagnosed by the body side with the CI-specific fix
+ * ("write the flag", not "set it in config").
  */
 export const ciRunConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
-  env: singleValued("env", "Environment ID to lease (required)"),
+  project: singleValuedAs(
+    "project",
+    "Project ID, which is the pinned genesis hash (required)",
+    ProjectIdSchema,
+  ),
+  env: singleValuedAs("env", "Environment ID to lease (required)", EnvironmentIdSchema),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   mirror: singleValued(
     "mirror",
@@ -63,7 +65,11 @@ export const ciRunConfig = {
  */
 export const ciSyncConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
+  project: singleValuedAs(
+    "project",
+    "Project ID, which is the pinned genesis hash (required)",
+    ProjectIdSchema,
+  ),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   mirror: singleValued(
     "mirror",
@@ -90,8 +96,16 @@ export const ciSyncConfig = {
 /** `maruhi ci rotate <NAME>` (a sealed value proposal from a CI job — PF7b). */
 export const ciRotateConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
-  env: singleValued("env", "Environment ID of the variable to rotate (required)"),
+  project: singleValuedAs(
+    "project",
+    "Project ID, which is the pinned genesis hash (required)",
+    ProjectIdSchema,
+  ),
+  env: singleValuedAs(
+    "env",
+    "Environment ID of the variable to rotate (required)",
+    EnvironmentIdSchema,
+  ),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   anchor: singleValued(
     "anchor",
@@ -122,11 +136,11 @@ export const ciRotateConfig = {
  * genesis belongs to the workflow YAML's review). The diagnostic also
  * says "write the flag", not "set it in config".
  */
-function requireCiFlag(
-  value: string | undefined,
+function requireCiFlag<A extends string>(
+  value: A | undefined,
   flag: string,
   command: "ci run" | "ci sync" | "ci rotate" = "ci run",
-): Effect.Effect<string, CliError> {
+): Effect.Effect<A, CliError> {
   if (value !== undefined) {
     return Effect.succeed(value);
   }
@@ -185,8 +199,8 @@ const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(funct
 /** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
 const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
   readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly env?: string | undefined;
+  readonly project?: ProjectId | undefined;
+  readonly env?: EnvironmentId | undefined;
   readonly audience?: string | undefined;
   readonly mirror?: string | undefined;
   readonly anchor?: string | undefined;
@@ -196,21 +210,15 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
     import("../ci-run.ts").then((m) => ({ ciRunOp: m.ciRunOp })),
   );
 
-  // Every format check precedes network / key generation (the same discipline as the existing commands)
+  // Every format check precedes network / key generation (the same
+  // discipline as the existing commands): the ids' at the declaration, the
+  // origin's here
   const origin = yield* normalizeHttpOrigin(
     yield* requireCiFlag(values.server, "--server"),
     "the server URL",
   );
-  const projectFlag = yield* requireCiFlag(values.project, "--project");
-  if (!isProjectId(projectFlag)) {
-    return yield* Effect.fail(
-      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-    );
-  }
-  const envFlag = yield* requireCiFlag(values.env, "--env");
-  if (!isEnvironmentId(envFlag)) {
-    return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-  }
+  const projectId = yield* requireCiFlag(values.project, "--project");
+  const environmentId = yield* requireCiFlag(values.env, "--env");
   // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
   return yield* withCiMirrorFallback(
     values,
@@ -218,8 +226,8 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
     (target) =>
       ciRunOp({
         origin: target.origin,
-        projectId: decodeProjectId(projectFlag),
-        environmentId: decodeEnvironmentId(envFlag),
+        projectId,
+        environmentId,
         audience: target.audience,
         anchorPath: values.anchor,
         command: values.command,
@@ -230,7 +238,7 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
 /** `maruhi ci sync <target>`'s body (the lease and the sync live in sync-ci.ts). */
 const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: {
   readonly server?: string | undefined;
-  readonly project?: string | undefined;
+  readonly project?: ProjectId | undefined;
   readonly audience?: string | undefined;
   readonly mirror?: string | undefined;
   readonly anchor?: string | undefined;
@@ -245,19 +253,14 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
     yield* requireCiFlag(values.server, "--server", "ci sync"),
     "the server URL",
   );
-  const projectFlag = yield* requireCiFlag(values.project, "--project", "ci sync");
-  if (!isProjectId(projectFlag)) {
-    return yield* Effect.fail(
-      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-    );
-  }
+  const projectId = yield* requireCiFlag(values.project, "--project", "ci sync");
   const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
   const target = yield* requireSyncTarget(config, values.target);
-  yield* checkConfigProject(config, projectFlag);
+  yield* checkConfigProject(config, projectId);
   yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
     ciSyncOp({
       origin: where.origin,
-      projectId: decodeProjectId(projectFlag),
+      projectId,
       audience: where.audience,
       anchorPath: values.anchor,
       target,
@@ -266,12 +269,11 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
   );
 });
 
-/** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
 /** The coordinates of `maruhi ci rotate` (every format check before the config read and the network). */
 const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(function* (values: {
   readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly env?: string | undefined;
+  readonly project?: ProjectId | undefined;
+  readonly env?: EnvironmentId | undefined;
   readonly "expires-in"?: number | undefined;
 }): Effect.fn.Return<
   {
@@ -287,34 +289,21 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
     "the server URL",
   );
   const projectId = yield* requireCiFlag(values.project, "--project", "ci rotate");
-  if (!isProjectId(projectId)) {
-    return yield* Effect.fail(
-      usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
-    );
-  }
   const environmentId = yield* requireCiFlag(values.env, "--env", "ci rotate");
-  if (!isEnvironmentId(environmentId)) {
-    return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
-  }
   const expiresInDays = values["expires-in"] ?? 7;
   if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > MAX_PROPOSAL_DAYS) {
     return yield* Effect.fail(
       usageError(`--expires-in must be a number of days from 1 to ${MAX_PROPOSAL_DAYS}`),
     );
   }
-  return {
-    origin,
-    projectId: decodeProjectId(projectId),
-    environmentId: decodeEnvironmentId(environmentId),
-    expiresInDays,
-  };
+  return { origin, projectId, environmentId, expiresInDays };
 });
 
 /** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
 const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (values: {
   readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly env?: string | undefined;
+  readonly project?: ProjectId | undefined;
+  readonly env?: EnvironmentId | undefined;
   readonly audience?: string | undefined;
   readonly anchor?: string | undefined;
   readonly "rotate-config"?: string | undefined;

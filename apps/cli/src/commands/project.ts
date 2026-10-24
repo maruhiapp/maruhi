@@ -62,24 +62,14 @@ export const projectInitConfig = {
 
 export const projectListConfig = { ...serverOnlyFlags() };
 
-export const projectVerifyConfig = {
-  ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
-};
+export const projectVerifyConfig = { ...projectFlags() };
 
-export const projectAnchorConfig = {
-  ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
-};
+export const projectAnchorConfig = { ...projectFlags() };
 
-export const projectCheckpointConfig = {
-  ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
-};
+export const projectCheckpointConfig = { ...projectFlags() };
 
 export const projectExportConfig = {
-  ...serverOnlyFlags(),
-  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
+  ...projectFlags(),
   out: singleValued(
     "out",
     "Path of the snapshot file to write (refused if it exists); the identities companion is written as <out>.identities.json",

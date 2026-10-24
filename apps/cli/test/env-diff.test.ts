@@ -308,11 +308,11 @@ describe("maruhi env diff", () => {
     expect(cleanNotices[0]).not.toContain("before filling them in with a push");
   });
 
-  it("terminal-neutralizes the environment ID too (EnvironmentId is not branded)", async () => {
-    // `EnvironmentId` is an alias of Schema.String.check, so an unverified
-    // string can be assigned as-is (the type does not enforce validation). The
-    // CLI side goes through requireEnvironmentId, but this directly pins that
-    // the display side does not lean on that invariant
+  it("terminal-neutralizes the environment ID too (the display does not lean on the format check)", async () => {
+    // The CLI's declarations check an environment ID's format before a
+    // command runs, but this directly pins that the display side does not
+    // lean on that invariant (a cast makes an EnvironmentId that carries
+    // control characters)
     const env = await makeTestEnv();
     await Effect.runPromise(
       reportEnvironmentDiff({
@@ -707,9 +707,10 @@ describe("maruhi env diff", () => {
 
       expect(await runCli(["env", "diff", DEV, "not a valid id"], env.layer)).toBe(2);
       expect(env.errors).toEqual([
-        "maruhi: Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -. Example: `maruhi env diff dev prod`)",
+        "Usage: maruhi env diff [flags] <environment-id> <other-environment-id>",
+        "maruhi: Unacceptable value for positional argument other-environment-id (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
       ]);
-      expect(env.errors[0]).not.toContain("not a valid id");
+      expect(env.errors.join("\n")).not.toContain("not a valid id");
       expect(lastServer().requests).toEqual([]);
     });
 

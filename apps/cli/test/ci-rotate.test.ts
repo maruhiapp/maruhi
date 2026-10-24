@@ -1086,4 +1086,52 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(fixture.leased.bodies).toHaveLength(0);
     expect(fixture.minted.bodies).toHaveLength(0);
   });
+
+  it("refuses a malformed --project or --env at its declaration, before the config read and any network", async () => {
+    const fixture = await startCi();
+    const missingConfig = join(tmpdir(), "maruhi-ci-rotate-no-such-config.json");
+    expect(
+      await runCli(
+        [
+          "ci",
+          "rotate",
+          "STRIPE_SECRET_KEY",
+          "--server",
+          fixture.server.origin,
+          "--project",
+          "not-a-genesis",
+          "--env",
+          ENV_ID,
+          "--rotate-config",
+          missingConfig,
+        ],
+        fixture.env.layer,
+      ),
+    ).toBe(2);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
+    );
+    expect(
+      await runCli(
+        [
+          "ci",
+          "rotate",
+          "STRIPE_SECRET_KEY",
+          "--server",
+          fixture.server.origin,
+          "--project",
+          built.projectId,
+          "--env",
+          "!bad",
+          "--rotate-config",
+          missingConfig,
+        ],
+        fixture.env.layer,
+      ),
+    ).toBe(2);
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Unacceptable value for flag --env (expected: environment id (1-64 chars of [A-Za-z0-9_-], starting alphanumeric))",
+    );
+    expect(fixture.server.requests).toEqual([]);
+  });
 });
