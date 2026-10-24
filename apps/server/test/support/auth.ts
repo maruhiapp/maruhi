@@ -320,6 +320,28 @@ export async function cliToken(
   return issued.token;
 }
 
+/**
+ * The auth side of a fixture reset: wipe the auth tables, seed each user and
+ * issue it a real PAT through the CLI login handoff, then seat `orgMember` in
+ * its org as a member (init's org-member-or-higher requirement). Each user's
+ * seed → issuance (~5 round-trips) is independent of the other users', so the
+ * users run concurrently. Returns each user's token, keyed by user ID.
+ */
+export async function reseedAuthDb(
+  githubIds: Readonly<Record<string, number>>,
+  orgMember: { readonly orgId: string; readonly userId: string },
+): Promise<Record<string, string>> {
+  await resetAuthDb();
+  const issued = await Promise.all(
+    Object.entries(githubIds).map(async ([userId, githubId]) => {
+      await seedUser(userId, githubId);
+      return [userId, await cliToken(githubId)] as const;
+    }),
+  );
+  await seedOrgMember(orgMember.orgId, orgMember.userId, "member");
+  return Object.fromEntries(issued);
+}
+
 export function bearer(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }

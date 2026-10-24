@@ -18,7 +18,11 @@ import {
 } from "../src/policy.ts";
 import { projectBytesExceeded } from "../src/quotas.ts";
 import { cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
+import type {
+  WireEncryptedPayload,
+  WireEnvironmentManifest,
+  WireVariableMetaStatement,
+} from "./support/data-crypto.ts";
 import {
   encryptValue,
   unwrapAndDecrypt,
@@ -50,10 +54,15 @@ import {
   ENV,
   fakePayload,
   fixture,
+  manifestForStatement,
+  nextVariableStatement,
   registerDataScenario,
   renameVariableRequest,
   token,
   unsignedManifest,
+  unsignedPayload,
+  unsignedVariableStatement,
+  v3Fields,
   VAR,
   variableStatementFor,
 } from "./support/data-scenario.ts";
@@ -180,6 +189,52 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       expect(response.status).toBe(422);
       const body = (await response.json()) as { field: string };
       expect(body.field).toBe(field);
+    }
+  });
+
+  it("rejects a rename, delete or activation whose declared coordinates mismatch the URL (422 §12-2 / §12-5)", async () => {
+    // The worker checks the coordinates before the token scope and the DO,
+    // so unsigned bodies that pass the Schema reach the checks
+    const variablePath = `/environments/${ENV}/variables/${VAR}`;
+    const routes = [
+      ["PATCH", variablePath, "active"],
+      ["DELETE", variablePath, "deleted"],
+      ["POST", `${variablePath}/activate`, "active"],
+    ] as const;
+    type Override = {
+      readonly statement?: Partial<WireVariableMetaStatement>;
+      readonly manifest?: Partial<WireEnvironmentManifest>;
+      readonly aad?: Partial<WireEncryptedPayload["aad"]>;
+    };
+    const cases: readonly [Override, string][] = [
+      [{ statement: { environmentId: "env-app-0002" } }, "statementEnvironmentId"],
+      [{ statement: { variableId: "var-other" } }, "statementVariableId"],
+      [{ manifest: { environmentId: "env-app-0002" } }, "manifestEnvironmentId"],
+    ];
+    // Only the activation carries a value
+    const aadCases: readonly [Override, string][] = [
+      [{ aad: { environmentId: "env-app-0002" } }, "environmentId"],
+      [{ aad: { variableId: "var-other" } }, "variableId"],
+      [{ aad: { projectId: "ab".repeat(32) } }, "projectId"],
+    ];
+    for (const [method, path, status] of routes) {
+      const activation = method === "POST";
+      for (const [override, field] of activation ? [...cases, ...aadCases] : cases) {
+        const response = await requestJson(method, path, token(MEMBER), {
+          statement: {
+            ...unsignedVariableStatement(VAR, "DATABASE_URL"),
+            status,
+            metaVersion: 2,
+            prevMetaSigHashHex: "ab".repeat(32),
+            ...(activation ? v3Fields() : {}),
+            ...override.statement,
+          },
+          manifest: { ...unsignedManifest(), ...override.manifest },
+          ...(activation ? { value: unsignedPayload(aadFor(1, 1, override.aad)) } : {}),
+        });
+        expect(response.status, `${method} ${path}: ${field}`).toBe(422);
+        expect(((await response.json()) as { field: string }).field).toBe(field);
+      }
     }
   });
 
@@ -350,6 +405,30 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     );
     expect(push.status).toBe(403);
     expect(((await push.json()) as { reason: string }).reason).toBe("insufficient-permission");
+    // Rename and delete are writes too: correctly signed, they are still
+    // denied under the read scope
+    for (const [method, name, status] of [
+      ["PATCH", "DB_URL", "active"],
+      ["DELETE", "DATABASE_URL", "deleted"],
+    ] as const) {
+      const statement = await nextVariableStatement({
+        variableId: VAR,
+        name,
+        status,
+        authorUserId: MEMBER,
+      });
+      const { manifest } = await manifestForStatement(statement, MEMBER);
+      const response = await requestJson(
+        method,
+        `/environments/${ENV}/variables/${VAR}`,
+        readToken,
+        { statement, manifest },
+      );
+      expect(response.status, method).toBe(403);
+      expect(((await response.json()) as { reason: string }).reason).toBe(
+        "insufficient-permission",
+      );
+    }
 
     // A reader's write scope: even with sufficient scope the chain role binds (403 insufficient-role)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];

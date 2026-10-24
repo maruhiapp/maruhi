@@ -16,9 +16,12 @@
 // coordinate check uses the statement's variableId (the only value
 // path without a variableId in the URL).
 
+import type { EnvironmentManifest } from "@maruhi/api-schema";
 import { ForbiddenError, maruhiApi } from "@maruhi/api-schema";
+import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/core";
 import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
+import type { HttpApiEndpoint } from "effect/http-api";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { statefulGetCsrfViolated } from "../auth.package/index.ts";
@@ -39,6 +42,7 @@ import type {
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   VariableVersionValue,
+  WireMetaStatement,
 } from "../data/data-plane.ts";
 import type {
   VariableVersionHistoryValue,
@@ -59,6 +63,54 @@ const ensureStatefulGetCsrf = Effect.fn("handlers-variables.ensureStatefulGetCsr
   if (statefulGetCsrfViolated(principal, headers)) {
     return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
   }
+});
+
+/**
+ * Rename and remove (§12-5) take the same request — a signed statement and
+ * the manifest that reflects it, without a value — and check it the same
+ * way, against the URL's coordinates. They differ only in the DO method
+ * that applies the statement.
+ */
+const applyVariableStatement = Effect.fn("handlers-variables.applyVariableStatement")(function* <
+  Endpoint extends HttpApiEndpoint.Top,
+>(
+  method: "renameVariable" | "deleteVariable",
+  {
+    params,
+    payload,
+    endpoint,
+  }: {
+    readonly params: {
+      readonly projectId: ProjectId;
+      readonly environmentId: EnvironmentId;
+      readonly variableId: VariableId;
+    };
+    readonly payload: {
+      readonly statement: WireMetaStatement & {
+        readonly environmentId: EnvironmentId;
+        readonly variableId: VariableId;
+      };
+      readonly manifest: EnvironmentManifest;
+    };
+    readonly endpoint: Endpoint;
+  },
+) {
+  yield* checkStatementCoordinates(payload.statement, params);
+  yield* checkManifestCoordinates(payload.manifest, params.environmentId);
+  yield* callProjectData<void>()({
+    endpoint,
+    projectId: params.projectId,
+    permission: "write",
+    invoke: (stub, actor) =>
+      stub[method](
+        actor,
+        params.environmentId,
+        params.variableId,
+        toMetaStatementInput(payload.statement),
+        toManifestInput(payload.manifest),
+      ),
+  });
+  return noContent;
 });
 
 export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handlers) =>
@@ -105,11 +157,7 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
       "push",
       Effect.fn("handlers-variables.push")(function* ({ params, payload, endpoint }) {
         yield* checkValueSize(payload.value);
-        yield* checkAadCoordinates(payload.value, {
-          projectId: params.projectId,
-          environmentId: params.environmentId,
-          variableId: params.variableId,
-        });
+        yield* checkAadCoordinates(payload.value, params);
         return yield* callProjectData<VariableVersionValue>()({
           endpoint,
           projectId: params.projectId,
@@ -175,16 +223,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         // to create (the value-bundled form), and the variableId is fixed
         // by the URL
         yield* checkValueSize(payload.value);
-        yield* checkStatementCoordinates(payload.statement, {
-          environmentId: params.environmentId,
-          variableId: params.variableId,
-        });
+        yield* checkStatementCoordinates(payload.statement, params);
         yield* checkManifestCoordinates(payload.manifest, params.environmentId);
-        yield* checkAadCoordinates(payload.value, {
-          projectId: params.projectId,
-          environmentId: params.environmentId,
-          variableId: params.variableId,
-        });
+        yield* checkAadCoordinates(payload.value, params);
         return yield* callProjectData<VariableVersionValue>()({
           endpoint,
           projectId: params.projectId,
@@ -198,52 +239,8 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         });
       }),
     )
-    .handle(
-      "rename",
-      Effect.fn("handlers-variables.rename")(function* ({ params, payload, endpoint }) {
-        yield* checkStatementCoordinates(payload.statement, {
-          environmentId: params.environmentId,
-          variableId: params.variableId,
-        });
-        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
-        return yield* callProjectData<void>()({
-          endpoint,
-          projectId: params.projectId,
-          permission: "write",
-          invoke: (stub, actor) =>
-            stub.renameVariable(
-              actor,
-              params.environmentId,
-              params.variableId,
-              toMetaStatementInput(payload.statement),
-              toManifestInput(payload.manifest),
-            ),
-        });
-      }, Effect.as(noContent)),
-    )
-    .handle(
-      "remove",
-      Effect.fn("handlers-variables.remove")(function* ({ params, payload, endpoint }) {
-        yield* checkStatementCoordinates(payload.statement, {
-          environmentId: params.environmentId,
-          variableId: params.variableId,
-        });
-        yield* checkManifestCoordinates(payload.manifest, params.environmentId);
-        return yield* callProjectData<void>()({
-          endpoint,
-          projectId: params.projectId,
-          permission: "write",
-          invoke: (stub, actor) =>
-            stub.deleteVariable(
-              actor,
-              params.environmentId,
-              params.variableId,
-              toMetaStatementInput(payload.statement),
-              toManifestInput(payload.manifest),
-            ),
-        });
-      }, Effect.as(noContent)),
-    )
+    .handle("rename", (request) => applyVariableStatement("renameVariable", request))
+    .handle("remove", (request) => applyVariableStatement("deleteVariable", request))
     .handle(
       "pull",
       Effect.fn("handlers-variables.pull")(function* ({ params, endpoint, request }) {

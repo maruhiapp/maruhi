@@ -254,6 +254,24 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
     expect(await auditCount("auth.key_wrap_registered")).toBe(5);
   });
 
+  it("refuses a wrapId already registered with 422 duplicate-id, recording no audit (§13-10)", async () => {
+    const token = await cliToken(617);
+    const body = passkeyBody();
+    const register = () =>
+      SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, ...bearer(token) },
+        body,
+      });
+    expect((await register()).status).toBe(200);
+    const again = await register();
+    expect(again.status).toBe(422);
+    expect((await json(again))["reason"]).toBe("duplicate-id");
+    // The refused insert writes nothing, though the existing row matches its
+    // wrapId (what was not accepted is not recorded)
+    expect(await auditCount("auth.key_wrap_registered")).toBe(1);
+  });
+
   it("shares one blob-fetch window with the recovery-code blob (the §13-8 combined window)", async () => {
     const token = await cliToken(615);
     expect(

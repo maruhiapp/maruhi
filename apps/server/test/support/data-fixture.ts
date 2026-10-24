@@ -9,15 +9,7 @@ import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { expect } from "vitest";
 
-import {
-  BASE,
-  bearer,
-  cliToken,
-  JSON_HEADERS,
-  resetAuthDb,
-  seedOrgMember,
-  seedUser,
-} from "./auth.ts";
+import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./auth.ts";
 import type {
   WireDigestEntry,
   WireEnvironmentManifest,
@@ -104,23 +96,13 @@ export interface DataFixture {
 
 /** Reset DO / D1 + seed users and PATs + replay the base chain through the API. */
 export async function setupDataProject(): Promise<DataFixture> {
-  // The DO reset is independent of the D1-side reset + reseed, and each
-  // user's seed → real-PAT issuance (the ~5-RT CLI login handoff) is
-  // independent of the other users' — running them concurrently removes
-  // ~15-20 sequential round-trips per call. Fresh state and real issued
-  // PATs as before; only the sequential order is dropped
-  const auth = (async () => {
-    await resetAuthDb();
-    const issued = await Promise.all(
-      Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
-        await seedUser(userId, githubId);
-        return [userId, await cliToken(githubId)] as const;
-      }),
-    );
-    await seedOrgMember(DATA_ORG, OWNER, "member");
-    return Object.fromEntries(issued);
-  })();
-  const [tokens] = await Promise.all([auth, resetProjectDo(projectId)]);
+  // The DO reset is independent of the D1-side reset + reseed, so the two
+  // run concurrently, as reseedAuthDb runs its users: fresh state and real
+  // issued PATs without ~15-20 sequential round-trips per call
+  const [tokens] = await Promise.all([
+    reseedAuthDb(GITHUB_IDS, { orgId: DATA_ORG, userId: OWNER }),
+    resetProjectDo(projectId),
+  ]);
 
   const [genesis, ...rest] = baseChain.entries;
   const init = await SELF.fetch(`${BASE}/projects`, {

@@ -20,15 +20,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "../src/policy.ts";
-import {
-  BASE,
-  bearer,
-  cliToken,
-  JSON_HEADERS,
-  resetAuthDb,
-  seedOrgMember,
-  seedUser,
-} from "./support/auth.ts";
+import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
 import { hexBytes, resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
 import { testProjectId } from "./support/data-crypto.ts";
@@ -160,22 +152,13 @@ async function fetchAttestations(asUserId: string = OWNER): Promise<readonly Wir
 }
 
 beforeEach(async () => {
-  // The DO reset is independent of the D1-side reset + reseed, and each
-  // user's seed → real-PAT issuance is independent of the other users' —
-  // run them concurrently (same shape as registerMembershipScenario)
-  const auth = (async () => {
-    await resetAuthDb();
-    const issued = await Promise.all(
-      Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
-        await seedUser(userId, githubId);
-        return [userId, await cliToken(githubId)] as const;
-      }),
-    );
-    await seedOrgMember(ORG, OWNER, "member");
-    return issued;
-  })();
-  const [issued] = await Promise.all([auth, resetProjectDo(vectorProjectId)]);
-  tokens = Object.fromEntries(issued);
+  // The DO reset is independent of the D1-side reset + reseed, so the two
+  // run concurrently (same shape as registerMembershipScenario)
+  const [issued] = await Promise.all([
+    reseedAuthDb(GITHUB_IDS, { orgId: ORG, userId: OWNER }),
+    resetProjectDo(vectorProjectId),
+  ]);
+  tokens = issued;
 });
 
 describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16-1)", () => {

@@ -247,6 +247,9 @@ jobs:
           # (dead-code + health + dupes in one combined pass, each against its
           # committed baseline) fails when a baseline still lists a finding that
           # no longer exists, so a fix lands together with its baseline shrink.
+          # Like the audit, it fails on any clone group the dupes baseline
+          # does not list (the duplicates threshold in .fallowrc.json), here
+          # across the whole project.
           # It shares .fallow/ with step 5, which runs concurrently: since
           # fallow 3.34.0 each cache save writes through a uniquely named temp
           # file and renames it into place, so concurrent runs share the cache
