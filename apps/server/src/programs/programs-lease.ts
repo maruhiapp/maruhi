@@ -239,7 +239,7 @@ export const authorizeWorkload = Effect.fn("programs-lease.authorizeWorkload")(f
   // An uninitialized project is 404 with no storage left behind: a
   // never-materialized DO holds no tables, and this read creates none
   // (Sc-7 / A-4, owner approval 2026-10-11 — the DO's tables are created only
-  // at genesis acceptance, chain-do.ts / do-schema.ts). The project ID is a
+  // at genesis acceptance, programs-chain.ts / do-schema.ts). The project ID is a
   // genesis hash = effectively a capability and cannot be guessed. **Note the
   // fixed window below bounds the number of audit rows, not the probe itself**
   // (someone holding one valid token from an allowed issuer can repeat requests

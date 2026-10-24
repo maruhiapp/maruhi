@@ -10,7 +10,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { OpsBackupOutcome } from "../src/do/chain-do.ts";
+import type { OpsBackupOutcome } from "../src/do/do-ops.ts";
 import { OPS_BACKUP_MAX_BYTES } from "../src/ops/ops-policy.ts";
 import type { RestoreJobResult } from "../src/restore-worker.ts";
 import { processRestoreJobs, projectIdFromSnapshot } from "../src/restore-worker.ts";

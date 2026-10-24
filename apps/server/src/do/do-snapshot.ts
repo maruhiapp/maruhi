@@ -780,7 +780,7 @@ export interface RestoreSnapshotInput {
   /**
    * Asked before each chunk of the audit-head derivation: false = hash and
    * check, but store no further head (the storage guard's rejection line —
-   * AUTH_SPEC §11-7 / §12-8; chain-do.ts measures it).
+   * AUTH_SPEC §11-7 / §12-8; do-ops.ts's restoreProgram measures it).
    */
   readonly storesAuditHeads: () => boolean;
 }

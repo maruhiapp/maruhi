@@ -256,7 +256,7 @@ export function countLivePendingProposals(
 /**
  * The acceptance policy of `propose` (upper bound → pending cap).
  * Called after the membership check and the growth guard, before CAS
- * / verifyChain (appendProgram in chain-do.ts).
+ * / verifyChain (appendProgram in programs-chain.ts).
  */
 export const ensureProposalAdmitted = Effect.fn("quotas.ensureProposalAdmitted")(function* (
   expiresAtMs: number,

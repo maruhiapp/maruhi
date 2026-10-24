@@ -299,7 +299,7 @@ export const mirrorPageProgram = Effect.fn("programs-mirror.mirrorPageProgram")(
   }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
   // The chain and the audit log were replaced: the derived memory is
   // discarded and the audit-head column extended to the end (the same
-  // convergence as a restore — chain-do.ts opsRestore)
+  // convergence as a restore — do-ops.ts's restoreProgram)
   yield* Effect.sync(() => {
     cache.chain = null;
     cache.current = null;

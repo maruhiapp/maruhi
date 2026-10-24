@@ -673,9 +673,9 @@ export interface DataStoreShape {
   /**
    * Every member's stored head attestations (the distribution material
    * of AUTH_SPEC §16-1). The narrowing to current members is done by
-   * the caller (chain-do.ts — the chain-derived current-member set):
-   * the distribution side holds an independent defensive layer in case
-   * the row deletion at remove (§6.4) missed one.
+   * the caller (programs-chain.ts's snapshotProgram — the chain-derived
+   * current-member set): the distribution side holds an independent
+   * defensive layer in case the row deletion at remove (§6.4) missed one.
    */
   readonly listHeadAttestations: Effect.Effect<readonly StoredHeadAttestation[]>;
   /**

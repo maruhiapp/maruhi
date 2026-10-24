@@ -167,7 +167,7 @@ const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: Checkpoin
 
 /**
  * Acceptance of a standalone checkpoint (the checkpoint branch of the
- * generic chain append — called from chain-do.ts's appendProgram). Chain
+ * generic chain append — called from programs-chain.ts's appendProgram). Chain
  * append + mirror + snapshot upsert commit atomically in a single
  * synchronous block (§16-2's "same transaction as the chain append";
  * existing snapshots of environments absent from the payload are left

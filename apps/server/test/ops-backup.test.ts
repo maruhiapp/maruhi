@@ -20,7 +20,8 @@ import { Context, Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeDbServices, OpsRepo } from "../src/db.package/index.ts";
-import type { Env, OpsBackupOutcome, OpsRestoreOutcome } from "../src/do/chain-do.ts";
+import type { Env } from "../src/do/chain-do.ts";
+import type { OpsBackupOutcome, OpsRestoreOutcome } from "../src/do/do-ops.ts";
 import { PROJECT_DO_TABLES } from "../src/do/do-schema.ts";
 import { SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION } from "../src/do/do-snapshot.ts";
 import worker from "../src/index.ts";

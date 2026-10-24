@@ -37,12 +37,12 @@ import {
 import { callProjectData, noContent, unwrapDataOutcome } from "../data/data-http.ts";
 import type { DataOutcome } from "../data/data-rejection.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "../db.package/index.ts";
-import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "../do/chain-do.ts";
 import {
   MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ENTRY_CANONICAL_BYTES,
   PROJECT_LIST_PAGE_SIZE,
 } from "../policy.ts";
+import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "../programs/programs-chain.ts";
 import { projectQuotaExceeded } from "../quotas.ts";
 import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
 
