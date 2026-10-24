@@ -1,4 +1,6 @@
-// Tests for non-sensitive config (config.ts) and the CLI's config command.
+// Tests for non-sensitive config (config.ts) and what `maruhi config get`
+// and `set` do. The config command's argument layer is pinned in
+// config-command.test.ts.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
