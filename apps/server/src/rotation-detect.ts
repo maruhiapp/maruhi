@@ -44,7 +44,7 @@
 //   decode that skips the row would silently drop a rotation candidate.
 //   Here, (environment, variable) pairs travel together in row shapes and
 //   `pairKey`. A seam that takes both ids from an already-typed caller takes
-//   the brands instead (`rotationFlagEventsFor` in audit-store.ts)
+//   the brands instead (`rotationFlagEventsFor` in audit-store-rotation-read.ts)
 
 import type {
   AuditEventRecordOf,
@@ -62,7 +62,7 @@ import type {
   RotationFlagSourceRow,
   ScopeSnapshot,
   VariableLifecycleRow,
-} from "./audit-store.ts";
+} from "./audit-store-rotation-read.ts";
 import { MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW } from "./policy.ts";
 
 /** Basis rank (§4.1 step 3): read = definitely obtained / readable = could have been obtained. */

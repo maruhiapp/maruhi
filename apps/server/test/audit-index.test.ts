@@ -330,7 +330,7 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
   });
 });
 
-describe("rotation flag reads (Q5 — audit-store.ts)", () => {
+describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
   /**
    * Seeds the flag-read fixture (seqs 1..12 via the store, then a corrupt
    * aggregate row at seq 13 inserted raw). Aggregate recommended rows (§3.3
