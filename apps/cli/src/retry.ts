@@ -3,10 +3,15 @@
 //
 // The skeleton "attempt → classify conflict → recover (build re-sign
 // material from a re-synced view) → re-attempt, and run recovery even
-// on the final attempt to surface definite errors" is shared by
-// push.ts / env-create.ts. Domain-specific recovery (adopting the
-// winner, re-resolving, rebuilding wraps) stays in the caller's
-// recover.
+// on the final attempt to surface definite errors" is shared by the
+// CLI's CAS-retrying writes. checkpoint.ts, env rotate's values-conflict
+// retry (env-rotate.ts) and its re-encryption passes (env-rotate-pass.ts)
+// keep their own loops. The CI workload's one-time retries keep their own
+// code too: a lease refused as token-replayed is asked once more with a
+// fresh OIDC token (ci-lease.ts), and ci rotate mints once more, under a
+// new proposal id, after a recipients mismatch (ci-rotate.ts).
+// Domain-specific recovery (adopting the winner, re-resolving, rebuilding
+// wraps) stays in the caller's recover.
 
 import { Effect } from "effect";
 

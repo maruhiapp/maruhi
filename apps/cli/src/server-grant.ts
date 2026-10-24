@@ -26,7 +26,6 @@
 // registered)". A lease in shortage falls to 503 `server-wraps-missing`
 // (AUTH_SPEC §14-3).
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import {
   type EnvironmentId,
   type KeyFingerprintHex,
@@ -34,7 +33,6 @@ import {
   type UserId,
 } from "@maruhi/core";
 import type {
-  ChainEntry,
   LeasePolicyIssuer,
   ProposableOperation,
   ServerGrant,
@@ -52,16 +50,13 @@ import {
   type ProposedSummary,
 } from "./approval.ts";
 import { type BackfillEnvironmentOutcome, backfillEnvironmentFor } from "./backfill.ts";
-import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { appendOperationWithRetry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
 import { CliIo } from "./io.ts";
-import { retryOnConflict } from "./retry.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /** The server key's public face (`/auth/config` — AUTH_SPEC §4). */
 interface ServerKeyConfig {
@@ -273,32 +268,6 @@ const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (i
   });
 });
 
-/** Signs the grant_server entry right after the current head (the shared core = chain-append.ts). */
-const signGrantEntry = Effect.fn("server-grant.signGrantEntry")(function* (input: {
-  readonly verified: VerifiedProject;
-  readonly signerUserId: UserId;
-  readonly signingKeyPair: SigningKeyPair;
-  readonly serverConfig: ServerKeyConfig;
-  readonly scope: readonly EnvironmentId[];
-  readonly leasePolicy: readonly LeasePolicyIssuer[];
-}): Effect.fn.Return<ChainEntry, CliError> {
-  return yield* signEntryAtHead({
-    verified: input.verified,
-    signerUserId: input.signerUserId,
-    operation: {
-      op: "grant_server",
-      payload: {
-        serverEncPubHex: input.serverConfig.serverEncPubHex,
-        serverKeyFingerprintHex: input.serverConfig.serverKeyFingerprintHex,
-        scopeEnvironmentIds: input.scope,
-        leasePolicy: input.leasePolicy,
-      },
-    },
-    signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the grant_server entry",
-  });
-});
-
 /**
  * Registers the server-addressed wraps for every epoch (1..current
  * epoch) of one environment (the shared core = backfill.ts). A per-epoch
@@ -461,44 +430,24 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
       "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
     );
   } else {
-    const appended = yield* retryOnConflict(
-      { verified },
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        attempt: (state) =>
-          Effect.gen(function* () {
-            const entry = yield* signGrantEntry({
-              verified: state.verified,
-              signerUserId: input.signerUserId,
-              signingKeyPair: input.signingKeyPair,
-              serverConfig,
-              scope,
-              leasePolicy: input.leasePolicy,
-            });
-            yield* appendEntry(input.client, state.verified, entry);
-            return state.verified;
-          }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-        recover: (state) =>
-          Effect.gen(function* () {
-            // Resync with the extended check (blocks re-signing onto a
-            // shortened / forked chain — the same discipline as env
-            // create / rotate's CAS retry)
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            yield* ensureStillTarget(resynced, inner, false);
-            yield* ensureGrantable({
-              verified: resynced,
-              signerUserId: input.signerUserId,
-              scope,
-              serverConfig,
-            });
-            return { verified: resynced };
-          }),
-        exhaustedMessage: `grant_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-      },
-    );
+    // The entry's operation is `inner` itself (the one a proposal would carry)
+    const outcome = yield* appendOperationWithRetry(input, {
+      operation: inner,
+      initial: { verified },
+      recheck: (resynced) =>
+        Effect.gen(function* () {
+          yield* ensureStillTarget(resynced, inner, false);
+          yield* ensureGrantable({
+            verified: resynced,
+            signerUserId: input.signerUserId,
+            scope,
+            serverConfig,
+          });
+          return { verified: resynced };
+        }),
+    });
     // Confirm the grant's listing via the post-acceptance resync (never make the server's claim the source of truth)
-    verified = yield* resyncExtended(input.resync, appended);
+    verified = yield* resyncExtended(input.resync, outcome.state.verified);
     const granted = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
     if (granted === undefined) {
       return yield* Effect.fail(

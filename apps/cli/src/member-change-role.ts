@@ -20,7 +20,6 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import {
-  ensureStillTarget,
   type ProposalInput,
   type ProposeContext,
   type ProposedSummary,
@@ -335,7 +334,6 @@ function signChangeRoleEntry(input: {
       },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the change_role entry",
   });
 }
 
@@ -520,7 +518,7 @@ const appendRoleChange = Effect.fn("member-change-role.appendRoleChange")(functi
       client: input.client,
       verified,
       resync: input.resync,
-      opLabel: "change_role",
+      inner: input.inner,
       // The omitted side (role / scope) is resolved from the target's
       // state on **the signing view** (signChangeRoleAtView — Cursor
       // Bugbot's catch)
@@ -533,10 +531,7 @@ const appendRoleChange = Effect.fn("member-change-role.appendRoleChange")(functi
           signingKeyPair: input.signingKeyPair,
         }),
       recheck: (view) =>
-        ensureStillTarget(view, input.inner, false).pipe(
-          Effect.flatMap(() => input.recheck(view)),
-          Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
-        ),
+        Effect.map(input.recheck(view), (rechecked) => ({ already: rechecked.alreadyChanged })),
     });
     verified = outcome.verified;
     appended = outcome.appended;

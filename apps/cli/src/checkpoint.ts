@@ -426,7 +426,6 @@ const sendCheckpoint = Effect.fn("checkpoint.sendCheckpoint")(function* (input: 
       payload: { environments, auditHeadHashHex: input.auditHeadHashHex },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the checkpoint entry",
   });
   yield* appendCheckpoint(input.client, input.view, entry);
   // Post-acceptance reconciliation (§12-10 (3)): confirming own entry on

@@ -23,14 +23,8 @@
 // 404 declaration alone — §7. If it cannot be verified it stays a
 // target and surfaces as a rotate failure).
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { type EnvironmentId, type KeyFingerprintHex, type UserId } from "@maruhi/core";
-import {
-  type ChainEntry,
-  isApprovalTarget,
-  type ProposableOperation,
-  type SigningKeyPair,
-} from "@maruhi/crypto";
+import { isApprovalTarget, type ProposableOperation, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -40,11 +34,10 @@ import {
   proposeOperation,
   type ProposedSummary,
 } from "./approval.ts";
-import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { appendOperationWithRetry } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { retryOnConflict } from "./retry.ts";
 import {
   baselinesOf,
   rotationMandates,
@@ -53,8 +46,6 @@ import {
   sweepRotations,
 } from "./rotation-sweep.ts";
 import { compareCodePoints } from "./scope.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /** The reason recorded on the chain by the post-revoke whole-environment rotation (§6.2 payload). */
 export const REVOKE_ROTATION_REASON = "server-revoked";
@@ -114,25 +105,6 @@ function selectGrant(
   return only === undefined
     ? Effect.succeed(null)
     : Effect.succeed({ serverKeyFingerprintHex: only.serverKeyFingerprintHex });
-}
-
-/** Signs a revoke_server entry immediately after the current head (the shared core = chain-append.ts). */
-function signRevokeEntry(input: {
-  readonly verified: VerifiedProject;
-  readonly signerUserId: UserId;
-  readonly serverKeyFingerprintHex: KeyFingerprintHex;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<ChainEntry, CliError> {
-  return signEntryAtHead({
-    verified: input.verified,
-    signerUserId: input.signerUserId,
-    operation: {
-      op: "revoke_server",
-      payload: { serverKeyFingerprintHex: input.serverKeyFingerprintHex },
-    },
-    signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the revoke_server entry",
-  });
 }
 
 /** The applied seq of the last revoke_server on the chain (null when absent. Includes applications via a proposal — K6-C). */
@@ -210,15 +182,20 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
   yield* requireOwner(input.verified, input.signerUserId);
   const target = yield* selectGrant(input.verified, input.fingerprintHex);
 
-  // Four-eyes (K6-A): when the policy covers revoke_server,
-  // propose and finish (the whole-environment rotate is done by
-  // the approver who completed the application — approval item
-  // 22). A resume (no valid grant) is not proposed
+  let verified = input.verified;
+  let appended = false;
+  let revokedFingerprint: string | null = null;
+
+  // A resume (no valid grant) appends nothing and is not proposed
   if (target !== null) {
     const inner: ProposableOperation = {
       op: "revoke_server",
       payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
     };
+    // Four-eyes (K6-A): when the policy covers revoke_server,
+    // propose and finish (the whole-environment rotate is done by
+    // the approver who completed the application — approval item
+    // 22)
     if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
       const proposal = yield* proposeOperation(input, inner, (view) =>
         Effect.gen(function* () {
@@ -234,54 +211,27 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
       );
       return { kind: "proposed", proposal };
     }
-  }
 
-  let verified = input.verified;
-  let appended = false;
-  let revokedFingerprint: string | null = null;
-
-  if (target !== null) {
     revokedFingerprint = target.serverKeyFingerprintHex;
-    const outcome = yield* retryOnConflict(
-      { verified, target: target.serverKeyFingerprintHex, alreadyRevoked: false },
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        attempt: (state) =>
-          // Already revoked by a concurrent revoke — skip the append and proceed to rotation.
-          state.alreadyRevoked
-            ? Effect.succeed({ verified: state.verified, appended: false })
-            : Effect.gen(function* () {
-                const entry = yield* signRevokeEntry({
-                  verified: state.verified,
-                  signerUserId: input.signerUserId,
-                  serverKeyFingerprintHex: state.target,
-                  signingKeyPair: input.signingKeyPair,
-                });
-                yield* appendEntry(input.client, state.verified, entry);
-                return { verified: state.verified, appended: true };
-              }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-        recover: (state) =>
-          Effect.gen(function* () {
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            yield* requireOwner(resynced, input.signerUserId);
-            yield* ensureStillTarget(
-              resynced,
-              { op: "revoke_server", payload: { serverKeyFingerprintHex: state.target } },
-              false,
-            );
-            // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
-            return {
-              verified: resynced,
-              target: state.target,
-              alreadyRevoked: !resynced.state.serverGrants.has(state.target),
-            };
-          }),
-        exhaustedMessage: `revoke_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-      },
-    );
-    verified = outcome.verified;
-    appended = outcome.appended;
+    // The entry's operation is `inner` itself (the one a proposal would carry)
+    const outcome = yield* appendOperationWithRetry(input, {
+      operation: inner,
+      initial: { verified, alreadyRevoked: false },
+      // Already revoked by a concurrent revoke — skip the append and proceed to rotation.
+      settled: (state) => state.alreadyRevoked,
+      recheck: (resynced) =>
+        Effect.gen(function* () {
+          yield* requireOwner(resynced, input.signerUserId);
+          yield* ensureStillTarget(resynced, inner, false);
+          // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
+          return {
+            verified: resynced,
+            alreadyRevoked: !resynced.state.serverGrants.has(target.serverKeyFingerprintHex),
+          };
+        }),
+    });
+    verified = outcome.state.verified;
+    appended = outcome.entry !== null;
     // After acceptance, a re-sync confirms the revocation's posting (the server declaration is not the source of truth)
     verified = yield* resyncExtended(input.resync, verified);
     if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {

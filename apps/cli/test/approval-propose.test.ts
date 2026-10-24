@@ -7,7 +7,8 @@
 //     append and fulfill nothing (no rotate / backfill — ruling P7). The
 //     display is "Proposed … nothing has been applied yet"
 //  2. Idempotency: if a pending proposal for the same inner op already
-//     exists, do not propose anew (K6-A)
+//     exists, or a CAS-conflict resync finds one a concurrent run appended,
+//     do not propose anew (K6-A)
 //  3. Ops the policy does not target keep the direct append (pinned by
 //     existing tests). If a CAS-conflict resync finds the policy changed,
 //     fail closed (re-run)
@@ -82,6 +83,30 @@ async function startEnv(
 
 type PolicyOp = Parameters<typeof setApprovalPolicyOp>[0][number];
 
+/** An accepted invite from owner, for `member add` to admit invitee. */
+async function invitationFor(projectId: string, invitee: TestUser) {
+  const issued = await issueInviteFixture({
+    inviter: owner,
+    projectId,
+    headHashHex: "cd".repeat(32),
+    headSeq: 1,
+  });
+  const acceptance = await acceptanceFixture({ projectId, issued, invitee });
+  return {
+    id: INVITE_ID,
+    projectId,
+    role: "member",
+    scopeKind: "all",
+    scopeEnvironmentIds: [],
+    status: "accepted",
+    inviterUserId: owner.userId,
+    issuance: issued.issuance,
+    createdAtMs: 1755200000000,
+    expiresAtMs: 1755993600000,
+    acceptance,
+  };
+}
+
 /** 2 owners, 1 member, 1 environment, policy (ops, required 2). */
 function baseSteps(ops: readonly PolicyOp[]) {
   return [
@@ -144,6 +169,39 @@ describe("auto-proposal of existing commands (K6-A)", () => {
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
     expect(env.logs.join("\n")).toContain("The same operation is already proposed");
+  });
+
+  it("member remove: when a CAS-conflict resync shows another owner proposed the same operation, reports that proposal and appends nothing", async () => {
+    const steps = baseSteps(["remove_member"]);
+    const built = await buildChain(steps);
+    const concurrent = await buildChain([
+      ...steps,
+      { actor: owner2, operation: proposeOp(innerOf(removeMemberOp(target))) },
+    ]);
+    const state = await makeFourEyesServer({
+      built,
+      environments: {},
+      actor: owner,
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner);
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
+    expect(state.counters.appendAttempts).toBe(1);
+    expect(state.appendedEntries).toHaveLength(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("The same operation is already proposed");
+    expect(logs).toContain(`by ${owner2.userId}`);
   });
 
   it("member remove: the proposal path does not refuse a self-remove (the fulfiller is the approver — K6-N)", async () => {
@@ -270,42 +328,75 @@ describe("auto-proposal of existing commands (K6-A)", () => {
   });
 
   it("stops fail-closed when the policy changed on a CAS-conflict resync (re-run lands the new shape)", async () => {
-    const steps = [
-      { actor: owner, operation: genesisOp(owner) },
-      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-      { actor: owner, operation: addMemberOp(owner2, "owner") },
-      { actor: owner, operation: addMemberOp(target, "member") },
+    const grant = await grantServerOp([ENV_ID], [], SERVER_ENC_PUB_HEX);
+    const cases: readonly {
+      readonly op: PolicyOp;
+      readonly argv: readonly string[];
+      readonly granted?: boolean;
+      readonly invited?: boolean;
+    }[] = [
+      {
+        op: "add_member",
+        argv: ["member", "add", "--expect-fingerprint", acceptor.fingerprintHex],
+        invited: true,
+      },
+      { op: "remove_member", argv: ["member", "remove", target.userId] },
+      { op: "change_role", argv: ["member", "change-role", target.userId, "--role", "admin"] },
+      {
+        op: "grant_server",
+        argv: ["server", "grant", "--environments", ENV_ID, "--expect-fingerprint", serverFpHex],
+      },
+      { op: "revoke_server", argv: ["server", "revoke"], granted: true },
     ];
-    const built = await buildChain(steps);
-    // The policy was activated concurrently with the submission
-    // (remove_member became targeted)
-    const concurrent = await buildChain([
-      ...steps,
-      { actor: owner, operation: setApprovalPolicyOp(["remove_member"], 2) },
-    ]);
-    const state = await makeFourEyesServer({
-      built,
-      environments: {},
-      actor: owner,
-      onAppend: (call) =>
-        call === 0
-          ? {
-              status: 409,
-              json: {
-                _tag: "ChainHeadConflict",
-                currentHeadSeq: concurrent.entries.length,
-                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
-              },
-            }
-          : undefined,
-      chainAfterConflict: concurrent,
-    });
-    const env = await startEnv(state, built.projectId, owner);
-    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      "The four-eyes policy changed while this command was appending",
-    );
-    expect(state.appendedEntries).toHaveLength(0);
+    for (const { op, argv, granted, invited } of cases) {
+      const steps = [
+        { actor: owner, operation: genesisOp(owner) },
+        { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+        { actor: owner, operation: addMemberOp(owner2, "owner") },
+        { actor: owner, operation: addMemberOp(target, "member") },
+        ...(granted === true ? [{ actor: owner, operation: grant }] : []),
+      ];
+      const built = await buildChain(steps);
+      // The policy was activated concurrently with the submission (the op
+      // became targeted)
+      const concurrent = await buildChain([
+        ...steps,
+        { actor: owner, operation: setApprovalPolicyOp([op], 2) },
+      ]);
+      const state = await makeFourEyesServer({
+        built,
+        environments: {},
+        actor: owner,
+        authConfig: {
+          githubClientId: "dummy-client-id",
+          signupPolicy: "open",
+          serverKeyFingerprintHex: serverFpHex,
+          serverEncPubHex: SERVER_ENC_PUB_HEX,
+        },
+        ...(invited === true
+          ? { invitations: [await invitationFor(built.projectId, acceptor)] }
+          : {}),
+        onAppend: (call) =>
+          call === 0
+            ? {
+                status: 409,
+                json: {
+                  _tag: "ChainHeadConflict",
+                  currentHeadSeq: concurrent.entries.length,
+                  currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+                },
+              }
+            : undefined,
+        chainAfterConflict: concurrent,
+      });
+      const env = await startEnv(state, built.projectId, owner);
+      expect(await runCli([...argv], env.layer), op).toBe(1);
+      expect(env.errors.join("\n"), op).toContain(
+        "The four-eyes policy changed while this command was appending",
+      );
+      expect(state.counters.appendAttempts, op).toBe(1);
+      expect(state.appendedEntries, op).toHaveLength(0);
+    }
   });
 
   it("a malformed --expires fails as usage (2) before any communication", async () => {
@@ -323,29 +414,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
 });
 
 describe("member add proposal and the key-FP re-registration warning (K6-D / K6-I)", () => {
-  async function invitationFor(projectId: string, invitee: TestUser) {
-    const issued = await issueInviteFixture({
-      inviter: owner,
-      projectId,
-      headHashHex: "cd".repeat(32),
-      headSeq: 1,
-    });
-    const acceptance = await acceptanceFixture({ projectId, issued, invitee });
-    return {
-      id: INVITE_ID,
-      projectId,
-      role: "member",
-      scopeKind: "all",
-      scopeEnvironmentIds: [],
-      status: "accepted",
-      inviterUserId: owner.userId,
-      issuance: issued.issuance,
-      createdAtMs: 1755200000000,
-      expiresAtMs: 1755993600000,
-      acceptance,
-    };
-  }
-
   it("appends propose after the ceremony and does not backfill when the policy targets add_member", async () => {
     const built = await buildChain(baseSteps(["add_member"]));
     const state = await makeFourEyesServer({

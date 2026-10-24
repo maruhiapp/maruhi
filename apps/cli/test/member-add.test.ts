@@ -15,10 +15,11 @@ import { join } from "node:path";
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
-import { computeChainEntryHash, decodeHex, fingerprintToWords } from "@maruhi/crypto";
+import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
   addScopedMemberOp,
@@ -191,23 +192,14 @@ async function makeAddServer(input: {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
       }
-      const injected = input.onAppend?.(counters.appendAttempts);
+      const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
-        if (input.chainAfterConflict !== undefined) {
-          entries.splice(0, entries.length, ...input.chainAfterConflict.entries);
-          hashes.splice(0, hashes.length, ...input.chainAfterConflict.hashes);
-        }
         return injected;
       }
       const body = request.body as { readonly entry: ChainEntry };
       appendedEntries.push(body.entry);
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      return {
-        status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
+      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
     onRequest("GET", `/projects/${projectId}/invites`, () => ({
       status: 200,

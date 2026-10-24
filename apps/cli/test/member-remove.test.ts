@@ -22,6 +22,7 @@ import { computeChainEntryHash } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
   addScopedMemberOp,
@@ -215,23 +216,14 @@ async function makeRemoveServer(input: {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
         return null;
       }
-      const injected = input.onAppend?.(counters.appendAttempts);
+      const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
-        if (input.chainAfterConflict !== undefined) {
-          entries.splice(0, entries.length, ...input.chainAfterConflict.entries);
-          hashes.splice(0, hashes.length, ...input.chainAfterConflict.hashes);
-        }
         return injected;
       }
       const body = request.body as { readonly entry: ChainEntry };
       appendedEntries.push(body.entry);
-      entries.push(body.entry);
-      hashes.push(await computeChainEntryHash(body.entry));
-      return {
-        status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
+      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
       status: 200,
@@ -543,6 +535,37 @@ describe("maruhi member remove", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
+  });
+
+  it("gives up after five head conflicts in a row, naming remove_member, and sweeps nothing", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    const state = await makeRemoveServer({
+      built,
+      environments: {
+        [ENV_ID]: { currentEpoch: 1, deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)] },
+      },
+      onAppend: () => ({
+        status: 409,
+        json: {
+          _tag: "ChainHeadConflict",
+          currentHeadSeq: built.entries.length,
+          currentHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+        },
+      }),
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(1);
+    expect(state.counters.appendAttempts).toBe(5);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(state.rotateBodies).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(
+      "remove_member's chain-head conflict did not resolve (5 attempts). Wait a moment and re-run",
+    );
   });
 
   it("interruption recovery: when the target is already a non-member (remove on record), doesn't append and resumes the sweep", async () => {
