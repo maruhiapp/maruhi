@@ -24,6 +24,13 @@ import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import {
+  configNamesProject,
+  DEFAULT_ROTATE_CONFIG_PATH,
+  loadRotateConfigIfPresent,
+  type RotateConfig,
+  ruleFor,
+} from "./connector.package/index.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
@@ -41,13 +48,6 @@ import {
   type MaxAgeCandidate,
 } from "./max-age.ts";
 import { logNote } from "./notice.ts";
-import {
-  configNamesProject,
-  DEFAULT_ROTATE_CONFIG_PATH,
-  loadRotateConfigIfPresent,
-  type RotateConfig,
-  ruleFor,
-} from "./rotate-config.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */

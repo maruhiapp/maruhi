@@ -30,7 +30,7 @@ import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { type CliServices, runCli } from "../src/cli.ts";
-import { IssuerEndpoints } from "../src/rotate-connector.ts";
+import { IssuerEndpoints } from "../src/connector.package/connector-shared.ts";
 import {
   buildChain,
   createEnvironmentOp,

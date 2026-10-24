@@ -50,7 +50,7 @@ export interface ExecOutcome {
 }
 
 /**
- * One script of the `exec` rotation connector (rotate-connector.ts — PF8).
+ * One script of the `exec` rotation connector (connector-exec.ts — PF8).
  * Unlike {@link ExecInput}, `extraEnv` **does** carry secrets: the current
  * credential, its companions and the admin inputs ride into the child's
  * environment by memory injection — the `maruhi run` shape, restricted to
@@ -129,11 +129,11 @@ export interface ProcessRunnerShape {
   readonly exec: (input: ExecInput) => Effect.Effect<ExecOutcome, CliError>;
   /**
    * Runs a script of the `exec` rotation connector with secrets in its
-   * environment and its stdout captured as bytes (rotate-connector.ts —
-   * PF8). Promise-shaped like the connectors' other seams (`SqlRunner`):
-   * the connector frame lives in Promise land. A launch failure (not
-   * found, cwd missing) rejects with a message that names only the
-   * executable and the directory.
+   * environment and its stdout captured as bytes (connector-exec.ts —
+   * PF8). Promise-shaped like `SqlRunner`'s calls: the connector wraps it
+   * in `Effect.tryPromise`. A launch failure (not found, cwd missing)
+   * rejects with a message that names only the executable and the
+   * directory.
    */
   readonly captureScript: (input: CaptureInput) => Promise<CaptureOutcome>;
   /**

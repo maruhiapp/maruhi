@@ -30,6 +30,7 @@ import { AGENT_SOCKET_ENV, makeAgentKeychain } from "./agent.ts";
 import { makeStreamReplacer, scrubPatterns } from "./byte-replace.ts";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
+import { SqlRunner, type SqlRunnerShape } from "./connector.package/index.ts";
 import { cliError } from "./errors.ts";
 import { makeFileFloorStore } from "./floor-log.ts";
 import { floorDirOf, FloorStore } from "./floor.ts";
@@ -48,7 +49,6 @@ import {
   makeFileProxyAcceptStore,
   ProxyAcceptStore,
 } from "./proxy.package/index.ts";
-import { SqlRunner, type SqlRunnerShape } from "./rotate-connector.ts";
 import {
   buildChildEnvironment,
   type CaptureInput,
@@ -155,7 +155,7 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
 }
 
 /**
- * A script of the `exec` rotation connector (rotate-connector.ts — PF8):
+ * A script of the `exec` rotation connector (connector-exec.ts — PF8):
  * secrets ride in the child's environment (the `maruhi run` shape — the
  * only path they take), stdin is closed, stdout comes back as bytes (the
  * new credential — never decoded or logged here), stderr as text for the
@@ -388,7 +388,7 @@ function execStartFailure(input: ExecInput, error: unknown): string {
  * Bun's built-in SQL client (no dependency; the URL's scheme selects the
  * driver). One short-lived connection per call, closed whatever happened.
  * Statements are built by the connector from validated identifiers and
- * generated passwords (rotate-connector.ts); nothing here interpolates.
+ * generated passwords (connector-sql.ts); nothing here interpolates.
  */
 async function withSqlConnection(
   url: string,

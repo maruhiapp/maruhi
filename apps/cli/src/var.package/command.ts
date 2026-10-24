@@ -13,16 +13,16 @@ import {
 } from "../commands/flags.ts";
 import { openEnvironment, openMetadataEnvironment } from "../commands/lazy.ts";
 import { decideWriteSync, finishWrite, openWriteEnvironment } from "../commands/shared.ts";
+import {
+  DEFAULT_ROTATE_CONFIG_PATH,
+  loadRotateConfig,
+  configNamesProject as rotateConfigNamesProject,
+} from "../connector.package/index.ts";
 import type { CliServices } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
-import {
-  DEFAULT_ROTATE_CONFIG_PATH,
-  loadRotateConfig,
-  configNamesProject as rotateConfigNamesProject,
-} from "../rotate-config.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   type PushSyncSetup,

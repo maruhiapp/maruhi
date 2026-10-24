@@ -104,8 +104,8 @@ const issuanceHttpClientLayer = egressHttpClientLayer({ redirect: "manual" });
  * The message an `HttpClientError` carries: the transport's own cause (the
  * fetch rejection — a refused connection, a DNS failure) when it has one,
  * the client's wording ("Transport error", "Decode error"…) otherwise.
- * (Same chain as W1 rotate-connector.ts — kept local because its helper is
- * file-private there.)
+ * (Same chain as W1 connector-shared.ts — kept local because that helper
+ * is private to connector.package.)
  */
 function transportReason(error: HttpClientError.HttpClientError): string {
   const cause = error.reason.cause;

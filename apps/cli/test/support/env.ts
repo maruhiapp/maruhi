@@ -13,6 +13,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { AgentProfileRef } from "../../src/agent-gate.ts";
 import type { CliServices } from "../../src/cli.ts";
 import { ConfigStore, makeFileConfigStore } from "../../src/config.ts";
+import { SqlRunner, type SqlRunnerShape } from "../../src/connector.package/connector-sql.ts";
 import { CliError, cliError } from "../../src/errors.ts";
 import { makeFileFloorStore } from "../../src/floor-log.ts";
 import { floorDirOf, FloorStore } from "../../src/floor.ts";
@@ -39,7 +40,6 @@ import {
   ProxyAcceptStore,
 } from "../../src/proxy.package/proxy-accept.ts";
 import { ProxySeams, type ProxySeamsShape } from "../../src/proxy.package/proxy-run.ts";
-import { SqlRunner, type SqlRunnerShape } from "../../src/rotate-connector.ts";
 import {
   type CaptureInput,
   type CaptureOutcome,
@@ -67,7 +67,7 @@ export interface ExecCall {
   readonly stdin: Uint8Array;
 }
 
-/** One recorded `exec` rotation-connector script (rotate-connector.ts — the env carries the secrets). */
+/** One recorded `exec` rotation-connector script (connector-exec.ts — the env carries the secrets). */
 export type CaptureCall = CaptureInput;
 
 /** One recorded `maruhi agent` session child (agent.ts — env carries the socket path). */

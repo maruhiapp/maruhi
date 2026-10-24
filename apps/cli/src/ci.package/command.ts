@@ -18,16 +18,16 @@ import {
 } from "../commands/flags.ts";
 import { normalizeHttpOrigin } from "../commands/lazy.ts";
 import { commandAfterTerminator } from "../commands/shared.ts";
+import {
+  DEFAULT_ROTATE_CONFIG_PATH,
+  loadRotateConfig,
+  configNamesProject as rotateConfigNamesProject,
+} from "../connector.package/index.ts";
 import type { CliServices } from "../context.ts";
 import { displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { MAX_PROPOSAL_DAYS } from "../max-age.ts";
-import {
-  DEFAULT_ROTATE_CONFIG_PATH,
-  loadRotateConfig,
-  configNamesProject as rotateConfigNamesProject,
-} from "../rotate-config.ts";
 import {
   ciSyncOp,
   DEFAULT_SYNC_CONFIG_PATH,

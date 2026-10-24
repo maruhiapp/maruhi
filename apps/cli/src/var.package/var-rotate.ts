@@ -22,6 +22,24 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted, Stdio } from "effect";
 
+import {
+  companionsOf,
+  type ConnectorError,
+  type CredentialValues,
+  describeFinalize,
+  describeValueShapes,
+  type FinalizeOutcome,
+  finalizeCredential,
+  type InputRefs,
+  lineCountWarning,
+  planRotation,
+  type RotateConfig,
+  type RotateInputs,
+  rotateCredential,
+  type RotateRule,
+  type RotationOutcome,
+  ruleFor,
+} from "../connector.package/index.ts";
 import type { CliServices, EnvironmentContext } from "../context.ts";
 import { floorHandleFor } from "../context.ts";
 import { environmentKeysFor } from "../deks.ts";
@@ -31,21 +49,6 @@ import { CliIo } from "../io.ts";
 import { logWarning } from "../notice.ts";
 import { decryptVerifiedValue } from "../pull.ts";
 import { type PushedVersion, pushVariable } from "../push.package/index.ts";
-import { type InputRefs, type RotateConfig, type RotateRule, ruleFor } from "../rotate-config.ts";
-import {
-  companionsOf,
-  type ConnectorError,
-  type CredentialValues,
-  describeFinalize,
-  describeValueShapes,
-  type FinalizeOutcome,
-  finalizeCredential,
-  lineCountWarning,
-  planRotation,
-  type RotateInputs,
-  rotateCredential,
-  type RotationOutcome,
-} from "../rotate-connector.ts";
 import { requireEnvironmentInScope } from "../scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";

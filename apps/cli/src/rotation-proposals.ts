@@ -18,6 +18,12 @@ import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core"
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
+import {
+  describeShape,
+  lineCountWarning,
+  shapeOf,
+  type ValueShape,
+} from "./connector.package/index.ts";
 import type { CliServices, EnvironmentContext, ProjectContextBase } from "./context.ts";
 import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { environmentKeysFor } from "./deks.ts";
@@ -27,7 +33,6 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable } from "./push.package/index.ts";
-import { describeShape, lineCountWarning, shapeOf, type ValueShape } from "./rotate-connector.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
