@@ -43,6 +43,13 @@
     "typescript/unbound-method": "off"
   },
   "ignorePatterns": ["fallow-baselines", ".agents", ".claude", ".deepsec"],
+  // With nested configs, as `bun run lint` runs oxlint, a file under
+  // apps/web is linted with apps/web/.oxlintrc.json, which extends this
+  // config, and oxlint matches every override's globs there, these
+  // included, against the path relative to apps/web: a glob below that
+  // names a path from the repository root (`apps/*/src/**`) does not
+  // match the web file it names, while a `**/` glob still applies. An
+  // override aimed at apps/web paths goes in that config
   "overrides": [
     {
       // Promoted to correctness by oxlint 1.85. Moving helper functions out of
@@ -55,7 +62,12 @@
       // Outbound HTTP goes through one client (packages/core/src/egress.ts):
       // effect's own clients add trace headers (traceparent / b3) to every
       // request, which the "say nothing" principle rules out. Tests may build
-      // plain clients for their local stub servers
+      // plain clients for their local stub servers. This override does not
+      // reach apps/web/src (see above), and the web needs no copy: the
+      // bundle tripwires in apps/web/test/unit/endpoints.test.ts refuse a
+      // value import of effect, @effect/* or @maruhi/core (static or
+      // dynamic), and any @maruhi/crypto specifier, in every source file
+      // there
       "files": ["apps/*/src/**", "packages/*/src/**"],
       "rules": {
         "no-restricted-imports": [
@@ -216,36 +228,6 @@
             ]
           }
         ]
-      }
-    },
-    {
-      // Astryx styling discipline (ADR-0013, B2 operation). Details: the
-      // styling-discipline section of CLAUDE.md
-      "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
-      "rules": {
-        "eslint-js/no-restricted-syntax": [
-          "error",
-          {
-            "selector": "JSXAttribute[name.name='className']",
-            "message": "className is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
-          },
-          {
-            "selector": "JSXAttribute[name.name='style']",
-            "message": "Inline style is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
-          },
-          {
-            "selector": "CallExpression[callee.object.name='stylex'][callee.property.name='props']",
-            "message": "stylex.props on raw DOM is only allowed inside apps/web/src/ui.package/. App code uses Astryx components + xstyle"
-          }
-        ]
-      }
-    },
-    {
-      // ui.package is where new visual patterns live, so the styling
-      // restrictions are lifted there
-      "files": ["apps/web/**/ui.package/**"],
-      "rules": {
-        "eslint-js/no-restricted-syntax": "off"
       }
     },
     {

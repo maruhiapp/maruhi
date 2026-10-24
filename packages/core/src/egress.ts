@@ -19,9 +19,11 @@
 // the client then creates no span and adds no trace header.
 //
 // Enforcement: oxlint `no-restricted-imports` (.oxlintrc.json) forbids
-// FetchHttpClient / BunHttpClient in src outside this file, and
-// packages/core/test/egress.test.ts pins that the client adds no header of
-// its own and that no src file builds a client with HttpClient.make.
+// FetchHttpClient / BunHttpClient in src outside this file (apps/web/src,
+// which that override does not reach, is held by the web's bundle
+// tripwires — see .oxlintrc.json), and packages/core/test/egress.test.ts
+// pins that the client adds no header of its own and that no src file
+// builds a client with HttpClient.make.
 
 import { Effect, Layer, Tracer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";

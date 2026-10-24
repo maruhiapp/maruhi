@@ -6,5 +6,46 @@
     "stylex/valid-styles": "error"
   },
   // astryx theme build artifacts are excluded from lint
-  "ignorePatterns": ["theme/maruhi.js", "theme/*.d.ts", "dist"]
+  "ignorePatterns": ["theme/maruhi.js", "theme/*.d.ts", "dist"],
+  // With nested configs, as `bun run lint` runs oxlint, every file under
+  // apps/web is linted with this config, and oxlint matches each
+  // override's globs, the inherited root ones included, against the path
+  // relative to this directory: a glob the root config writes from the
+  // repository root (`apps/web/src/**`) does not match the web file it
+  // names. An override aimed at apps/web paths therefore goes in this
+  // file, with globs relative to it. oxlint reports nothing for an
+  // override that matches no file, so test/unit/styling-lint.test.ts runs
+  // it on probe files to check that the bans below apply
+  "overrides": [
+    {
+      // Astryx styling discipline (ADR-0013, B2 operation). Details: the
+      // styling-discipline section of CLAUDE.md
+      "files": ["**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "JSXAttribute[name.name='className']",
+            "message": "className is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
+          },
+          {
+            "selector": "JSXAttribute[name.name='style']",
+            "message": "Inline style is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
+          },
+          {
+            "selector": "CallExpression[callee.object.name='stylex'][callee.property.name='props']",
+            "message": "stylex.props on raw DOM is only allowed inside apps/web/src/ui.package/. App code uses Astryx components + xstyle"
+          }
+        ]
+      }
+    },
+    {
+      // src/ui.package is where new visual patterns live, so the styling
+      // restrictions are lifted there, and in no other ui.package directory
+      "files": ["src/ui.package/**"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": "off"
+      }
+    }
+  ]
 }
