@@ -55,32 +55,37 @@ import {
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import { type CliServices, type CommonFlags, openMetadataProject, openSession } from "./context.ts";
-import { devicesOf } from "./device-key.ts";
-import { countNoun, displayText } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
-import type { Keychain } from "./keychain.ts";
-import { serializeStoredMasterKey } from "./keychain.ts";
+import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import {
+  type CliServices,
+  type CommonFlags,
+  openMetadataProject,
+  openSession,
+} from "../context.ts";
+import { devicesOf } from "../device-key.ts";
+import { countNoun, displayText } from "../display.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import type { Keychain } from "../keychain.ts";
+import { serializeStoredMasterKey } from "../keychain.ts";
 import {
   confirmKnownFingerprint,
   consultFingerprintBook,
   FingerprintBook,
   usableBookHit,
-} from "./known-fingerprints.ts";
+} from "../known-fingerprints.ts";
 import {
   decodeWrapped,
   newLedgerId,
   openOwnGuardianShare,
   sealForRequester,
-} from "./master-ops.ts";
-import { logNote, logWarning } from "./notice.ts";
-import type { ReserveKeys } from "./reserve.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
+} from "../master-ops.ts";
+import { logNote, logWarning } from "../notice.ts";
+import type { ReserveKeys } from "../reserve.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 
 /** The same cap as the acceptance policy (AUTH_SPEC §13-8) (guidance ahead of the server's 422). */
 const MAX_GUARDIANS = 5;

@@ -41,7 +41,21 @@ import {
   auditVerifyConfig,
   makeAuditCommands,
 } from "../audit.package/command.ts";
+import {
+  ciRotateConfig,
+  ciRunConfig,
+  ciSyncConfig,
+  makeCiCommands,
+} from "../ci.package/command.ts";
 import type { CommandSpec } from "../cli-formatter.ts";
+import {
+  guardianAddConfig,
+  guardianApproveConfig,
+  guardianListConfig,
+  guardianRemoveConfig,
+  guardianWardsConfig,
+  makeGuardianCommands,
+} from "../guardian.package/command.ts";
 import {
   mirrorMarkConfig,
   mirrorPromoteConfig,
@@ -73,7 +87,6 @@ import {
   approvalWithdrawConfig,
   makeApprovalCommands,
 } from "./approval.ts";
-import { ciRotateConfig, ciRunConfig, ciSyncConfig, makeCiCommands } from "./ci.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {
   deviceAddConfig,
@@ -92,14 +105,6 @@ import {
   makeEnvCommands,
 } from "./env.ts";
 import { specOf } from "./flags.ts";
-import {
-  guardianAddConfig,
-  guardianApproveConfig,
-  guardianListConfig,
-  guardianRemoveConfig,
-  guardianWardsConfig,
-  makeGuardianCommands,
-} from "./guardian.ts";
 import {
   inviteAcceptConfig,
   inviteCreateConfig,

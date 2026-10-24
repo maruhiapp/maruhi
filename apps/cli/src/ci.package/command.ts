@@ -9,6 +9,15 @@ import {
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import {
+  NonBlank,
+  runCommandArgument,
+  singleFlag,
+  singleValued,
+  singleValuedAs,
+} from "../commands/flags.ts";
+import { normalizeHttpOrigin } from "../commands/lazy.ts";
+import { commandAfterTerminator } from "../commands/shared.ts";
 import type { CliServices } from "../context.ts";
 import { displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
@@ -26,9 +35,6 @@ import {
   loadSyncConfig,
   requireSyncTarget,
 } from "../sync.package/index.ts";
-import { NonBlank, runCommandArgument, singleFlag, singleValued, singleValuedAs } from "./flags.ts";
-import { normalizeHttpOrigin } from "./lazy.ts";
-import { commandAfterTerminator } from "./shared.ts";
 
 /**
  * `maruhi ci run`'s declaration: unlike an ordinary run it reads no
@@ -36,6 +42,7 @@ import { commandAfterTerminator } from "./shared.ts";
  * the declaration they are optional (the ids' formats are checked there),
  * and a missing one is diagnosed by the body side with the CI-specific fix
  * ("write the flag", not "set it in config").
+ * @public
  */
 export const ciRunConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
@@ -62,6 +69,7 @@ export const ciRunConfig = {
  * `ci run` it reads no config file (server / project are mandatory flags).
  * There is no `--env` since the sync config's target decides the
  * environment. `--yes` is the same word as the local apply.
+ * @public
  */
 export const ciSyncConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
@@ -93,7 +101,9 @@ export const ciSyncConfig = {
   ),
 };
 
-/** `maruhi ci rotate <NAME>` (a sealed value proposal from a CI job — PF7b). */
+/** `maruhi ci rotate <NAME>` (a sealed value proposal from a CI job — PF7b).
+ * @public
+ */
 export const ciRotateConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
   project: singleValuedAs(
@@ -167,7 +177,7 @@ interface CiTarget {
  * --audience was given (the mirror's own grant names its audience). Never
  * on an answer of the server (a 404 or a 401 is not retried)
  */
-const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(function* <A>(
+const withCiMirrorFallback = Effect.fn("ci-command.withCiMirrorFallback")(function* <A>(
   values: { readonly mirror?: string | undefined; readonly audience?: string | undefined },
   primary: CiTarget,
   attempt: (target: CiTarget) => Effect.Effect<A, CliError, CliServices>,
@@ -197,7 +207,7 @@ const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(funct
 });
 
 /** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
-const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
+const ciRunCommand = Effect.fn("ci-command.ciRunCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
   readonly env?: EnvironmentId | undefined;
@@ -207,7 +217,7 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
   readonly command: readonly string[];
 }): Effect.fn.Return<number, CliError, CliServices> {
   const { ciRunOp } = yield* Effect.promise(() =>
-    import("../ci-run.ts").then((m) => ({ ciRunOp: m.ciRunOp })),
+    import("./ci-run.ts").then((m) => ({ ciRunOp: m.ciRunOp })),
   );
 
   // Every format check precedes network / key generation (the same
@@ -236,7 +246,7 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
 });
 
 /** `maruhi ci sync <target>`'s body (the lease and the sync live in sync-ci.ts). */
-const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: {
+const ciSyncCommand = Effect.fn("ci-command.ciSyncCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
   readonly audience?: string | undefined;
@@ -270,7 +280,7 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
 });
 
 /** The coordinates of `maruhi ci rotate` (every format check before the config read and the network). */
-const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(function* (values: {
+const ciRotateCoordinates = Effect.fn("ci-command.ciRotateCoordinates")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
   readonly env?: EnvironmentId | undefined;
@@ -300,7 +310,7 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
 });
 
 /** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
-const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (values: {
+const ciRotateCommand = Effect.fn("ci-command.ciRotateCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
   readonly env?: EnvironmentId | undefined;
@@ -311,7 +321,7 @@ const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (valu
   readonly name: string;
 }): Effect.fn.Return<void, CliError, CliServices> {
   const { ciRotateOp, describeProposal } = yield* Effect.promise(() =>
-    import("../ci-rotate.ts").then((m) => ({
+    import("./ci-rotate.ts").then((m) => ({
       ciRotateOp: m.ciRotateOp,
       describeProposal: m.describeProposal,
     })),
@@ -343,11 +353,12 @@ const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (valu
   }
 });
 
+/** @public */
 export function makeCiCommands(onExitCode: (code: number) => void) {
   const ciRun = Command.make(
     "run",
     ciRunConfig,
-    Effect.fn("commands-ci.ciRun")(function* (values) {
+    Effect.fn("ci-command.ciRun")(function* (values) {
       const { command: parsed, ...flags } = values;
       // Drops before communication / key generation (at the command body's head) (the same `--` discipline as run)
       const command = yield* commandAfterTerminator(parsed);

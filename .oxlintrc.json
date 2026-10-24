@@ -122,7 +122,7 @@
       "files": [
         "packages/api-schema/src/**",
         "apps/cli/src/commands/flags.ts",
-        "apps/cli/src/commands/ci.ts",
+        "apps/cli/src/ci.package/command.ts",
         "apps/cli/src/commands/device.ts",
         "apps/cli/src/commands/env.ts",
         "apps/cli/src/commands/rotation.ts",
