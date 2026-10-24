@@ -11,6 +11,7 @@ import {
   singleValued,
   singleValuedAs,
 } from "../commands/flags.ts";
+import { floorHandleFor, openProject } from "../commands/lazy.ts";
 import { CliError, usageError } from "../errors.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
@@ -146,13 +147,6 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
   readonly config: string | undefined;
   readonly target: string;
 }) {
-  const { floorHandleFor, openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({
-      floorHandleFor: m.floorHandleFor,
-      openProject: m.openProject,
-    })),
-  );
-
   // The config is read before any network (a broken file's detection is never placed behind a round trip)
   const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
   const target = yield* requireSyncTarget(config, values.target);

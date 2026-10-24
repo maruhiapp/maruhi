@@ -1,4 +1,5 @@
-// Helpers shared across command groups (discipline: see commands/index.ts). A leaf: nothing here imports another commands/ file.
+// Helpers shared across command groups (discipline: see commands/index.ts).
+// A leaf: of the other commands/ files it imports only lazy.ts, itself a leaf.
 
 import { Clock, Effect, Stdio } from "effect";
 
@@ -7,9 +8,9 @@ import {
   describeInnerOperation,
   parseProposalExpiry,
 } from "../approval-rules.ts";
-import { type ProposalInput, type ProposedSummary } from "../approval.ts";
+import type { ProposalInput, ProposedSummary } from "../approval.ts";
 import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
-import { type CliServices, type ProjectContext } from "../context.ts";
+import type { CliServices, ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { GITHUB_LOGIN } from "../invite-link.ts";
@@ -17,7 +18,8 @@ import { CliIo, type CliIoShape } from "../io.ts";
 import { Keychain, tokenEntryName } from "../keychain.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
-import { type SweepOutcome } from "../rotation-sweep.ts";
+import type { SweepOutcome } from "../rotation-sweep.ts";
+import { normalizeHttpOrigin } from "./lazy.ts";
 
 // P-6: the heavy implementation graph (context / api / session and the op
 // modules) is imported lazily inside the bodies that use it, so that
@@ -25,6 +27,11 @@ import { type SweepOutcome } from "../rotation-sweep.ts";
 // `Effect.promise` resolves only when the command handler actually runs.
 // Each load reads its names off the module inside the `.then` — the only
 // shape fallow credits per export (pinned by test/lazy-imports.test.ts).
+// Every context.ts and session.ts function the commands call is wrapped
+// once in lazy.ts, so a command imports it from there and calls it
+// directly. That parsing, help and version load none of context / api /
+// session / chain-sync is checked on the running CLI by
+// test/startup-loads.test.ts.
 
 /** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
 const RUN_TERMINATOR_HINT =
@@ -79,9 +86,6 @@ export const ENV_FLAG_SHAPE_MESSAGE =
 export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(function* (
   raw: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
-  );
   const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
     fix: "mirror in your config",
   });

@@ -6,6 +6,7 @@ import { Argument, Command } from "effect/cli";
 
 import { usageError } from "../errors.ts";
 import { NonBlank, projectFlags, serverOnlyFlags, singleValued } from "./flags.ts";
+import { openSession } from "./lazy.ts";
 
 export const guardianApproveConfig = {
   ...serverOnlyFlags(),
@@ -85,9 +86,6 @@ export function makeGuardianCommands() {
     "approve",
     guardianApproveConfig,
     Effect.fn("commands-guardian.guardianApprove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { guardianApproveOp } = yield* Effect.promise(() =>
         import("../guardian.ts").then((m) => ({ guardianApproveOp: m.guardianApproveOp })),
       );
@@ -121,9 +119,6 @@ export function makeGuardianCommands() {
     "remove",
     guardianRemoveConfig,
     Effect.fn("commands-guardian.guardianRemove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { guardianRemoveOp } = yield* Effect.promise(() =>
         import("../guardian.ts").then((m) => ({ guardianRemoveOp: m.guardianRemoveOp })),
       );
@@ -140,9 +135,6 @@ export function makeGuardianCommands() {
     "wards",
     guardianWardsConfig,
     Effect.fn("commands-guardian.guardianWards")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { guardianWardsOp } = yield* Effect.promise(() =>
         import("../guardian.ts").then((m) => ({ guardianWardsOp: m.guardianWardsOp })),
       );

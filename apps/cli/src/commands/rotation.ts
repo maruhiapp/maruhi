@@ -14,6 +14,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import { openEnvironment, openMetadataProject } from "./lazy.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, proposeCheckpointRefresh } from "./shared.ts";
 
 export const rotationListConfig = {
@@ -89,9 +90,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "list",
     rotationListConfig,
     Effect.fn("commands-rotation.rotationList")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-      );
       const { rotationListOp } = yield* Effect.promise(() =>
         import("../rotation.ts").then((m) => ({ rotationListOp: m.rotationListOp })),
       );
@@ -126,9 +124,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     "dismiss",
     rotationDismissConfig,
     Effect.fn("commands-rotation.rotationDismiss")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-      );
       const { parseDismissRequest, resolveDismissTargets, rotationDismissOp } =
         yield* Effect.promise(() =>
           import("../rotation.ts").then((m) => ({
@@ -208,9 +203,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-      );
       const { rotationProposalsOp } = yield* Effect.promise(() =>
         import("../rotation-proposals.ts").then((m) => ({
           rotationProposalsOp: m.rotationProposalsOp,
@@ -240,12 +232,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openEnvironment, openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({
-          openEnvironment: m.openEnvironment,
-          openMetadataProject: m.openMetadataProject,
-        })),
-      );
       const { describeAcceptance, findProposal, rotationAcceptOp } = yield* Effect.promise(() =>
         import("../rotation-proposals.ts").then((m) => ({
           describeAcceptance: m.describeAcceptance,
@@ -290,9 +276,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       CliError,
       CliServices
     > {
-      const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-      );
       const { findProposal, rotationRejectOp } = yield* Effect.promise(() =>
         import("../rotation-proposals.ts").then((m) => ({
           findProposal: m.findProposal,

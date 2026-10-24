@@ -2,7 +2,7 @@
 
 import { Duration, Effect } from "effect";
 
-import { type CliServices } from "../context.ts";
+import type { CliServices } from "../context.ts";
 
 // P-6: api.ts (the HttpApi client) is loaded lazily inside the probe body so
 // help / version never pay the client graph (discipline: see

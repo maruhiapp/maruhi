@@ -13,6 +13,7 @@ import {
   singleFlag,
   singleValued,
 } from "../commands/flags.ts";
+import { openEnvironment, openMetadataEnvironment } from "../commands/lazy.ts";
 import type { CliServices } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
@@ -128,9 +129,6 @@ const runSchemaShow = Effect.fn("schema-command.runSchemaShow")(function* (value
   readonly project?: string | undefined;
   readonly env?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataEnvironment: m.openMetadataEnvironment })),
-  );
   const { schemaShowOp } = yield* Effect.promise(() =>
     import("./schema.ts").then((m) => ({ schemaShowOp: m.schemaShowOp })),
   );
@@ -253,9 +251,6 @@ export function makeSchemaCommands() {
     "set",
     schemaSetConfig,
     Effect.fn("schema-command.schemaSet")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       const { ensureEntropyAcknowledged, schemaSetOp } = yield* Effect.promise(() =>
         import("./schema.ts").then((m) => ({
           ensureEntropyAcknowledged: m.ensureEntropyAcknowledged,
@@ -304,9 +299,6 @@ export function makeSchemaCommands() {
     "import",
     schemaImportConfig,
     Effect.fn("schema-command.schemaImport")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       const { ensureImportCeremonyAllowed, schemaImportOp } = yield* Effect.promise(() =>
         import("./schema-import.ts").then((m) => ({
           ensureImportCeremonyAllowed: m.ensureImportCeremonyAllowed,
@@ -365,11 +357,6 @@ export function makeSchemaCommands() {
     "export",
     schemaExportConfig,
     Effect.fn("schema-command.schemaExport")(function* (values) {
-      const { openMetadataEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({
-          openMetadataEnvironment: m.openMetadataEnvironment,
-        })),
-      );
       const { schemaExportOp } = yield* Effect.promise(() =>
         import("./schema-snapshot.ts").then((m) => ({ schemaExportOp: m.schemaExportOp })),
       );
@@ -393,11 +380,6 @@ export function makeSchemaCommands() {
     "verify-snapshot",
     schemaVerifySnapshotConfig,
     Effect.fn("schema-command.schemaVerifySnapshot")(function* (values) {
-      const { openMetadataEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({
-          openMetadataEnvironment: m.openMetadataEnvironment,
-        })),
-      );
       const { schemaVerifySnapshotOp } = yield* Effect.promise(() =>
         import("./schema-snapshot.ts").then((m) => ({
           schemaVerifySnapshotOp: m.schemaVerifySnapshotOp,
@@ -434,11 +416,6 @@ export function makeSchemaCommands() {
     "lint",
     schemaLintConfig,
     Effect.fn("schema-command.schemaLint")(function* (values) {
-      const { openMetadataEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({
-          openMetadataEnvironment: m.openMetadataEnvironment,
-        })),
-      );
       const { scanPaths, schemaLintOp } = yield* Effect.promise(() =>
         import("./schema-lint.ts").then((m) => ({
           scanPaths: m.scanPaths,

@@ -14,6 +14,7 @@ import { loadLeasePolicy } from "../lease-policy.ts";
 import { logNote } from "../notice.ts";
 import type { RevokeSummary } from "../server-revoke.ts";
 import { projectFlags, proposalFlags, singleValued } from "./flags.ts";
+import { normalizeHttpOrigin, openProject } from "./lazy.ts";
 import { proposalInputOf, reportProposed, reportSweepOutcome } from "./shared.ts";
 
 export const serverGrantConfig = {
@@ -127,14 +128,8 @@ const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(funct
     readonly keyFrom?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { serverGrantOp } = yield* Effect.promise(() =>
     import("../server-grant.ts").then((m) => ({ serverGrantOp: m.serverGrantOp })),
-  );
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
   );
 
   const io = yield* CliIo;
@@ -193,9 +188,6 @@ const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(fun
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { reportRotationChecklist } = yield* Effect.promise(() =>
     import("../rotation.ts").then((m) => ({ reportRotationChecklist: m.reportRotationChecklist })),
   );

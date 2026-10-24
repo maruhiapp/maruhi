@@ -29,6 +29,7 @@ import {
   requireSyncTarget,
 } from "../sync.package/index.ts";
 import { NonBlank, runCommandArgument, singleFlag, singleValued } from "./flags.ts";
+import { normalizeHttpOrigin } from "./lazy.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, commandAfterTerminator } from "./shared.ts";
 
 /**
@@ -157,10 +158,6 @@ const withCiMirrorFallback = Effect.fn("commands-ci.withCiMirrorFallback")(funct
   primary: CiTarget,
   attempt: (target: CiTarget) => Effect.Effect<A, CliError, CliServices>,
 ): Effect.fn.Return<A, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
-  );
-
   if (values.mirror === undefined) {
     return yield* attempt(primary);
   }
@@ -197,9 +194,6 @@ const ciRunCommand = Effect.fn("commands-ci.ciRunCommand")(function* (values: {
 }): Effect.fn.Return<number, CliError, CliServices> {
   const { ciRunOp } = yield* Effect.promise(() =>
     import("../ci-run.ts").then((m) => ({ ciRunOp: m.ciRunOp })),
-  );
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
   );
 
   // Every format check precedes network / key generation (the same discipline as the existing commands)
@@ -244,10 +238,6 @@ const ciSyncCommand = Effect.fn("commands-ci.ciSyncCommand")(function* (values: 
   readonly yes: boolean;
   readonly target: string;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
-  );
-
   // The format checks and the config read precede network / key
   // generation (the same discipline as ci run). There is no `--env`: the
   // sync config's target decides the environment
@@ -292,10 +282,6 @@ const ciRotateCoordinates = Effect.fn("commands-ci.ciRotateCoordinates")(functio
   },
   CliError
 > {
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
-  );
-
   const origin = yield* normalizeHttpOrigin(
     yield* requireCiFlag(values.server, "--server", "ci rotate"),
     "the server URL",

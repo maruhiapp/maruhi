@@ -18,6 +18,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import { openEnvironment } from "./lazy.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 
 /**
@@ -53,9 +54,6 @@ export function makePushCommand() {
     "push",
     pushConfig,
     Effect.fn("commands-push.push")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       const { normalizeStdinValue, pushVariable } = yield* Effect.promise(() =>
         import("../push.ts").then((m) => ({
           normalizeStdinValue: m.normalizeStdinValue,

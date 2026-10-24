@@ -29,6 +29,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import { openEnvironment, openMetadataEnvironment } from "./lazy.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 
 /** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5). */
@@ -191,9 +192,6 @@ export function makeVarCommands() {
     varRmConfig,
     Effect.fn("commands-var.varRm")(function* (values) {
       const io = yield* CliIo;
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       const { varRmOp } = yield* Effect.promise(() =>
         import("../var-rm.ts").then((m) => ({ varRmOp: m.varRmOp })),
       );
@@ -229,11 +227,6 @@ export function makeVarCommands() {
     varHistoryConfig,
     Effect.fn("commands-var.varHistory")(function* (values) {
       const io = yield* CliIo;
-      const { openMetadataEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({
-          openMetadataEnvironment: m.openMetadataEnvironment,
-        })),
-      );
       const { formatVarHistory, varHistoryJson, varHistoryOp } = yield* Effect.promise(() =>
         import("../var-history.ts").then((m) => ({
           formatVarHistory: m.formatVarHistory,
@@ -272,9 +265,6 @@ export function makeVarCommands() {
     varRollbackConfig,
     Effect.fn("commands-var.varRollback")(function* (values) {
       const io = yield* CliIo;
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       const { varRollbackOp } = yield* Effect.promise(() =>
         import("../var-history.ts").then((m) => ({ varRollbackOp: m.varRollbackOp })),
       );
@@ -338,9 +328,6 @@ export function makeVarCommands() {
     "rotate",
     varRotateConfig,
     Effect.fn("commands-var.varRotate")(function* (values) {
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
       yield* checkPreviousFlag(values);
       // Both configs are read before any network: a broken or absent rotation
       // config is a usage problem, not something to find after a pull
