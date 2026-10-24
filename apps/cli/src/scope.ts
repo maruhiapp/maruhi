@@ -92,11 +92,15 @@ export function scopeContains(actor: MemberScope, target: MemberScope): boolean 
 
 /**
  * Assembling a scope from `--env <id>` (repeatable) / `--all-envs`
- * / `--no-envs` (shared by `invite create` / `member change-role`).
- * Format check (§12-1), duplicate refusal (§6.2's structural
- * rules), cap 256, code-point ascending (generation is ascending
- * SHOULD). When both are omitted, null (= the caller's default —
- * all for an invite, kept as-is for change-role).
+ * / `--no-envs` (shared by `invite create` / `member change-role` /
+ * `device approve`). Format check (§12-1), duplicate refusal (§6.2's
+ * structural rules), cap 256, code-point ascending (generation is
+ * ascending SHOULD). When all are omitted, null (= the caller's
+ * default — all for an invite or a device approval, kept as-is for
+ * change-role). At most one of them is given: each command refuses a
+ * combination with a `Command.validate` rule before its handler runs
+ * (commands/flags.ts's rejectCombinedScopeFlags; invite create, which has
+ * no --all-envs, checks its one pair inline).
  */
 export function scopeFromFlags(input: {
   readonly env: readonly string[];
@@ -104,10 +108,6 @@ export function scopeFromFlags(input: {
   /** `--no-envs` = `listed{}` (§6.2's empty listed — an admin who only manages, or a member to be admitted later). */
   readonly noEnvs?: boolean;
 }): Effect.Effect<MemberScope | null, CliError> {
-  const modes = [input.allEnvs, input.noEnvs === true, input.env.length > 0].filter(Boolean);
-  if (modes.length > 1) {
-    return Effect.fail(usageError("--env, --all-envs and --no-envs cannot be combined"));
-  }
   if (input.allEnvs) {
     return Effect.succeed(ALL_SCOPE);
   }

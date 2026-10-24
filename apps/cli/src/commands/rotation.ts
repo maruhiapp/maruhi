@@ -7,7 +7,13 @@ import { Argument, Command, Flag } from "effect/cli";
 import type { CliServices } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
-import { NonBlank, projectFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  invalidFlagCombination,
+  projectFlags,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, proposeCheckpointRefresh } from "./shared.ts";
 
 export const rotationListConfig = {
@@ -91,17 +97,8 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       );
 
       const dueWithin = values["due-within"];
-      if (
-        dueWithin !== undefined &&
-        (dueWithin < 0 || (!values["fail-on-due"] && !values["fail-on-pending"]))
-      ) {
-        return yield* Effect.fail(
-          usageError(
-            dueWithin < 0
-              ? "--due-within must be a number of days (0 or more)"
-              : "--due-within applies to --fail-on-due / --fail-on-pending only",
-          ),
-        );
+      if (dueWithin !== undefined && dueWithin < 0) {
+        return yield* Effect.fail(usageError("--due-within must be a number of days (0 or more)"));
       }
       const context = yield* openMetadataProject(values);
       onExitCode(
@@ -116,6 +113,12 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)",
+    ),
+    // --due-within sets the window of --fail-on-due / --fail-on-pending, so it needs one of them
+    Command.validate((values) =>
+      values["due-within"] !== undefined && !values["fail-on-due"] && !values["fail-on-pending"]
+        ? invalidFlagCombination("--due-within applies to --fail-on-due / --fail-on-pending only")
+        : Effect.void,
     ),
   );
 
@@ -146,7 +149,7 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
           usageError("Invalid variableId (see `maruhi rotation list` for the current targets)"),
         );
       }
-      // The request's shape (an --all / variable-id contradiction, a missing target) is settled before communication too
+      // The request's shape (a missing target) is settled before communication too
       const request = yield* parseDismissRequest({
         all: values.all,
         environmentId: environmentId === undefined ? null : decodeEnvironmentId(environmentId),
@@ -172,6 +175,24 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)",
+    ),
+    Command.validate((values) =>
+      values.all && values.variable !== undefined
+        ? invalidFlagCombination(
+            "--all cannot be combined with a variableId (use one or the other)",
+          )
+        : Effect.void,
+    ),
+    // A single dismissal names the pair <variableId> --env <environmentId>;
+    // --env without a variableId only narrows --all
+    Command.validate((values) =>
+      values.all || (values.variable === undefined) === (values.env === undefined)
+        ? Effect.void
+        : invalidFlagCombination(
+            values.env === undefined
+              ? "A variableId requires --env <environmentId>"
+              : "--env requires a variableId (or --all to dismiss every flag in that environment)",
+          ),
     ),
   );
 

@@ -16,6 +16,7 @@ import { logNote, logWarning } from "../notice.ts";
 import { scopeFromFlags } from "../scope.ts";
 import {
   NonBlank,
+  rejectCombinedScopeFlags,
   scopeEnvFlag,
   serverOnlyFlags,
   singleFlag,
@@ -206,6 +207,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     Command.withDescription(
       "Approve a device-add request from this (registered) device: adds the device key to your projects' chains and backfills its DEK wraps",
     ),
+    Command.validate((values) => rejectCombinedScopeFlags(values)),
   );
 
   const deviceList = Command.make(

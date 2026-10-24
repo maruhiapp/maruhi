@@ -762,11 +762,12 @@ export type DismissRequest =
     };
 
 /**
- * Interprets `maruhi rotation dismiss`'s request. Checks needing
- * no network (a contradiction between `--all` and a variable id,
- * a missing target) fail here — placed after the prior sync, the
- * guidance would hide behind a connection error and waste a
- * round trip.
+ * Interprets `maruhi rotation dismiss`'s request. A check needing no
+ * network (a missing target) fails here — placed after the prior sync,
+ * the guidance would hide behind a connection error and waste a round
+ * trip. `--all` with a variable id, and half a single target (a variable
+ * id without --env, or --env without a variable id), never reach here:
+ * the command's validate rules refuse them as usage errors.
  */
 export function parseDismissRequest(input: {
   readonly all: boolean;
@@ -774,11 +775,6 @@ export function parseDismissRequest(input: {
   readonly variableId: VariableId | null;
 }): Effect.Effect<DismissRequest, CliError> {
   if (input.all) {
-    if (input.variableId !== null) {
-      return Effect.fail(
-        cliError("--all cannot be combined with a variableId (use one or the other)"),
-      );
-    }
     return Effect.succeed({ kind: "all", environmentId: input.environmentId });
   }
   if (input.environmentId === null || input.variableId === null) {

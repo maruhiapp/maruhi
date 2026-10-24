@@ -65,7 +65,7 @@ import {
   describeUnmarkedLedgerKey,
   displayText,
 } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { requestHandoffReserve } from "./handoff.ts";
 import { CliIo } from "./io.ts";
@@ -439,17 +439,9 @@ export const keyRecoveryOp = Effect.fn("key-recover.keyRecoveryOp")(function* (i
     yield* sealNewReserve({ session: input.session, client: input.client });
     return 0;
   }
+  // --replace never opens the ledger, so `via` plays no part in it (the
+  // command refuses --passkey with --replace before any network)
   if (input.replace) {
-    if (input.via === "passkey") {
-      // --passkey is a way to open the ledger. --replace presumes never
-      // opening it, so they cannot combine — with a passkey, opening and
-      // reissuing keeps the same reserve key (noted by pullfrog)
-      return yield* Effect.fail(
-        usageError(
-          "--passkey cannot be combined with --replace: --replace never opens the ledger. If you still have a passkey, run `maruhi key recovery --passkey` (without --replace) to reissue the recovery code for the same reserve key",
-        ),
-      );
-    }
     return yield* replaceReserveWithoutOpening(input);
   }
   const opened = yield* openLedgerReserve({

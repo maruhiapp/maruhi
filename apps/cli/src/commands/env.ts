@@ -15,7 +15,13 @@ import {
   advanceReceiptsAfterRotation,
   checkRotateConfigProject,
 } from "../sync.package/index.ts";
-import { NonBlank, projectFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  invalidFlagCombination,
+  NonBlank,
+  projectFlags,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 
 /** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */
 const environmentIdArgument = (name: string, description: string) =>
@@ -200,9 +206,10 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
     resync: context.resync,
     floor: context.floorHandle,
   });
-  // "Was a new epoch requested" is fixed by the launch-time flag
-  // (--reason is required only on the path that creates a new epoch —
-  // env-rotate.ts's requireReason)
+  // "Was a new epoch requested" is fixed by the launch-time flags: either
+  // --new-epoch (refused without --reason by env rotate's validate rule)
+  // or a reason, which is what selects the rotate path (env-rotate.ts's
+  // rotatePathOf)
   const code = yield* reportRotation(
     environmentId,
     summary,
@@ -442,6 +449,18 @@ export function makeEnvCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "Rotate the environment's epoch DEK, or resume an incomplete re-encryption",
+    ),
+    // --new-epoch always signs a rotate_epoch entry, whose payload records the
+    // reason. Refused before the session: a run that fetched every variable's
+    // ciphertext for an unsatisfiable argument check would leave a
+    // per-variable var.read on the audit log. Without --new-epoch a reason is
+    // what selects the rotate path (env-rotate.ts's rotatePathOf)
+    Command.validate((values) =>
+      values["new-epoch"] && values.reason === undefined
+        ? invalidFlagCombination(
+            "Specify the rotation reason with --reason (it is recorded on the chain's rotate_epoch entry and cannot be rewritten later)",
+          )
+        : Effect.void,
     ),
   );
 

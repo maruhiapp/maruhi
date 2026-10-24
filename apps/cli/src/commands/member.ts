@@ -22,6 +22,7 @@ import {
   NonBlankUserId,
   projectFlags,
   proposalFlags,
+  rejectCombinedScopeFlags,
   scopeEnvFlag,
   singleFlag,
   singleValued,
@@ -373,7 +374,8 @@ export const reportRoleChangeFulfilment = Effect.fn("commands-member.reportRoleC
 /**
  * change-role's input: at least one of `--role` / `--env`… / `--all-envs`
  * (an omission is kept as-is — design record K4-A). A malformed format
- * drops as usage (2) before any communication.
+ * drops as usage (2) before any communication. A combination of the
+ * scope flags was already refused by the command's validate rule.
  */
 const parseChangeRoleRequest = Effect.fn("commands-member.parseChangeRoleRequest")(
   function* (flags: {
@@ -538,6 +540,7 @@ export function makeMemberCommands(onExitCode: (code: number) => void) {
     Command.withDescription(
       "Change a member's role and/or environment scope (demotion and scope narrowing force a rotation)",
     ),
+    Command.validate((values) => rejectCombinedScopeFlags(values)),
   );
 
   const memberList = Command.make("list", memberListConfig, (values) =>
