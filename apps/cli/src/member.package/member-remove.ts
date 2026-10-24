@@ -12,12 +12,14 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { type ProposalInput, proposeOperation, proposeRecheck } from "./approval.ts";
-import { signEntryAtHead } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import { cliError, type CliError } from "./errors.ts";
+import type { MaruhiClient } from "../api.ts";
+import { type ProposalInput, proposeOperation, proposeRecheck } from "../approval.package/index.ts";
+import { signEntryAtHead } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { SweepRotate } from "../rotation-sweep.ts";
+import { describeScope, scopeContains } from "../scope.ts";
 import {
   actorAuthority,
   type ActorAuthority,
@@ -30,8 +32,6 @@ import {
   sweepAfterMandate,
   targetedOpRejection,
 } from "./member.ts";
-import type { SweepRotate } from "./rotation-sweep.ts";
-import { describeScope, scopeContains } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // member remove

@@ -6,7 +6,7 @@ import { Command } from "effect/cli";
 
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
 import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
-import type { PolicyRequest } from "../approval.ts";
+import type { PolicyRequest } from "../approval.package/index.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
 import type { CliServices, CommonFlags } from "../context.ts";
 import { chainEnvironmentIds } from "../deks.ts";
@@ -272,7 +272,9 @@ const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyA
     },
   ): Effect.fn.Return<number, CliError, CliServices> {
     const { setApprovalPolicyOp } = yield* Effect.promise(() =>
-      import("../approval.ts").then((m) => ({ setApprovalPolicyOp: m.setApprovalPolicyOp })),
+      import("../approval.package/index.ts").then((m) => ({
+        setApprovalPolicyOp: m.setApprovalPolicyOp,
+      })),
     );
 
     const io = yield* CliIo;

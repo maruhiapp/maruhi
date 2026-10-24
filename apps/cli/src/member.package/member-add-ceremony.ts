@@ -8,20 +8,20 @@ import type { Role } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { IdentityBacking } from "./config.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { confirmByLastWord, fingerprintWords, formatWordList } from "./fp-words.ts";
-import { checkSigningKeyBacking, describeBackingFallback } from "./github-signing-keys.ts";
-import type { InvitationRow, InviteAcceptance } from "./invite.ts";
-import { CliIo } from "./io.ts";
+import type { IdentityBacking } from "../config.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
+import { checkSigningKeyBacking, describeBackingFallback } from "../github-signing-keys.ts";
+import type { InvitationRow, InviteAcceptance } from "../invite.ts";
+import { CliIo } from "../io.ts";
 import {
   confirmKnownFingerprint,
   consultFingerprintBook,
   type FingerprintBook,
   usableBookHit,
-} from "./known-fingerprints.ts";
-import { logNote } from "./notice.ts";
+} from "../known-fingerprints.ts";
+import { logNote } from "../notice.ts";
 
 /** An accepted row (every row carries the issuance text). */
 export type AddableRow = InvitationRow & { readonly acceptance: InviteAcceptance };

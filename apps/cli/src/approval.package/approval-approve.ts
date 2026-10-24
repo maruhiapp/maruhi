@@ -25,31 +25,32 @@ import type { PendingProposal, ProposableOperation, SigningKeyPair } from "@maru
 import { memberScopeOf } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   describeUnresolvedRef,
   type ProposalView,
   proposalViewOf,
   resolveProposalRef,
   voteEligibility,
-} from "./approval-rules.ts";
-import { proposalStatusOf } from "./approval.ts";
-import { appendOperationWithRetry } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import type { DekRecipient } from "./deks.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import { backfillNewMember, type MemberAddSummary } from "./member-add.ts";
+} from "../approval-rules.ts";
+import { appendOperationWithRetry } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import type { DekRecipient } from "../deks.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
 import {
+  backfillNewMember,
   fulfilRoleChange,
+  type MemberAddSummary,
+  type MemberSweepOutcome,
   type RoleChangeFulfilment,
   selfObligationReason,
-} from "./member-change-role.ts";
-import { type MemberSweepOutcome, sweepMemberMandates } from "./member.ts";
-import type { SweepOutcome, SweepRotate } from "./rotation-sweep.ts";
-import { backfillServerGrant } from "./server-grant.ts";
-import { sweepAfterRevoke } from "./server-revoke.ts";
+  sweepMemberMandates,
+} from "../member.package/index.ts";
+import type { SweepOutcome, SweepRotate } from "../rotation-sweep.ts";
+import { backfillServerGrant, sweepAfterRevoke } from "../server.package/index.ts";
+import { proposalStatusOf } from "./approval.ts";
 
 /** What the completing approver's client did after the inner op was applied (approval item 22). */
 export type Fulfilment =

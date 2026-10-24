@@ -5,18 +5,6 @@ import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import type { CliServices, CommonFlags } from "../context.ts";
-import { countNoun, displayText } from "../display.ts";
-import { CliError, usageError } from "../errors.ts";
-import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
-import { CliIo, type CliIoShape } from "../io.ts";
-import type { MemberAddSummary } from "../member-add.ts";
-import type { ChangeRoleRequest, RoleChangeFulfilment } from "../member-change-role.ts";
-import { formatMemberListRow, memberListJson, memberListRows } from "../member-list.ts";
-import type { MemberOpOutcome } from "../member.ts";
-import { logNote, logWarning } from "../notice.ts";
-import { PinStore } from "../pins.ts";
-import { describeScope, scopeFromFlags } from "../scope.ts";
 import {
   NonBlank,
   NonBlankUserId,
@@ -26,20 +14,33 @@ import {
   scopeEnvFlag,
   singleFlag,
   singleValued,
-} from "./flags.ts";
+} from "../commands/flags.ts";
 import {
   openMetadataProject,
   openProject,
   reportRotationChecklist,
   sweepRotateFor,
-} from "./lazy.ts";
+} from "../commands/lazy.ts";
 import {
   loadIdentityBacking,
   parseGithubLoginFlag,
   proposalInputOf,
+  reportMemberAdd,
   reportProposed,
+  reportRoleChangeFulfilment,
   reportSweepOutcome,
-} from "./shared.ts";
+} from "../commands/shared.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
+import { displayText } from "../display.ts";
+import { CliError, usageError } from "../errors.ts";
+import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import { formatMemberListRow, memberListJson, memberListRows } from "../member-list.ts";
+import { logNote } from "../notice.ts";
+import { PinStore } from "../pins.ts";
+import { describeScope, scopeFromFlags } from "../scope.ts";
+import type { ChangeRoleRequest } from "./member-change-role.ts";
+import type { MemberOpOutcome } from "./member.ts";
 
 /** The role grantable to a member (CRYPTO_SPEC §6.2). */
 const MEMBER_ROLES = ["reader", "member", "admin", "owner"] as const;
@@ -48,6 +49,7 @@ function isMemberRole(value: string | undefined): value is Role {
   return MEMBER_ROLES.some((known) => known === value);
 }
 
+/** @public */
 export const memberAddConfig = {
   ...projectFlags(),
   ...proposalFlags(),
@@ -77,12 +79,14 @@ const memberTargetArgument = () =>
     Argument.withSchema(NonBlankUserId),
   );
 
+/** @public */
 export const memberRemoveConfig = {
   ...projectFlags(),
   ...proposalFlags(),
   "user-id": memberTargetArgument(),
 };
 
+/** @public */
 export const memberChangeRoleConfig = {
   ...projectFlags(),
   ...proposalFlags(),
@@ -104,13 +108,14 @@ export const memberChangeRoleConfig = {
   "user-id": memberTargetArgument(),
 };
 
+/** @public */
 export const memberListConfig = {
   ...projectFlags(),
   json: singleFlag("json", "Print the members as JSON (user id, role, scope, key fingerprint)"),
 };
 
 /** `maruhi member add [invite-id]` (§6.5's mutual confirmation + add_member + the backfill). */
-const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function* (
+const memberAddCommand = Effect.fn("member-command.memberAddCommand")(function* (
   flags: CommonFlags & {
     readonly invite?: string | undefined;
     readonly github?: string | undefined;
@@ -119,7 +124,7 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { memberAddOp } = yield* Effect.promise(() =>
-    import("../member-add.ts").then((m) => ({ memberAddOp: m.memberAddOp })),
+    import("./member-add.ts").then((m) => ({ memberAddOp: m.memberAddOp })),
   );
 
   const io = yield* CliIo;
@@ -158,39 +163,12 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
   return yield* reportMemberAdd(io, outcome.summary);
 });
 
-/** member add's result report and exit code (a backfill failure = a partial completion). */
-export const reportMemberAdd = Effect.fn("commands-member.reportMemberAdd")(function* (
-  io: CliIoShape,
-  summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
-    readonly targetUserId: UserId;
-    readonly role: Role | null;
-  },
-): Effect.fn.Return<number, CliError, CliIo> {
-  const repaired =
-    summary.repaired > 0 ? `, ${countNoun(summary.repaired, "old-key wrap")} repaired` : "";
-  yield* io.log(
-    `Added member ${displayText(summary.targetUserId)}${summary.role === null ? "" : ` (role=${summary.role})`}. Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered${repaired}`,
-  );
-  if (summary.failed.length === 0) {
-    yield* io.log(
-      "Done: DEK wraps for every environment in the member's scope × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run `maruhi pull` and confirm they can decrypt",
-    );
-    return 0;
-  }
-  for (const failure of summary.failed) {
-    yield* logWarning(
-      `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member add\` to resume (409 converges as already-registered)`,
-    );
-  }
-  return 1;
-});
-
 /** `maruhi member remove <user-id>` (§7 — accompanied by the forced rotation of every environment). */
-const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(function* (
+const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(function* (
   flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { memberRemoveOp } = yield* Effect.promise(() =>
-    import("../member-remove.ts").then((m) => ({ memberRemoveOp: m.memberRemoveOp })),
+    import("./member-remove.ts").then((m) => ({ memberRemoveOp: m.memberRemoveOp })),
   );
 
   const io = yield* CliIo;
@@ -262,7 +240,7 @@ function unlessProposed<S>(
  * §6.2). An omission is kept as-is (design record K4-A). The widened part
  * is backfilled; the demoted / narrowed part carries §7's rotation duty.
  */
-const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleCommand")(function* (
+const memberChangeRoleCommand = Effect.fn("member-command.memberChangeRoleCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly target: UserId;
     readonly role?: string | undefined;
@@ -273,7 +251,7 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { memberChangeRoleOp } = yield* Effect.promise(() =>
-    import("../member-change-role.ts").then((m) => ({ memberChangeRoleOp: m.memberChangeRoleOp })),
+    import("./member-change-role.ts").then((m) => ({ memberChangeRoleOp: m.memberChangeRoleOp })),
   );
 
   const io = yield* CliIo;
@@ -321,42 +299,13 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   );
 });
 
-/** Reporting change-role's post-application stage (shared by the direct append and the approver's fulfillment [approval approve]). */
-export const reportRoleChangeFulfilment = Effect.fn("commands-member.reportRoleChangeFulfilment")(
-  function* (
-    io: CliIoShape,
-    summary: RoleChangeFulfilment,
-    rerunCommand: string,
-  ): Effect.fn.Return<number, CliError, CliServices> {
-    const backfillCode = yield* reportScopeBackfill(io, summary, rerunCommand);
-    if (summary.sweep === null) {
-      yield* io.log(
-        backfillCode === 0
-          ? "Done: the role / scope was changed (no rotation mandate)"
-          : "The role / scope was changed, but the backfill is incomplete",
-      );
-      return backfillCode;
-    }
-    yield* reportChangeRoleMandates(io, summary);
-    const sweepCode = yield* reportSweepOutcome(summary.sweep, {
-      rerunCommand,
-      alreadyRotatedBasis: "the mandate entry",
-    });
-    const exitCode = backfillCode === 0 && sweepCode === 0 ? 0 : 1;
-    if (exitCode === 0) {
-      yield* io.log("Done: the change and the rotation of the affected environments completed");
-    }
-    return exitCode;
-  },
-);
-
 /**
  * change-role's input: at least one of `--role` / `--env`… / `--all-envs`
  * (an omission is kept as-is — design record K4-A). A malformed format
  * drops as usage (2) before any communication. A combination of the
  * scope flags was already refused by the command's validate rule.
  */
-const parseChangeRoleRequest = Effect.fn("commands-member.parseChangeRoleRequest")(
+const parseChangeRoleRequest = Effect.fn("member-command.parseChangeRoleRequest")(
   function* (flags: {
     readonly role?: string | undefined;
     readonly env: readonly EnvironmentId[];
@@ -382,52 +331,6 @@ const parseChangeRoleRequest = Effect.fn("commands-member.parseChangeRoleRequest
   },
 );
 
-/** Reporting change-role's widening backfill (a failure = a partial completion → 1). */
-const reportScopeBackfill = Effect.fn("commands-member.reportScopeBackfill")(function* (
-  io: CliIoShape,
-  summary: RoleChangeFulfilment,
-  rerunCommand: string,
-): Effect.fn.Return<number, never, CliIo> {
-  // The note of the widenings remaining outside scope is emitted even
-  // when no backfill exists within my scope (Cursor Bugbot's catch: the
-  // main path is a listed admin re-running after someone else's
-  // widening)
-  if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
-    yield* logWarning(
-      `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
-    );
-  }
-  if (summary.backfill === null) {
-    return 0;
-  }
-  yield* io.log(
-    `${countNoun(summary.widenedEnvironmentIds.length, "environment")} added to the member's scope (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
-  );
-  for (const failure of summary.backfill.failed) {
-    yield* logWarning(
-      `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${rerunCommand} to resume (409 converges as already-registered)`,
-    );
-  }
-  return summary.backfill.failed.length === 0 ? 0 : 1;
-});
-
-/** The explanation line of change-role's duties (demotion / narrowing) (the sweep report's preamble). */
-const reportChangeRoleMandates = Effect.fn("commands-member.reportChangeRoleMandates")(function* (
-  io: CliIoShape,
-  summary: RoleChangeFulfilment,
-): Effect.fn.Return<void, never> {
-  if (summary.demoted) {
-    yield* io.log(
-      "Demotion below member forces a rotation of every environment in the target's scope (CRYPTO_SPEC §7 — epoch-anchor soundness)",
-    );
-  }
-  if (summary.narrowedEnvironmentIds.length > 0) {
-    yield* io.log(
-      `Scope narrowed by ${countNoun(summary.narrowedEnvironmentIds.length, "environment")} (${summary.narrowedEnvironmentIds.map(displayText).join(", ")}) — forcing a rotation of those environments (CRYPTO_SPEC §7 — the target keeps their old DEKs)`,
-    );
-  }
-});
-
 /**
  * `maruhi member list [--json]`: the verified chain's members (user id,
  * role, scope, key FPs). Zero values, so the agent-gate
@@ -435,7 +338,7 @@ const reportChangeRoleMandates = Effect.fn("commands-member.reportChangeRoleMand
  * K4-E — the same permissive side as `maruhi schema`). The master key is
  * not required either (the same keyless class as project verify).
  */
-const memberListCommand = Effect.fn("commands-member.memberListCommand")(function* (
+const memberListCommand = Effect.fn("member-command.memberListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
@@ -453,11 +356,12 @@ const memberListCommand = Effect.fn("commands-member.memberListCommand")(functio
   }
 });
 
+/** @public */
 export function makeMemberCommands(onExitCode: (code: number) => void) {
   const memberAdd = Command.make(
     "add",
     memberAddConfig,
-    Effect.fn("commands-member.memberAdd")(function* (values) {
+    Effect.fn("member-command.memberAdd")(function* (values) {
       onExitCode(
         yield* memberAddCommand({
           server: values.server,
@@ -478,7 +382,7 @@ export function makeMemberCommands(onExitCode: (code: number) => void) {
   const memberRemove = Command.make(
     "remove",
     memberRemoveConfig,
-    Effect.fn("commands-member.memberRemove")(function* (values) {
+    Effect.fn("member-command.memberRemove")(function* (values) {
       onExitCode(
         yield* memberRemoveCommand({
           server: values.server,
@@ -497,7 +401,7 @@ export function makeMemberCommands(onExitCode: (code: number) => void) {
   const memberChangeRole = Command.make(
     "change-role",
     memberChangeRoleConfig,
-    Effect.fn("commands-member.memberChangeRole")(function* (values) {
+    Effect.fn("member-command.memberChangeRole")(function* (values) {
       onExitCode(
         yield* memberChangeRoleCommand({
           server: values.server,

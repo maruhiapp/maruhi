@@ -1,6 +1,8 @@
 // Helpers shared across command groups (discipline: see commands/index.ts).
 // A leaf: of the other commands/ files it imports only lazy.ts, itself a leaf.
 
+import type { UserId } from "@maruhi/core";
+import type { Role } from "@maruhi/crypto";
 import { Clock, Effect, Stdio } from "effect";
 
 import {
@@ -8,7 +10,7 @@ import {
   describeInnerOperation,
   parseProposalExpiry,
 } from "../approval-rules.ts";
-import type { ProposalInput, ProposedSummary } from "../approval.ts";
+import type { ProposalInput, ProposedSummary } from "../approval.package/index.ts";
 import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
 import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
@@ -16,6 +18,7 @@ import { CliError, usageError } from "../errors.ts";
 import { GITHUB_LOGIN } from "../invite-link.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { Keychain, tokenEntryName } from "../keychain.ts";
+import type { MemberAddSummary, RoleChangeFulfilment } from "../member.package/index.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
 import type { SweepOutcome } from "../rotation-sweep.ts";
@@ -349,4 +352,106 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
     yield* logNote(ANCHOR_STALE_AFTER_ROTATION);
   }
   return exitCode;
+});
+
+/** member add's result report and exit code (a backfill failure = a partial completion). */
+export const reportMemberAdd = Effect.fn("commands-shared.reportMemberAdd")(function* (
+  io: CliIoShape,
+  summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
+    readonly targetUserId: UserId;
+    readonly role: Role | null;
+  },
+): Effect.fn.Return<number, CliError, CliIo> {
+  const repaired =
+    summary.repaired > 0 ? `, ${countNoun(summary.repaired, "old-key wrap")} repaired` : "";
+  yield* io.log(
+    `Added member ${displayText(summary.targetUserId)}${summary.role === null ? "" : ` (role=${summary.role})`}. Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered${repaired}`,
+  );
+  if (summary.failed.length === 0) {
+    yield* io.log(
+      "Done: DEK wraps for every environment in the member's scope × every epoch were distributed to the new member (CRYPTO_SPEC §7). Have the new member run `maruhi pull` and confirm they can decrypt",
+    );
+    return 0;
+  }
+  for (const failure of summary.failed) {
+    yield* logWarning(
+      `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run \`maruhi member add\` to resume (409 converges as already-registered)`,
+    );
+  }
+  return 1;
+});
+
+/** Reporting change-role's post-application stage (shared by the direct append and the approver's fulfillment [approval approve]). */
+export const reportRoleChangeFulfilment = Effect.fn("commands-shared.reportRoleChangeFulfilment")(
+  function* (
+    io: CliIoShape,
+    summary: RoleChangeFulfilment,
+    rerunCommand: string,
+  ): Effect.fn.Return<number, CliError, CliServices> {
+    const backfillCode = yield* reportScopeBackfill(io, summary, rerunCommand);
+    if (summary.sweep === null) {
+      yield* io.log(
+        backfillCode === 0
+          ? "Done: the role / scope was changed (no rotation mandate)"
+          : "The role / scope was changed, but the backfill is incomplete",
+      );
+      return backfillCode;
+    }
+    yield* reportChangeRoleMandates(io, summary);
+    const sweepCode = yield* reportSweepOutcome(summary.sweep, {
+      rerunCommand,
+      alreadyRotatedBasis: "the mandate entry",
+    });
+    const exitCode = backfillCode === 0 && sweepCode === 0 ? 0 : 1;
+    if (exitCode === 0) {
+      yield* io.log("Done: the change and the rotation of the affected environments completed");
+    }
+    return exitCode;
+  },
+);
+
+/** Reporting change-role's widening backfill (a failure = a partial completion → 1). */
+const reportScopeBackfill = Effect.fn("commands-shared.reportScopeBackfill")(function* (
+  io: CliIoShape,
+  summary: RoleChangeFulfilment,
+  rerunCommand: string,
+): Effect.fn.Return<number, never, CliIo> {
+  // The note of the widenings remaining outside scope is emitted even
+  // when no backfill exists within my scope (Cursor Bugbot's catch: the
+  // main path is a listed admin re-running after someone else's
+  // widening)
+  if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
+    yield* logWarning(
+      `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
+    );
+  }
+  if (summary.backfill === null) {
+    return 0;
+  }
+  yield* io.log(
+    `${countNoun(summary.widenedEnvironmentIds.length, "environment")} added to the member's scope (${summary.widenedEnvironmentIds.map(displayText).join(", ")}) — backfilled every epoch's DEK to the target (AUTH_SPEC §12-6): ${summary.backfill.registered} newly registered, ${summary.backfill.alreadyRegistered} already registered`,
+  );
+  for (const failure of summary.backfill.failed) {
+    yield* logWarning(
+      `backfill for environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${rerunCommand} to resume (409 converges as already-registered)`,
+    );
+  }
+  return summary.backfill.failed.length === 0 ? 0 : 1;
+});
+
+/** The explanation line of change-role's duties (demotion / narrowing) (the sweep report's preamble). */
+const reportChangeRoleMandates = Effect.fn("commands-shared.reportChangeRoleMandates")(function* (
+  io: CliIoShape,
+  summary: RoleChangeFulfilment,
+): Effect.fn.Return<void, never> {
+  if (summary.demoted) {
+    yield* io.log(
+      "Demotion below member forces a rotation of every environment in the target's scope (CRYPTO_SPEC §7 — epoch-anchor soundness)",
+    );
+  }
+  if (summary.narrowedEnvironmentIds.length > 0) {
+    yield* io.log(
+      `Scope narrowed by ${countNoun(summary.narrowedEnvironmentIds.length, "environment")} (${summary.narrowedEnvironmentIds.map(displayText).join(", ")}) — forcing a rotation of those environments (CRYPTO_SPEC §7 — the target keeps their old DEKs)`,
+    );
+  }
 });

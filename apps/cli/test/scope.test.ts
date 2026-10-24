@@ -20,7 +20,7 @@ import type { MaruhiClient } from "../src/api.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
 import { requireWritingMember } from "../src/dek-wrap.ts";
 import { environmentKeysFor } from "../src/deks.ts";
-import { scopeChangesOf } from "../src/member-change-role.ts";
+import { scopeChangesOf } from "../src/member.package/member-change-role.ts";
 import {
   environmentsOfScopeAt,
   requireEnvironmentInScope,

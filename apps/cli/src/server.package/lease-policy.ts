@@ -1,12 +1,12 @@
 // Loading and normalizing `maruhi server grant --lease-policy
 // <file>` (lease_policy — CRYPTO_SPEC §6.2). The argument layer is
-// commands/server.ts. Wording is English per ADR-0017.
+// this package's command.ts. Wording is English per ADR-0017.
 
 import type { LeasePolicyIssuer } from "@maruhi/crypto";
 import { Effect, Result, Schema } from "effect";
 
-import { type CliError, usageError } from "./errors.ts";
-import { JsonRecord, readNamedFile, recordKeysMatch } from "./json-record.ts";
+import { type CliError, usageError } from "../errors.ts";
+import { JsonRecord, readNamedFile, recordKeysMatch } from "../json-record.ts";
 
 // Input-file limits of lease_policy (CRYPTO_SPEC §6.2). Same values
 // as the consensus rules (an excess becomes invalid-payload at chain

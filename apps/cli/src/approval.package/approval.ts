@@ -20,19 +20,19 @@ import type { ApprovalTargetOp, ProposableOperation, Role, SigningKeyPair } from
 import { computeChainEntryHash, effectivePermissionOf, isApprovalTarget } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   describeUnresolvedRef,
   type ProposalView,
   proposalViewOf,
   resolveProposalRef,
   sameOperation,
-} from "./approval-rules.ts";
-import { appendOperationWithRetry } from "./chain-append.ts";
-import { proposalIndexOf } from "./chain-applied.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { ownDeviceBySigningKey } from "./device-key.ts";
-import { cliError, type CliError } from "./errors.ts";
+} from "../approval-rules.ts";
+import { appendOperationWithRetry } from "../chain-append.ts";
+import { proposalIndexOf } from "../chain-applied.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { ownDeviceBySigningKey } from "../device-key.ts";
+import { cliError, type CliError } from "../errors.ts";
 
 /** The outcome of proposing: a new proposal, or the one already pending for the same operation. */
 export interface ProposedSummary {

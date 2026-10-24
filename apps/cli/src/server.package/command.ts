@@ -5,23 +5,24 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import type { MaruhiClient } from "../api.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
-import { countNoun } from "../display.ts";
-import { CliError, usageError } from "../errors.ts";
-import { parseFingerprintFlag } from "../fingerprint-flag.ts";
-import { CliIo, type CliIoShape } from "../io.ts";
-import { loadLeasePolicy } from "../lease-policy.ts";
-import { logNote } from "../notice.ts";
-import type { RevokeSummary } from "../server-revoke.ts";
-import { projectFlags, proposalFlags, singleValued } from "./flags.ts";
+import { projectFlags, proposalFlags, singleValued } from "../commands/flags.ts";
 import {
   normalizeHttpOrigin,
   openProject,
   reportRotationChecklist,
   sweepRotateFor,
-} from "./lazy.ts";
-import { proposalInputOf, reportProposed, reportSweepOutcome } from "./shared.ts";
+} from "../commands/lazy.ts";
+import { proposalInputOf, reportProposed, reportSweepOutcome } from "../commands/shared.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
+import { countNoun } from "../display.ts";
+import { CliError, usageError } from "../errors.ts";
+import { parseFingerprintFlag } from "../fingerprint-flag.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import { logNote } from "../notice.ts";
+import { loadLeasePolicy } from "./lease-policy.ts";
+import type { RevokeSummary } from "./server-revoke.ts";
 
+/** @public */
 export const serverGrantConfig = {
   ...projectFlags(),
   ...proposalFlags(),
@@ -43,6 +44,7 @@ export const serverGrantConfig = {
   ),
 };
 
+/** @public */
 export const serverRevokeConfig = {
   ...projectFlags(),
   ...proposalFlags(),
@@ -97,7 +99,7 @@ interface GrantKeySource {
  * server itself). The endpoint is unauthenticated, so a tokenless client
  * reads it; naming the server itself is the default spelled out.
  */
-const grantKeySource = Effect.fn("commands-server.grantKeySource")(function* (
+const grantKeySource = Effect.fn("server-command.grantKeySource")(function* (
   keyOrigin: string | null,
   serverOrigin: string,
 ): Effect.fn.Return<GrantKeySource | null, CliError, CliServices> {
@@ -125,7 +127,7 @@ function noteGrantKeySource(keySource: GrantKeySource | null) {
 }
 
 /** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
-const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(function* (
+const serverGrantCommand = Effect.fn("server-command.serverGrantCommand")(function* (
   flags: CommonFlags & {
     readonly environments?: string | undefined;
     readonly leasePolicyPath?: string | undefined;
@@ -135,7 +137,7 @@ const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(funct
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { serverGrantOp } = yield* Effect.promise(() =>
-    import("../server-grant.ts").then((m) => ({ serverGrantOp: m.serverGrantOp })),
+    import("./server-grant.ts").then((m) => ({ serverGrantOp: m.serverGrantOp })),
   );
 
   const io = yield* CliIo;
@@ -188,14 +190,14 @@ const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(funct
 });
 
 /** `maruhi server revoke [--fingerprint <hex>]` (§7 / §9). */
-const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(function* (
+const serverRevokeCommand = Effect.fn("server-command.serverRevokeCommand")(function* (
   flags: CommonFlags & {
     readonly fingerprint?: string | undefined;
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { REVOKE_ROTATION_REASON, serverRevokeOp } = yield* Effect.promise(() =>
-    import("../server-revoke.ts").then((m) => ({
+    import("./server-revoke.ts").then((m) => ({
       REVOKE_ROTATION_REASON: m.REVOKE_ROTATION_REASON,
       serverRevokeOp: m.serverRevokeOp,
     })),
@@ -259,11 +261,12 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
   );
 }
 
+/** @public */
 export function makeServerCommands(onExitCode: (code: number) => void) {
   const serverGrant = Command.make(
     "grant",
     serverGrantConfig,
-    Effect.fn("commands-server.serverGrant")(function* (values) {
+    Effect.fn("server-command.serverGrant")(function* (values) {
       onExitCode(
         yield* serverGrantCommand({
           server: values.server,
@@ -285,7 +288,7 @@ export function makeServerCommands(onExitCode: (code: number) => void) {
   const serverRevoke = Command.make(
     "revoke",
     serverRevokeConfig,
-    Effect.fn("commands-server.serverRevoke")(function* (values) {
+    Effect.fn("server-command.serverRevoke")(function* (values) {
       onExitCode(
         yield* serverRevokeCommand({
           server: values.server,

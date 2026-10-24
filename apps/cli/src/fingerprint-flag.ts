@@ -1,6 +1,7 @@
 // Format validation of flags that take a key fingerprint (shared by
-// server grant / revoke, invite accept, member add). The consumer is
-// commands/{server,invite,member}.ts. Wording is English per ADR-0017.
+// server grant / revoke, invite accept, member add). The consumers are
+// server.package/command.ts, commands/invite.ts and
+// member.package/command.ts. Wording is English per ADR-0017.
 
 import { Effect } from "effect";
 

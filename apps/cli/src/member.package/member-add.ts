@@ -19,20 +19,20 @@ import {
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { MaruhiClient } from "./api.ts";
-import { describeKeyReuse, keyReuseOf } from "./approval-rules.ts";
-import { type ProposalInput, proposeOperation, proposeRecheck } from "./approval.ts";
-import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "./backfill.ts";
-import { signEntryAtHead } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import type { IdentityBacking } from "./config.ts";
-import { deviceReceivesEnvironment, ROLE_RANK } from "./dek-wrap.ts";
-import type { DekRecipient } from "./deks.ts";
-import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
-import { devicesOf, memberHasKeys } from "./device-key.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
+import type { MaruhiClient } from "../api.ts";
+import { describeKeyReuse, keyReuseOf } from "../approval-rules.ts";
+import { type ProposalInput, proposeOperation, proposeRecheck } from "../approval.package/index.ts";
+import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "../backfill.ts";
+import { signEntryAtHead } from "../chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import type { IdentityBacking } from "../config.ts";
+import { deviceReceivesEnvironment, ROLE_RANK } from "../dek-wrap.ts";
+import type { DekRecipient } from "../deks.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "../deks.ts";
+import { devicesOf, memberHasKeys } from "../device-key.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
 import {
   acceptanceFailureText,
   type InviteAcceptance,
@@ -41,9 +41,12 @@ import {
   pinMismatchOf,
   verifyAcceptanceBlock,
   verifyIssuance,
-} from "./invite.ts";
-import { CliIo } from "./io.ts";
-import type { FingerprintBook } from "./known-fingerprints.ts";
+} from "../invite.ts";
+import { CliIo } from "../io.ts";
+import type { FingerprintBook } from "../known-fingerprints.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { type InvitePins, issuedPinOf } from "../pins.ts";
+import { compareCodePoints, describeScope, scopeContains } from "../scope.ts";
 import {
   type AddableRow,
   confirmInviteeFingerprint,
@@ -56,9 +59,6 @@ import {
   appendWithCas,
   type MemberOpOutcome,
 } from "./member.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { type InvitePins, issuedPinOf } from "./pins.ts";
-import { compareCodePoints, describeScope, scopeContains } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // member add
