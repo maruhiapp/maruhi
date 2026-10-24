@@ -10,34 +10,25 @@
 // - **No issuing here** (ADR-0018 amendment 2 — no out-of-band anchor +
 //   capability minting). Only static guidance pointing at the CLI
 //   `maruhi invite create`
-// - Revocation is an inline two-step confirm (ruling CO) + a server
-//   re-fetch after completion. Revoke exists only on rows whose status
-//   is pending | accepted (a copy of the server's acceptance
-//   conditions — which also allow cleaning up an expired pending)
+// - Revocation is confirmed in a modal dialog (ruling CO's state
+//   machine, with the confirm DP3 amendment 4 moved out of the row —
+//   revocation.tsx) + a server re-fetch after completion. Revoke exists
+//   only on rows whose status is pending | accepted (a copy of the
+//   server's acceptance conditions — which also allow cleaning up an
+//   expired pending)
 
 import { Code } from "@astryxdesign/core/Code";
-import { VStack } from "@astryxdesign/core/Layout";
-import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
+import { pixel, proportional, type TableColumn } from "@astryxdesign/core/Table";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode, useCallback } from "react";
 
+import { ExpiryCell, HexText, RoleToken } from "./display.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { EmptyNotice } from "./resource-states.tsx";
+import { RevocableList, useRevocableList } from "./revocable-list.tsx";
+import { Callout } from "./sections.tsx";
 import { formatServerTime } from "./server-time.ts";
-import {
-  Callout,
-  EmptyNotice,
-  ExpiryCell,
-  FailureNotice,
-  HexText,
-  LoadingRow,
-  RevokeButton,
-  RevocationOutcome,
-  RoleToken,
-  SectionBlock,
-} from "./shared.tsx";
 import type { InvitationList, InvitationSummary, InviteStatus } from "./types.ts";
-import { type ResourceState, useApiResource } from "./use-api-resource.ts";
-import { type RevocationState, useRevocation } from "./use-revocation.ts";
 
 interface InviteRow extends Record<string, unknown> {
   id: string;
@@ -104,57 +95,40 @@ function inviteRevokeName(row: InviteRow): string {
   return `Revoke ${row.status} ${row.role} invitation from ${row.inviterUserId}, expires ${formatServerTime(row.expiresAtMs)}`;
 }
 
-function buildInviteColumns(
-  isLocked: boolean,
-  onArm: (id: string | undefined) => void,
-): TableColumn<InviteRow>[] {
-  return [
-    {
-      key: "status",
-      header: "Status",
-      width: pixel(110),
-      renderCell: (row: InviteRow) => <InviteStatusToken status={row.status} />,
-    },
-    {
-      key: "role",
-      header: "Role",
-      width: pixel(100),
-      renderCell: (row: InviteRow) => <RoleToken role={row.role} />,
-    },
-    {
-      key: "inviterUserId",
-      header: "Invited by",
-      width: proportional(1),
-      renderCell: (row: InviteRow) => <HexText>{row.inviterUserId}</HexText>,
-    },
-    {
-      key: "inviteeUserId",
-      header: "Accepted by",
-      width: proportional(1),
-      renderCell: (row: InviteRow) =>
-        row.inviteeUserId === undefined ? null : <HexText>{row.inviteeUserId}</HexText>,
-    },
-    {
-      key: "expiresAtMs",
-      header: "Expires",
-      width: pixel(260),
-      renderCell: (row: InviteRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      width: pixel(200),
-      renderCell: (row: InviteRow) =>
-        isRevocable(row) ? (
-          <RevokeButton
-            onArm={() => onArm(row.id)}
-            isLocked={isLocked}
-            accessibleName={inviteRevokeName(row)}
-          />
-        ) : null,
-    },
-  ];
-}
+/** The data columns (revocable-list.tsx appends the Actions column). */
+const INVITE_COLUMNS: TableColumn<InviteRow>[] = [
+  {
+    key: "status",
+    header: "Status",
+    width: pixel(110),
+    renderCell: (row: InviteRow) => <InviteStatusToken status={row.status} />,
+  },
+  {
+    key: "role",
+    header: "Role",
+    width: pixel(100),
+    renderCell: (row: InviteRow) => <RoleToken role={row.role} />,
+  },
+  {
+    key: "inviterUserId",
+    header: "Invited by",
+    width: proportional(1),
+    renderCell: (row: InviteRow) => <HexText>{row.inviterUserId}</HexText>,
+  },
+  {
+    key: "inviteeUserId",
+    header: "Accepted by",
+    width: proportional(1),
+    renderCell: (row: InviteRow) =>
+      row.inviteeUserId === undefined ? null : <HexText>{row.inviteeUserId}</HexText>,
+  },
+  {
+    key: "expiresAtMs",
+    header: "Expires",
+    width: pixel(260),
+    renderCell: (row: InviteRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
+  },
+];
 
 /** Static guidance on issuing (no issue UI here — ADR-0018 amendment 2) + a note on the consequence of revoking. */
 function InviteNotes(): ReactNode {
@@ -167,89 +141,42 @@ function InviteNotes(): ReactNode {
   );
 }
 
-function InvitesTable({
-  invitations,
-  isLocked,
-  onArm,
-}: {
-  invitations: ReadonlyArray<InvitationSummary>;
-  isLocked: boolean;
-  onArm: (id: string | undefined) => void;
-}): ReactNode {
-  if (invitations.length === 0) {
-    return (
-      <EmptyNotice
-        title="No invitations"
-        description="Invitations issued for this project appear here, as reported by the server."
-        testId="invite-empty"
-      />
-    );
-  }
-  return (
-    <Table
-      data={invitations.map(toInviteRow)}
-      columns={buildInviteColumns(isLocked, onArm)}
-      idKey="id"
-      density="balanced"
-      hasHover
-      dividers="rows"
-      data-testid="invite-table"
-    />
-  );
-}
-
-function InvitesResource({
-  revocation,
-  onArm,
-  reload,
-  state,
-}: {
-  revocation: RevocationState;
-  onArm: (id: string | undefined) => void;
-  reload: () => void;
-  state: ResourceState<InvitationList>;
-}): ReactNode {
-  // Replacement form (ruling B-a). During the post-revocation re-fetch
-  // (refreshing) the previous list stays, and each row's Revoke is
-  // disabled the same as when one is in flight (prevents a double
-  // revocation on a pre-refetch row)
-  if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
-  if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
-  return (
-    <InvitesTable
-      invitations={state.value.invitations}
-      isLocked={revocation.pendingId !== undefined || state.refreshing}
-      onArm={onArm}
-    />
-  );
-}
-
 export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
-  const { state, reload } = useApiResource<InvitationList>(apiPaths.invites(projectId));
   // The revocation state lives outside the list resource (directly
   // under the tab) — the latest failure display must not disappear on
   // an unmount mid-refetch (the header comment of use-revocation.ts)
   const revokePath = useCallback((id: string) => apiPaths.inviteRevoke(projectId, id), [projectId]);
-  const { revocation, arm, confirm } = useRevocation(revokePath, reload);
+  const list = useRevocableList<InvitationList>(apiPaths.invites(projectId), revokePath);
   return (
-    <VStack gap={4} data-testid="invite-list">
-      <SectionBlock
-        title="Invitations"
-        description="Pending, accepted, and completed invitations for this project, as reported by the server."
-      >
-        <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
-      </SectionBlock>
-      {/* Confirmation is modal (AlertDialogAsyncAction template) + an appended-form failure (ruling B-b) */}
-      <RevocationOutcome
-        revocation={revocation}
-        title="Revoke this invitation?"
-        description="The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it."
-        successMessage="Invitation revoked."
-        subject="invitation"
-        arm={arm}
-        confirm={confirm}
-      />
-      <InviteNotes />
-    </VStack>
+    <RevocableList
+      list={list}
+      testId="invite-list"
+      title="Invitations"
+      description="Pending, accepted, and completed invitations for this project, as reported by the server."
+      loadingLabel="Loading invitations"
+      listSubject="project"
+      table={{
+        toRows: (value) => value.invitations.map(toInviteRow),
+        columns: INVITE_COLUMNS,
+        tableTestId: "invite-table",
+        empty: (
+          <EmptyNotice
+            title="No invitations"
+            description="Invitations issued for this project appear here, as reported by the server."
+            testId="invite-empty"
+          />
+        ),
+        isRevocable,
+        revokeName: inviteRevokeName,
+      }}
+      revocationWording={{
+        title: "Revoke this invitation?",
+        description:
+          "The invitation link becomes unusable immediately. Issue a new invitation from the CLI to replace it.",
+        successMessage: "Invitation revoked.",
+        subject: "invitation",
+      }}
+      notes={<InviteNotes />}
+    />
   );
 }

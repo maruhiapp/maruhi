@@ -23,13 +23,13 @@ import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useState } from "react";
 
 import { DashboardShell } from "./DashboardShell.tsx";
+import { HexText } from "./display.tsx";
 import { isProjectId, shortId } from "./ids.ts";
 import { InvitesTab } from "./InvitesTab.tsx";
 import { AuditTab } from "./ProjectScreenAudit.tsx";
 import { OverviewTab } from "./ProjectScreenOverview.tsx";
 import { RotationTab } from "./ProjectScreenRotation.tsx";
 import { projectRoute, spaPaths } from "./routes.ts";
-import { HexText } from "./shared.tsx";
 
 // ---------------------------------------------------------------------------
 // The screen body

@@ -12,7 +12,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import { apiPaths } from "./endpoints.ts";
-import { SectionBlock } from "./shared.tsx";
+import { SectionBlock } from "./sections.tsx";
 import type { AuditEventsPage } from "./types.ts";
 
 // ---------------------------------------------------------------------------

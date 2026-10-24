@@ -54,8 +54,9 @@ import {
   lineageLabel,
   readSummaryLabel,
 } from "./audit-read.ts";
+import { HexText, ServerTime } from "./display.tsx";
+import { EmptyNotice, FailureNotice, LoadingRow } from "./resource-states.tsx";
 import { formatServerTime } from "./server-time.ts";
-import { EmptyNotice, FailureNotice, HexText, LoadingRow, ServerTime } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
 /** Fetches one page. `before` is the row_id of the previous page's last row (AUDIT_SPEC §7). */

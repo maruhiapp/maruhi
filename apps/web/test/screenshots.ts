@@ -236,7 +236,7 @@ const SHOTS: ReadonlyArray<Shot> = [
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
   { name: "s11-devices", path: "/dashboard/devices", ready: "[data-testid=device-table]" },
   // Empty states (in a box without a heading the empty state's
-  // heading is h2 — shared.tsx's EmptyNotice).
+  // heading is h2 — resource-states.tsx's EmptyNotice).
   // The empty state of variable names (an environment exists but has
   // no variables) cannot be drawn in empty mode (environments become
   // empty too)

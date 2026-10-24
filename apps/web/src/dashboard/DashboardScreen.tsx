@@ -20,20 +20,13 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet } from "./api.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
+import { HexText, RoleToken } from "./display.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { isProjectId } from "./ids.ts";
 import { navigateTo } from "./navigation.ts";
+import { EmptyNotice, FailureNotice, LoadingRow } from "./resource-states.tsx";
 import { spaPaths } from "./routes.ts";
-import {
-  EmptyNotice,
-  FailureNotice,
-  HexText,
-  LoadingRow,
-  RoleToken,
-  SectionBlock,
-  SectionHeader,
-  SECTION_GAP,
-} from "./shared.tsx";
+import { SectionBlock, SectionHeader, SECTION_GAP } from "./sections.tsx";
 import type { ProjectList } from "./types.ts";
 
 // A format error (client-side judgment — the server is not asked).

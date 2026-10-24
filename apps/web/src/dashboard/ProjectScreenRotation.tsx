@@ -10,15 +10,10 @@ import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import type { ReactNode } from "react";
 
+import { ServerTime } from "./display.tsx";
 import { apiPaths } from "./endpoints.ts";
-import {
-  Callout,
-  EmptyNotice,
-  FailureNotice,
-  LoadingRow,
-  SectionBlock,
-  ServerTime,
-} from "./shared.tsx";
+import { EmptyNotice, FailureNotice, LoadingRow } from "./resource-states.tsx";
+import { Callout, SectionBlock } from "./sections.tsx";
 import type { RotationFlag, RotationFlagList } from "./types.ts";
 import { useApiResource } from "./use-api-resource.ts";
 
