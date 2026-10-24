@@ -1280,25 +1280,15 @@ describe("rotation / audit nested subcommands (ADR-0016 stage 3 ③)", () => {
     expect(explicit.server.requests).toHaveLength(0);
   });
 
-  it("a missing rotation-dismiss target / a contradiction with --all fails before any communication", async () => {
+  it("a missing rotation-dismiss target fails before any communication", async () => {
     // Put behind the prelude's sync, the guidance would be hidden behind a
     // connection error (this harness's server only ever returns 404) and the round trip would be wasted
+    // (the contradiction with --all and half a single target are Command.validate
+    // rules — the block at the end of this file)
     const missing = await startEnv();
     expect(await runCli(["rotation", "dismiss"], missing.env.layer)).toBe(1);
     expect(missing.env.errors.join("\n")).toContain("Specify what to dismiss");
     expect(missing.server.requests).toHaveLength(0);
-
-    const contradictory = await startEnv();
-    expect(
-      await runCli(
-        ["rotation", "dismiss", "--all", "va1234567890123456789012", "--env", "prod"],
-        contradictory.env.layer,
-      ),
-    ).toBe(1);
-    expect(contradictory.env.errors.join("\n")).toContain(
-      "--all cannot be combined with a variableId",
-    );
-    expect(contradictory.server.requests).toHaveLength(0);
   });
 
   it("the rotation-dismiss target's format check fails before any communication (the value is never shown)", async () => {
@@ -1502,5 +1492,228 @@ describe("config's nested subcommands (ADR-0016 stage 3 ①)", () => {
     expect(await runCli(["config", "get", "defaultEnvironment"], env.layer)).toBe(0);
     expect(stdout).not.toHaveBeenCalled();
     expect(env.logs).toEqual(["prod"]);
+  });
+});
+
+describe("contradictory and dependent flags (Command.validate rules)", () => {
+  // A rule runs after parsing and before the handler, so its refusal reads
+  // like a parse error (the usage line plus the rule's fixed message, exit
+  // 2), and the command never reaches the session or the network
+  async function refusal(argv: readonly string[]): Promise<{
+    readonly code: number;
+    readonly errors: readonly string[];
+    readonly requests: number;
+  }> {
+    const { env, server } = await startEnv();
+    const code = await runCli([...argv], env.layer);
+    expect(env.logs).toEqual([]);
+    return { code, errors: env.errors, requests: server.requests.length };
+  }
+
+  it("member change-role / device approve: at most one of --env, --all-envs and --no-envs", async () => {
+    const message = "maruhi: --env, --all-envs and --no-envs cannot be combined";
+    for (const flags of [
+      ["--env", "prod", "--all-envs"],
+      ["--env", "prod", "--no-envs"],
+      ["--all-envs", "--no-envs"],
+    ]) {
+      expect(await refusal(["member", "change-role", "user-target-2222", ...flags])).toEqual({
+        code: 2,
+        errors: ["Usage: maruhi member change-role [flags] <user-id>", message],
+        requests: 0,
+      });
+      expect(
+        await refusal(["device", "approve", "0123456789abcdef0123456789abcdef", ...flags]),
+      ).toEqual({
+        code: 2,
+        errors: ["Usage: maruhi device approve [flags] <fp-or-words>", message],
+        requests: 0,
+      });
+    }
+  });
+
+  it("invite create: --env and --no-envs (an invite has no --all-envs)", async () => {
+    expect(
+      await refusal(["invite", "create", "--role", "member", "--env", "prod", "--no-envs"]),
+    ).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi invite create [flags]",
+        "maruhi: --env and --no-envs cannot be combined",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("key recover: --handoff and --passkey", async () => {
+    expect(await refusal(["key", "recover", "--handoff", "--passkey"])).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi key recover [flags]",
+        "maruhi: Choose one of --handoff and --passkey",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("key recovery: --passkey with --replace is refused before asking the server whether a reserve key exists", async () => {
+    // Checked after that request before, so with no reserve key yet the pair
+    // was silently ignored and a new reserve key was created
+    expect(await refusal(["key", "recovery", "--passkey", "--replace"])).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi key recovery [flags]",
+        "maruhi: --passkey cannot be combined with --replace: --replace never opens the ledger. If you still have a passkey, run `maruhi key recovery --passkey` (without --replace) to reissue the recovery code for the same reserve key",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("push / var rollback / var rotate: --no-sync and --config", async () => {
+    const message = "maruhi: --no-sync and --config cannot be combined (drop one of them)";
+    const sync = ["--no-sync", "--config", "maruhi.sync.json"];
+    expect(await refusal(["push", "API_KEY", ...sync])).toEqual({
+      code: 2,
+      errors: ["Usage: maruhi push [flags] <name>", message],
+      requests: 0,
+    });
+    expect(await refusal(["var", "rollback", "API_KEY", "--to", "1", ...sync])).toEqual({
+      code: 2,
+      errors: ["Usage: maruhi var rollback [flags] <name>", message],
+      requests: 0,
+    });
+    expect(await refusal(["var", "rotate", "API_KEY", ...sync])).toEqual({
+      code: 2,
+      errors: ["Usage: maruhi var rotate [flags] <name>", message],
+      requests: 0,
+    });
+  });
+
+  it("var rotate: --previous without --finalize; under --finalize the sync flags are not read", async () => {
+    expect(await refusal(["var", "rotate", "API_KEY", "--previous", "1"])).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi var rotate [flags] <name>",
+        "maruhi: --previous applies to --finalize only",
+      ],
+      requests: 0,
+    });
+    // --finalize syncs nothing, so the pair passes the rules as before and
+    // the run stops at the next check (the missing rotation config, still
+    // before any network)
+    const finalize = await refusal([
+      "var",
+      "rotate",
+      "API_KEY",
+      "--finalize",
+      "--no-sync",
+      "--config",
+      "maruhi.sync.json",
+      "--rotate-config",
+      "missing.rotate.json",
+    ]);
+    expect(finalize.code).toBe(1);
+    expect(finalize.errors.join("\n")).toContain(
+      "Cannot read the rotation config missing.rotate.json",
+    );
+    expect(finalize.requests).toBe(0);
+  });
+
+  it("rotation list: --due-within without --fail-on-due / --fail-on-pending", async () => {
+    expect(await refusal(["rotation", "list", "--due-within", "7"])).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi rotation list [flags]",
+        "maruhi: --due-within applies to --fail-on-due / --fail-on-pending only",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("env rotate: --new-epoch without --reason is refused before the session and the chain sync", async () => {
+    // Checked inside the rotation before, after the session was opened and
+    // the chain synced
+    expect(await refusal(["env", "rotate", "dev", "--new-epoch"])).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi env rotate [flags] <environment-id>",
+        "maruhi: Specify the rotation reason with --reason (it is recorded on the chain's rotate_epoch entry and cannot be rewritten later)",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("rotation dismiss: --all with a variable ID is a usage error (exit 2)", async () => {
+    expect(
+      await refusal(["rotation", "dismiss", "--all", "va1234567890123456789012", "--env", "prod"]),
+    ).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi rotation dismiss [flags] [<variable...>]",
+        "maruhi: --all cannot be combined with a variableId (use one or the other)",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("rotation dismiss: a variable ID without --env, and --env without a variable ID", async () => {
+    // Both reached the command body before and failed there with exit 1 and
+    // the missing-target guidance, which a bare `rotation dismiss` still gets
+    const usage = "Usage: maruhi rotation dismiss [flags] [<variable...>]";
+    expect(await refusal(["rotation", "dismiss", "va1234567890123456789012"])).toEqual({
+      code: 2,
+      errors: [usage, "maruhi: A variableId requires --env <environmentId>"],
+      requests: 0,
+    });
+    expect(await refusal(["rotation", "dismiss", "--env", "prod"])).toEqual({
+      code: 2,
+      errors: [
+        usage,
+        "maruhi: --env requires a variableId (or --all to dismiss every flag in that environment)",
+      ],
+      requests: 0,
+    });
+  });
+
+  it("project policy approvals: --off with --required / --ops, and --ops without --required", async () => {
+    const usage = "Usage: maruhi project policy approvals [flags]";
+    for (const flags of [
+      ["--off", "--required", "2"],
+      ["--off", "--ops", "remove_member"],
+    ]) {
+      expect(await refusal(["project", "policy", "approvals", ...flags])).toEqual({
+        code: 2,
+        errors: [usage, "maruhi: --off cannot be combined with --required / --ops"],
+        requests: 0,
+      });
+    }
+    expect(await refusal(["project", "policy", "approvals", "--ops", "remove_member"])).toEqual({
+      code: 2,
+      errors: [usage, "maruhi: --ops requires --required <n>"],
+      requests: 0,
+    });
+  });
+
+  it("a rule's refusal comes before the command body's own checks", async () => {
+    // --role is checked in the command body, which reported it first before
+    expect(
+      await refusal([
+        "member",
+        "change-role",
+        "user-target-2222",
+        "--role",
+        "bogus",
+        "--env",
+        "prod",
+        "--all-envs",
+      ]),
+    ).toEqual({
+      code: 2,
+      errors: [
+        "Usage: maruhi member change-role [flags] <user-id>",
+        "maruhi: --env, --all-envs and --no-envs cannot be combined",
+      ],
+      requests: 0,
+    });
   });
 });

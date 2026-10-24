@@ -93,20 +93,15 @@ export interface PushSyncSetup {
 /**
  * Reads the sync config before the push touches the network: the explicit
  * `--config` must exist; the default path is optional. `--no-sync` reads
- * nothing (the push behaves as if no config existed) and cannot be combined
- * with `--config`.
+ * nothing (the push behaves as if no config existed); the commands refuse
+ * it together with `--config` before their handler runs
+ * (commands/flags.ts's rejectNoSyncWithConfig).
  */
 export const loadPushSyncConfig = Effect.fn("sync-push.loadPushSyncConfig")(function* (input: {
   readonly config: string | undefined;
   readonly noSync: boolean;
 }): Effect.fn.Return<PushSyncSetup | null, CliError> {
   if (input.noSync) {
-    if (input.config !== undefined) {
-      // Do not silently allow the shape that avoids reading the pointed-at config
-      return yield* Effect.fail(
-        usageError("--no-sync and --config cannot be combined (drop one of them)"),
-      );
-    }
     return null;
   }
   if (input.config !== undefined) {

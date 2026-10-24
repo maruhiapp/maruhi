@@ -31,7 +31,14 @@ import {
   noteServerDisclosure,
   serverDisclosures,
 } from "../server-disclosure.ts";
-import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  invalidFlagCombination,
+  projectFlags,
+  proposalFlags,
+  serverOnlyFlags,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 import { proposalInputOf, reportProposed } from "./shared.ts";
 
 export const projectInitConfig = {
@@ -238,22 +245,20 @@ function parsePolicyOps(
   return Effect.succeed(ops.toSorted());
 }
 
-/** `--required N` / `--off` → the policy request (neither = null = display only). */
+/**
+ * `--required N` / `--off` → the policy request (neither = null = display
+ * only). `--off` with `--required` / `--ops` and `--ops` without
+ * `--required` were already refused by the command's validate rules.
+ */
 const parsePolicyRequest = Effect.fn("commands-project.parsePolicyRequest")(function* (flags: {
   readonly required?: string | undefined;
   readonly ops?: string | undefined;
   readonly off: boolean;
 }): Effect.fn.Return<PolicyRequest | null, CliError> {
   if (flags.off) {
-    if (flags.required !== undefined || flags.ops !== undefined) {
-      return yield* Effect.fail(usageError("--off cannot be combined with --required / --ops"));
-    }
     return { kind: "off" } as const;
   }
   if (flags.required === undefined) {
-    if (flags.ops !== undefined) {
-      return yield* Effect.fail(usageError("--ops requires --required <n>"));
-    }
     return null;
   }
   const required = Number(flags.required);
@@ -499,6 +504,16 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "Show or set the four-eyes approval policy (owner approvals required for sensitive operations); no flags = show",
+    ),
+    Command.validate((values) =>
+      values.off && (values.required !== undefined || values.ops !== undefined)
+        ? invalidFlagCombination("--off cannot be combined with --required / --ops")
+        : Effect.void,
+    ),
+    Command.validate((values) =>
+      values.ops !== undefined && values.required === undefined
+        ? invalidFlagCombination("--ops requires --required <n>")
+        : Effect.void,
     ),
   );
 

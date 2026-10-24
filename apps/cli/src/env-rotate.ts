@@ -106,10 +106,11 @@ export interface ReencryptedVariable {
  * is dropped here without waiting for the server's refusal.
  *
  * The "required" judgment does not happen here: on the resume path (which
- * creates no new entry) the reason is neither recorded nor required, so
- * the required check sits right before the entry is actually signed
- * (requireReason). Never refuse a recovery from a broken state on the
- * absence of a field that would not be written.
+ * creates no new entry) the reason is neither recorded nor required. Never
+ * refuse a recovery from a broken state on the absence of a field that
+ * would not be written. A reason is what selects the rotate path
+ * (rotatePathOf), and --new-epoch, which always signs, is refused without
+ * one before any network (commands/env.ts's validate rule).
  */
 function checkReasonLength(reason: string | undefined): Effect.Effect<string | null, CliError> {
   if (reason === undefined) {
@@ -137,16 +138,20 @@ function checkReasonLength(reason: string | undefined): Effect.Effect<string | n
   return Effect.succeed(trimmed);
 }
 
-/** Makes the reason required only on the path that creates a new epoch (part of the rotate_epoch payload). */
-function requireReason(reason: string | null): Effect.Effect<string, CliError> {
-  if (reason === null) {
-    return Effect.fail(
-      usageError(
-        "Specify the rotation reason with --reason (it is recorded on the chain's rotate_epoch entry and cannot be rewritten later)",
-      ),
-    );
-  }
-  return Effect.succeed(reason);
+/**
+ * The reason of the path that signs a rotate_epoch entry (part of its
+ * payload). That path always has one: without --new-epoch it is taken only
+ * when a reason was given (rotatePathOf), and every caller that forces a
+ * new epoch passes one — `maruhi env rotate` refuses --new-epoch without
+ * --reason before any network (commands/env.ts's validate rule), and
+ * sweepRotateFor forces one only with the reason its caller hands it
+ * (sweep-rotate.ts). So a missing reason here is a defect, not a usage
+ * error.
+ */
+function requireReason(reason: string | null): Effect.Effect<string> {
+  return reason === null
+    ? Effect.die(new Error("the rotate path was taken without a rotation reason"))
+    : Effect.succeed(reason);
 }
 
 /**
@@ -436,16 +441,6 @@ const rotateWithWarnings = Effect.fn("env-rotate.rotateWithWarnings")(function* 
     input.signerUserId,
     input.signingKeyPair,
   );
-  // --new-epoch never goes through the resume path = it always signs an
-  // entry. The reason the required check is deferred to just before
-  // signing (on resume the reason is not recorded) does not exist here,
-  // so it is dropped before the pull — never fetch every variable's
-  // ciphertext for an unsatisfiable argument check and leave a
-  // per-variable var.read on the audit log (same discipline as
-  // ensureRotatable)
-  if (input.forceNewEpoch) {
-    yield* requireReason(reason);
-  }
   // The target set's only source is the server's pull response (the
   // variable list is not on the chain — §6.2). Since detecting an
   // omission is the local floor's variable-omitted rule's job (§6.3
@@ -523,7 +518,7 @@ const rotateWithWarnings = Effect.fn("env-rotate.rotateWithWarnings")(function* 
   }
 
   // --- The normal rotation ---
-  // The reason becomes required from here (the path that actually signs a chain entry)
+  // The path that actually signs a chain entry: its reason is always set (requireReason)
   const entryReason = yield* requireReason(reason);
   const newEpoch = currentEpoch + 1;
   const member = yield* ensureRotatable(

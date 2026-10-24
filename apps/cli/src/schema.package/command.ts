@@ -6,7 +6,13 @@ import { MAX_META_MAX_AGE_DAYS, type MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command, CliError as EffectCliError, Flag } from "effect/cli";
 
-import { NonBlank, commonFlags, singleFlag, singleValued } from "../commands/flags.ts";
+import {
+  NonBlank,
+  commonFlags,
+  invalidFlagCombination,
+  singleFlag,
+  singleValued,
+} from "../commands/flags.ts";
 import type { CliServices } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
@@ -190,18 +196,12 @@ function rejectContradictorySchemaFlags(values: {
   readonly "clear-description": boolean;
 }): Effect.Effect<void, EffectCliError.ValidationError> {
   if (values.required && values.optional) {
-    return Effect.fail(
-      new EffectCliError.ValidationError({
-        message: "--required and --optional are mutually exclusive (specify at most one)",
-      }),
+    return invalidFlagCombination(
+      "--required and --optional are mutually exclusive (specify at most one)",
     );
   }
   if (values.description !== undefined && values["clear-description"]) {
-    return Effect.fail(
-      new EffectCliError.ValidationError({
-        message: "--description and --clear-description are mutually exclusive",
-      }),
-    );
+    return invalidFlagCombination("--description and --clear-description are mutually exclusive");
   }
   return Effect.void;
 }

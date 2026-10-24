@@ -21,7 +21,14 @@ import {
   syncAfterPush,
 } from "../sync.package/index.ts";
 import type { VarFinalizeInput, VarRotateInput } from "../var-rotate.ts";
-import { NonBlank, commonFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  commonFlags,
+  invalidFlagCombination,
+  rejectNoSyncWithConfig,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 
 /** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5). */
@@ -113,18 +120,14 @@ export const varRotateConfig = {
   ),
 };
 
-/** `--previous` rides only with `--finalize` and names a version (checked before any network). */
+/**
+ * `--previous` names a version (checked before any network; that it rides
+ * only with `--finalize` is the command's validate rule).
+ */
 function checkPreviousFlag(values: {
   readonly previous: number | undefined;
-  readonly finalize: boolean;
 }): Effect.Effect<void, CliError> {
-  if (values.previous === undefined) {
-    return Effect.void;
-  }
-  if (!values.finalize) {
-    return Effect.fail(usageError("--previous applies to --finalize only"));
-  }
-  return values.previous < 1
+  return values.previous !== undefined && values.previous < 1
     ? Effect.fail(usageError("--previous must be a positive version number"))
     : Effect.void;
 }
@@ -328,6 +331,7 @@ export function makeVarCommands() {
     Command.withDescription(
       "Restore a previous version's value as a new version (verifies the old version against the latest first; asks for confirmation unless --force). Never displays the value",
     ),
+    Command.validate((values) => rejectNoSyncWithConfig(values)),
   );
 
   const varRotate = Command.make(
@@ -369,6 +373,13 @@ export function makeVarCommands() {
     Command.withDescription(
       "Create a new credential at the issuer through the rule's connector and push it as a new version; the previous credential stays valid until --finalize. Never displays a value",
     ),
+    Command.validate((values) =>
+      values.previous !== undefined && !values.finalize
+        ? invalidFlagCombination("--previous applies to --finalize only")
+        : Effect.void,
+    ),
+    // --finalize syncs nothing, so it reads neither sync flag
+    Command.validate((values) => (values.finalize ? Effect.void : rejectNoSyncWithConfig(values))),
   );
 
   const varGroup = Command.make("var").pipe(

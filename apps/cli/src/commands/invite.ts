@@ -19,7 +19,14 @@ import {
 import { inviteListOp, inviteRevokeOp } from "../invite-list.ts";
 import { PinStore } from "../pins.ts";
 import { scopeFromFlags } from "../scope.ts";
-import { NonBlank, projectFlags, scopeEnvFlag, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  invalidFlagCombination,
+  projectFlags,
+  scopeEnvFlag,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 import { loadIdentityBacking, parseGithubLoginFlag } from "./shared.ts";
 
 /** The role an invite can grant (an owner is never granted via an invite — AUTH_SPEC §15-1). */
@@ -227,7 +234,15 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
       noEnvs: values["no-envs"],
       github: values.github,
     }),
-  ).pipe(Command.withDescription("Issue an invite and build the invite link"));
+  ).pipe(
+    Command.withDescription("Issue an invite and build the invite link"),
+    // Each sets the whole scope (an invite has no --all-envs: omitting both is all)
+    Command.validate((values) =>
+      values.env.length > 0 && values["no-envs"]
+        ? invalidFlagCombination("--env and --no-envs cannot be combined")
+        : Effect.void,
+    ),
+  );
 
   const inviteAccept = Command.make("accept", inviteAcceptConfig, (values) =>
     inviteAcceptCommand({

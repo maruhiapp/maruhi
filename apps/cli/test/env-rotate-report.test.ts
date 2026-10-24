@@ -590,48 +590,23 @@ describe("maruhi env rotate", () => {
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
-  it("a --new-epoch run without --reason fails before fetching values (leaves no var.read)", async () => {
-    const variables = [
-      await variableAt({
-        built: chainBase,
-        variableId: "vaa",
-        name: "DATABASE_URL",
-        dek: dek1,
-        epoch: 1,
-        version: 1,
-        plaintext: "postgres://example",
-        headSeq: 2,
-      }),
-    ];
-    const state = makeServer({
-      built: chainBase,
-      variables,
-      deks: [
-        await wrapDekFor({
-          projectId: chainBase.projectId,
-          environmentId: ENV_ID,
-          epoch: 1,
-          dek: dek1,
-          recipient: owner,
-          signer: owner,
-        }),
-      ],
-      currentEpoch: 1,
-    });
+  it("a --new-epoch run without --reason is refused before any request (leaves no var.read)", async () => {
+    const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
     const server = await MockServer.start(state.handlers);
     servers.push(server);
     const env = await makeTestEnv();
     seedSession(env, server.origin, owner);
     await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
 
-    // --new-epoch always signs an entry = a reason is mandatory. Never goes to
-    // fetch every variable's ciphertext for an unsatisfiable argument check
-    // and leaves a per-variable var.read in the audit log (the same discipline as ensureRotatable)
-    // A usage mistake (the missing reason) is a usage error (2) — so the same
-    // `--reason` mistake never splits by exit code
+    // --new-epoch always signs an entry = a reason is mandatory. The command
+    // refuses the pair before the session opens (commands/env.ts's validate
+    // rule), so it never fetches every variable's ciphertext for an
+    // unsatisfiable argument check and leaves no per-variable var.read in the
+    // audit log. A usage mistake (the missing reason) is a usage error (2) —
+    // so the same `--reason` mistake never splits by exit code
     expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Specify the rotation reason with --reason");
-    expect(server.requests.filter((request) => request.path.endsWith("/pull"))).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
   });
 
@@ -658,19 +633,6 @@ describe("maruhi env rotate", () => {
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "  "], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unacceptable value for flag --reason");
     expect(state.rotateBodies).toHaveLength(0);
-    expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
-  });
-
-  it("the path that creates a new epoch requires --reason (also with --new-epoch given)", async () => {
-    const state = makeServer({ built: chainBase, variables: [], deks: [], currentEpoch: 1 });
-    const server = await MockServer.start(state.handlers);
-    servers.push(server);
-    const env = await makeTestEnv();
-    seedSession(env, server.origin, owner);
-    await seedConfig(env, { server: server.origin, defaultProject: chainBase.projectId });
-
-    expect(await runCli(["env", "rotate", ENV_ID, "--new-epoch"], env.layer)).toBe(2);
-    expect(env.errors.join("\n")).toContain("--reason");
     expect(server.requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 

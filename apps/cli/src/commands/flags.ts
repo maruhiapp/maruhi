@@ -1,8 +1,8 @@
 // Shared flag/argument building blocks for the command declarations (discipline: see commands/index.ts).
 
 import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
-import { Schema } from "effect";
-import { Argument, Flag, Param } from "effect/cli";
+import { Effect, Schema } from "effect";
+import { Argument, CliError as EffectCliError, Flag, Param } from "effect/cli";
 
 import { type CommandSpec, NON_BLANK_MESSAGE } from "../cli-formatter.ts";
 import { RUN_COMMAND_REQUIRED } from "../run.ts";
@@ -169,4 +169,50 @@ export function scopeEnvFlag(description: string) {
     // Express repetition in the declaration (0 or more — atLeast(0) gives readonly EnvironmentId[])
     Flag.atLeast(0),
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Combination rules (`Command.validate`)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The refusal of a `Command.validate` rule (contradictory or dependent
+ * flags). The rule runs after parsing and before the handler, so the
+ * refusal is reported like a parse error — the usage line plus this
+ * message, exit 2 — and never costs a network round trip. The message is
+ * fixed text: it names flags, never a typed value.
+ */
+export function invalidFlagCombination(
+  message: string,
+): Effect.Effect<never, EffectCliError.ValidationError> {
+  return Effect.fail(new EffectCliError.ValidationError({ message }));
+}
+
+/**
+ * `--env` / `--all-envs` / `--no-envs` each set the whole scope, so at
+ * most one of them is given (member change-role, device approve).
+ */
+export function rejectCombinedScopeFlags(values: {
+  readonly env: readonly string[];
+  readonly "all-envs": boolean;
+  readonly "no-envs": boolean;
+}): Effect.Effect<void, EffectCliError.ValidationError> {
+  const given = [values.env.length > 0, values["all-envs"], values["no-envs"]].filter(Boolean);
+  return given.length > 1
+    ? invalidFlagCombination("--env, --all-envs and --no-envs cannot be combined")
+    : Effect.void;
+}
+
+/**
+ * `--no-sync` reads no sync config, so also naming one with `--config` is
+ * a contradiction (push, var rollback, var rotate). Refused rather than
+ * silently skipping the config that was pointed at.
+ */
+export function rejectNoSyncWithConfig(values: {
+  readonly config: string | undefined;
+  readonly "no-sync": boolean;
+}): Effect.Effect<void, EffectCliError.ValidationError> {
+  return values["no-sync"] && values.config !== undefined
+    ? invalidFlagCombination("--no-sync and --config cannot be combined (drop one of them)")
+    : Effect.void;
 }

@@ -6,9 +6,8 @@ import { Argument, Command, Flag } from "effect/cli";
 
 import { PASSKEY_LABEL_MESSAGE } from "../cli-formatter.ts";
 import { identityBackingOf } from "../config.ts";
-import { usageError } from "../errors.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "../passkey.package/index.ts";
-import { NonBlank, serverOnlyFlags, singleFlag } from "./flags.ts";
+import { NonBlank, invalidFlagCombination, serverOnlyFlags, singleFlag } from "./flags.ts";
 
 export const keyGenerateConfig = {
   ...serverOnlyFlags(),
@@ -163,10 +162,6 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
         import("../key-recover.ts").then((m) => ({ keyRecoverOp: m.keyRecoverOp })),
       );
 
-      // A misspelling drops before the session resolution (network)
-      if (values.handoff && values.passkey) {
-        return yield* Effect.fail(usageError("Choose one of --handoff and --passkey"));
-      }
       const context = yield* openSession(values.server);
       yield* keyRecoverOp({
         session: context.session,
@@ -178,6 +173,11 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "Recover on a new machine: open the reserve key (recovery code, --passkey, or --handoff via your guardians), then register a new device key for this machine with it",
+    ),
+    Command.validate((values) =>
+      values.handoff && values.passkey
+        ? invalidFlagCombination("Choose one of --handoff and --passkey")
+        : Effect.void,
     ),
   );
 
@@ -300,6 +300,16 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
   ).pipe(
     Command.withDescription(
       "Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code",
+    ),
+    // --passkey is a way to open the ledger and --replace presumes never
+    // opening it, so they cannot combine — with a passkey, opening and
+    // reissuing keeps the same reserve key (noted by pullfrog)
+    Command.validate((values) =>
+      values.passkey && values.replace
+        ? invalidFlagCombination(
+            "--passkey cannot be combined with --replace: --replace never opens the ledger. If you still have a passkey, run `maruhi key recovery --passkey` (without --replace) to reissue the recovery code for the same reserve key",
+          )
+        : Effect.void,
     ),
   );
 

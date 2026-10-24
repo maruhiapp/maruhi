@@ -11,7 +11,13 @@ import {
   loadPushSyncConfig,
   syncAfterPush,
 } from "../sync.package/index.ts";
-import { NonBlank, commonFlags, singleFlag, singleValued } from "./flags.ts";
+import {
+  NonBlank,
+  commonFlags,
+  rejectNoSyncWithConfig,
+  singleFlag,
+  singleValued,
+} from "./flags.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 
 /**
@@ -118,6 +124,7 @@ export function makePushCommand() {
     Command.withDescription(
       "Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it",
     ),
+    Command.validate((values) => rejectNoSyncWithConfig(values)),
   );
 
   return push;
