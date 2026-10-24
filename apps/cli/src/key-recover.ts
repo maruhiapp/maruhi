@@ -80,7 +80,7 @@ import {
 } from "./ledger-open.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
-import { fetchProjectMemberships } from "./project-list.ts";
+import { fetchProjectMemberships } from "./project.package/index.ts";
 import { issueRecoveryCodeOp, mapUnloadableRecoveryBlob, sealNewReserve } from "./recovery.ts";
 import {
   generateReserveKeys,

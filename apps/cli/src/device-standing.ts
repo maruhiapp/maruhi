@@ -31,7 +31,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
 import { revokedFingerprintsOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
-import { fetchProjectMemberships } from "./project-list.ts";
+import { fetchProjectMemberships } from "./project.package/index.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
 

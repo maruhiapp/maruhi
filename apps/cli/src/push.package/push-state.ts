@@ -15,14 +15,14 @@ import {
 import { type EnvironmentId, type UserId, type VariableId } from "@maruhi/core";
 import { Effect, type Redacted } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { type DekRecipient, environmentKeysFor } from "./deks.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
+import type { MaruhiClient } from "../api.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import { type DekRecipient, environmentKeysFor } from "../deks.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import { type ManifestIssueBase, pullVerifiedEnvironment } from "../values.ts";
 import { resolveTarget, type PushTarget } from "./push-resolve.ts";
 import { winnerInconsistency } from "./push-winner.ts";
-import { type ManifestIssueBase, pullVerifiedEnvironment } from "./values.ts";
 
 type PushConflict =
   | { readonly kind: "version-conflict"; readonly currentVersion: number }

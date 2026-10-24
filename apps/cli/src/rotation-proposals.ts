@@ -26,12 +26,12 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
-import { type PushedVersion, pushVariable } from "./push.ts";
+import { type PushedVersion, pushVariable } from "./push.package/index.ts";
 import { describeShape, lineCountWarning, shapeOf, type ValueShape } from "./rotate-connector.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
-import { ensureConfirmed } from "./var-rotate.ts";
+import { ensureConfirmed } from "./var.package/index.ts";
 
 /** A proposal's variables for display: the verified name when known, else the identifier. */
 function describeVariables(proposal: RotationProposal, states: StateIndex | undefined): string {

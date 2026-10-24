@@ -30,20 +30,20 @@ import { type EnvironmentId, type UserId, type VariableId, cryptoEffect } from "
 import { verifyDistributedValue } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { cryptoErrorKind } from "./crypto-error-kind.ts";
-import { type DekRecipient, environmentKeysFor } from "./deks.ts";
-import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
-import { cliError, type CliError, evidenceError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { decryptVerifiedValue } from "./pull.ts";
-import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
-import { resolveSchemaTarget } from "./schema.package/index.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
-import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { cryptoErrorKind } from "../crypto-error-kind.ts";
+import { type DekRecipient, environmentKeysFor } from "../deks.ts";
+import { countNoun, displayText, formatUtcSeconds } from "../display.ts";
+import { cliError, type CliError, evidenceError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import type { FloorHandle, VerifiedVariableStatement } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { decryptVerifiedValue } from "../pull.ts";
+import { type PushedVersion, pushVariable, sameRedactedBytes } from "../push.package/index.ts";
+import { resolveSchemaTarget } from "../schema.package/index.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 
 /** The shared input of both commands (the environment prologue's pieces). */
 interface VarHistoryBase {

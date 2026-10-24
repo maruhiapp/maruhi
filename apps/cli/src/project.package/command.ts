@@ -8,29 +8,6 @@ import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
 import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
 import type { PolicyRequest } from "../approval.package/index.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
-import { chainEnvironmentIds } from "../deks.ts";
-import { countNoun, displayText, logWarnings } from "../display.ts";
-import { CliError, cliError, usageError } from "../errors.ts";
-import type { FloorHandle } from "../floor-check.ts";
-import { CliIo } from "../io.ts";
-import { formatMemberListRow, memberListRows } from "../member-list.ts";
-import { logNote, logWarning } from "../notice.ts";
-import { describeExport, projectExportOp } from "../project-export.ts";
-import { projectInitOp } from "../project-init.ts";
-import { projectListOp } from "../project-list.ts";
-import {
-  isSchemaPolicy,
-  SCHEMA_POLICIES,
-  setSchemaPolicyOp,
-  showSchemaPolicyOp,
-} from "../project-schema-policy.ts";
-import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
-import {
-  formatServerDisclosureRow,
-  noteServerDisclosure,
-  serverDisclosures,
-} from "../server-disclosure.ts";
 import {
   invalidFlagCombination,
   projectFlags,
@@ -38,7 +15,7 @@ import {
   serverOnlyFlags,
   singleFlag,
   singleValued,
-} from "./flags.ts";
+} from "../commands/flags.ts";
 import {
   checkInviteAnchor,
   floorHandleFor,
@@ -49,9 +26,33 @@ import {
   openSession,
   reconcileGossip,
   resolveProjectId,
-} from "./lazy.ts";
-import { proposalInputOf, reportProposed } from "./shared.ts";
+} from "../commands/lazy.ts";
+import { proposalInputOf, reportProposed } from "../commands/shared.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
+import { chainEnvironmentIds } from "../deks.ts";
+import { countNoun, displayText, logWarnings } from "../display.ts";
+import { CliError, cliError, usageError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { formatMemberListRow, memberListRows } from "../member-list.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
+import {
+  formatServerDisclosureRow,
+  noteServerDisclosure,
+  serverDisclosures,
+} from "../server-disclosure.ts";
+import { describeExport, projectExportOp } from "./project-export.ts";
+import { projectInitOp } from "./project-init.ts";
+import { projectListOp } from "./project-list.ts";
+import {
+  isSchemaPolicy,
+  SCHEMA_POLICIES,
+  setSchemaPolicyOp,
+  showSchemaPolicyOp,
+} from "./project-schema-policy.ts";
 
+/** @public */
 export const projectInitConfig = {
   ...serverOnlyFlags(),
   org: singleValued(
@@ -60,14 +61,19 @@ export const projectInitConfig = {
   ),
 };
 
+/** @public */
 export const projectListConfig = { ...serverOnlyFlags() };
 
+/** @public */
 export const projectVerifyConfig = { ...projectFlags() };
 
+/** @public */
 export const projectAnchorConfig = { ...projectFlags() };
 
+/** @public */
 export const projectCheckpointConfig = { ...projectFlags() };
 
+/** @public */
 export const projectExportConfig = {
   ...projectFlags(),
   out: singleValued(
@@ -76,6 +82,7 @@ export const projectExportConfig = {
   ),
 };
 
+/** @public */
 export const projectPolicyApprovalsConfig = {
   ...projectFlags(),
   ...proposalFlags(),
@@ -93,6 +100,7 @@ export const projectPolicyApprovalsConfig = {
   ),
 };
 
+/** @public */
 export const projectPolicySchemaConfig = {
   ...projectFlags(),
   set: singleValued(
@@ -106,7 +114,7 @@ export const projectPolicySchemaConfig = {
  * flag = show the policy; `--set` = set it (admin). Keyless and chain-free
  * — the policy is a server acceptance setting (project-schema-policy.ts).
  */
-const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySchemaCommand")(
+const projectPolicySchemaCommand = Effect.fn("project-command.projectPolicySchemaCommand")(
   function* (flags: CommonFlags & { readonly set?: string | undefined }) {
     const tier = flags.set;
     if (tier !== undefined && !isSchemaPolicy(tier)) {
@@ -122,7 +130,7 @@ const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySche
 );
 
 /** `maruhi project verify`: chain verification + floor / anchor checks + state display. */
-const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
+const projectVerify = Effect.fn("project-command.projectVerify")(function* (
   serverFlag: string | undefined,
   projectFlag: string | undefined,
 ): Effect.fn.Return<void, CliError, CliServices> {
@@ -186,7 +194,7 @@ const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
 });
 
 /** `project verify`'s server-grant lines (CRYPTO_SPEC §9 — "none" is said too: verify prints the whole state). */
-const reportServerDisclosures = Effect.fn("commands-project.reportServerDisclosures")(function* (
+const reportServerDisclosures = Effect.fn("project-command.reportServerDisclosures")(function* (
   verified: VerifiedProject,
 ): Effect.fn.Return<void, CliError, CliIo> {
   const io = yield* CliIo;
@@ -234,7 +242,7 @@ function parsePolicyOps(
  * only). `--off` with `--required` / `--ops` and `--ops` without
  * `--required` were already refused by the command's validate rules.
  */
-const parsePolicyRequest = Effect.fn("commands-project.parsePolicyRequest")(function* (flags: {
+const parsePolicyRequest = Effect.fn("project-command.parsePolicyRequest")(function* (flags: {
   readonly required?: string | undefined;
   readonly ops?: string | undefined;
   readonly off: boolean;
@@ -262,7 +270,7 @@ const parsePolicyRequest = Effect.fn("commands-project.parsePolicyRequest")(func
  * policy is enabled, set_approval_policy itself is a four-eyes target, so
  * it becomes a proposal (CRYPTO_SPEC §6.2).
  */
-const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyApprovalsCommand")(
+const projectPolicyApprovalsCommand = Effect.fn("project-command.projectPolicyApprovalsCommand")(
   function* (
     flags: CommonFlags & {
       readonly required?: string | undefined;
@@ -327,7 +335,7 @@ const projectPolicyApprovalsCommand = Effect.fn("commands-project.projectPolicyA
  * selection (i) of approval item 17 — kept as guidance, never a prompt):
  * owner ≥ required + 1, and every owner's recovery registration.
  */
-const warnPolicyAvailability = Effect.fn("commands-project.warnPolicyAvailability")(function* (
+const warnPolicyAvailability = Effect.fn("project-command.warnPolicyAvailability")(function* (
   verified: Parameters<typeof proposalViews>[0],
   request: PolicyRequest,
 ): Effect.fn.Return<void, never, CliIo> {
@@ -345,11 +353,12 @@ const warnPolicyAvailability = Effect.fn("commands-project.warnPolicyAvailabilit
   );
 });
 
+/** @public */
 export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectInit = Command.make(
     "init",
     projectInitConfig,
-    Effect.fn("commands-project.projectInit")(function* (values) {
+    Effect.fn("project-command.projectInit")(function* (values) {
       const context = yield* openSession(values.server);
       const masterKeys = yield* loadMasterKeys(context.session);
       yield* projectInitOp({
@@ -364,7 +373,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectList = Command.make(
     "list",
     projectListConfig,
-    Effect.fn("commands-project.projectList")(function* (values) {
+    Effect.fn("project-command.projectList")(function* (values) {
       const context = yield* openSession(values.server);
       yield* projectListOp({ client: context.client });
     }),
@@ -375,7 +384,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectExport = Command.make(
     "export",
     projectExportConfig,
-    Effect.fn("commands-project.projectExport")(function* (values) {
+    Effect.fn("project-command.projectExport")(function* (values) {
       const { syncProject } = yield* Effect.promise(() =>
         import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
       );
@@ -424,7 +433,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectAnchor = Command.make(
     "anchor",
     projectAnchorConfig,
-    Effect.fn("commands-project.projectAnchor")(function* (values) {
+    Effect.fn("project-command.projectAnchor")(function* (values) {
       const io = yield* CliIo;
       // The prologue is the same keyless class as verify (chain sync +
       // §6.3 checks + floor + the invite anchor's mechanical matching) —
@@ -447,7 +456,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectPolicyApprovals = Command.make(
     "approvals",
     projectPolicyApprovalsConfig,
-    Effect.fn("commands-project.projectPolicyApprovals")(function* (values) {
+    Effect.fn("project-command.projectPolicyApprovals")(function* (values) {
       onExitCode(
         yield* projectPolicyApprovalsCommand({
           server: values.server,
@@ -478,7 +487,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectPolicySchema = Command.make(
     "schema",
     projectPolicySchemaConfig,
-    Effect.fn("commands-project.projectPolicySchema")(function* (values) {
+    Effect.fn("project-command.projectPolicySchema")(function* (values) {
       yield* projectPolicySchemaCommand({
         server: values.server,
         project: values.project,
@@ -499,7 +508,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
   const projectCheckpoint = Command.make(
     "checkpoint",
     projectCheckpointConfig,
-    Effect.fn("commands-project.projectCheckpoint")(function* (values) {
+    Effect.fn("project-command.projectCheckpoint")(function* (values) {
       const { issueCheckpoint } = yield* Effect.promise(() =>
         import("../checkpoint.ts").then((m) => ({ issueCheckpoint: m.issueCheckpoint })),
       );

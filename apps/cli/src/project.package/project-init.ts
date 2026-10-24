@@ -20,12 +20,12 @@ import {
 } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { displayText } from "./display.ts";
-import { type CliError, cliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import type { CliSession, MasterKeys } from "./session.ts";
+import type { MaruhiClient } from "../api.ts";
+import { displayText } from "../display.ts";
+import { type CliError, cliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import type { CliSession, MasterKeys } from "../session.ts";
 
 type UserOrg = typeof UserOrgSchema.Type;
 

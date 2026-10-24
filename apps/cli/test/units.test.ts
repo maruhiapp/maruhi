@@ -32,7 +32,7 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import type { DecryptedVariable } from "../src/pull.ts";
-import { normalizeStdinValue } from "../src/push.ts";
+import { normalizeStdinValue } from "../src/push.package/push.ts";
 import { buildChildEnvironment, buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";
 import {
   cryptoBackendUsable,

@@ -46,7 +46,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliError } from "./errors.ts";
-import { fetchProjectMemberships } from "./project-list.ts";
+import { fetchProjectMemberships } from "./project.package/index.ts";
 import { compareCodePoints } from "./scope.ts";
 
 /** One registry row (server-reported). */
