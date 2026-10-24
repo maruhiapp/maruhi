@@ -8,7 +8,7 @@ import { type HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "../api.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
-import { type CliConfig as MaruhiCliConfig } from "../config.ts";
+import type { CliConfig as MaruhiCliConfig } from "../config.ts";
 import type { CliServices, SessionContext } from "../context.ts";
 import { countNoun, displayText } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
@@ -17,6 +17,7 @@ import { CliIo } from "../io.ts";
 import { headOnChain } from "../mirror.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { projectFlags, singleFlag, singleValued } from "./flags.ts";
+import { normalizeHttpOrigin, openSession, openSessionWith, resolveProjectId } from "./lazy.ts";
 import { PROMOTE_PROBE_TIMEOUT, sameDeployment } from "./mirror-core.ts";
 
 /** `maruhi mirror mark`: --server is the mirror deployment, --source the deployment it mirrors. */
@@ -44,16 +45,6 @@ const mirrorMarkCommand = Effect.fn("commands-mirror-write.mirrorMarkCommand")(f
   readonly source?: string | undefined;
   readonly force?: boolean | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { openSession, resolveProjectId } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({
-      openSession: m.openSession,
-      resolveProjectId: m.resolveProjectId,
-    })),
-  );
-  const { normalizeHttpOrigin } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ normalizeHttpOrigin: m.normalizeHttpOrigin })),
-  );
-
   const io = yield* CliIo;
   if (flags.source === undefined) {
     return yield* Effect.fail(
@@ -105,9 +96,6 @@ const ensureMarkable = Effect.fn("commands-mirror-write.ensureMarkable")(functio
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { syncProject } = yield* Effect.promise(() =>
     import("../chain-sync.ts").then((m) => ({ syncProject: m.syncProject })),
-  );
-  const { openSessionWith } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openSessionWith: m.openSessionWith })),
   );
 
   const here = yield* syncProject(context.client, projectId);
@@ -288,13 +276,6 @@ const mirrorPromoteCommand = Effect.fn("commands-mirror-write.mirrorPromoteComma
     readonly project?: string | undefined;
     readonly force?: boolean | undefined;
   }): Effect.fn.Return<void, CliError, CliServices> {
-    const { openSession, resolveProjectId } = yield* Effect.promise(() =>
-      import("../context.ts").then((m) => ({
-        openSession: m.openSession,
-        resolveProjectId: m.resolveProjectId,
-      })),
-    );
-
     const io = yield* CliIo;
     const context = yield* openSession(flags.server);
     const projectId = yield* resolveProjectId(flags.project, context.config);
@@ -535,10 +516,6 @@ const sourceState = Effect.fn("commands-mirror-write.sourceState")(function* (
   projectId: ProjectId,
   thisOrigin: string,
 ): Effect.fn.Return<SourceState, never, CliServices> {
-  const { openSessionWith } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openSessionWith: m.openSessionWith })),
-  );
-
   const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
     Effect.flatMap((source) =>
       source.client.mirror.status({ params: { projectId } }).pipe(

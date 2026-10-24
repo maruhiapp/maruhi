@@ -23,8 +23,9 @@ import { displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
-import { type SweepOutcome } from "../rotation-sweep.ts";
+import type { SweepOutcome } from "../rotation-sweep.ts";
 import { NonBlank, projectFlags, singleFlag } from "./flags.ts";
+import { loadMasterKeys, openMetadataProject, openProject } from "./lazy.ts";
 import { reportMemberAdd, reportRoleChangeFulfilment } from "./member.ts";
 import { describeNeeded, reportSweepOutcome } from "./shared.ts";
 
@@ -120,10 +121,6 @@ function readyNote(view: ProposalView): string | null {
 const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-  );
-
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const views = proposalViews(context.verified, yield* Clock.currentTimeMillis);
@@ -150,13 +147,6 @@ const approvalListCommand = Effect.fn("commands-approval.approvalListCommand")(f
 const approvalShowCommand = Effect.fn("commands-approval.approvalShowCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-  );
-  const { loadMasterKeys } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
-  );
-
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const resolution = resolveProposalRef(context.verified, flags.ref);
@@ -343,9 +333,6 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
   const { approveProposalOp } = yield* Effect.promise(() =>
     import("../approval-approve.ts").then((m) => ({ approveProposalOp: m.approveProposalOp })),
   );
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { sweepRotateFor } = yield* Effect.promise(() =>
     import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
@@ -391,9 +378,6 @@ const approvalWithdrawCommand = Effect.fn("commands-approval.approvalWithdrawCom
 ): Effect.fn.Return<void, CliError, CliServices> {
   const { withdrawProposalOp } = yield* Effect.promise(() =>
     import("../approval.ts").then((m) => ({ withdrawProposalOp: m.withdrawProposalOp })),
-  );
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
   );
 
   const io = yield* CliIo;

@@ -23,6 +23,7 @@ import {
   singleValued,
   singleValuedAs,
 } from "./flags.ts";
+import { openSession } from "./lazy.ts";
 import { reportSweepOutcome } from "./shared.ts";
 
 export const deviceAddConfig = {
@@ -145,9 +146,6 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "add",
     deviceAddConfig,
     Effect.fn("commands-device.deviceAdd")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { deviceAddOp } = yield* Effect.promise(() =>
         import("../device-add.ts").then((m) => ({ deviceAddOp: m.deviceAddOp })),
       );
@@ -170,9 +168,6 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "approve",
     deviceApproveConfig,
     Effect.fn("commands-device.deviceApprove")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { deviceApproveOp, parseApproveRef, reportApproveOutcomes } = yield* Effect.promise(
         () =>
           import("../device-approve.ts").then((m) => ({
@@ -214,9 +209,6 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "list",
     deviceListConfig,
     Effect.fn("commands-device.deviceList")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { deviceListOp } = yield* Effect.promise(() =>
         import("../device-list.ts").then((m) => ({ deviceListOp: m.deviceListOp })),
       );
@@ -238,9 +230,6 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
     "revoke",
     deviceRevokeConfig,
     Effect.fn("commands-device.deviceRevoke")(function* (values) {
-      const { openSession } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openSession: m.openSession })),
-      );
       const { deviceRevokeOp } = yield* Effect.promise(() =>
         import("../device-revoke.ts").then((m) => ({ deviceRevokeOp: m.deviceRevokeOp })),
       );

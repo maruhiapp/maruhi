@@ -26,6 +26,7 @@ import {
 import type { PulledVariables } from "../pull.ts";
 import { enforceDeclaredPresence, runOp, typeAdvisoryWarnings } from "../run.ts";
 import { commonFlags, mirrorFlag, runCommandArgument, singleFlag } from "./flags.ts";
+import { openEnvironment, withMirrorFallback } from "./lazy.ts";
 import { commandAfterTerminator, proposeCheckpointRefresh } from "./shared.ts";
 
 export const pullConfig = {
@@ -94,10 +95,6 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   readonly listen?: string | undefined;
   readonly advertise?: string | undefined;
 }): Effect.fn.Return<number, CliError, CliServices> {
-  const { withMirrorFallback } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
-  );
-
   const { config } = input.loaded;
   yield* checkProxyConfigProject(config, input.flags.project);
   // A config is applied only once a person accepted its content on this
@@ -118,10 +115,6 @@ export const brokeredRun = Effect.fn("commands-pull-run.brokeredRun")(function* 
   // The read may be retried against the configured mirror (PF2); the proxy then starts once
   const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
     Effect.gen(function* () {
-      const { openEnvironment } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-      );
-
       const opened = yield* openEnvironment({
         ...flags,
         project: flags.project ?? config.projectId,
@@ -151,10 +144,6 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     "pull",
     pullConfig,
     Effect.fn("commands-pull-run.pull")(function* (values) {
-      const { withMirrorFallback } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
-      );
-
       const io = yield* CliIo;
       // The value-display refusal is the command entry = checked **before
       // decryption** (never decrypt the whole environment first and then
@@ -168,9 +157,6 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       // configured mirror when the server is unreachable (PF2)
       const { context, pulled } = yield* withMirrorFallback(values, (flags) =>
         Effect.gen(function* () {
-          const { openEnvironment } = yield* Effect.promise(() =>
-            import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-          );
           const { pullVariables } = yield* Effect.promise(() =>
             import("../pull.ts").then((m) => ({ pullVariables: m.pullVariables })),
           );
@@ -236,10 +222,6 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
     "run",
     runConfig,
     Effect.fn("commands-pull-run.run")(function* (values) {
-      const { withMirrorFallback } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),
-      );
-
       const { command: parsed, plain, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
@@ -274,10 +256,6 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       // server is unreachable (PF2); the command then runs once
       const pulled = yield* withMirrorFallback(flags, (read) =>
         Effect.gen(function* () {
-          const { openEnvironment } = yield* Effect.promise(() =>
-            import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-          );
-
           const context = yield* openEnvironment(read);
           if (proxyConfig === null) {
             // A project brokered on this machine: the real values only to a

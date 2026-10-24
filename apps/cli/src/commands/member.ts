@@ -27,6 +27,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import { openMetadataProject, openProject } from "./lazy.ts";
 import {
   loadIdentityBacking,
   parseGithubLoginFlag,
@@ -112,9 +113,6 @@ const memberAddCommand = Effect.fn("commands-member.memberAddCommand")(function*
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { memberAddOp } = yield* Effect.promise(() =>
     import("../member-add.ts").then((m) => ({ memberAddOp: m.memberAddOp })),
   );
@@ -186,9 +184,6 @@ export const reportMemberAdd = Effect.fn("commands-member.reportMemberAdd")(func
 const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(function* (
   flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { memberRemoveOp } = yield* Effect.promise(() =>
     import("../member-remove.ts").then((m) => ({ memberRemoveOp: m.memberRemoveOp })),
   );
@@ -281,9 +276,6 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
   const { memberChangeRoleOp } = yield* Effect.promise(() =>
     import("../member-change-role.ts").then((m) => ({ memberChangeRoleOp: m.memberChangeRoleOp })),
   );
@@ -459,10 +451,6 @@ const reportChangeRoleMandates = Effect.fn("commands-member.reportChangeRoleMand
 const memberListCommand = Effect.fn("commands-member.memberListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-  );
-
   const io = yield* CliIo;
   const context = yield* openMetadataProject(flags);
   const rows = memberListRows(context.verified);

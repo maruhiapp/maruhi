@@ -93,9 +93,11 @@ async function lazyImports(): Promise<{
 
 describe("lazy imports (apps/cli/src, P-6)", () => {
   it("finds the lazy imports (the check isn't idling)", async () => {
-    // 192 at introduction: a walk or pattern that stops matching fails here
-    // before the shape checks below can pass on an empty collection
-    expect((await lazyImports()).calls).toBeGreaterThanOrEqual(150);
+    // 192 at introduction, 115 once commands/lazy.ts took over the commands'
+    // loads of context.ts and session.ts: a walk or pattern that stops
+    // matching fails here before the shape checks below can pass on an empty
+    // collection
+    expect((await lazyImports()).calls).toBeGreaterThanOrEqual(100);
   });
 
   it("writes every import() in the picked-names shape", async () => {

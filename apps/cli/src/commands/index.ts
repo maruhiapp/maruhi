@@ -33,7 +33,7 @@
 
 import { Command, Param } from "effect/cli";
 
-import { type CommandSpec } from "../cli-formatter.ts";
+import type { CommandSpec } from "../cli-formatter.ts";
 import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
 import {
   schemaExportConfig,

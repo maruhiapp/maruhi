@@ -7,7 +7,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { formatterLayer } from "./cli-formatter.ts";
 import { maruhiTeardown } from "./cli-teardown.ts";
 import { COMMAND_SPECS, makeRootCommand } from "./commands/index.ts";
-import { type CliServices } from "./context.ts";
+import type { CliServices } from "./context.ts";
 import { CliError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";

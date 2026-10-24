@@ -22,6 +22,15 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import {
+  commitVerifiedHead,
+  floorHandleFor,
+  loadMasterKeys,
+  openEnvironment,
+  openMetadataEnvironmentPair,
+  openMetadataProject,
+  openProject,
+} from "./lazy.ts";
 
 /** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */
 const environmentIdArgument = (name: string, description: string) =>
@@ -103,12 +112,6 @@ const envCreateCommand = Effect.fn("commands-env.envCreateCommand")(function* (
   flags: CommonFlags & { readonly name?: string | undefined },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { floorHandleFor, openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({
-      floorHandleFor: m.floorHandleFor,
-      openProject: m.openProject,
-    })),
-  );
   const { envCreateOp } = yield* Effect.promise(() =>
     import("../env-create.ts").then((m) => ({ envCreateOp: m.envCreateOp })),
   );
@@ -160,12 +163,6 @@ const envRotateCommand = Effect.fn("commands-env.envRotateCommand")(function* (
   const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
     import("../checkpoint.ts").then((m) => ({
       ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
-    })),
-  );
-  const { floorHandleFor, openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({
-      floorHandleFor: m.floorHandleFor,
-      openEnvironment: m.openEnvironment,
     })),
   );
   const { envRotateOp } = yield* Effect.promise(() =>
@@ -260,9 +257,6 @@ const envRenameCommand = Effect.fn("commands-env.envRenameCommand")(function* (
   environmentId: EnvironmentId,
   newName: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-  );
   const { envRenameOp } = yield* Effect.promise(() =>
     import("../env-rename.ts").then((m) => ({ envRenameOp: m.envRenameOp })),
   );
@@ -290,9 +284,6 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
   flags: CommonFlags & { readonly force: boolean },
   environmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openEnvironment } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openEnvironment: m.openEnvironment })),
-  );
   const { envRmOp } = yield* Effect.promise(() =>
     import("../env-rm.ts").then((m) => ({ envRmOp: m.envRmOp })),
   );
@@ -327,9 +318,6 @@ const envRmCommand = Effect.fn("commands-env.envRmCommand")(function* (
 const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
   flags: CommonFlags & { readonly all: boolean; readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-  );
   const { envListJson, envListOp, formatEnvListRow, shownEnvironmentRows } = yield* Effect.promise(
     () =>
       import("../env-list.ts").then((m) => ({
@@ -338,9 +326,6 @@ const envListCommand = Effect.fn("commands-env.envListCommand")(function* (
         formatEnvListRow: m.formatEnvListRow,
         shownEnvironmentRows: m.shownEnvironmentRows,
       })),
-  );
-  const { loadMasterKeys } = yield* Effect.promise(() =>
-    import("../session.ts").then((m) => ({ loadMasterKeys: m.loadMasterKeys })),
   );
 
   const io = yield* CliIo;
@@ -388,12 +373,6 @@ const envDiffCommand = Effect.fn("commands-env.envDiffCommand")(function* (
   environmentId: EnvironmentId,
   otherEnvironmentId: EnvironmentId,
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { commitVerifiedHead, openMetadataEnvironmentPair } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({
-      commitVerifiedHead: m.commitVerifiedHead,
-      openMetadataEnvironmentPair: m.openMetadataEnvironmentPair,
-    })),
-  );
   const { envDiffOp, reportEnvironmentDiff } = yield* Effect.promise(() =>
     import("../env-diff.ts").then((m) => ({
       envDiffOp: m.envDiffOp,

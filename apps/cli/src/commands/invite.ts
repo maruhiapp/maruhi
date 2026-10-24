@@ -27,6 +27,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
+import { openMetadataProject, openProject, openSession } from "./lazy.ts";
 import { loadIdentityBacking, parseGithubLoginFlag } from "./shared.ts";
 
 /** The role an invite can grant (an owner is never granted via an invite — AUTH_SPEC §15-1). */
@@ -91,10 +92,6 @@ const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(fun
     readonly github?: string | undefined;
   },
 ): Effect.fn.Return<void, CliError, CliServices> {
-  const { openProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openProject: m.openProject })),
-  );
-
   if (!isInviteRole(flags.role)) {
     return yield* Effect.fail(
       usageError(
@@ -167,9 +164,6 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
   readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  const { openSession } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openSession: m.openSession })),
-  );
   const { inviteAcceptOp } = yield* Effect.promise(() =>
     import("../invite-accept.ts").then((m) => ({ inviteAcceptOp: m.inviteAcceptOp })),
   );
@@ -205,10 +199,6 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
 const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { openMetadataProject } = yield* Effect.promise(() =>
-    import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-  );
-
   const context = yield* openMetadataProject(flags);
   const store = yield* PinStore;
   const loaded = yield* store.load(context.projectId);
@@ -269,10 +259,6 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     "revoke",
     inviteRevokeConfig,
     Effect.fn("commands-invite.inviteRevoke")(function* (values) {
-      const { openMetadataProject } = yield* Effect.promise(() =>
-        import("../context.ts").then((m) => ({ openMetadataProject: m.openMetadataProject })),
-      );
-
       const context = yield* openMetadataProject(values);
       yield* inviteRevokeOp({
         client: context.client,

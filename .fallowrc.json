@@ -64,7 +64,8 @@
   // proxy-probe.ts are real-process probes that live-exec / live-run /
   // live-proxy.test.ts launch
   // with `bun` (to inspect Bun.spawn and the proxy under Bun from Node-side
-  // vitest) — likewise never imported
+  // vitest), and import-trace.ts is the preload startup-loads.test.ts passes
+  // to `bun --preload` — likewise never imported
   "entry": [
     "apps/web/src/Root.tsx",
     "apps/web/src/App.tsx",
@@ -83,6 +84,7 @@
     "apps/site/test/unit/shims/*.ts",
     "apps/cli/scripts/*.ts",
     "apps/cli/test/support/exec-probe.ts",
+    "apps/cli/test/support/import-trace.ts",
     "apps/cli/test/support/run-probe.ts",
     "apps/cli/test/support/pipe-probe.ts",
     "apps/cli/test/support/proxy-probe.ts"
