@@ -31,17 +31,17 @@ import { ALL_SCOPE, type ChainDevice } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { MaruhiClient } from "./api.ts";
+import type { MaruhiClient } from "../api.ts";
 import {
   type CliServices,
   openProject,
   type ProjectContext,
   type ProjectContextBase,
-} from "./context.ts";
-import type { DekRecipient } from "./deks.ts";
-import { describeBackfill, reportRegisteredDevice } from "./device-approve.ts";
-import { describeGapFillRoute } from "./device-gaps.ts";
-import { findOwnDevice } from "./device-key.ts";
+} from "../context.ts";
+import type { DekRecipient } from "../deks.ts";
+import { describeBackfill, reportRegisteredDevice } from "../device-approve.ts";
+import { describeGapFillRoute } from "../device-gaps.ts";
+import { findOwnDevice } from "../device-key.ts";
 import {
   appendAddDevice,
   appendRevokeDevice,
@@ -50,45 +50,43 @@ import {
   type DeviceBackfillOutcome,
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
-} from "./device-ops.ts";
+} from "../device-ops.ts";
 import {
   type KeyStanding,
   keyStandingOnProject,
   ledgerKeyVerdictOf,
   type ReserveVerdict,
   reserveVerdictOf,
-} from "./device-standing.ts";
+} from "../device-standing.ts";
 import {
   countNoun,
   describeListedScope,
   describeProjects,
   describeUnmarkedLedgerKey,
   displayText,
-} from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { requestHandoffReserve } from "./handoff.ts";
-import { CliIo } from "./io.ts";
-import { generateKeyRecord } from "./key-record.ts";
-import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keychain.ts";
-import { recoveryRegistered } from "./keygen.ts";
+} from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import { generateKeyRecord } from "../key-record.ts";
+import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "../keychain.ts";
 import {
   type LedgerOpenVia,
   noteUncheckedLedgerKey,
   openLedgerReserve,
   settleLedgerKeyForChange,
-} from "./ledger-open.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { OwnDeviceStore } from "./own-devices.ts";
-import { fetchProjectMemberships } from "./project.package/index.ts";
-import { issueRecoveryCodeOp, mapUnloadableRecoveryBlob, sealNewReserve } from "./recovery.ts";
+} from "../ledger-open.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { OwnDeviceStore } from "../own-devices.ts";
+import { fetchProjectMemberships } from "../project.package/index.ts";
+import { issueRecoveryCodeOp, mapUnloadableRecoveryBlob, sealNewReserve } from "../recovery.ts";
 import {
   generateReserveKeys,
   isMarkedReserve,
   markRevokedReserveRecord,
   recordReserveLocally,
   type ReserveKeys,
-} from "./reserve.ts";
+} from "../reserve.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
@@ -96,8 +94,10 @@ import {
   loadMasterKeys,
   type MasterKeys,
   storeMasterKeyAndReport,
-} from "./session.ts";
-import { sweepRotateFor } from "./sweep-rotate.ts";
+} from "../session.ts";
+import { sweepRotateFor } from "../sweep-rotate.ts";
+import { requestHandoffReserve } from "./handoff.ts";
+import { recoveryRegistered } from "./keygen.ts";
 
 /** How `maruhi key recover` opens the reserve key. */
 type RecoverVia = LedgerOpenVia | "handoff";

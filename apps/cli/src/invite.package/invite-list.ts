@@ -4,12 +4,16 @@
 
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { fingerprintWords, formatWordList } from "./fp-words.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo } from "../io.ts";
+import { logWarning } from "../notice.ts";
+import type { InvitePins } from "../pins.ts";
+import { describeScope } from "../scope.ts";
 import {
   acceptanceFailureText,
   formatDateTimeUtc,
@@ -20,10 +24,6 @@ import {
   verifyAcceptanceBlock,
   verifyIssuance,
 } from "./invite.ts";
-import { CliIo } from "./io.ts";
-import { logWarning } from "./notice.ts";
-import type { InvitePins } from "./pins.ts";
-import { describeScope } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // invite list / revoke

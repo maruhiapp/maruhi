@@ -5,20 +5,6 @@ import { ALL_SCOPE } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import { identityBackingOf } from "../config.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
-import { CliError, usageError } from "../errors.ts";
-import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
-import { inviteCreateOp } from "../invite-create.ts";
-import {
-  type InviteInputRejection,
-  type InviteLinkData,
-  type InviteRole,
-  parseInviteAcceptInput,
-} from "../invite-link.ts";
-import { inviteListOp, inviteRevokeOp } from "../invite-list.ts";
-import { PinStore } from "../pins.ts";
-import { scopeFromFlags } from "../scope.ts";
 import {
   NonBlank,
   invalidFlagCombination,
@@ -26,9 +12,23 @@ import {
   scopeEnvFlag,
   singleFlag,
   singleValued,
-} from "./flags.ts";
-import { openMetadataProject, openProject, openSession } from "./lazy.ts";
-import { loadIdentityBacking, parseGithubLoginFlag } from "./shared.ts";
+} from "../commands/flags.ts";
+import { openMetadataProject, openProject, openSession } from "../commands/lazy.ts";
+import { loadIdentityBacking, parseGithubLoginFlag } from "../commands/shared.ts";
+import { identityBackingOf } from "../config.ts";
+import type { CliServices, CommonFlags } from "../context.ts";
+import { CliError, usageError } from "../errors.ts";
+import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
+import {
+  type InviteInputRejection,
+  type InviteLinkData,
+  type InviteRole,
+  parseInviteAcceptInput,
+} from "../invite-link.ts";
+import { PinStore } from "../pins.ts";
+import { scopeFromFlags } from "../scope.ts";
+import { inviteCreateOp } from "./invite-create.ts";
+import { inviteListOp, inviteRevokeOp } from "./invite-list.ts";
 
 /** The role an invite can grant (an owner is never granted via an invite — AUTH_SPEC §15-1). */
 const INVITE_ROLES = ["reader", "member", "admin"] as const;
@@ -37,6 +37,7 @@ function isInviteRole(value: string | undefined): value is InviteRole {
   return INVITE_ROLES.some((known) => known === value);
 }
 
+/** @public */
 export const inviteCreateConfig = {
   ...projectFlags(),
   role: singleValued("role", `Role to grant (required — ${INVITE_ROLES.join(" | ")})`),
@@ -53,6 +54,7 @@ export const inviteCreateConfig = {
   ),
 };
 
+/** @public */
 export const inviteAcceptConfig = {
   server: singleValued("server", "Server URL (defaults to config server)"),
   from: singleValued(
@@ -73,8 +75,10 @@ export const inviteAcceptConfig = {
   ),
 };
 
+/** @public */
 export const inviteListConfig = { ...projectFlags() };
 
+/** @public */
 export const inviteRevokeConfig = {
   ...projectFlags(),
   "invite-id": Argument.String("invite-id").pipe(
@@ -84,7 +88,7 @@ export const inviteRevokeConfig = {
 };
 
 /** `maruhi invite create --role <r> [--env <id>]… [--github <login>]` (§15-2 issuance + §15-3 link assembly). */
-const inviteCreateCommand = Effect.fn("commands-invite.inviteCreateCommand")(function* (
+const inviteCreateCommand = Effect.fn("invite-command.inviteCreateCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
     readonly env: readonly EnvironmentId[];
@@ -158,17 +162,17 @@ function resolveAcceptLink(
 }
 
 /** `maruhi invite accept <link>` (§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5). */
-const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(function* (flags: {
+const inviteAcceptCommand = Effect.fn("invite-command.inviteAcceptCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly target: Redacted.Redacted<string>;
   readonly from?: string | undefined;
   readonly inviterFingerprint?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliServices> {
   const { inviteAcceptOp } = yield* Effect.promise(() =>
-    import("../invite-accept.ts").then((m) => ({ inviteAcceptOp: m.inviteAcceptOp })),
+    import("./invite-accept.ts").then((m) => ({ inviteAcceptOp: m.inviteAcceptOp })),
   );
   const { keyGenerateOp } = yield* Effect.promise(() =>
-    import("../keygen.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
+    import("../key.package/index.ts").then((m) => ({ keyGenerateOp: m.keyGenerateOp })),
   );
 
   const link = yield* resolveAcceptLink(flags.target);
@@ -196,7 +200,7 @@ const inviteAcceptCommand = Effect.fn("commands-invite.inviteAcceptCommand")(fun
 });
 
 /** `maruhi invite list` (§6.5 independent verification of the acceptance blocks + the issuance-pin cross-check). */
-const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(function* (
+const inviteListCommand = Effect.fn("invite-command.inviteListCommand")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
   const context = yield* openMetadataProject(flags);
@@ -214,6 +218,7 @@ const inviteListCommand = Effect.fn("commands-invite.inviteListCommand")(functio
   return summary.integrityFailures > 0 ? 1 : 0;
 });
 
+/** @public */
 export function makeInviteCommands(onExitCode: (code: number) => void) {
   const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
     inviteCreateCommand({
@@ -246,7 +251,7 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
   const inviteList = Command.make(
     "list",
     inviteListConfig,
-    Effect.fn("commands-invite.inviteList")(function* (values) {
+    Effect.fn("invite-command.inviteList")(function* (values) {
       onExitCode(yield* inviteListCommand(values));
     }),
   ).pipe(
@@ -258,7 +263,7 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
   const inviteRevoke = Command.make(
     "revoke",
     inviteRevokeConfig,
-    Effect.fn("commands-invite.inviteRevoke")(function* (values) {
+    Effect.fn("invite-command.inviteRevoke")(function* (values) {
       const context = yield* openMetadataProject(values);
       yield* inviteRevokeOp({
         client: context.client,

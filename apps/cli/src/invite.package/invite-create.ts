@@ -23,20 +23,20 @@ import {
 } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
-import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import { ownDeviceByKeys } from "./device-key.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { buildInviteLink, type InviteRole } from "./invite-link.ts";
+import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
+import { ownDeviceByKeys } from "../device-key.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { buildInviteLink, type InviteRole } from "../invite-link.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import { logWarning } from "../notice.ts";
+import { PinStore } from "../pins.ts";
+import { describeScope, requireScopeEnvironmentsExist, scopeContains } from "../scope.ts";
+import type { MasterKeys } from "../session.ts";
 import { reportIssued } from "./invite.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
-import { logWarning } from "./notice.ts";
-import { PinStore } from "./pins.ts";
-import { describeScope, requireScopeEnvironmentsExist, scopeContains } from "./scope.ts";
-import type { MasterKeys } from "./session.ts";
 
 // ---------------------------------------------------------------------------
 // invite create

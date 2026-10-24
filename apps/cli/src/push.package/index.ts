@@ -4,8 +4,8 @@
 // layout"). var.package's rotate and rollback, rotation-proposals.ts,
 // schema.package's import and sync.package's receipts write a value with
 // pushVariable, and var rollback compares values with sameRedactedBytes.
-// env-rotate-push.ts re-encrypts with encryptAndSignPayload and judges a
-// conflict's winner with winnerInconsistency, as push does.
+// env.package's env-rotate-push.ts re-encrypts with encryptAndSignPayload
+// and judges a conflict's winner with winnerInconsistency, as push does.
 export {
   encryptAndSignPayload,
   type PushedVersion,

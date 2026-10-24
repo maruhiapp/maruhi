@@ -23,21 +23,20 @@
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { MaruhiClient } from "./api.ts";
-import type { IdentityBacking } from "./config.ts";
-import { displayText, formatUtcDate } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo } from "./io.ts";
-import { offerGithubRegistration } from "./key-publish.ts";
-import { generateKeyRecord } from "./key-record.ts";
-import { Keychain, serializeStoredMasterKey } from "./keychain.ts";
-import { logNote } from "./notice.ts";
-import { OwnDeviceStore } from "./own-devices.ts";
-import { issueRecoveryAfterKeygen } from "./recovery.ts";
-import { recordedReserves } from "./reserve.ts";
-import type { ProcessRunner } from "./run.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { IdentityBacking } from "../config.ts";
+import { displayText, formatUtcDate } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo } from "../io.ts";
+import { generateKeyRecord } from "../key-record.ts";
+import { Keychain, serializeStoredMasterKey } from "../keychain.ts";
+import { logNote } from "../notice.ts";
+import { OwnDeviceStore } from "../own-devices.ts";
+import { issueRecoveryAfterKeygen } from "../recovery.ts";
+import { recordedReserves } from "../reserve.ts";
+import type { ProcessRunner } from "../run.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,
@@ -47,7 +46,8 @@ import {
   storeMasterKeyAndReport,
   unsupportedCryptoCause,
   loadMasterKeys,
-} from "./session.ts";
+} from "../session.ts";
+import { offerGithubRegistration } from "./key-publish.ts";
 
 /** `maruhi key generate`: create and store this device's key for the session user. */
 export const keyGenerateOp = Effect.fn("keygen.keyGenerateOp")(function* (input: {
