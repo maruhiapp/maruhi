@@ -40,10 +40,10 @@ import {
   deviceOf,
   ensureDevicePermission,
   loadInitializedChain,
-  rejectData,
   requireRole,
   requireRoleInScope,
-} from "./data/data-plane.ts";
+} from "./data/data-guards.ts";
+import { rejectData } from "./data/data-rejection.ts";
 import type { CheckpointValueEntryRow } from "./data/data-store.ts";
 import { DataStore } from "./data/data-store.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "./do/chain-accept.ts";

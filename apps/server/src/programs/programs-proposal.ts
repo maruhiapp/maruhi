@@ -24,12 +24,11 @@ import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto"
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import type {
-  DataActor,
-  DataRejectedError,
-  RotationProposalRejectReason,
-} from "../data/data-plane.ts";
-import { dataEvent, rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";
+import { dataEvent } from "../data/data-events.ts";
+import { requireMemberState, roleAtLeast } from "../data/data-guards.ts";
+import type { DataActor } from "../data/data-plane.ts";
+import type { DataRejectedError, RotationProposalRejectReason } from "../data/data-rejection.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { DataStoreShape, StoredProposal, StoredProposalVariable } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import { deviceReceivesEnvironment } from "../dek-wraps.ts";

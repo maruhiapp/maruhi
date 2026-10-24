@@ -13,7 +13,7 @@ import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MetaStatementStatusInput } from "./data/data-plane.ts";
-import { rejectData } from "./data/data-plane.ts";
+import { rejectData } from "./data/data-rejection.ts";
 import { DataStore } from "./data/data-store.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,

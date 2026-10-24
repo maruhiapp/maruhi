@@ -35,23 +35,23 @@ import type { AuditRotationRead } from "../audit-store-rotation-read.ts";
 import type { AuditEventInput } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
 import { ensureAuditHeadAcceptable, ensureCheckpointValuesDigest } from "../checkpoint-accept.ts";
+import { dataEvent } from "../data/data-events.ts";
+import type { MemberWithDevice } from "../data/data-guards.ts";
+import {
+  deviceOf,
+  ensureDevicePermission,
+  loadInitializedChain,
+  requireRole,
+  requireRoleInScope,
+} from "../data/data-guards.ts";
 import type {
   DataActor,
   DekWrapInput,
   EnvManifestInput,
-  MemberWithDevice,
   MetaStatementInput,
 } from "../data/data-plane.ts";
-import {
-  dataEvent,
-  deviceOf,
-  ensureDevicePermission,
-  loadInitializedChain,
-  rejectData,
-  requireRole,
-  requireRoleInScope,
-} from "../data/data-plane.ts";
 import { projectIdOf } from "../data/data-plane.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { DataWriteOps } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import {

@@ -13,14 +13,15 @@ import { verifyDistributedValue } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { catchCryptoErrors } from "../crypto-catch.ts";
+import type { MemberWithDevice } from "./data-guards.ts";
+import { currentEpochOf } from "./data-guards.ts";
+import type { ValueInput } from "./data-plane.ts";
 import type {
   DataRejectedError,
   DataRejection,
-  MemberWithDevice,
-  ValueInput,
   ValueSignatureRejectReason,
-} from "./data-plane.ts";
-import { currentEpochOf, rejectData } from "./data-plane.ts";
+} from "./data-rejection.ts";
+import { rejectData } from "./data-rejection.ts";
 import { DataStore } from "./data-store.ts";
 
 /** The CAS against the stored value's (epoch, version) (§12-5): only the current epoch × latest + 1. */

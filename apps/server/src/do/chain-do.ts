@@ -39,11 +39,9 @@ import type { HeadAttestationSubmissionInput } from "../attestation-accept.ts";
 import { putHeadAttestationProgram } from "../attestation-accept.ts";
 import { AuditStore, auditStoreLayer } from "../audit-store.ts";
 import { standaloneCheckpointProgram } from "../checkpoint-accept.ts";
+import { requireMemberState } from "../data/data-guards.ts";
 import type {
   DataActor,
-  DataOutcome,
-  DataRejectedError,
-  DataRejection,
   DekWrapInput,
   DekWrapRefInput,
   EnvironmentListValue,
@@ -56,7 +54,8 @@ import type {
   ValueInput,
   VariableVersionValue,
 } from "../data/data-plane.ts";
-import { rejectData, requireMemberState } from "../data/data-plane.ts";
+import type { DataOutcome, DataRejectedError, DataRejection } from "../data/data-rejection.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { StoredHeadAttestation } from "../data/data-store.ts";
 import { DataStore, dataStoreLayer } from "../data/data-store.ts";
 import { MAX_DEVICES_PER_MEMBER } from "../policy.ts";
@@ -328,7 +327,7 @@ export type OpsRestoreOutcome =
 // Typed errors (internal to the DO) and the outcome types at the RPC
 // boundary
 //
-// Chain-API rejections also travel as DataRejection (data-plane.ts): the
+// Chain-API rejections also travel as DataRejection (data-rejection.ts): the
 // tagged-error → outcome mapping is the single toDataOutcome, and the
 // rejection → api-schema error mapping is consolidated into the one
 // worker-side table rejectionErrors (data-http.ts — a Record shape whose

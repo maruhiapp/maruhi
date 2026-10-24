@@ -26,8 +26,9 @@ import { Effect, type Schema } from "effect";
 
 import type { StoredAuditEventRow } from "../audit-store-query.ts";
 import { AuditStore } from "../audit-store.ts";
+import { requireMemberState, roleAtLeast } from "../data/data-guards.ts";
 import type { DataActor } from "../data/data-plane.ts";
-import { rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";
+import { rejectData } from "../data/data-rejection.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { ensureStorageAdmitsAuditHeadExtension } from "../storage-guard.ts";
 

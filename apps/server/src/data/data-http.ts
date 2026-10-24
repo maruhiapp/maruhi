@@ -63,10 +63,9 @@ import { ensureTokenScopeForProject } from "../authz.ts";
 import type { ProjectChainDO } from "../do/chain-do.ts";
 import { MAX_VALUE_CIPHERTEXT_BYTES } from "../policy.ts";
 import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
+import { roleAtLeast } from "./data-guards.ts";
 import type {
   DataActor,
-  DataOutcome,
-  DataRejection,
   EnvironmentPullValue,
   EnvManifestInput,
   MetaStatementInput,
@@ -75,7 +74,7 @@ import type {
   WireMetaStatement,
   WireSchemaField,
 } from "./data-plane.ts";
-import { roleAtLeast } from "./data-plane.ts";
+import type { DataOutcome, DataRejection } from "./data-rejection.ts";
 
 /** The 204 response (shared by write endpoints). */
 export const noContent = HttpServerResponse.empty({ status: 204 });

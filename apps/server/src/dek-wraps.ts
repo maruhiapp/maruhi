@@ -23,14 +23,12 @@ import {
 import { Effect } from "effect";
 
 import type { AuditEventInput } from "./audit-store.ts";
-import type {
-  DataActor,
-  DataRejection,
-  DekRecipientClass,
-  DekWrapInput,
-  MemberWithDevice,
-} from "./data/data-plane.ts";
-import { dataEvent, dekRecipientTarget, rejectData, withSigningDevice } from "./data/data-plane.ts";
+import { dataEvent, dekRecipientTarget } from "./data/data-events.ts";
+import type { MemberWithDevice } from "./data/data-guards.ts";
+import { withSigningDevice } from "./data/data-guards.ts";
+import type { DataActor, DekRecipientClass, DekWrapInput } from "./data/data-plane.ts";
+import type { DataRejection } from "./data/data-rejection.ts";
+import { rejectData } from "./data/data-rejection.ts";
 import { DataStore } from "./data/data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
