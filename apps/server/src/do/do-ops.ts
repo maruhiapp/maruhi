@@ -2,7 +2,8 @@
 // evacuation of every table to R2 and the restore from one, which
 // chain-do.ts's opsBackup / opsRestore run under the DO's permit. Called
 // only from inside the worker (the cron sweep, the restore worker); no HTTP
-// handler calls them. Reading and writing a snapshot is do-snapshot.ts.
+// handler calls them. Writing a snapshot is do-snapshot-write.ts, restoring
+// one do-snapshot-restore.ts.
 
 import { Effect } from "effect";
 
@@ -15,14 +16,11 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "./do-schema.ts";
-import type { RestoreFailureCode, SnapshotTrailer } from "./do-snapshot.ts";
-import {
-  readWatermarks,
-  RestoreRefusedError,
-  restoreSnapshot,
-  snapshotObjectKey,
-  writeSnapshot,
-} from "./do-snapshot.ts";
+import type { RestoreFailureCode } from "./do-snapshot-restore.ts";
+import { RestoreRefusedError, restoreSnapshot } from "./do-snapshot-restore.ts";
+import { snapshotObjectKey, writeSnapshot } from "./do-snapshot-write.ts";
+import type { SnapshotTrailer } from "./do-snapshot.ts";
+import { readWatermarks } from "./do-snapshot.ts";
 
 export interface OpsBackupInput {
   /** The object key's prefix (`do`). The project ID never appears on the key. */
@@ -91,7 +89,7 @@ export type OpsRestoreOutcome =
 
 /**
  * The DO → R2 evacuation, run by opsBackup under the permit (= all tables
- * consistent). Reading and writing is do-snapshot.ts. The census (the
+ * consistent). Reading and writing is do-snapshot-write.ts. The census (the
  * AUTH_SPEC §12-8 judgment) shares the existing meter and pure function
  * (feeding into the §12-8 warning line — hosted-ops.md §2-C; the warning
  * line's wording and once-only discipline are unchanged).
@@ -148,7 +146,7 @@ export const backupProgram = Effect.fn("do-ops.backupProgram")(function* (
       databaseSizeBytes,
       trailer: result.trailer,
     })),
-    // Every evacuation failure is a defect (do-snapshot.ts); it is
+    // Every evacuation failure is a defect (do-snapshot-write.ts); it is
     // answered with the static code and retried on the next sweep
     Effect.catchDefect((defect) =>
       // A static message only (up to the class name). The

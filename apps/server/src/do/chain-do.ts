@@ -1031,8 +1031,8 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   /**
    * Restore from an evacuation (under the permit). Writes **only into an
-   * empty DO** (do-snapshot.ts — no overwrite path exists). After the
-   * restore, instance memory (the derived state, the audit sequence) is
+   * empty DO** (do-snapshot-restore.ts — no overwrite path exists). After
+   * the restore, instance memory (the derived state, the audit sequence) is
    * discarded, the cumulative hash row is extended to MAX(seq) below the
    * storage guard's line, and the audit head is returned (for
    * cross-checking — do-ops.ts's restoreProgram).

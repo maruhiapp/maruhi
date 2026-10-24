@@ -30,11 +30,8 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
-import {
-  exportSnapshotPage,
-  SNAPSHOT_FORMAT_VERSION,
-  type ExportCursorState,
-} from "../src/do/do-snapshot.ts";
+import { exportSnapshotPage, type ExportCursorState } from "../src/do/do-snapshot-export.ts";
+import { SNAPSHOT_FORMAT_VERSION } from "../src/do/do-snapshot.ts";
 import { MAX_EXPORTS_PER_WINDOW } from "../src/policy.ts";
 import type { RestoreJobResult } from "../src/restore-worker.ts";
 import { processRestoreJobs } from "../src/restore-worker.ts";
