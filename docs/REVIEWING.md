@@ -91,7 +91,7 @@ implementation per operation, shared by server and CLI.
 | Mirrors and export | CRYPTO §9.2; AUTH §11-6, §11-7 | — | `programs/programs-mirror.ts`, `programs/programs-export.ts`, `do/do-snapshot-export.ts`, `do/do-mirror.ts` | `mirror.ts`, `project-export.ts` | — |
 | Server key and workload leases | CRYPTO §9, §9.1; AUTH §14 | `lease-wrap.ts` | `server-key.ts`, `programs/programs-lease.ts` | `ci-run.ts`, `lease-client.ts` | `lease-wrap.json` |
 | Key fingerprints and word display | CRYPTO §3 | `keys.ts`, `fingerprint-words.ts` | — | `fp-words.ts`, `known-fingerprints.ts` | keys and fingerprints from `chain-entries.json`, `dek-wrap.json` |
-| Audit-head cumulative hash | AUDIT §5.1, §6 | `audit-head.ts` | `audit-store.ts`, `audit-store-rows.ts` | `audit-reconcile.ts` | `audit-head.json` |
+| Audit-head cumulative hash | AUDIT §5.1, §6 | `audit-head.ts` | `audit-store.ts`, `audit-store-rows.ts` | `audit.package/audit-reconcile.ts` | `audit-head.json` |
 
 The vectors README lists what each file pins and the conventions behind the
 negative cases: [packages/crypto/test-vectors/README.md](../packages/crypto/test-vectors/README.md).

@@ -42,17 +42,17 @@ import type { AuditHeadRow, ChainEntry } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
-import type { WireAuditEvent } from "./audit.ts";
-import { paginateAuditEvents } from "./audit.ts";
-import { fetchAuditHead } from "./checkpoint.ts";
-import type { CliServices, ProjectContextBase } from "./context.ts";
-import { cryptoErrorKind } from "./crypto-error-kind.ts";
-import { countNoun, displayText } from "./display.ts";
-import type { CliError } from "./errors.ts";
-import { cliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
+import { fetchAuditHead } from "../checkpoint.ts";
+import type { CliServices, ProjectContextBase } from "../context.ts";
+import { cryptoErrorKind } from "../crypto-error-kind.ts";
+import { countNoun, displayText } from "../display.ts";
+import type { CliError } from "../errors.ts";
+import { cliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
+import type { WireAuditEvent } from "./audit-mirror.ts";
+import { paginateAuditEvents } from "./audit-verify.ts";
 
 /** Interval (in pages) of the fetch progress display — makes unresponsiveness and non-termination on huge logs visible. */
 const FETCH_PROGRESS_PAGES = 50;
@@ -95,21 +95,6 @@ const ensureEffectiveAdmin = Effect.fn("audit-reconcile.ensureEffectiveAdmin")(f
   }
 });
 
-/**
- * Fetching every audit row (§7 paging — admin-visible, unfiltered,
- * newest-first).
- *
- * Integrity strategy (session-38 ruling AJ): the cursor is a row id, and a
- * duplicate id or a non-strictly-decreasing `seq` (within a page or across
- * pages) aborts as a self-contradicting server response. Because `seq` in an
- * admin response is a positive integer forced strictly decreasing, the total
- * row count is bounded by the first page's maximum seq and paging always
- * terminates. Rows appended during the fetch are newer than the first page's
- * cursor and never appear in later pages — the fetched set closes as a
- * snapshot of the first page's point in time (the audit-head declaration is
- * taken **before** this snapshot, so the membership check's population is
- * covered by the snapshot).
- */
 /** Per-row integrity check (seq required, no duplicate ids, seq strictly decreasing). null = no problem. */
 function reconcileRowProblem(
   row: WireAuditEvent,
@@ -128,6 +113,21 @@ function reconcileRowProblem(
   return null;
 }
 
+/**
+ * Fetching every audit row (§7 paging — admin-visible, unfiltered,
+ * newest-first).
+ *
+ * Integrity strategy (session-38 ruling AJ): the cursor is a row id, and a
+ * duplicate id or a non-strictly-decreasing `seq` (within a page or across
+ * pages) aborts as a self-contradicting server response. Because `seq` in an
+ * admin response is a positive integer forced strictly decreasing, the total
+ * row count is bounded by the first page's maximum seq and paging always
+ * terminates. Rows appended during the fetch are newer than the first page's
+ * cursor and never appear in later pages — the fetched set closes as a
+ * snapshot of the first page's point in time (the audit-head declaration is
+ * taken **before** this snapshot, so the membership check's population is
+ * covered by the snapshot).
+ */
 const fetchAllAuditRows = Effect.fn("audit-reconcile.fetchAllAuditRows")(function* (
   context: ProjectContextBase,
 ): Effect.fn.Return<readonly WireAuditEvent[], CliError, CliIo> {
@@ -140,7 +140,7 @@ const fetchAllAuditRows = Effect.fn("audit-reconcile.fetchAllAuditRows")(functio
     pageLimit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
     // No static page bound: onRow's strictly-decreasing seq (positive
     // integers) bounds the total row count by the first page's maximum seq
-    // and carries termination (the engine doc in audit.ts)
+    // and carries termination (the engine doc in audit-verify.ts)
     bound: null,
     fetchPage: (before) =>
       Effect.gen(function* () {
