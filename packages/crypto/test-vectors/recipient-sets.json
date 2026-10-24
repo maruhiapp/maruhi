@@ -1,0 +1,744 @@
+{
+  "description": "CRYPTO_SPEC §6.2 / §5.3: the recipient sets of an environment E. R(E) — the complete set of E's DEK-wrap destinations (§6.2, the device axis; read by §6.3 / §7 / AUTH_SPEC §12-4 / §12-6) — and W(E) — the recipients of E's sealed value proposals (§5.3). No spec change: the CLI and the server each computed the sets, and packages/crypto now holds the one definition. The inputs are verification states, not chains, and this file references no other file",
+  "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}, listed once per wrap address (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot); an address a member and a server key share is listed as the member's. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
+  "fixtures": {
+    "project": {
+      "members": [
+        {
+          "user_id": "user-owner-0101",
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "owner-0101 laptop",
+              "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+              "enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309",
+              "sig_pub_hex": "1f9cf768ce27a28c17cf6ec49f300afc8ed37f32f528924d8e9714b3f4f6b468",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            },
+            {
+              "label": "owner-0101 reader-capped tablet",
+              "key_fingerprint_hex": "bddc092e2447c70d0eb83b61ad7b1caa",
+              "enc_pub_hex": "737fb92d5ee0873037a6d8f19cb797598cb71d82a4453bb8496ae6bd3d7c3a09",
+              "sig_pub_hex": "0404f1290b5ed813d8ccc2552e0990e51d81f257f7bdca7380e1be32448ab66d",
+              "role_cap": "reader",
+              "scope": {
+                "kind": "all"
+              }
+            },
+            {
+              "label": "owner-0101 dev box",
+              "key_fingerprint_hex": "9f6a9789463c667c1c60d3046dae3f11",
+              "enc_pub_hex": "839e21b71eb3b551d6fe259520dec55ed415dbcfbacc22249d70715de8864c3c",
+              "sig_pub_hex": "8181a5ef8a822845b2db69ed4dc4715147ef55b2238b2753c2b2929a6c333c3b",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "listed",
+                "environments": ["env-dev-0102"]
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-admin-0102",
+          "role": "admin",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-prod-0101", "env-dev-0102"]
+          },
+          "devices": [
+            {
+              "label": "admin-0102 laptop",
+              "key_fingerprint_hex": "b0052fad45c80a07187d2a6796808438",
+              "enc_pub_hex": "da61a01114008ee14cd4880a2e593e2e42cc34d2b4376bebeec6732eab05170d",
+              "sig_pub_hex": "d0a105a70fda138d94fc04f39c77828172ddbdafc27ef36840cb25e8268f98c4",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            },
+            {
+              "label": "admin-0102 ci box",
+              "key_fingerprint_hex": "6bacbb5bbca37beb447057a13de50a77",
+              "enc_pub_hex": "5bbe46c1e2ada19af58e3689cb655ef4cf478151045975598bbe78acd0803260",
+              "sig_pub_hex": "fde5efbddf60349d64be388295c7e357839fd7251aeffe1715e1ecb8e3b68868",
+              "role_cap": "member",
+              "scope": {
+                "kind": "listed",
+                "environments": ["env-dev-0102", "env-stage-0103"]
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-devmember-0103",
+          "role": "member",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-dev-0102"]
+          },
+          "devices": [
+            {
+              "label": "devmember-0103 laptop",
+              "key_fingerprint_hex": "480fc7a1e8032ad44b11b6bc333ebc8a",
+              "enc_pub_hex": "2b450421bb290098033b418d88d6ffd3b8a569cde9fa24d9281260fde45c1161",
+              "sig_pub_hex": "752be2694df514c3b16f880d6abc84ddb8f9aa4e97f372791e16b16e45287f81",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-prodreader-0104",
+          "role": "reader",
+          "scope": {
+            "kind": "listed",
+            "environments": ["env-prod-0101"]
+          },
+          "devices": [
+            {
+              "label": "prodreader-0104 laptop",
+              "key_fingerprint_hex": "eae474e7e96343c47ba038a59de98390",
+              "enc_pub_hex": "70c778243069f560b4aeeb0790e6d18d6d698bc1e1219c78d0d2583429562761",
+              "sig_pub_hex": "c040b567a3cf25d814e87e0c300b714b4215d30600214fdb220a7dfa3d4b50e3",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-emptyscope-0105",
+          "role": "member",
+          "scope": {
+            "kind": "listed",
+            "environments": []
+          },
+          "devices": [
+            {
+              "label": "emptyscope-0105 laptop",
+              "key_fingerprint_hex": "3cf319648fcfabd96209610838206547",
+              "enc_pub_hex": "6d7ba5cd66b4c3428eeb329b8d2738372cb33f9f33bcbbf1ef8c06ce70fa626d",
+              "sig_pub_hex": "bc02b30c81622aeb1715ab9621d878ee36236a6eb952178382a91aab00adc4b9",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-allmember-0106",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "allmember-0106 laptop",
+              "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+              "enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d",
+              "sig_pub_hex": "b49540d35fa67863885e11e10ef5ddecc0db5ecbbdca2b02b66665b63fab74b0",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            },
+            {
+              "label": "allmember-0106 parked box",
+              "key_fingerprint_hex": "7ac4acb2b490afd388a1ba3a9a21802c",
+              "enc_pub_hex": "4f82f7101757cc51ee50434018db459b78df3729737c9928ce83a8f01aec1374",
+              "sig_pub_hex": "a6b8b67759b4b172eee07bc04fafdefa61c1e181f5aa8109dc273da1d1913e5f",
+              "role_cap": "member",
+              "scope": {
+                "kind": "listed",
+                "environments": []
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-prodbox-0107",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "prodbox-0107 prod box",
+              "key_fingerprint_hex": "7bbdf463442f7253c34fa7d9fee59691",
+              "enc_pub_hex": "ab05648d19654768026f6dd931603e93df7ea165d5ff4fd0e93bfd71e470bd2b",
+              "sig_pub_hex": "f75136f95b9289f86e5cf6c8b3b235400da24cdff64d335d163692338d8c6057",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "listed",
+                "environments": ["env-prod-0101"]
+              }
+            }
+          ]
+        }
+      ],
+      "server_grants": [
+        {
+          "label": "server-a",
+          "server_key_fingerprint_hex": "2cc782d5ae61a895d2cf9b17aa895d15",
+          "server_enc_pub_hex": "697ca987cb6cbb69645af252b7121775209aef0020f2ad610439b1544344625d",
+          "scope_environments": ["env-prod-0101", "env-dev-0102"]
+        },
+        {
+          "label": "server-b",
+          "server_key_fingerprint_hex": "2633a7d13b8c01104c3a766a277e81e3",
+          "server_enc_pub_hex": "12deec40d4f143efc7f0938031bb481667deb5d7412864e43e9ace5fd8804913",
+          "scope_environments": ["env-stage-0103"]
+        },
+        {
+          "label": "server-c",
+          "server_key_fingerprint_hex": "2de45fe355fa06dec439c8f91a045508",
+          "server_enc_pub_hex": "d7d5583049bf35cb8acf67f925004d82de2a9e907c4f0be55768cad10a18796c",
+          "scope_environments": []
+        },
+        {
+          "label": "server-d",
+          "server_key_fingerprint_hex": "ec104cd573acacb688a5eb15b67b2cf6",
+          "server_enc_pub_hex": "6c1f28316b95a8539ed7ba5c989171dafabf891ea0df7dfaa00478859a4d9b74",
+          "scope_environments": ["env-prod-0101", "env-stage-0103"]
+        }
+      ]
+    },
+    "shared-server-keys": {
+      "members": [
+        {
+          "user_id": "user-owner-0201",
+          "role": "owner",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "owner-0201 laptop",
+              "key_fingerprint_hex": "150a72faf437f53feaa5db2941bc3d47",
+              "enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77",
+              "sig_pub_hex": "46c2612d02ffe827160e69cc7337ea9897c2980a9d351ed1dd28238d0c07644e",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "de0341fe1e22659f6709e0eed04367a4",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "server-x-named member's laptop",
+              "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
+              "enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079",
+              "sig_pub_hex": "de599b88cda25a6f7cae2fbf0a05691126be6729d6b4a2f7472b30c9565bc37f",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-sockreader-0203",
+          "role": "reader",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "sockreader-0203 laptop",
+              "key_fingerprint_hex": "ee0e26f79f6ba94fbb0b5d97fae0e422",
+              "enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335",
+              "sig_pub_hex": "258e454bf77928b19528098d25b4bc16be2154645e9529f2e105d7ffc2ad6a52",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "server-z-named member's laptop",
+              "key_fingerprint_hex": "bd340010503b32352ab35ce126840b26",
+              "enc_pub_hex": "87a8a2ff0d1baa76e9096febd98811f2c1cc0837f176f1ff9f9f6aca8f93de1d",
+              "sig_pub_hex": "9d16a85ac3bcbc020d8272c140cd2bec14129d93fcf1cfe736106da4590e2657",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        }
+      ],
+      "server_grants": [
+        {
+          "label": "server-x",
+          "server_key_fingerprint_hex": "de0341fe1e22659f6709e0eed04367a4",
+          "server_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079",
+          "scope_environments": ["env-prod-0101"]
+        },
+        {
+          "label": "server-y",
+          "server_key_fingerprint_hex": "844373a11a2fd7d79e13a8f0b3601a6b",
+          "server_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335",
+          "scope_environments": ["env-prod-0101"]
+        },
+        {
+          "label": "server-z",
+          "server_key_fingerprint_hex": "e7e2b55b5ff929e4ffe7f725de87bbef",
+          "server_enc_pub_hex": "a49fa954d3e2426c60f0b337c2a6881822fccce0ce75a8303d340ae83a29876c",
+          "scope_environments": ["env-prod-0101"]
+        }
+      ]
+    },
+    "order": {
+      "members": [
+        {
+          "user_id": "user-abe-0301",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "abe-0301 laptop",
+              "key_fingerprint_hex": "47c19d1c343d61facf0b8e8b0111d7ae",
+              "enc_pub_hex": "712e6915c383b153932f82489d3f10158466f5b2dc5b23ebc7b02a21372e0f45",
+              "sig_pub_hex": "5aa04caba1c579ffed26feca8d26b4a2921b74ca1a249765456ba058e5e160f4",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        },
+        {
+          "user_id": "user-Zed-0302",
+          "role": "member",
+          "scope": {
+            "kind": "all"
+          },
+          "devices": [
+            {
+              "label": "Zed-0302 laptop",
+              "key_fingerprint_hex": "ac6ab7c7eb468bcc8054f9e5b20a365d",
+              "enc_pub_hex": "ca73a3016501a2dffc192ab061fa7e6cd8b5ada2daa509d88934bcb30fbd1f5c",
+              "sig_pub_hex": "9bbb5ec42bd4524bfe64664333c13072ee2139a7f5c0c9f9dd0b74041e345f0a",
+              "role_cap": "owner",
+              "scope": {
+                "kind": "all"
+              }
+            }
+          ]
+        }
+      ],
+      "server_grants": [
+        {
+          "label": "server-e",
+          "server_key_fingerprint_hex": "93eec10b806be54c7262436144d98f15",
+          "server_enc_pub_hex": "33d1ad7cb66c74d070389907257a6d0635aba2763e0758772e293efdc2836c07",
+          "scope_environments": ["env-prod-0101"]
+        },
+        {
+          "label": "server-f",
+          "server_key_fingerprint_hex": "26ef4b9f339f27ee658b6dbe79e6bb53",
+          "server_enc_pub_hex": "882ee932bc1a02fe6bd01012699a5f4df5e8d6732ab7f5d978e127d052bcd933",
+          "scope_environments": ["env-prod-0101"]
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "project-prod",
+      "fixture": "project",
+      "environment_id": "env-prod-0101",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "b0052fad45c80a07187d2a6796808438",
+          "recipient_enc_pub_hex": "da61a01114008ee14cd4880a2e593e2e42cc34d2b4376bebeec6732eab05170d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "bddc092e2447c70d0eb83b61ad7b1caa",
+          "recipient_enc_pub_hex": "737fb92d5ee0873037a6d8f19cb797598cb71d82a4453bb8496ae6bd3d7c3a09"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-prodbox-0107",
+          "key_fingerprint_hex": "7bbdf463442f7253c34fa7d9fee59691",
+          "recipient_enc_pub_hex": "ab05648d19654768026f6dd931603e93df7ea165d5ff4fd0e93bfd71e470bd2b"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-prodreader-0104",
+          "key_fingerprint_hex": "eae474e7e96343c47ba038a59de98390",
+          "recipient_enc_pub_hex": "70c778243069f560b4aeeb0790e6d18d6d698bc1e1219c78d0d2583429562761"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "2cc782d5ae61a895d2cf9b17aa895d15",
+          "recipient_enc_pub_hex": "697ca987cb6cbb69645af252b7121775209aef0020f2ad610439b1544344625d"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "ec104cd573acacb688a5eb15b67b2cf6",
+          "recipient_enc_pub_hex": "6c1f28316b95a8539ed7ba5c989171dafabf891ea0df7dfaa00478859a4d9b74"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "b0052fad45c80a07187d2a6796808438",
+          "recipient_enc_pub_hex": "da61a01114008ee14cd4880a2e593e2e42cc34d2b4376bebeec6732eab05170d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-prodbox-0107",
+          "key_fingerprint_hex": "7bbdf463442f7253c34fa7d9fee59691",
+          "recipient_enc_pub_hex": "ab05648d19654768026f6dd931603e93df7ea165d5ff4fd0e93bfd71e470bd2b"
+        }
+      ],
+      "note": "R(prod): owner-0101's laptop and its reader-capped tablet (a reader cap still receives wraps), admin-0102's laptop, prodreader-0104's laptop (a reader receives wraps), allmember-0106's laptop, prodbox-0107's prod box, server-a and server-d. Out: owner-0101's dev box (device scope {dev}), admin-0102's ci box ({prod, dev} ∩ {dev, stage} = {dev}), devmember-0103 (scope {dev}), emptyscope-0105 (listed {}), allmember-0106's parked box (device scope listed {}), server-b and server-c. W(prod) drops the reader-capped tablet, prodreader-0104 and both server keys"
+    },
+    {
+      "name": "project-dev",
+      "fixture": "project",
+      "environment_id": "env-dev-0102",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "6bacbb5bbca37beb447057a13de50a77",
+          "recipient_enc_pub_hex": "5bbe46c1e2ada19af58e3689cb655ef4cf478151045975598bbe78acd0803260"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "b0052fad45c80a07187d2a6796808438",
+          "recipient_enc_pub_hex": "da61a01114008ee14cd4880a2e593e2e42cc34d2b4376bebeec6732eab05170d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-devmember-0103",
+          "key_fingerprint_hex": "480fc7a1e8032ad44b11b6bc333ebc8a",
+          "recipient_enc_pub_hex": "2b450421bb290098033b418d88d6ffd3b8a569cde9fa24d9281260fde45c1161"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "bddc092e2447c70d0eb83b61ad7b1caa",
+          "recipient_enc_pub_hex": "737fb92d5ee0873037a6d8f19cb797598cb71d82a4453bb8496ae6bd3d7c3a09"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "9f6a9789463c667c1c60d3046dae3f11",
+          "recipient_enc_pub_hex": "839e21b71eb3b551d6fe259520dec55ed415dbcfbacc22249d70715de8864c3c"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "2cc782d5ae61a895d2cf9b17aa895d15",
+          "recipient_enc_pub_hex": "697ca987cb6cbb69645af252b7121775209aef0020f2ad610439b1544344625d"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "6bacbb5bbca37beb447057a13de50a77",
+          "recipient_enc_pub_hex": "5bbe46c1e2ada19af58e3689cb655ef4cf478151045975598bbe78acd0803260"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-admin-0102",
+          "key_fingerprint_hex": "b0052fad45c80a07187d2a6796808438",
+          "recipient_enc_pub_hex": "da61a01114008ee14cd4880a2e593e2e42cc34d2b4376bebeec6732eab05170d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-devmember-0103",
+          "key_fingerprint_hex": "480fc7a1e8032ad44b11b6bc333ebc8a",
+          "recipient_enc_pub_hex": "2b450421bb290098033b418d88d6ffd3b8a569cde9fa24d9281260fde45c1161"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "9f6a9789463c667c1c60d3046dae3f11",
+          "recipient_enc_pub_hex": "839e21b71eb3b551d6fe259520dec55ed415dbcfbacc22249d70715de8864c3c"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        }
+      ],
+      "note": "R(dev): every device whose person and device scopes both list dev or are all — owner-0101's three devices, admin-0102's laptop and ci box, devmember-0103, allmember-0106's laptop — and server-a. prodbox-0107 is out although its person scope is all: its only device lists prod. W(dev) keeps admin-0102's ci box (effective role min(admin, member) = member) and drops the reader-capped tablet and server-a"
+    },
+    {
+      "name": "project-stage",
+      "fixture": "project",
+      "environment_id": "env-stage-0103",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "bddc092e2447c70d0eb83b61ad7b1caa",
+          "recipient_enc_pub_hex": "737fb92d5ee0873037a6d8f19cb797598cb71d82a4453bb8496ae6bd3d7c3a09"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "2633a7d13b8c01104c3a766a277e81e3",
+          "recipient_enc_pub_hex": "12deec40d4f143efc7f0938031bb481667deb5d7412864e43e9ace5fd8804913"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "ec104cd573acacb688a5eb15b67b2cf6",
+          "recipient_enc_pub_hex": "6c1f28316b95a8539ed7ba5c989171dafabf891ea0df7dfaa00478859a4d9b74"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        }
+      ],
+      "note": "R(stage): admin-0102's ci box lists stage, but the person's scope {prod, dev} does not, so the intersection excludes it — only the all-scope persons' all-scope devices (owner-0101's laptop and tablet, allmember-0106's laptop), server-b and server-d"
+    },
+    {
+      "name": "project-fresh",
+      "fixture": "project",
+      "environment_id": "env-fresh-0104",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "bddc092e2447c70d0eb83b61ad7b1caa",
+          "recipient_enc_pub_hex": "737fb92d5ee0873037a6d8f19cb797598cb71d82a4453bb8496ae6bd3d7c3a09"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-allmember-0106",
+          "key_fingerprint_hex": "8aebd78981c32e47de065ea5d1da3a7f",
+          "recipient_enc_pub_hex": "4194eb9ca48d3140e7828c6a27708a830436fe0ad59ed3cde8771a4b7249ea2d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0101",
+          "key_fingerprint_hex": "3fd474accb1e69b7576f3c52e51bb70e",
+          "recipient_enc_pub_hex": "90acacf3f91c798990c569ab8623fcc37f14d54bf393bb78952ae8a23e60e309"
+        }
+      ],
+      "note": "an environment no listed scope and no grant names (a new environment: AUTH_SPEC §12-4's creation composite wraps to exactly this): only the all-scope persons' all-scope devices, and no server key"
+    },
+    {
+      "name": "shared-server-keys-prod",
+      "fixture": "shared-server-keys",
+      "environment_id": "env-prod-0101",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "de0341fe1e22659f6709e0eed04367a4",
+          "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
+          "recipient_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
+          "key_fingerprint_hex": "bd340010503b32352ab35ce126840b26",
+          "recipient_enc_pub_hex": "87a8a2ff0d1baa76e9096febd98811f2c1cc0837f176f1ff9f9f6aca8f93de1d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0201",
+          "key_fingerprint_hex": "150a72faf437f53feaa5db2941bc3d47",
+          "recipient_enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-sockreader-0203",
+          "key_fingerprint_hex": "ee0e26f79f6ba94fbb0b5d97fae0e422",
+          "recipient_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "844373a11a2fd7d79e13a8f0b3601a6b",
+          "recipient_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
+          "recipient_enc_pub_hex": "a49fa954d3e2426c60f0b337c2a6881822fccce0ce75a8303d340ae83a29876c"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "de0341fe1e22659f6709e0eed04367a4",
+          "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
+          "recipient_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
+          "key_fingerprint_hex": "bd340010503b32352ab35ce126840b26",
+          "recipient_enc_pub_hex": "87a8a2ff0d1baa76e9096febd98811f2c1cc0837f176f1ff9f9f6aca8f93de1d"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-owner-0201",
+          "key_fingerprint_hex": "150a72faf437f53feaa5db2941bc3d47",
+          "recipient_enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77"
+        }
+      ],
+      "note": "the member named by server-x's fingerprint holds server-x's enc key on its device: the same (recipient id, enc key) address as the grant, so R(prod) lists it once, as the member's. sockreader-0203's device holds server-y's enc key under its own user id, and the member named by server-z's fingerprint holds a key of its own: two addresses each, so both the member's device and the grant are listed. W(prod) drops sockreader-0203 (a reader) and the three grants, and keeps the server-x-named member's laptop, whose enc key is server-x's (README convention 33)"
+    },
+    {
+      "name": "order-prod",
+      "fixture": "order",
+      "environment_id": "env-prod-0101",
+      "expected_wrap_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-Zed-0302",
+          "key_fingerprint_hex": "ac6ab7c7eb468bcc8054f9e5b20a365d",
+          "recipient_enc_pub_hex": "ca73a3016501a2dffc192ab061fa7e6cd8b5ada2daa509d88934bcb30fbd1f5c"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-abe-0301",
+          "key_fingerprint_hex": "47c19d1c343d61facf0b8e8b0111d7ae",
+          "recipient_enc_pub_hex": "712e6915c383b153932f82489d3f10158466f5b2dc5b23ebc7b02a21372e0f45"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "26ef4b9f339f27ee658b6dbe79e6bb53",
+          "recipient_enc_pub_hex": "882ee932bc1a02fe6bd01012699a5f4df5e8d6732ab7f5d978e127d052bcd933"
+        },
+        {
+          "recipient_class": "server",
+          "recipient_id": "93eec10b806be54c7262436144d98f15",
+          "recipient_enc_pub_hex": "33d1ad7cb66c74d070389907257a6d0635aba2763e0758772e293efdc2836c07"
+        }
+      ],
+      "expected_proposal_recipients": [
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-Zed-0302",
+          "key_fingerprint_hex": "ac6ab7c7eb468bcc8054f9e5b20a365d",
+          "recipient_enc_pub_hex": "ca73a3016501a2dffc192ab061fa7e6cd8b5ada2daa509d88934bcb30fbd1f5c"
+        },
+        {
+          "recipient_class": "member",
+          "recipient_id": "user-abe-0301",
+          "key_fingerprint_hex": "47c19d1c343d61facf0b8e8b0111d7ae",
+          "recipient_enc_pub_hex": "712e6915c383b153932f82489d3f10158466f5b2dc5b23ebc7b02a21372e0f45"
+        }
+      ],
+      "note": "both members' laptops and both grants: the case adds no way in or out, and is there for the order check (user-Zed-0302 precedes user-abe-0301 in UTF-16 code-unit order only, and server-f's fingerprint precedes server-e's while its enc key does not). W(prod) is the two laptops"
+    }
+  ]
+}
