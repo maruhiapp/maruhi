@@ -21,12 +21,7 @@ import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { describeKeyReuse, keyReuseOf } from "./approval-rules.ts";
-import {
-  ensureStillTarget,
-  type ProposalInput,
-  proposeOperation,
-  proposeRecheck,
-} from "./approval.ts";
+import { type ProposalInput, proposeOperation, proposeRecheck } from "./approval.ts";
 import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
@@ -225,7 +220,6 @@ function signAddMemberEntry(input: {
       },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the add_member entry",
   });
 }
 
@@ -624,7 +618,7 @@ export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input:
       client: input.client,
       verified,
       resync: input.resync,
-      opLabel: "add_member",
+      inner,
       signEntry: (view) =>
         signAddMemberEntry({
           verified: view,
@@ -635,10 +629,7 @@ export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input:
           signingKeyPair: input.signingKeyPair,
         }),
       recheck: (view) =>
-        ensureStillTarget(view, inner, false).pipe(
-          Effect.flatMap(() => recheck(view)),
-          Effect.map((rechecked) => ({ already: rechecked.alreadyAdded })),
-        ),
+        Effect.map(recheck(view), (rechecked) => ({ already: rechecked.alreadyAdded })),
     });
     appended = outcome.appended;
     verified = outcome.verified;

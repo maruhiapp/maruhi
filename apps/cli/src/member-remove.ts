@@ -13,12 +13,7 @@ import {
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import {
-  ensureStillTarget,
-  type ProposalInput,
-  proposeOperation,
-  proposeRecheck,
-} from "./approval.ts";
+import { type ProposalInput, proposeOperation, proposeRecheck } from "./approval.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
@@ -138,7 +133,6 @@ function signRemoveEntry(input: {
     signerUserId: input.signerUserId,
     operation: { op: "remove_member", payload: { targetUserId: input.targetUserId } },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the remove_member entry",
   });
 }
 
@@ -191,7 +185,7 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
       client: input.client,
       verified,
       resync: input.resync,
-      opLabel: "remove_member",
+      inner,
       signEntry: (view) =>
         signRemoveEntry({
           verified: view,
@@ -200,10 +194,7 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
           signingKeyPair: input.signingKeyPair,
         }),
       recheck: (view) =>
-        ensureStillTarget(view, inner, false).pipe(
-          Effect.flatMap(() => recheck(view)),
-          Effect.map((rechecked) => ({ already: rechecked.alreadyRemoved })),
-        ),
+        Effect.map(recheck(view), (rechecked) => ({ already: rechecked.alreadyRemoved })),
     });
     verified = outcome.verified;
     appended = outcome.appended;

@@ -22,7 +22,6 @@
 // device's enc public key (the shared core in backfill.ts — 409 counts
 // as already registered).
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import {
   cryptoEffect,
   type EnvironmentId,
@@ -48,15 +47,14 @@ import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEachEnvironment, backfillEnvironmentFor } from "./backfill.ts";
-import { appendEntry } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
+import { appendWithRetry } from "./chain-append.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { capWithinSignerCap, describeCap, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { retryOnConflict } from "./retry.ts";
 import {
   baselinesOf,
   partitionSweepBaselines,
@@ -67,8 +65,6 @@ import {
   sweepRotations,
 } from "./rotation-sweep.ts";
 import { compareCodePoints, requireScopeEnvironmentsExist, scopeContains } from "./scope.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /** A device key to register (public side + declared cap). */
 export interface DeviceCandidate {
@@ -83,30 +79,27 @@ export interface DeviceOpSigner {
   readonly signingKeyPair: SigningKeyPair;
 }
 
-/** Shared scaffolding for a CAS append (same shape as member.ts's appendWithCas — for device ops). */
+/**
+ * Shared scaffolding for a CAS append of a device op (chain-append.ts's
+ * appendWithRetry). `signEntry` runs the op's pre-flight checks on each
+ * view, so the resync after a head conflict needs no recheck of its own.
+ */
 function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly opLabel: string;
+  /** null = already in the desired state (a concurrent run appended first) — continue without appending. */
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry | null, CliError>;
 }): Effect.Effect<{ readonly verified: VerifiedProject; readonly appended: boolean }, CliError> {
-  return retryOnConflict(input.verified, {
-    maxAttempts: MAX_ATTEMPTS,
-    attempt: (view) =>
-      Effect.gen(function* () {
-        // null = already in the desired state (a concurrent run appended first) — continue without appending
-        const entry = yield* input.signEntry(view);
-        if (entry === null) {
-          return { verified: view, appended: false };
-        }
-        yield* appendEntry(input.client, view, entry);
-        return { verified: view, appended: true };
-      }),
-    classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-    recover: (view) => resyncExtended(input.resync, view),
-    exhaustedMessage: `${input.opLabel}'s chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-  });
+  return appendWithRetry(input, {
+    op: input.opLabel,
+    initial: { verified: input.verified },
+    sign: (state) => input.signEntry(state.verified),
+    recheck: (resynced) => Effect.succeed({ verified: resynced }),
+  }).pipe(
+    Effect.map(({ state, entry }) => ({ verified: state.verified, appended: entry !== null })),
+  );
 }
 
 /** Pre-flight judgment of key uniqueness (§6.2 — no duplicate same-kind public key across all devices of current members). */

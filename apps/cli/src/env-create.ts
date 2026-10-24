@@ -103,7 +103,6 @@ const signCreateEntry = Effect.fn("env-create.signCreateEntry")(function* (input
       },
     },
     signingKeyPair: input.signingKeyPair,
-    failureText: "Failed to sign the create_environment entry",
   });
   // Narrowing the op (signChainEntry preserves the input's op)
   if (signed.op !== "create_environment") {

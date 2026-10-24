@@ -10,9 +10,11 @@
 //     self-obligation) → append → learn completion on resync (K6-B). The
 //     approver who completes it fulfills the sweep (remove) / backfill
 //     (add_member) (approval item 22). If another owner completed it first,
-//     do not append
+//     do not append. After a head conflict, the approve completing the
+//     proposal is re-signed on the resynced head and still fulfills it
 //  3. withdraw: proposer / owner. A Note is required when an owner closes
-//     someone else's proposal
+//     someone else's proposal. A head conflict re-signs on the resynced
+//     head; five in a row stop with the exhausted wording
 //  4. policy: activation (pre-announce owner ≥ required, availability
 //     guidance); changes while active go through a proposal
 
@@ -319,6 +321,48 @@ describe("maruhi approval approve", () => {
     expect(env.logs.join("\n")).toContain("already completed by another owner's approval");
   });
 
+  it("after an unrelated head conflict, re-signs the approve on the resynced head and, completing the proposal, fulfills it", async () => {
+    const { steps, built, hash } = await proposedChain();
+    // An unrelated concurrent append (add_member is not a policy target here)
+    const concurrent = await buildChain([
+      ...steps,
+      { actor: owner, operation: addMemberOp(newbie, "member") },
+    ]);
+    const state = await makeFourEyesServer({
+      built,
+      environments: {
+        [ENV_ID]: { currentEpoch: 1, deks: [await wrapFor(built.projectId, owner2)] },
+      },
+      actor: owner2,
+      author: owner,
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner2);
+    expect(
+      await runCli(["approval", "approve", hash.slice(0, 8)], env.layer),
+      env.errors.join("\n"),
+    ).toBe(0);
+    expect(state.counters.appendAttempts).toBe(2);
+    const approve = state.appendedEntries[0];
+    if (approve?.op !== "approve") throw new Error("approve entry missing");
+    expect(approve.seq).toBe(concurrent.entries.length + 1);
+    expect(state.rotateBodies).toHaveLength(1);
+    expect(env.logs.join("\n")).toContain(
+      `Your approval reached the quorum: applied remove_member at seq=${concurrent.entries.length + 1}`,
+    );
+  });
+
   it("the approver who completes an add_member proposal fulfills the backfill for the new member (the fifth path in §12-6)", async () => {
     const steps = [
       ...prefixSteps({ ops: ["add_member"] }),
@@ -386,6 +430,65 @@ describe("maruhi approval withdraw", () => {
     expect(await runCli(["approval", "withdraw", hash.slice(0, 8)], memberEnv.layer)).toBe(1);
     expect(memberEnv.errors.join("\n")).toContain("Only the proposer or an owner can withdraw");
     expect(fresh.counters.appendAttempts).toBe(0);
+  });
+
+  it("after a head conflict, re-signs the withdraw on the resynced head", async () => {
+    const { steps, built, hash } = await proposedChain();
+    // An unrelated concurrent append (add_member is not a policy target here)
+    const concurrent = await buildChain([
+      ...steps,
+      { actor: owner, operation: addMemberOp(newbie, "member") },
+    ]);
+    const state = await makeFourEyesServer({
+      built,
+      environments: {},
+      actor: owner2,
+      onAppend: (call) =>
+        call === 0
+          ? {
+              status: 409,
+              json: {
+                _tag: "ChainHeadConflict",
+                currentHeadSeq: concurrent.entries.length,
+                currentHeadHashHex: concurrent.hashes[concurrent.hashes.length - 1] ?? "",
+              },
+            }
+          : undefined,
+      chainAfterConflict: concurrent,
+    });
+    const env = await startEnv(state, built.projectId, owner2);
+    expect(await runCli(["approval", "withdraw", hash.slice(0, 8)], env.layer)).toBe(0);
+    expect(state.counters.appendAttempts).toBe(2);
+    expect(state.appendedEntries).toHaveLength(1);
+    const withdraw = state.appendedEntries[0];
+    if (withdraw?.op !== "withdraw") throw new Error("withdraw entry missing");
+    expect(withdraw.seq).toBe(concurrent.entries.length + 1);
+    expect(withdraw.prevHashHex).toBe(concurrent.hashes[concurrent.hashes.length - 1]);
+    expect(withdraw.payload.proposalHashHex).toBe(hash);
+  });
+
+  it("gives up after five head conflicts in a row, naming the op", async () => {
+    const { built, hash } = await proposedChain();
+    const state = await makeFourEyesServer({
+      built,
+      environments: {},
+      actor: owner2,
+      onAppend: () => ({
+        status: 409,
+        json: {
+          _tag: "ChainHeadConflict",
+          currentHeadSeq: built.entries.length,
+          currentHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+        },
+      }),
+    });
+    const env = await startEnv(state, built.projectId, owner2);
+    expect(await runCli(["approval", "withdraw", hash.slice(0, 8)], env.layer)).toBe(1);
+    expect(state.counters.appendAttempts).toBe(5);
+    expect(state.appendedEntries).toHaveLength(0);
+    expect(env.errors.join("\n")).toContain(
+      "withdraw's chain-head conflict did not resolve (5 attempts). Wait a moment and re-run",
+    );
   });
 });
 

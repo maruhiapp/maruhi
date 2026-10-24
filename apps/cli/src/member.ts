@@ -20,7 +20,6 @@
 // the §7 duty themselves (the consensus rules don't forbid it, but the CLI
 // never creates a shape where the duty is structurally orphaned).
 
-import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
@@ -29,20 +28,20 @@ import {
   type EffectivePermission,
   effectivePermissionOf,
   type MemberScope,
+  type ProposableOperation,
   type Role,
   type SigningKeyPair,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import type { ProposedSummary } from "./approval.ts";
-import { appendEntry } from "./chain-append.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
+import { ensureStillTarget, type ProposedSummary } from "./approval.ts";
+import { appendWithRetry } from "./chain-append.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { chainDeletedEnvironments } from "./deks.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
-import { retryOnConflict } from "./retry.ts";
 import {
   baselinesOf,
   partitionSweepBaselines,
@@ -52,8 +51,6 @@ import {
   type SweepRotate,
   sweepRotations,
 } from "./rotation-sweep.ts";
-
-const MAX_ATTEMPTS = 5;
 
 /**
  * Each op's result under four-eyes (K6): if the policy targets the inner
@@ -233,49 +230,35 @@ function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap
 }
 
 /**
- * The CAS append of a membership op (the shared scaffolding of
- * retryOnConflict — same shape across add / remove / change_role). On each
- * head conflict: resync with the extension check → redo the pre-check via
- * `recheck`; if a concurrent run already committed the same change
- * (already), continue without appending.
+ * The CAS append of a membership op (chain-append.ts's appendWithRetry —
+ * same shape across add / remove / change_role). On each head conflict,
+ * after the resync: the four-eyes policy must still leave `inner` to a
+ * direct append, and `recheck` redoes the op's pre-check; if a concurrent
+ * run already committed the same change (already), the op continues
+ * without appending.
  */
 export function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** The op name used in the exhausted wording (e.g. "remove_member"). */
-  readonly opLabel: string;
+  /** The op as a four-eyes inner operation (ensureStillTarget — approval.ts); its op names it in the exhausted wording. */
+  readonly inner: ProposableOperation;
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry, CliError>;
   readonly recheck: (
     verified: VerifiedProject,
   ) => Effect.Effect<{ readonly already: boolean }, CliError>;
 }): Effect.Effect<{ readonly verified: VerifiedProject; readonly appended: boolean }, CliError> {
-  return retryOnConflict(
-    { verified: input.verified, already: false },
-    {
-      maxAttempts: MAX_ATTEMPTS,
-      attempt: (
-        state,
-      ): Effect.Effect<
-        { readonly verified: VerifiedProject; readonly appended: boolean },
-        CliError | ChainHeadConflictError
-      > =>
-        state.already
-          ? Effect.succeed({ verified: state.verified, appended: false })
-          : Effect.gen(function* () {
-              const entry = yield* input.signEntry(state.verified);
-              yield* appendEntry(input.client, state.verified, entry);
-              return { verified: state.verified, appended: true };
-            }),
-      classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-      recover: (state) =>
-        Effect.gen(function* () {
-          const resynced = yield* resyncExtended(input.resync, state.verified);
-          const rechecked = yield* input.recheck(resynced);
-          return { verified: resynced, already: rechecked.already };
-        }),
-      exhaustedMessage: `${input.opLabel}'s chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-    },
+  return appendWithRetry(input, {
+    op: input.inner.op,
+    initial: { verified: input.verified, already: false },
+    sign: (state) => (state.already ? Effect.succeed(null) : input.signEntry(state.verified)),
+    recheck: (resynced) =>
+      ensureStillTarget(resynced, input.inner, false).pipe(
+        Effect.flatMap(() => input.recheck(resynced)),
+        Effect.map((rechecked) => ({ verified: resynced, already: rechecked.already })),
+      ),
+  }).pipe(
+    Effect.map(({ state, entry }) => ({ verified: state.verified, appended: entry !== null })),
   );
 }
 
