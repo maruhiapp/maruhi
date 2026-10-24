@@ -1,8 +1,9 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  // The newest key below (audit.worsened) needs fallow 3.35 or later; an
-  // older binary names the upgrade instead of failing on an unknown key
-  "minimumVersion": "3.35.0",
+  // The newest keys below (the rules new in fallow 3.34) need fallow 3.34 or
+  // later; an older binary names the upgrade instead of failing on an unknown
+  // key
+  "minimumVersion": "3.34.0",
   // A file fallow cannot parse drops out of every detector, the boundaries
   // below included, so a parse failure fails the run instead of only warning
   "failOnParseError": true,
@@ -187,10 +188,45 @@
   // packages/crypto/test/checks/<section>.ts is a per-spec-section harness kept
   // independently readable against its CRYPTO_SPEC section, and deduplicating
   // them would change packages/crypto, which needs crypto human review
-  // (CLAUDE.md). The duplication baseline (fallow-baselines/dupes.json) holds
-  // only real debt and is shrink-only (scripts/check-dupes-baseline.mjs, CI 5b)
+  // (CLAUDE.md). It also skips the theme files `astryx theme build` generates
+  // from apps/web/theme/maruhi.ts (maruhi.css and maruhi.js, both marked
+  // @generated): nobody edits them, so a repeat there is not code to share.
+  // ignoredClones lists clone groups reviewed and kept, by the key fallow
+  // reports; a change to either copy, or a third copy, gives a new key that
+  // is reported again. fallow says nothing about a key that matches no
+  // clone, so a change that removes a kept clone removes its key and note:
+  // - dup:cfe4b53c:2 is apps/cli/src/values-verify.ts's
+  //   verifyVariableStatements and verifyDeclaredStatements. Each checks its
+  //   own §12-7 list, and the two refuse different things: the metadata-only
+  //   list refuses only a deleted statement, after the signature check; the
+  //   declared list refuses every status but declared (an active one is a
+  //   value omission — CRYPTO_SPEC §6.3), before the signature check, and
+  //   also an ID the active list holds. One shared loop would need a switch
+  //   for each difference, the order of the checks included.
+  // The duplication baseline (fallow-baselines/dupes.json) holds only real
+  // debt and is shrink-only (scripts/check-dupes-baseline.mjs, CI 5b).
+  // fallow reports a clone group at warn, which fails neither `fallow
+  // audit` (CI 5) nor the whole-project run (`fallow:baselines` in
+  // package.json: CI 5a and `bun run check`). threshold fails both on any
+  // clone group the baseline does not list instead: it is the most
+  // duplication allowed, as a share of the scanned lines in percent, and
+  // the smallest clone fallow reports (two copies of 5 lines, minLines'
+  // default) is 0.0066% of today's 151,000 lines. 0.0001 stays below one
+  // such clone until the project passes ten million lines. fallow prints
+  // the failure as "Duplication (0.0%) exceeds threshold (0.0%)", both
+  // values rounded. fallow's default ignores leave spec files
+  // (`**/*.test.*`) out of clone detection, and so out of this gate.
+  // `bun run fallow:baseline` saves the baseline with `--threshold 0`:
+  // under the threshold the save would exit 1 on a clone and stop the
+  // chain before the shrink-only restore
   "duplicates": {
-    "ignore": ["packages/crypto/test/checks/**"]
+    "ignore": [
+      "packages/crypto/test/checks/**",
+      "apps/web/theme/maruhi.css",
+      "apps/web/theme/maruhi.js"
+    ],
+    "ignoredClones": ["dup:cfe4b53c:2"],
+    "threshold": 0.0001
   },
   // Owner ruling 2026-10-06 (CLAUDE.md "No backward compatibility before the
   // first public release"): nothing may be kept around for older data,
@@ -217,11 +253,15 @@
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
     "dupesBaseline": "fallow-baselines/dupes.json",
-    // A complexity finding the base already has and the change makes worse
-    // (a higher cyclomatic, cognitive or CRAP value, or 5 or more added
-    // lines) fails the audit like a new finding. fallow 3.35 made such
-    // growth a warning by default (exit 0); before that, growth of an
-    // exceeded metric failed
-    "worsened": "error"
+    // Every error-level finding in a changed file fails the audit,
+    // inherited or not, and the base-snapshot attribution pass is skipped
+    // (owner decision 2026-10-24, once the clone groups reached zero). A
+    // complexity finding in a changed non-test file fails whether or not
+    // the change made it worse, so there is no `worsened` setting (it has
+    // no effect under `all`); in a test file the audit only warns, and the
+    // whole-project run (CI 5a) fails on it unless the health baseline
+    // lists it. The diff-risk rules above still read the diff, and the
+    // duplicates threshold above fails a clone group
+    "gate": "all"
   }
 }

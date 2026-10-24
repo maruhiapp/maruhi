@@ -31,15 +31,7 @@ import { vectorEnvironmentDeks } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
 import { beforeEach, expect } from "vitest";
 
-import {
-  BASE,
-  bearer,
-  cliToken,
-  JSON_HEADERS,
-  resetAuthDb,
-  seedOrgMember,
-  seedUser,
-} from "./auth.ts";
+import { BASE, bearer, JSON_HEADERS, reseedAuthDb } from "./auth.ts";
 import {
   toWireEntry,
   vectorEntries,
@@ -510,24 +502,14 @@ export async function replayNegativePrefix(negative: {
  */
 export function registerMembershipScenario(): void {
   beforeEach(async () => {
-    // The DO reset is independent of the D1-side reset + reseed, and
-    // each user's seed → real-PAT issuance (the ~5-RT CLI login
-    // handoff) is independent of the other users' — running them
-    // concurrently removes ~15-20 sequential round-trips per test.
-    // Every test still gets fresh state and real issued PATs; only
-    // the sequential order is dropped
-    const auth = (async () => {
-      await resetAuthDb();
-      const issued = await Promise.all(
-        Object.entries(GITHUB_IDS).map(async ([userId, githubId]) => {
-          await seedUser(userId, githubId);
-          return [userId, await cliToken(githubId)] as const;
-        }),
-      );
-      await seedOrgMember(VECTOR_ORG, "user-owner-0001", "member");
-      return issued;
-    })();
-    const [issued] = await Promise.all([auth, resetProjectDo(vectorProjectId)]);
-    tokens = Object.fromEntries(issued);
+    // The DO reset is independent of the D1-side reset + reseed, so the
+    // two run concurrently, as reseedAuthDb runs its users: every test
+    // gets fresh state and real issued PATs without ~15-20 sequential
+    // round-trips
+    const [issued] = await Promise.all([
+      reseedAuthDb(GITHUB_IDS, { orgId: VECTOR_ORG, userId: "user-owner-0001" }),
+      resetProjectDo(vectorProjectId),
+    ]);
+    tokens = issued;
   });
 }

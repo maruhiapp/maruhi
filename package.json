@@ -12,7 +12,7 @@
     "doctor": "bun run --filter @maruhi/web doctor",
     "fallow:audit": "fallow audit",
     "fallow:baselines": "fallow --baseline fallow-baselines/dead-code.json --health-baseline fallow-baselines/health.json --dupes-baseline fallow-baselines/dupes.json --baseline-mode identity --fail-on-stale-baseline",
-    "fallow:baseline": "fallow dead-code --save-baseline fallow-baselines/dead-code.json && fallow health --save-baseline fallow-baselines/health.json --baseline-mode identity && fallow dupes --save-baseline fallow-baselines/dupes.json && bun scripts/check-dupes-baseline.mjs --restore HEAD",
+    "fallow:baseline": "fallow dead-code --save-baseline fallow-baselines/dead-code.json && fallow health --save-baseline fallow-baselines/health.json --baseline-mode identity && fallow dupes --save-baseline fallow-baselines/dupes.json --threshold 0 && bun scripts/check-dupes-baseline.mjs --restore HEAD",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "importlint": "import-lint",

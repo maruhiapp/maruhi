@@ -235,9 +235,11 @@ function toShare(row: {
 }
 
 export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
-  // Conditional INSERT…SELECT for audit rows (guardianCreate: only when
-  // "a group row was inserted"; guardianDelete: only when "a group row
-  // was deleted" = bundled 1:1 via the changes() chain)
+  // Conditional INSERT…SELECT for an audit row, bundled into the batch of
+  // the write it records: the row goes in only when `condition` holds over
+  // `source` — when the write took effect (the changes() chain, e.g.
+  // guardianCreate: "a group row was inserted"; guardianDelete: "a group
+  // row was deleted"), so the write and its audit row are 1:1
   const guardedAuditInsert = (
     event: D1AuditEventInput,
     nowMs: number,
@@ -338,23 +340,15 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             ? await db.batch([upsert])
             : await db.batch([
                 upsert,
-                db.insert(userAuditEvents).select(
-                  db
-                    .select(
-                      guardedAuditSelectColumns({
-                        ...audit,
-                        nowMs,
-                        targetUserId: audit.targetUserId ?? null,
-                      }),
-                    )
-                    .from(keyWrapWindows)
-                    .where(
-                      and(
-                        eq(keyWrapWindows.userId, userId),
-                        eq(keyWrapWindows.kind, kind),
-                        sql`changes() = 1`,
-                      ),
-                    ),
+                guardedAuditInsert(
+                  audit,
+                  nowMs,
+                  keyWrapWindows,
+                  and(
+                    eq(keyWrapWindows.userId, userId),
+                    eq(keyWrapWindows.kind, kind),
+                    sql`changes() = 1`,
+                  ),
                 ),
               ]);
         if (results[0].length === 1) {
@@ -408,18 +402,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
                 .where(underLimit),
             )
             .returning({ id: masterKeyWraps.id }),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.key_wrap_registered",
-                  actor,
-                  nowMs,
-                  payload: { kind: "passkey-prf", wrapId },
-                }),
-              )
-              .from(masterKeyWraps)
-              .where(and(eq(masterKeyWraps.id, wrapId), sql`changes() = 1`)),
+          guardedAuditInsert(
+            { event: "auth.key_wrap_registered", actor, payload: { kind: "passkey-prf", wrapId } },
+            nowMs,
+            masterKeyWraps,
+            and(eq(masterKeyWraps.id, wrapId), sql`changes() = 1`),
           ),
         ]);
         if (results[0].length === 1) {
@@ -457,18 +444,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             .delete(masterKeyWraps)
             .where(and(eq(masterKeyWraps.userId, userId), eq(masterKeyWraps.id, wrapId)))
             .returning({ id: masterKeyWraps.id }),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.key_wrap_removed",
-                  actor,
-                  nowMs,
-                  payload: { kind: "passkey-prf", wrapId },
-                }),
-              )
-              .from(sql`(select 1)`)
-              .where(sql`changes() = 1`),
+          guardedAuditInsert(
+            { event: "auth.key_wrap_removed", actor, payload: { kind: "passkey-prf", wrapId } },
+            nowMs,
+            sql`(select 1)`,
+            sql`changes() = 1`,
           ),
         ]);
         return results[0].length === 1;
@@ -690,18 +670,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             })
             .onConflictDoNothing()
             .returning({ id: keyHandoffRequests.id }),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.key_handoff_requested",
-                  actor,
-                  nowMs,
-                  payload: { requestId },
-                }),
-              )
-              .from(sql`(select 1)`)
-              .where(sql`changes() = 1`),
+          guardedAuditInsert(
+            { event: "auth.key_handoff_requested", actor, payload: { requestId } },
+            nowMs,
+            sql`(select 1)`,
+            sql`changes() = 1`,
           ),
         ]);
         return results[0].length === 1 ? "created" : "conflict";
@@ -746,24 +719,21 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             .values(approvalRow(requestId, approverUserId, approval, nowMs))
             .onConflictDoNothing()
             .returning({ requestId: keyHandoffApprovals.requestId }),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.key_handoff_approved",
-                  actor,
-                  nowMs,
-                  targetUserId: wardUserId,
-                  payload: {
-                    requestId,
-                    source: approval.source,
-                    shareIndex: approval.shareIndex,
-                    approverKeyFingerprintHex: approval.approverKeyFingerprintHex,
-                  },
-                }),
-              )
-              .from(sql`(select 1)`)
-              .where(sql`changes() = 1`),
+          guardedAuditInsert(
+            {
+              event: "auth.key_handoff_approved",
+              actor,
+              targetUserId: wardUserId,
+              payload: {
+                requestId,
+                source: approval.source,
+                shareIndex: approval.shareIndex,
+                approverKeyFingerprintHex: approval.approverKeyFingerprintHex,
+              },
+            },
+            nowMs,
+            sql`(select 1)`,
+            sql`changes() = 1`,
           ),
         ]);
         return results[0].length === 1 ? "created" : "conflict";
@@ -797,18 +767,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             .where(
               and(eq(keyHandoffRequests.id, requestId), isNull(keyHandoffRequests.collectedAt)),
             ),
-          db.insert(userAuditEvents).select(
-            db
-              .select(
-                guardedAuditSelectColumns({
-                  event: "auth.key_handoff_collected",
-                  actor,
-                  nowMs,
-                  payload: { requestId, approvalCount },
-                }),
-              )
-              .from(sql`(select 1)`)
-              .where(sql`changes() = 1`),
+          guardedAuditInsert(
+            { event: "auth.key_handoff_collected", actor, payload: { requestId, approvalCount } },
+            nowMs,
+            sql`(select 1)`,
+            sql`changes() = 1`,
           ),
         ]);
       }).pipe(Effect.orDie),
