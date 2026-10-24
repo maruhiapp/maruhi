@@ -10,7 +10,7 @@ import {
 } from "../approval-rules.ts";
 import type { ProposalInput, ProposedSummary } from "../approval.ts";
 import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
-import type { CliServices, ProjectContext } from "../context.ts";
+import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { GITHUB_LOGIN } from "../invite-link.ts";
@@ -19,7 +19,14 @@ import { Keychain, tokenEntryName } from "../keychain.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
 import type { SweepOutcome } from "../rotation-sweep.ts";
-import { normalizeHttpOrigin } from "./lazy.ts";
+import {
+  decidePushSync,
+  loadPushSyncConfig,
+  type PushSyncDecision,
+  type PushSyncSetup,
+  syncAfterPush,
+} from "../sync.package/index.ts";
+import { normalizeHttpOrigin, openEnvironment } from "./lazy.ts";
 
 // P-6: the heavy implementation graph (context / api / session and the op
 // modules) is imported lazily inside the bodies that use it, so that
@@ -28,9 +35,10 @@ import { normalizeHttpOrigin } from "./lazy.ts";
 // Each load reads its names off the module inside the `.then` — the only
 // shape fallow credits per export (pinned by test/lazy-imports.test.ts).
 // Every context.ts and session.ts function the commands call is wrapped
-// once in lazy.ts, so a command imports it from there and calls it
-// directly. That parsing, help and version load none of context / api /
-// session / chain-sync is checked on the running CLI by
+// once in lazy.ts, as are the two rotation helpers several commands share
+// (reportRotationChecklist, sweepRotateFor), so a command imports them from
+// there and calls them directly. That parsing, help and version load none
+// of context / api / session / chain-sync is checked on the running CLI by
 // test/startup-loads.test.ts.
 
 /** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
@@ -165,7 +173,77 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
   },
 );
 
-/** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
+/** A value write's sync, decided before the write is sent: the sync config, and what it means for the written variable. */
+interface WriteSync {
+  readonly setup: PushSyncSetup;
+  readonly decision: PushSyncDecision;
+}
+
+/**
+ * Decides a value write's sync before the write is sent (push, var
+ * rollback, var rotate): null when no sync config was read (none at the
+ * default path, or --no-sync). A disagreement with an explicitly given
+ * config's `project` is a misspelling (2), and the write is not sent.
+ */
+export function decideWriteSync(
+  setup: PushSyncSetup | null,
+  context: EnvironmentContext,
+  name: string,
+): Effect.Effect<WriteSync | null, CliError> {
+  return setup === null
+    ? Effect.succeed(null)
+    : Effect.map(
+        decidePushSync(setup, {
+          projectId: context.projectId,
+          environmentId: context.environmentId,
+          name,
+        }),
+        (decision) => ({ setup, decision }),
+      );
+}
+
+/**
+ * Opens the environment a value write goes to (push, var rollback), with
+ * its sync. The sync config is read first, **before any network**, so a
+ * broken file or an explicitly given other project's config is never
+ * found behind the write (same as SY2 stage 2 2b's ruling B), and the
+ * sync is decided before the write is sent (decideWriteSync).
+ */
+export const openWriteEnvironment = Effect.fn("commands-shared.openWriteEnvironment")(function* (
+  values: CommonFlags & {
+    readonly config?: string | undefined;
+    readonly "no-sync": boolean;
+    readonly name: string;
+  },
+): Effect.fn.Return<
+  { readonly context: EnvironmentContext; readonly sync: WriteSync | null },
+  CliError,
+  CliServices
+> {
+  const setup = yield* loadPushSyncConfig({ config: values.config, noSync: values["no-sync"] });
+  const context = yield* openEnvironment(values);
+  return { context, sync: yield* decideWriteSync(setup, context, values.name) };
+});
+
+/**
+ * After a successful value write (push, var rollback, var rotate):
+ * issuance trigger (iii) (CRYPTO_SPEC §6.3), which detects the baseline
+ * checkpoint's staleness (proposeCheckpointRefresh — the anchor-update
+ * proposal rides the same route; the ruling is docs/notes/session-35.md),
+ * then the decided sync: applied directly to the targets carrying
+ * `onPush`, or CI launched. A failed sync stays a warning and the exit
+ * code stays the write's (only the evidence fails — sync-push.ts).
+ */
+export const finishWrite = Effect.fn("commands-shared.finishWrite")(function* (
+  context: EnvironmentContext,
+  sync: WriteSync | null,
+): Effect.fn.Return<void, CliError, CliServices> {
+  yield* proposeCheckpointRefresh(context, { afterWrite: true });
+  if (sync !== null) {
+    yield* syncAfterPush({ context, ...sync });
+  }
+});
+
 /**
  * Four-eyes (K6-K): `--expires <duration>` → the proposal's expiry and
  * clock. Never read on an operation the policy doesn't target, but a

@@ -110,7 +110,6 @@ export interface CiRotateResult {
   readonly expiresAtMs: number;
   /** Whether the proposal was sealed a second time after the recipients changed (O-7). */
   readonly resealed: boolean;
-  readonly warnings: readonly string[];
 }
 
 /** One recipient device of W(E) (CRYPTO_SPEC §5.3). */
@@ -570,7 +569,6 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
     previous: outcome.previous,
     expiresAtMs: minted.expiresAtMs,
     resealed: minted.resealed,
-    warnings: [],
   };
 });
 

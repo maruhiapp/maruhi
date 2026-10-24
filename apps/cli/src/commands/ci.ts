@@ -316,9 +316,6 @@ const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (valu
       describeProposal: m.describeProposal,
     })),
   );
-  const { logRotationWarnings } = yield* Effect.promise(() =>
-    import("../var-rotate.ts").then((m) => ({ logRotationWarnings: m.logRotationWarnings })),
-  );
 
   const io = yield* CliIo;
   const coordinates = yield* ciRotateCoordinates(values);
@@ -341,7 +338,6 @@ const ciRotateCommand = Effect.fn("commands-ci.ciRotateCommand")(function* (valu
     config: rotateConfig,
     configPath: rotateConfigPath,
   });
-  yield* logRotationWarnings(result.warnings);
   for (const line of describeProposal(result, coordinates.environmentId)) {
     yield* io.log(line);
   }

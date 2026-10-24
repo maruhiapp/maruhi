@@ -346,6 +346,54 @@ const buildTuples = Effect.fn("checkpoint.buildTuples")(function* (
 });
 
 /**
+ * Retries `effect` while it fails with AuditHeadNotReady, with the
+ * exponential backoff, and fails with AUDIT_HEAD_NOT_READY_EXHAUSTED once
+ * MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS attempts have hit it. Each retry logs
+ * "The server is materializing the audit-head hash column — <retrying>
+ * (attempt n of the cap)". `counts.notReady` is the number of 503s
+ * absorbed so far (the count behind that numbering), so a caller that
+ * runs the retry more than once spends one budget across the runs. The
+ * cap lives in `while`, not the schedule: stopping the schedule by
+ * `times` would still run the `while` predicate on the final step —
+ * emitting a spurious retry line.
+ */
+const retryWhileAuditHeadNotReady = Effect.fn("checkpoint.retryWhileAuditHeadNotReady")(function* <
+  A,
+  R,
+>(
+  effect: Effect.Effect<A, AuditHeadNotReadyError | CliError, R>,
+  counts: { notReady: number },
+  retrying: string,
+): Effect.fn.Return<A, CliError, R | CliIo> {
+  const io = yield* CliIo;
+  return yield* effect.pipe(
+    Effect.retry({
+      while: (error) => {
+        if (
+          !(error instanceof AuditHeadNotReadyError) ||
+          counts.notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
+        ) {
+          return false;
+        }
+        counts.notReady += 1;
+        return Effect.as(
+          io.log(
+            `The server is materializing the audit-head hash column — ${retrying} (attempt ${counts.notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+          ),
+          true,
+        );
+      },
+      schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
+    }),
+    Effect.catchTag(
+      "AuditHeadNotReady",
+      () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+      Effect.fail,
+    ),
+  );
+});
+
+/**
  * Fetching the audit-head attestation (called only for effective admin —
  * §16-2). AuditHeadNotReady (503 — the lazy materialization's bounded
  * extension is incomplete) is absorbed by a dedicated bounded retry: the
@@ -359,42 +407,17 @@ export const fetchAuditHead = Effect.fn("checkpoint.fetchAuditHead")(function* (
   client: MaruhiClient,
   projectId: ProjectId,
 ): Effect.fn.Return<string, CliError, CliIo> {
-  const io = yield* CliIo;
-  // 503 failures absorbed so far (the count behind the message's
-  // attempt numbering). The cap lives in `while`, not the schedule:
-  // stopping the schedule by `times` would still run the `while`
-  // predicate on the final step — emitting a spurious retry line
-  let notReady = 0;
-  return yield* client.audit.auditHead({ params: { projectId } }).pipe(
-    Effect.map((response) => response.auditHeadHashHex),
-    Effect.catchTag("AuditHeadNotReady", Effect.fail, (error) =>
-      Effect.fail(
-        cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+  return yield* retryWhileAuditHeadNotReady(
+    client.audit.auditHead({ params: { projectId } }).pipe(
+      Effect.map((response) => response.auditHeadHashHex),
+      Effect.catchTag("AuditHeadNotReady", Effect.fail, (error) =>
+        Effect.fail(
+          cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+        ),
       ),
     ),
-    Effect.retry({
-      while: (error) => {
-        if (
-          !(error instanceof AuditHeadNotReadyError) ||
-          notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
-        ) {
-          return false;
-        }
-        notReady += 1;
-        return Effect.as(
-          io.log(
-            `The server is materializing the audit-head hash column — retrying (attempt ${notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-          ),
-          true,
-        );
-      },
-      schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
-    }),
-    Effect.catchTag(
-      "AuditHeadNotReady",
-      () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
-      Effect.fail,
-    ),
+    { notReady: 0 },
+    "retrying",
   );
 });
 
@@ -566,9 +589,9 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
     // side is retried by Effect.retry on this whole unit — a fresh view
     // + attestation is exactly what converges it (the failure response
     // still advanced the server's bounded extension — progress saved,
-    // AUDIT_SPEC §5.1). `while` carries the cumulative cap for the same
-    // reason as fetchAuditHead (the outer for(;;) interleaves other
-    // retriable kinds, so a per-call `times` could not bound it)
+    // AUDIT_SPEC §5.1). The 503 budget is cumulative (counters.notReady):
+    // the outer for(;;) interleaves other retriable kinds, so a per-call
+    // `times` could not bound it
     const attemptBody: Effect.Effect<
       {
         readonly built: BuiltView;
@@ -621,30 +644,10 @@ export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function*
       );
       return { built, baseline, outcome };
     });
-    const attempt = yield* attemptBody.pipe(
-      Effect.retry({
-        while: (error) => {
-          if (
-            !(error instanceof AuditHeadNotReadyError) ||
-            counters.notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
-          ) {
-            return false;
-          }
-          counters.notReady += 1;
-          return Effect.as(
-            io.log(
-              `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${counters.notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-            ),
-            true,
-          );
-        },
-        schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
-      }),
-      Effect.catchTag(
-        "AuditHeadNotReady",
-        () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
-        Effect.fail,
-      ),
+    const attempt = yield* retryWhileAuditHeadNotReady(
+      attemptBody,
+      counters,
+      "refetching the attestation and retrying",
     );
     if (attempt.outcome.kind === "accepted" || attempt.outcome.kind === "current") {
       return summarize({

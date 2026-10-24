@@ -14,7 +14,12 @@ import { loadLeasePolicy } from "../lease-policy.ts";
 import { logNote } from "../notice.ts";
 import type { RevokeSummary } from "../server-revoke.ts";
 import { projectFlags, proposalFlags, singleValued } from "./flags.ts";
-import { normalizeHttpOrigin, openProject } from "./lazy.ts";
+import {
+  normalizeHttpOrigin,
+  openProject,
+  reportRotationChecklist,
+  sweepRotateFor,
+} from "./lazy.ts";
 import { proposalInputOf, reportProposed, reportSweepOutcome } from "./shared.ts";
 
 export const serverGrantConfig = {
@@ -119,6 +124,7 @@ function noteGrantKeySource(keySource: GrantKeySource | null) {
       );
 }
 
+/** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
 const serverGrantCommand = Effect.fn("commands-server.serverGrantCommand")(function* (
   flags: CommonFlags & {
     readonly environments?: string | undefined;
@@ -188,17 +194,11 @@ const serverRevokeCommand = Effect.fn("commands-server.serverRevokeCommand")(fun
     readonly expires?: string | undefined;
   },
 ): Effect.fn.Return<number, CliError, CliServices> {
-  const { reportRotationChecklist } = yield* Effect.promise(() =>
-    import("../rotation.ts").then((m) => ({ reportRotationChecklist: m.reportRotationChecklist })),
-  );
   const { REVOKE_ROTATION_REASON, serverRevokeOp } = yield* Effect.promise(() =>
     import("../server-revoke.ts").then((m) => ({
       REVOKE_ROTATION_REASON: m.REVOKE_ROTATION_REASON,
       serverRevokeOp: m.serverRevokeOp,
     })),
-  );
-  const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
 
   const io = yield* CliIo;

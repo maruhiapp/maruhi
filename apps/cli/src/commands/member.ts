@@ -27,7 +27,12 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
-import { openMetadataProject, openProject } from "./lazy.ts";
+import {
+  openMetadataProject,
+  openProject,
+  reportRotationChecklist,
+  sweepRotateFor,
+} from "./lazy.ts";
 import {
   loadIdentityBacking,
   parseGithubLoginFlag,
@@ -187,9 +192,6 @@ const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(fun
   const { memberRemoveOp } = yield* Effect.promise(() =>
     import("../member-remove.ts").then((m) => ({ memberRemoveOp: m.memberRemoveOp })),
   );
-  const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
-  );
 
   const io = yield* CliIo;
   const proposal = yield* proposalInputOf(flags.expires);
@@ -213,12 +215,6 @@ const memberRemoveCommand = Effect.fn("commands-member.memberRemoveCommand")(fun
   }
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
-      const { reportRotationChecklist } = yield* Effect.promise(() =>
-        import("../rotation.ts").then((m) => ({
-          reportRotationChecklist: m.reportRotationChecklist,
-        })),
-      );
-
       if (summary.appended) {
         yield* io.log(
           `Appended remove_member to the chain (target=${displayText(summary.targetUserId)}). Forcing a rotation of every environment in the target's scope (CRYPTO_SPEC §7)`,
@@ -279,9 +275,6 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   const { memberChangeRoleOp } = yield* Effect.promise(() =>
     import("../member-change-role.ts").then((m) => ({ memberChangeRoleOp: m.memberChangeRoleOp })),
   );
-  const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
-  );
 
   const io = yield* CliIo;
   const request = yield* parseChangeRoleRequest(flags);
@@ -305,12 +298,6 @@ const memberChangeRoleCommand = Effect.fn("commands-member.memberChangeRoleComma
   });
   return yield* unlessProposed(io, outcome, (summary) =>
     Effect.gen(function* () {
-      const { reportRotationChecklist } = yield* Effect.promise(() =>
-        import("../rotation.ts").then((m) => ({
-          reportRotationChecklist: m.reportRotationChecklist,
-        })),
-      );
-
       yield* io.log(
         summary.appended
           ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`

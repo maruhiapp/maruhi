@@ -190,7 +190,15 @@ interface Fixture {
   failResolutions: number;
 }
 
-async function startEnv(proposals: WireProposal[], chain: BuiltChain = built): Promise<Fixture> {
+async function startEnv(
+  proposals: WireProposal[],
+  options: {
+    readonly chain?: BuiltChain;
+    /** The name of a third variable, one outside NFC (the pull warns about it — §12-1). */
+    readonly nonNfcName?: string;
+  } = {},
+): Promise<Fixture> {
+  const chain = options.chain ?? built;
   const wrap: WireRecipientDek = await wrapDekFor({
     projectId: built.projectId,
     environmentId: ENV_ID,
@@ -246,6 +254,33 @@ async function startEnv(proposals: WireProposal[], chain: BuiltChain = built): P
     writer: owner,
     head: headOf(built, 2),
   });
+  const nonNfc =
+    options.nonNfcName === undefined
+      ? []
+      : [
+          {
+            variableId: "vn",
+            statement: await statementFor({
+              projectId: built.projectId,
+              environmentId: ENV_ID,
+              variableId: "vn",
+              name: options.nonNfcName,
+              author: owner,
+              head,
+            }),
+            value: await encryptValueFor({
+              dek,
+              projectId: built.projectId,
+              environmentId: ENV_ID,
+              epoch: 1,
+              variableId: "vn",
+              version: 1,
+              plaintext: "nfd_value_dummy",
+              writer: owner,
+              head: headOf(built, 2),
+            }),
+          },
+        ];
   const valueEnv = makeValueEnvironmentServer({
     chain,
     owner,
@@ -255,6 +290,7 @@ async function startEnv(proposals: WireProposal[], chain: BuiltChain = built): P
     initialVariables: [
       { variableId: "vs", statement, value },
       { variableId: "vk", statement: idStatement, value: idValue },
+      ...nonNfc,
     ],
   });
   const resolutions: { proposalId: string; body: unknown }[] = [];
@@ -391,6 +427,18 @@ describe("maruhi rotation accept (PF7b)", () => {
     );
     expectNoSecretLeak(fixture.env);
     expect(errors).not.toContain("junk_line_dummy");
+  });
+
+  it("the pull's warnings are shown (a variable named outside NFC — §12-1), and the accept goes on", async () => {
+    const nonNfcName = "CAFE\u0301_URL";
+    expect(nonNfcName.normalize("NFC")).not.toBe(nonNfcName);
+    const fixture = await startEnv([await proposalFor({})], { nonNfcName });
+    expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(0);
+    expect(await latestPlaintext(fixture.state)).toEqual({ plaintext: NEW_KEY, version: 4 });
+    expect(fixture.env.errors.join("\n")).toContain(
+      "Warning: Variable vn has a name that is not NFC-normalized",
+    );
+    expectNoSecretLeak(fixture.env);
   });
 
   it("a prefix of the id works; a non-interactive accept without --yes refuses before pushing", async () => {
@@ -558,7 +606,7 @@ describe("maruhi rotation proposals / reject (PF7b)", () => {
 
   it("refuses a list holding a proposal of a chain-deleted environment as a resurrection, and resolves nothing", async () => {
     const stale = { ...(await proposalFor({})), environmentId: DELETED_ENV_ID };
-    const fixture = await startEnv([stale], withDeleted);
+    const fixture = await startEnv([stale], { chain: withDeleted });
     expect(await runCli(["rotation", "proposals"], fixture.env.layer)).toBe(1);
     const resurrection = `The server listed sealed proposal ${PROPOSAL_ID} for environment old, which is deleted on the verified chain (delete_environment at seq 4)`;
     expect(fixture.env.errors.join("\n")).toContain(resurrection);

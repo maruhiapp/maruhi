@@ -129,21 +129,30 @@ const HEX_32 = /^[0-9a-f]{32}$/;
 const ROLES = ["reader", "member", "admin", "owner"] as const;
 const SOURCES = ["reserve", "approved", "observed"] as const;
 
-// The entry as stored: the scope is the wire pair scopeKind +
-// scopeEnvironmentIds (the §6.2 normalization field order — the all scope
-// carries the empty list, checked structurally).
-const WireEntrySchema = Schema.Struct({
+// The fields the stored and the held entry share, before and after the
+// scope (only the scope's shape differs between them).
+const entryKeyFields = {
   encPubHex: Hex64,
   sigPubHex: Hex64,
   roleCap: Schema.Literals(ROLES),
-  scopeKind: Schema.Literals(["all", "listed"]),
-  scopeEnvironmentIds: Schema.Array(Schema.String),
+};
+const entryRecordFields = {
   source: Schema.Literals(SOURCES),
   label: Schema.NullOr(Schema.String),
   addedByFingerprintHex: Schema.NullOr(Hex32),
   observedProjectId: Schema.NullOr(Schema.String),
   recordedAtMs: PositiveInt,
   revokedAtMs: Schema.NullOr(PositiveInt),
+};
+
+// The entry as stored: the scope is the wire pair scopeKind +
+// scopeEnvironmentIds (the §6.2 normalization field order — the all scope
+// carries the empty list, checked structurally).
+const WireEntrySchema = Schema.Struct({
+  ...entryKeyFields,
+  scopeKind: Schema.Literals(["all", "listed"]),
+  scopeEnvironmentIds: Schema.Array(Schema.String),
+  ...entryRecordFields,
 }).check(
   Schema.makeFilter(
     (entry) =>
@@ -157,9 +166,7 @@ const WireEntrySchema = Schema.Struct({
 // member for `listed` carries the id-format / at most 256 / no
 // duplicates rules of §6.2).
 const DomainEntrySchema = Schema.Struct({
-  encPubHex: Hex64,
-  sigPubHex: Hex64,
-  roleCap: Schema.Literals(ROLES),
+  ...entryKeyFields,
   scope: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("all") }),
     Schema.Struct({
@@ -167,12 +174,7 @@ const DomainEntrySchema = Schema.Struct({
       environmentIds: ScopeEnvironmentIds,
     }),
   ]),
-  source: Schema.Literals(SOURCES),
-  label: Schema.NullOr(Schema.String),
-  addedByFingerprintHex: Schema.NullOr(Hex32),
-  observedProjectId: Schema.NullOr(Schema.String),
-  recordedAtMs: PositiveInt,
-  revokedAtMs: Schema.NullOr(PositiveInt),
+  ...entryRecordFields,
 });
 
 // One codec: the wire pair ↔ the derived scope (memberScopeOf /

@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import type { CliServices } from "../context.ts";
+import { logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import {
@@ -229,9 +230,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
           fetchRotationProposals: m.fetchRotationProposals,
         })),
       );
-      const { logRotationWarnings } = yield* Effect.promise(() =>
-        import("../var-rotate.ts").then((m) => ({ logRotationWarnings: m.logRotationWarnings })),
-      );
 
       const io = yield* CliIo;
       // The proposal decides the environment: it is looked up through a
@@ -241,7 +239,7 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       const proposal = yield* findProposal(yield* fetchRotationProposals(lookup), values.id);
       const context = yield* openEnvironment({ ...values, env: proposal.environmentId });
       const result = yield* rotationAcceptOp({ context, proposal, yes: values.yes });
-      yield* logRotationWarnings(result.warnings);
+      yield* logWarnings(result.warnings);
       for (const line of describeAcceptance(result, context.environmentId)) {
         yield* io.log(line);
       }

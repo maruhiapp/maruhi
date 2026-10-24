@@ -118,6 +118,12 @@ function chainHandler(
 function acceptingCreateServer(input: {
   readonly projectId: string;
   readonly base: Awaited<ReturnType<typeof buildChain>>;
+  /**
+   * The chain after an append that raced the first send: that send gets
+   * ChainHeadConflict (409), and later chain fetches serve this chain (plus
+   * what is accepted after it).
+   */
+  readonly concurrent?: Awaited<ReturnType<typeof buildChain>>;
   /** Per-call override response for create (undefined = accept). Skips acceptance. */
   readonly onCreate?: (call: number, body: CompositeCreateBody) => MockResponse | undefined;
   /** Override for the response returned after accepting (appending to the chain) — for the lying-attestation negative. */
@@ -152,6 +158,18 @@ function acceptingCreateServer(input: {
       createCalls += 1;
       if (injected !== undefined) {
         return injected;
+      }
+      if (call === 0 && input.concurrent !== undefined) {
+        entries.splice(0, entries.length, ...input.concurrent.entries);
+        hashes.splice(0, hashes.length, ...input.concurrent.hashes);
+        return {
+          status: 409,
+          json: {
+            _tag: "ChainHeadConflict",
+            currentHeadSeq: entries.length,
+            currentHeadHashHex: hashes[hashes.length - 1],
+          },
+        };
       }
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
@@ -344,64 +362,16 @@ describe("maruhi env create", () => {
     const headB = chainB.hashes[chainB.hashes.length - 1] ?? "";
     // The first sync serves chainA; post-409 resyncs serve chainB (+ the
     // accepted entry)
-    const entries: ChainEntry[] = [...chainA.entries];
-    const hashes: string[] = [...chainA.hashes];
-    const bodies: CompositeCreateBody[] = [];
-    const env = await startEnv(
-      chainA.projectId,
-      [
-        onRequest("GET", `/projects/${chainA.projectId}/chain`, () => ({
-          status: 200,
-          json: {
-            projectId: chainA.projectId,
-            entries,
-            headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
-            attestations: [],
-          },
-        })),
-        async (request) => {
-          if (
-            request.method !== "POST" ||
-            request.path !== `/projects/${chainA.projectId}/environments`
-          ) {
-            return null;
-          }
-          const body = request.body as CompositeCreateBody;
-          bodies.push(body);
-          if (bodies.length === 1) {
-            // Another member had appended concurrently with the send
-            // (parent-head CAS failure)
-            entries.splice(0, entries.length, ...chainB.entries);
-            hashes.splice(0, hashes.length, ...chainB.hashes);
-            return {
-              status: 409,
-              json: {
-                _tag: "ChainHeadConflict",
-                currentHeadSeq: chainB.entries.length,
-                currentHeadHashHex: headB,
-              },
-            };
-          }
-          entries.push(body.entry);
-          hashes.push(await computeChainEntryHash(body.entry));
-          return {
-            status: 200,
-            json: {
-              environmentId: "staging",
-              currentEpoch: 1,
-              headSeq: entries.length,
-              headHashHex: hashes[hashes.length - 1],
-            },
-          };
-        },
-      ],
-      owner,
-    );
+    const server = acceptingCreateServer({
+      projectId: chainA.projectId,
+      base: chainA,
+      concurrent: chainB,
+    });
+    const env = await startEnv(chainA.projectId, server.handlers, owner);
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
-    expect(bodies).toHaveLength(2);
-    const [first, second] = bodies;
+    expect(server.bodies).toHaveLength(2);
+    const [first, second] = server.bodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
     // The retry re-signs the entry with the new head as parent (seq / prev /
     // signature all change)
@@ -496,68 +466,60 @@ describe("maruhi env create", () => {
     ]);
     expect(chainB.projectId).toBe(chainA.projectId);
     const headB = chainB.hashes[chainB.hashes.length - 1] ?? "";
-    const entries: ChainEntry[] = [...chainA.entries];
-    const hashes: string[] = [...chainA.hashes];
-    const bodies: CompositeCreateBody[] = [];
-    const env = await startEnv(
-      chainA.projectId,
-      [
-        onRequest("GET", `/projects/${chainA.projectId}/chain`, () => ({
-          status: 200,
-          json: {
-            projectId: chainA.projectId,
-            entries,
-            headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
-            attestations: [],
-          },
-        })),
-        async (request) => {
-          if (
-            request.method !== "POST" ||
-            request.path !== `/projects/${chainA.projectId}/environments`
-          ) {
-            return null;
-          }
-          const body = request.body as CompositeCreateBody;
-          bodies.push(body);
-          if (bodies.length === 1) {
-            entries.splice(0, entries.length, ...chainB.entries);
-            hashes.splice(0, hashes.length, ...chainB.hashes);
-            return {
-              status: 409,
-              json: {
-                _tag: "ChainHeadConflict",
-                currentHeadSeq: chainB.entries.length,
-                currentHeadHashHex: headB,
-              },
-            };
-          }
-          entries.push(body.entry);
-          hashes.push(await computeChainEntryHash(body.entry));
-          return {
-            status: 200,
-            json: {
-              environmentId: "staging",
-              currentEpoch: 1,
-              headSeq: entries.length,
-              headHashHex: hashes[hashes.length - 1],
-            },
-          };
-        },
-      ],
-      owner,
-    );
+    const server = acceptingCreateServer({
+      projectId: chainA.projectId,
+      base: chainA,
+      concurrent: chainB,
+    });
+    const env = await startEnv(chainA.projectId, server.handlers, owner);
 
     expect(await runCli(["env", "create", "staging"], env.layer)).toBe(0);
-    expect(bodies).toHaveLength(2);
-    const [first, second] = bodies;
+    expect(server.bodies).toHaveLength(2);
+    const [first, second] = server.bodies;
     if (first === undefined || second === undefined) throw new Error("missing bodies");
     // The entry is re-signed (prev changes) but the wrap set is not rebuilt
     // (HPKE Seal is randomized — a re-wrap would change enc / ct /
     // signature)
     expect(second.entry.prevHashHex).toBe(headB);
     expect(second.deks).toEqual(first.deks);
+  });
+
+  it("after a ChainHeadConflict, the checks run again on the resynced view: a concurrent creation of the same ID stops the retry", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    // Another run created staging while this one was sending
+    const chainB = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp("staging", new Uint8Array(32).fill(2)) },
+    ]);
+    const server = acceptingCreateServer({
+      projectId: chainA.projectId,
+      base: chainA,
+      concurrent: chainB,
+    });
+    const env = await startEnv(chainA.projectId, server.handlers, owner);
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("Environment ID staging is already used on the chain");
+    // Nothing is resent after the conflict
+    expect(server.bodies).toHaveLength(1);
+  });
+
+  it("an AuditHeadNotReady (503) is retried like a conflict; after five attempts the wording names both causes", async () => {
+    const owner = await makeTestUser("user-owner-1111");
+    const base = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const server = acceptingCreateServer({
+      projectId: base.projectId,
+      base,
+      onCreate: () => ({ status: 503, json: { _tag: "AuditHeadNotReady" } }),
+    });
+    const env = await startEnv(base.projectId, server.handlers, owner);
+
+    expect(await runCli(["env", "create", "staging"], env.layer)).toBe(1);
+    expect(server.bodies).toHaveLength(5);
+    expect(env.errors.join("\n")).toContain(
+      "The environment creation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after 5 attempts. Wait a moment and re-run — server-side progress is preserved",
+    );
   });
 
   it("a missing environment-ID positional is refused before the network (never calls the create API with a bogus id)", async () => {

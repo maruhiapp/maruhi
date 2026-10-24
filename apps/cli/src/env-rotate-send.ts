@@ -3,11 +3,6 @@
 // confirming acceptance on the chain (the stage overview lives in
 // env-rotate.ts).
 
-import {
-  AuditHeadNotReadyError,
-  ChainHeadConflictError,
-  type WrappedDek,
-} from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, EnvValuesDigestEntry, SigningKeyPair } from "@maruhi/crypto";
 import { Data, Effect, Redacted, Runtime } from "effect";
@@ -15,7 +10,13 @@ import { Data, Effect, Redacted, Runtime } from "effect";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { signEntryAtHead } from "./chain-append.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { buildWrapCompleteSet, sameWrapRecipientSet } from "./dek-wrap.ts";
+import {
+  classifyCompositeConflict,
+  type CompositeState,
+  compositeExhaustedMessage,
+  recoverComposite,
+} from "./composite-retry.ts";
+import { buildWrapCompleteSet } from "./dek-wrap.ts";
 import { requireChainEnvironment } from "./deks.ts";
 import { ensureRotatable, type RotateInput, asOutcome } from "./env-rotate-shared.ts";
 import { CliError, cliError } from "./errors.ts";
@@ -171,16 +172,9 @@ const probeAmbiguousSend = Effect.fn("env-rotate-send.probeAmbiguousSend")(funct
   };
 });
 
-/** The CAS-retry state: the verification view, my member row, and the new epoch's wrap set. */
-interface RotateState {
-  readonly verified: VerifiedProject;
-  readonly member: ChainMember;
-  readonly deks: readonly WrappedDek[];
-}
-
 /** The composite-acceptance result (carries back the state at acceptance as the baseline of the post-acceptance resync). */
 interface AcceptedRotation {
-  readonly state: RotateState;
+  readonly state: CompositeState;
   /** The floor record of the accepted bundled manifest (self-computed — material for §6.3's rules (a)(b)(c)). */
   readonly manifest: ManifestFloor;
   /** The id of the intent (3-F) appended before the send. The effect confirmation's result closes it. */
@@ -465,45 +459,38 @@ export const appendRotation = Effect.fn("env-rotate-send.appendRotation")(functi
         // tag), and the unclassified path's toCliError mapping would
         // erase the distinction
         passthrough: RotateValuesConflictError,
-        // AuditHeadNotReady (503) advances with the same recovery as a
-        // CAS conflict (resync + re-sign + re-send) — the reason and the
-        // defensive classification's intent are the same as
-        // env-create.ts's
-        classify: (error) =>
-          error instanceof ChainHeadConflictError || error instanceof AuditHeadNotReadyError
-            ? "head-conflict"
-            : null,
+        classify: classifyCompositeConflict,
         recover: (state) =>
-          Effect.gen(function* () {
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            const member = yield* ensureRotatable(
-              resynced,
-              input.environmentId,
-              input.signerUserId,
-              input.signingKeyPair,
-            );
-            const environment = yield* requireChainEnvironment(resynced, input.environmentId);
-            if (environment.currentEpoch + 1 !== input.newEpoch) {
-              // Another member rotated concurrently. The generated new
-              // DEK, commitment, and wrap set are dedicated to that epoch
-              // (§5's info / §5.2's preimage carry the epoch), so abort
-              // without reusing them. A re-run resumes without advancing
-              // the epoch if an unfinished re-encryption exists
-              return yield* Effect.fail(
-                cliError(
-                  `Detected a concurrent rotation by another member (environment ${input.environmentId} is now at epoch ${environment.currentEpoch}). The newly generated DEK will not be used; aborting — please re-run`,
-                ),
-              );
-            }
-            const deks = sameWrapRecipientSet(state.verified, resynced, input.environmentId)
-              ? state.deks
-              : yield* buildWraps(resynced);
-            return { verified: resynced, member, deks };
+          recoverComposite(state, {
+            resync: input.resync,
+            environmentId: input.environmentId,
+            recheck: (resynced) =>
+              Effect.gen(function* () {
+                const member = yield* ensureRotatable(
+                  resynced,
+                  input.environmentId,
+                  input.signerUserId,
+                  input.signingKeyPair,
+                );
+                const environment = yield* requireChainEnvironment(resynced, input.environmentId);
+                if (environment.currentEpoch + 1 !== input.newEpoch) {
+                  // Another member rotated concurrently. The generated new
+                  // DEK, commitment, and wrap set are dedicated to that
+                  // epoch (§5's info / §5.2's preimage carry the epoch), so
+                  // abort without reusing them. A re-run resumes without
+                  // advancing the epoch if an unfinished re-encryption
+                  // exists
+                  return yield* Effect.fail(
+                    cliError(
+                      `Detected a concurrent rotation by another member (environment ${input.environmentId} is now at epoch ${environment.currentEpoch}). The newly generated DEK will not be used; aborting — please re-run`,
+                    ),
+                  );
+                }
+                return member;
+              }),
+            buildWraps,
           }),
-        // AuditHeadNotReady also cycles under the same classification,
-        // so the wording stays faithful to both causes (prevents a wrong
-        // guidance if it ever becomes reachable)
-        exhaustedMessage: `The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after ${MAX_ATTEMPTS} attempts. Wait a moment and re-run — server-side progress is preserved`,
+        exhaustedMessage: compositeExhaustedMessage("The rotation", MAX_ATTEMPTS),
       },
     ),
   );

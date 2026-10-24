@@ -23,11 +23,12 @@ import {
   verifyInviteIssueSignature,
   verifyInviteLinkSignature,
 } from "@maruhi/crypto";
-import { Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
+import { verifyAcceptanceBlock } from "../src/invite.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
 import {
   addScopedMemberOp,
@@ -37,6 +38,7 @@ import {
   makeTestUser,
   testEnvironmentId,
   testProjectId,
+  testUserId,
   type TestUser,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
@@ -1496,5 +1498,33 @@ describe("maruhi invite list / revoke", () => {
         "maruhi: This invite has completed through add_member. To undo the membership, run `maruhi member remove` (it rotates every environment — CRYPTO_SPEC §7)",
       ]),
     );
+  });
+});
+
+describe("verifyAcceptanceBlock (CRYPTO_SPEC §6.5)", () => {
+  // A crypto failure other than the signature itself (here a link key that
+  // is not hex) also means the block does not verify: a rejection, never a
+  // defect
+  it("rejects a block whose link key is not hex as a link-signature failure", async () => {
+    const verdict = await Effect.runPromise(
+      verifyAcceptanceBlock({
+        projectId: testProjectId("proj-1"),
+        issuance: {
+          linkPubHex: "zz",
+          headHashHex: "00".repeat(32),
+          headSeq: 1,
+          issueSignatureHex: "00".repeat(64),
+        },
+        acceptance: {
+          inviteeUserId: testUserId("user-invitee-1111"),
+          inviteeEncPubHex: "00".repeat(32),
+          inviteeSigPubHex: "00".repeat(32),
+          signatureHex: "00".repeat(64),
+          linkSignatureHex: "00".repeat(64),
+          acceptedAtMs: 0,
+        },
+      }),
+    );
+    expect(verdict).toEqual({ ok: false, which: "link" });
   });
 });

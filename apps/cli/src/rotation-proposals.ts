@@ -21,11 +21,10 @@ import { Effect, Redacted } from "effect";
 import type { CliServices, EnvironmentContext, ProjectContextBase } from "./context.ts";
 import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { environmentKeysFor } from "./deks.ts";
-import { countNoun, displayText, formatUtcDate, formatUtcMinutes } from "./display.ts";
+import { countNoun, displayText, formatUtcDate, formatUtcMinutes, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
-import { logWarning } from "./notice.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable } from "./push.ts";
 import { describeShape, lineCountWarning, shapeOf, type ValueShape } from "./rotate-connector.ts";
@@ -328,7 +327,7 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
   const toPush = opened.filter((entry) => entry.storedAs === null);
   // A line count that changed is worth a look before the push, here
   // where the decision is made (D-18; the CI job's report already showed it)
-  yield* Effect.forEach(
+  yield* logWarnings(
     toPush.flatMap((entry) => {
       const warning = lineCountWarning(
         displayText(entry.name),
@@ -338,8 +337,6 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
       );
       return warning === null ? [] : [warning];
     }),
-    (warning) => logWarning(warning),
-    { discard: true },
   );
   yield* ensureConfirmed({
     facts: acceptanceFacts(proposal, context.environmentId, opened),

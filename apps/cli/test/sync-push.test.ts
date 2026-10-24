@@ -519,6 +519,8 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     process.chdir(fixture.configDir);
     expect(await push(fixture, NEW_VALUE)).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("The sync config maruhi.sync.json is invalid");
+    // Read before any network: not even the environment is opened
+    expect(fixture.server.requests).toEqual([]);
     expect(fixture.source.writes).toEqual([]);
   });
 
@@ -550,6 +552,25 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(quiet.env.errors.join("\n")).not.toMatch(
       /sync config|synced|Warning: (?!no reserve key)/,
     );
+  });
+
+  it("after the push, the checkpoint proposal comes first and the sync after it", async () => {
+    const fixture = await startFixture({
+      config: config({ beta: previewTarget({ variables: ["BETA"] }) }),
+    });
+    expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
+    const errors = fixture.env.errors.join("\n");
+    // The project has no checkpoint, so issuance trigger (iii) proposes one,
+    // with the anchor refresh (CRYPTO_SPEC §6.3)
+    const proposal = errors.indexOf(
+      "Note: this project's checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3). If this project commits a repository anchor for CI",
+    );
+    expect(proposal).toBeGreaterThanOrEqual(0);
+    expect(
+      errors.indexOf(
+        "Note: no target in the sync config copies this variable from environment prod on push",
+      ),
+    ).toBeGreaterThan(proposal);
   });
 
   it("a production target isn't pushed under onPush as-is (apply is refused at the config stage)", async () => {

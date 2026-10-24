@@ -16,9 +16,7 @@ import {
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   type PushSyncSetup,
-  decidePushSync,
   loadPushSyncConfig,
-  syncAfterPush,
 } from "../sync.package/index.ts";
 import type { VarFinalizeInput, VarRotateInput } from "../var-rotate.ts";
 import {
@@ -30,7 +28,7 @@ import {
   singleValued,
 } from "./flags.ts";
 import { openEnvironment, openMetadataEnvironment } from "./lazy.ts";
-import { proposeCheckpointRefresh } from "./shared.ts";
+import { decideWriteSync, finishWrite, openWriteEnvironment } from "./shared.ts";
 
 /** `maruhi var rm <NAME>` (deleting a variable — AUTH_SPEC §12-5). */
 export const varRmConfig = {
@@ -138,15 +136,14 @@ const runVarFinalize = Effect.fn("commands-var.runVarFinalize")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
-  const { describeFinalization, logRotationWarnings, varFinalizeOp } = yield* Effect.promise(() =>
+  const { describeFinalization, varFinalizeOp } = yield* Effect.promise(() =>
     import("../var-rotate.ts").then((m) => ({
       describeFinalization: m.describeFinalization,
-      logRotationWarnings: m.logRotationWarnings,
       varFinalizeOp: m.varFinalizeOp,
     })),
   );
   const result = yield* varFinalizeOp(input);
-  yield* logRotationWarnings(result.warnings);
+  yield* logWarnings(result.warnings);
   for (const line of describeFinalization(result, input.context.environmentId)) {
     yield* io.log(line);
   }
@@ -158,32 +155,21 @@ const runVarRotate = Effect.fn("commands-var.runVarRotate")(function* (
   syncSetup: PushSyncSetup | null,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const io = yield* CliIo;
-  const { describeRotation, logRotationWarnings, varRotateOp } = yield* Effect.promise(() =>
+  const { describeRotation, varRotateOp } = yield* Effect.promise(() =>
     import("../var-rotate.ts").then((m) => ({
       describeRotation: m.describeRotation,
-      logRotationWarnings: m.logRotationWarnings,
       varRotateOp: m.varRotateOp,
     })),
   );
   const { context } = input;
-  const syncDecision =
-    syncSetup === null
-      ? null
-      : yield* decidePushSync(syncSetup, {
-          projectId: context.projectId,
-          environmentId: context.environmentId,
-          name: input.name,
-        });
+  const sync = yield* decideWriteSync(syncSetup, context, input.name);
   const result = yield* varRotateOp(input);
-  yield* logRotationWarnings(result.warnings);
+  yield* logWarnings(result.warnings);
   const nowMs = yield* Clock.currentTimeMillis;
   for (const line of describeRotation(result, context.environmentId, nowMs)) {
     yield* io.log(line);
   }
-  yield* proposeCheckpointRefresh(context, { afterWrite: true });
-  if (syncSetup !== null && syncDecision !== null) {
-    yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
-  }
+  yield* finishWrite(context, sync);
 });
 
 export function makeVarCommands() {
@@ -276,20 +262,7 @@ export function makeVarCommands() {
           ),
         );
       }
-      // The sync config is read before any network (same order as push)
-      const syncSetup = yield* loadPushSyncConfig({
-        config: values.config,
-        noSync: values["no-sync"],
-      });
-      const context = yield* openEnvironment(values);
-      const syncDecision =
-        syncSetup === null
-          ? null
-          : yield* decidePushSync(syncSetup, {
-              projectId: context.projectId,
-              environmentId: context.environmentId,
-              name: values.name,
-            });
+      const { context, sync } = yield* openWriteEnvironment(values);
       const result = yield* varRollbackOp({
         client: context.client,
         verified: context.verified,
@@ -312,10 +285,7 @@ export function makeVarCommands() {
           `The restored value was readable by the subject of ${countNoun(result.flagsIfCurrent, "rotation flag")} — see \`maruhi rotation list\``,
         );
       }
-      yield* proposeCheckpointRefresh(context, { afterWrite: true });
-      if (syncSetup !== null && syncDecision !== null) {
-        yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
-      }
+      yield* finishWrite(context, sync);
     }),
   ).pipe(
     Command.withDescription(
