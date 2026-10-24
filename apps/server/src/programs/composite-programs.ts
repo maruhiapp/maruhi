@@ -31,7 +31,8 @@ import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
 import type { ChainEntry, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
-import type { AuditEventInput, AuditRotationRead } from "../audit-store.ts";
+import type { AuditRotationRead } from "../audit-store-rotation-read.ts";
+import type { AuditEventInput } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
 import { ensureAuditHeadAcceptable, ensureCheckpointValuesDigest } from "../checkpoint-accept.ts";
 import type {

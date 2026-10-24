@@ -24,7 +24,11 @@
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vitest";
 
-import type { AuditRotationRead, ScopeSnapshot, SeqRange } from "../src/audit-store.ts";
+import type {
+  AuditRotationRead,
+  ScopeSnapshot,
+  SeqRange,
+} from "../src/audit-store-rotation-read.ts";
 import { MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW } from "../src/policy.ts";
 import {
   deriveEffectiveFlags,

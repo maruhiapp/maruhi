@@ -7,7 +7,7 @@
 //   judges scopeAdmin and passes it in). Below that, only class-1
 //   rows and rows where the requester is the actor are visible, and
 //   class-2 rows appear in neither the count, the pages, nor the
-//   cursor (audit-store.ts's WHERE clause — "they behave as if they
+//   cursor (audit-store-query.ts's WHERE clause — "they behave as if they
 //   do not exist")
 // - Specifying someone else in the actor_user_id filter is a 403
 //   without admin visibility (§6's "cross-sectional search of rows
@@ -24,7 +24,7 @@ import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@m
 import type { KeyFingerprintHex, OrgId, UserId } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 
-import type { StoredAuditEventRow } from "../audit-store.ts";
+import type { StoredAuditEventRow } from "../audit-store-query.ts";
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor } from "../data/data-plane.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";

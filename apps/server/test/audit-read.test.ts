@@ -20,7 +20,7 @@
 import { auditReadVariablesOf } from "@maruhi/core";
 import { describe, expect, it } from "vitest";
 
-import { isClass1Event } from "../src/audit-store.ts";
+import { isClass1Event } from "../src/audit-store-query.ts";
 import {
   eventNames,
   fetchEvents,
