@@ -535,10 +535,3 @@ export function describeFinalization(
         : `Nothing to finalize for ${displayText(result.primary)} (version ${result.previousVersion} → ${result.latestVersion})`;
   return [head, ...result.outcome.facts.map((fact) => `  ${fact}`)];
 }
-
-/** Logs the warnings a rotation collected (a connection test that failed is one). */
-export function logRotationWarnings(
-  warnings: readonly string[],
-): Effect.Effect<void, never, CliIo> {
-  return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
-}

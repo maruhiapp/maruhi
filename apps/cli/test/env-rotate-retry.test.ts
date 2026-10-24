@@ -284,6 +284,32 @@ describe("maruhi env rotate", () => {
     expect(second.deks).toEqual(first.deks);
   });
 
+  it("an AuditHeadNotReady (503) is retried like a conflict; after five attempts the wording names both causes", async () => {
+    const state = makeServer({
+      built: chainBase,
+      variables: [],
+      deks: [
+        await wrapDekFor({
+          projectId: chainBase.projectId,
+          environmentId: ENV_ID,
+          epoch: 1,
+          dek: dek1,
+          recipient: owner,
+          signer: owner,
+        }),
+      ],
+      currentEpoch: 1,
+      onRotate: () => ({ status: 503, json: { _tag: "AuditHeadNotReady" } }),
+    });
+    const env = await startEnv(state.handlers, owner);
+
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "busy test"], env.layer)).toBe(1);
+    expect(state.rotateBodies).toHaveLength(5);
+    expect(env.errors.join("\n")).toContain(
+      "The rotation kept being rejected with retryable conflicts (a chain-head conflict, or audit-head materialization in progress) after 5 attempts. Wait a moment and re-run — server-side progress is preserved",
+    );
+  });
+
   it("CheckpointStateMismatch (422) retries bounded, restarting from a verified pull (§12-4)", async () => {
     // A 422 from the boundary checkpoint's values_digest match = a concurrent
     // push after the declared head was fixed. Re-signing does not resolve it

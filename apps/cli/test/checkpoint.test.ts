@@ -674,6 +674,27 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     expect(output).toContain("re-run the command to continue where it left off");
   }, 20000);
 
+  it("AuditHeadNotReady (503) attempts count toward one budget across a 422 (CheckpointStateMismatch) retry", async () => {
+    const { state, env } = await makeNotReadyFixture({
+      onAppend: (call) =>
+        call === 5
+          ? {
+              status: 422,
+              json: { _tag: "CheckpointStateMismatch", reason: "values-digest-mismatch" },
+            }
+          : NOT_READY,
+    });
+    expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
+    // Five 503s, the 422, then five more: the attempt after the 422 starts
+    // with the five already spent, so the budget runs out at 11 appends (a
+    // fresh budget per attempt would take 16)
+    expect(state.appends.length).toBe(11);
+    expect(env.logs.join("\n")).toContain(
+      "refetching the attestation and retrying (attempt 10 of 10)",
+    );
+    expect(env.errors.join("\n")).toContain("still materializing the audit-head hash column");
+  });
+
   it("when AuditHeadNotReady is exhausted, fails with guidance on the trigger condition and the fix by re-running", async () => {
     const { state, env } = await makeNotReadyFixture({ onAuditHead: () => NOT_READY });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);

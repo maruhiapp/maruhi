@@ -15,6 +15,10 @@
 //     --yes; an in-place rotation (no grace) asks the same way
 //  6. a missing rule, a missing value, and a config of another project stop
 //     before anything is sent to the issuer
+//  7. the sync config is read and the sync decided before the rotation, as
+//     push does: an explicit config of another project stops it before the
+//     issuer, and one that copies nothing gets a note after the push; the
+//     rotation's warnings (a failed connection test) are shown, never a refusal
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -283,6 +287,30 @@ const PG_CONFIG = {
   },
 };
 
+/** Writes a sync config for `project` whose one onPush target copies DATABASE_URL from `environment`. */
+async function writeSyncConfig(project: string, environment: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "maruhi-var-rotate-sync-test-"));
+  const path = join(dir, "maruhi.sync.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      project,
+      receipts: { environment: "sync-receipts" },
+      targets: {
+        web: {
+          preset: "vercel",
+          environment,
+          variables: ["DATABASE_URL"],
+          options: { environment: "preview" },
+          onPush: "apply",
+        },
+      },
+    }),
+  );
+  return path;
+}
+
 describe("maruhi var rotate (postgres, alternated roles)", () => {
   it("creates the new credential on the admin connection from another environment, pushes it, and reports how to finalize", async () => {
     const { env, prod, ops, configPath } = await startEnv({
@@ -471,6 +499,62 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     );
     expect(output).toContain("nothing to finalize");
     expect(output).not.toContain("--finalize`");
+  });
+});
+
+describe("maruhi var rotate's sync and warnings (postgres)", () => {
+  const seeds = {
+    prod: [{ variableId: "v-db", name: "DATABASE_URL", plaintexts: [OLD_URL] }],
+    ops: [{ variableId: "v-admin", name: "ADMIN_DATABASE_URL", plaintexts: [ADMIN_URL] }],
+    config: PG_CONFIG,
+  };
+
+  it("an explicit --config belonging to a different project is a usage error (2) before the issuer is called", async () => {
+    const { env, prod, configPath } = await startEnv(seeds);
+    const sql = recordingSql();
+    env.setSqlRunner(sql.runner);
+    const syncPath = await writeSyncConfig("f".repeat(64), ENV_ID);
+    expect(
+      await runCli(
+        ["var", "rotate", "DATABASE_URL", "--rotate-config", configPath, "--config", syncPath],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("The sync config belongs to a different project");
+    expect(sql.executed).toEqual([]);
+    expect(prod.writes).toEqual([]);
+  });
+
+  it("an explicit --config with no target copying the variable from this environment gets a note after the rotation", async () => {
+    const { env, prod, configPath } = await startEnv(seeds);
+    env.setSqlRunner(recordingSql().runner);
+    const syncPath = await writeSyncConfig(built.projectId, "staging");
+    expect(
+      await runCli(
+        ["var", "rotate", "DATABASE_URL", "--rotate-config", configPath, "--config", syncPath],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(prod.writes.filter((write) => write.kind === "version")).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain(
+      "Note: no target in the sync config copies this variable from environment prod on push, so nothing was synced",
+    );
+  });
+
+  it("a connection test that fails with the new credential is a warning, and the rotation stands", async () => {
+    const { env, prod, configPath } = await startEnv(seeds);
+    const sql = recordingSql();
+    env.setSqlRunner({
+      ...sql.runner,
+      probe: () => Promise.reject(new Error("password authentication failed")),
+    });
+    expect(
+      await runCli(["var", "rotate", "DATABASE_URL", "--rotate-config", configPath], env.layer),
+    ).toBe(0);
+    expect(prod.writes.filter((write) => write.kind === "version")).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain(
+      "Warning: postgres: the new credential of role app_b was set at the server but a connection test with it failed: password authentication failed — check the new value before finalizing",
+    );
   });
 });
 

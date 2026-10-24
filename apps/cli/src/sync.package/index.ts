@@ -15,6 +15,7 @@ export { GH_ENV, scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 export {
   decidePushSync,
   loadPushSyncConfig,
+  type PushSyncDecision,
   type PushSyncSetup,
   syncAfterPush,
 } from "./sync-push.ts";

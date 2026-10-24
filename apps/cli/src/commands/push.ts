@@ -5,12 +5,7 @@ import { Argument, Command } from "effect/cli";
 
 import { displayText, logWarnings } from "../display.ts";
 import { CliIo } from "../io.ts";
-import {
-  DEFAULT_SYNC_CONFIG_PATH,
-  decidePushSync,
-  loadPushSyncConfig,
-  syncAfterPush,
-} from "../sync.package/index.ts";
+import { DEFAULT_SYNC_CONFIG_PATH } from "../sync.package/index.ts";
 import {
   NonBlank,
   commonFlags,
@@ -18,8 +13,7 @@ import {
   singleFlag,
   singleValued,
 } from "./flags.ts";
-import { openEnvironment } from "./lazy.ts";
-import { proposeCheckpointRefresh } from "./shared.ts";
+import { finishWrite, openWriteEnvironment } from "./shared.ts";
 
 /**
  * `maruhi push`'s specific fix, attached to its extra positional
@@ -62,25 +56,7 @@ export function makePushCommand() {
       );
 
       const io = yield* CliIo;
-      // The sync config is read **before any network**: detecting a broken
-      // file or an explicitly-given other project's config is never placed
-      // behind the push (same as SY2 stage 2 2b's ruling B)
-      const syncSetup = yield* loadPushSyncConfig({
-        config: values.config,
-        noSync: values["no-sync"],
-      });
-      const context = yield* openEnvironment(values);
-      // The cleanup's contents are decided **before** the push (a
-      // disagreement with the explicitly-given config's `project` is a
-      // misspelling = 2, and the push is not sent)
-      const syncDecision =
-        syncSetup === null
-          ? null
-          : yield* decidePushSync(syncSetup, {
-              projectId: context.projectId,
-              environmentId: context.environmentId,
-              name: values.name,
-            });
+      const { context, sync } = yield* openWriteEnvironment(values);
       // stdin is the origin where plaintext enters as raw bytes. Wrapped
       // here and flows only as a Redacted from now on (unwrapped only at
       // push.ts's encryption boundary)
@@ -106,17 +82,7 @@ export function makePushCommand() {
       yield* io.log(
         `Pushed ${displayText(values.name)} (version=${pushed.version}, epoch=${pushed.epoch})`,
       );
-      // Issuance trigger (iii) (CRYPTO_SPEC §6.3): detecting the baseline
-      // checkpoint's staleness on a successful push. The anchor-update
-      // proposal rides the same route (the ruling is
-      // docs/notes/session-35.md)
-      yield* proposeCheckpointRefresh(context, { afterWrite: true });
-      if (syncSetup !== null && syncDecision !== null) {
-        // Cleanup: apply directly to targets carrying `onPush`, or launch
-        // CI. A failure stays a warning and the exit code stays push's
-        // (only the evidence fails — sync-push.ts)
-        yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
-      }
+      yield* finishWrite(context, sync);
     }),
   ).pipe(
     Command.withDescription(

@@ -1,10 +1,15 @@
 // The command layer's lazy entry points into context.ts and session.ts
-// (P-6 — commands/shared.ts's note): one wrapper for each of their
-// functions a command calls. A wrapper takes the arguments of the function
-// it names and returns that function's effect, which loads the module when
-// it runs. So a command imports these statically, and parsing, help and
-// version still load neither module (test/startup-loads.test.ts runs them
-// and checks). A leaf: nothing here imports another commands/ file.
+// (P-6 — commands/shared.ts's note), and into two rotation helpers several
+// commands share (rotation.ts's reportRotationChecklist and sweep-rotate.ts's
+// sweepRotateFor, which import context.ts): one wrapper for each context.ts
+// and session.ts function a command calls, and one for each of the two
+// helpers (commands/rotation.ts loads the rest of rotation.ts itself). A
+// wrapper takes the arguments of the function it names and returns that
+// function's effect, which loads the module when it runs (sweepRotateFor's
+// returns its rotation function, which loads the module when a rotation
+// runs). So a command imports these statically, and parsing, help and
+// version still load none of the modules (test/startup-loads.test.ts runs
+// them and checks). A leaf: nothing here imports another commands/ file.
 //
 // The wrappers are exported under the names of the functions they wrap (the
 // list at the end), so a command's call reads as the direct call. Their
@@ -15,7 +20,9 @@ import { Effect } from "effect";
 
 import type * as Context from "../context.ts";
 import type { CliError } from "../errors.ts";
+import type * as Rotation from "../rotation.ts";
 import type * as Session from "../session.ts";
+import type * as SweepRotate from "../sweep-rotate.ts";
 
 /* -------------------------------------------------------------------------- */
 /* context.ts                                                                 */
@@ -207,6 +214,35 @@ const lazyResolveServerOrigin = (
     ({ resolveServerOrigin }) => resolveServerOrigin(...args),
   );
 
+/* -------------------------------------------------------------------------- */
+/* rotation.ts and sweep-rotate.ts                                            */
+/* -------------------------------------------------------------------------- */
+
+const lazyReportRotationChecklist = (
+  ...args: Parameters<typeof Rotation.reportRotationChecklist>
+): ReturnType<typeof Rotation.reportRotationChecklist> =>
+  Effect.flatMap(
+    Effect.promise(() =>
+      import("../rotation.ts").then((m) => ({
+        reportRotationChecklist: m.reportRotationChecklist,
+      })),
+    ),
+    ({ reportRotationChecklist }) => reportRotationChecklist(...args),
+  );
+
+/** sweepRotateFor returns the rotation function, so the load waits for a rotation. */
+const lazySweepRotateFor =
+  (
+    ...args: Parameters<typeof SweepRotate.sweepRotateFor>
+  ): ReturnType<typeof SweepRotate.sweepRotateFor> =>
+  (...rotation) =>
+    Effect.flatMap(
+      Effect.promise(() =>
+        import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
+      ),
+      ({ sweepRotateFor }) => sweepRotateFor(...args)(...rotation),
+    );
+
 export {
   lazyCheckInviteAnchor as checkInviteAnchor,
   lazyCommitVerifiedHead as commitVerifiedHead,
@@ -226,4 +262,6 @@ export {
   lazyLoadMasterKeys as loadMasterKeys,
   lazyNormalizeHttpOrigin as normalizeHttpOrigin,
   lazyResolveServerOrigin as resolveServerOrigin,
+  lazyReportRotationChecklist as reportRotationChecklist,
+  lazySweepRotateFor as sweepRotateFor,
 };

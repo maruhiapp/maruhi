@@ -245,7 +245,7 @@ export function formatPulledLine(variable: DisplayableVariable): string {
   return `${displayText(variable.name)}\tversion=${variable.version}\tepoch=${variable.epoch}\t(${byteLength} bytes)`;
 }
 
-/** Displays the SHOULD warnings collected during verification (e.g. serving a non-NFC name — §12-1). */
+/** Displays collected warnings, one line each (e.g. a SHOULD of verification such as serving a non-NFC name — §12-1 — or a rotation's failed connection test). */
 export function logWarnings(warnings: readonly string[]): Effect.Effect<void, never, CliIo> {
   return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
 }

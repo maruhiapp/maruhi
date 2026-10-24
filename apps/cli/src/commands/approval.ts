@@ -25,7 +25,7 @@ import { CliIo, type CliIoShape } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
 import type { SweepOutcome } from "../rotation-sweep.ts";
 import { NonBlank, projectFlags, singleFlag } from "./flags.ts";
-import { loadMasterKeys, openMetadataProject, openProject } from "./lazy.ts";
+import { loadMasterKeys, openMetadataProject, openProject, sweepRotateFor } from "./lazy.ts";
 import { reportMemberAdd, reportRoleChangeFulfilment } from "./member.ts";
 import { describeNeeded, reportSweepOutcome } from "./shared.ts";
 
@@ -332,9 +332,6 @@ const approvalApproveCommand = Effect.fn("commands-approval.approvalApproveComma
 ): Effect.fn.Return<number, CliError, CliServices> {
   const { approveProposalOp } = yield* Effect.promise(() =>
     import("../approval-approve.ts").then((m) => ({ approveProposalOp: m.approveProposalOp })),
-  );
-  const { sweepRotateFor } = yield* Effect.promise(() =>
-    import("../sweep-rotate.ts").then((m) => ({ sweepRotateFor: m.sweepRotateFor })),
   );
 
   const io = yield* CliIo;

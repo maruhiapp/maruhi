@@ -20,6 +20,13 @@
 //     silently overwritten with the restored value
 //  7. `maruhi push` of a value identical to the latest declares the lineage
 //     (sameValueAs = the latest) — re-pushing the same value is not a new value
+//  8. rollback reads its sync config and decides the sync before the write,
+//     as push does: an explicit config of another project stops it, and one
+//     that copies nothing from the environment gets a note after the write
+
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -208,6 +215,30 @@ function expectNoValueShown(env: TestEnv): void {
 
 const rangeRequests = (server: MockServer) =>
   server.requests.filter((request) => request.path.endsWith("/versions/values"));
+
+/** Writes a sync config for `project` whose one onPush target copies NAME from `environment`. */
+async function writeSyncConfig(project: string, environment: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "maruhi-var-history-test-"));
+  const path = join(dir, "maruhi.sync.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      project,
+      receipts: { environment: "sync-receipts" },
+      targets: {
+        web: {
+          preset: "vercel",
+          environment,
+          variables: [NAME],
+          options: { environment: "preview" },
+          onPush: "apply",
+        },
+      },
+    }),
+  );
+  return path;
+}
 
 describe("maruhi var history (metadata only — AUTH_SPEC §12-7)", () => {
   it("lists versions newest first with the derived lineage and the flag exposure, labeled server-declared, without fetching any value", async () => {
@@ -416,6 +447,39 @@ describe("maruhi var rollback under a concurrent push", () => {
     );
     expect(valueEnv.state.writes).toEqual([]);
     expectNoValueShown(env);
+  });
+});
+
+describe("maruhi var rollback's sync (decided before the write, as push's is)", () => {
+  it("an explicit --config belonging to a different project is a usage error (2) and nothing is sent", async () => {
+    const { env, state } = await startEnv();
+    env.setTerminal({ stdin: false, stdout: false });
+    const configPath = await writeSyncConfig("f".repeat(64), ENV_ID);
+    expect(
+      await runCli(
+        ["var", "rollback", NAME, "--to", "1", "--force", "--config", configPath],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("The sync config belongs to a different project");
+    expect(state.writes).toEqual([]);
+  });
+
+  it("an explicit --config with no target copying the variable from this environment gets a note after the rollback", async () => {
+    const { env, state } = await startEnv();
+    env.setTerminal({ stdin: false, stdout: false });
+    const configPath = await writeSyncConfig(built.projectId, "staging");
+    expect(
+      await runCli(
+        ["var", "rollback", NAME, "--to", "1", "--force", "--config", configPath],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(state.writes.filter((write) => write.kind === "version")).toHaveLength(1);
+    expect(env.errors.join("\n")).toContain(
+      "Note: no target in the sync config copies this variable from environment prod on push, so nothing was synced",
+    );
+    expect(env.execCalls).toEqual([]);
   });
 });
 

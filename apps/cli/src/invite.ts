@@ -24,7 +24,13 @@
 // never persisted (the issuance pin holds only the public key). The
 // server never receives the seed.
 
-import { cryptoEffect, type UserId, type EnvironmentId, type ProjectId } from "@maruhi/core";
+import {
+  cryptoEffect,
+  type UserId,
+  type EnvironmentId,
+  type ProjectId,
+  type WrappedCryptoError,
+} from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -96,6 +102,29 @@ export function listInvitations(
   );
 }
 
+/**
+ * Whether one §6.5 invite signature verifies. Each crypto failure the
+ * verification can produce (bad input, a key that does not import, or
+ * the signature itself — `signatureTag`) means it does not: the same
+ * folding the pre-bridge `!ok` checks made. Any other kind is an
+ * invariant break and dies.
+ */
+function signatureVerifies(
+  signatureTag:
+    | "CryptoInviteIssueSignature"
+    | "CryptoInviteLinkSignature"
+    | "CryptoInviteAcceptSignature",
+  verification: Effect.Effect<unknown, WrappedCryptoError>,
+): Effect.Effect<boolean> {
+  return verification.pipe(
+    Effect.as(true),
+    Effect.catchTag(["CryptoInvalidInput", "CryptoKeyImport", signatureTag], () =>
+      Effect.succeed(false),
+    ),
+    Effect.orDie,
+  );
+}
+
 /** The issuance verification result (the reason is mapped to wording). */
 export type IssuanceVerdict =
   | { readonly ok: true }
@@ -124,36 +153,28 @@ export const verifyIssuance = Effect.fn("invite.verifyIssuance")(function* (inpu
   // A row issued by a revoked device does not pass = the inviter
   // reissues)
   for (const inviterDevice of devicesOf(inviter)) {
-    // Any crypto failure means "this device's key does not verify the
-    // row" — the same folding the pre-bridge `!ok` check made (the
-    // verification's producible kinds are these three); anything the
-    // union adds later is an invariant break and dies
-    const verified = yield* cryptoEffect(() =>
-      verifyInviteIssueSignature({
-        context: {
-          suite: SUITE_ID,
-          inviteId: input.row.id,
-          projectId: input.verified.projectId,
-          linkPubHex: issuance.linkPubHex,
-          headHashHex: issuance.headHashHex,
-          headSeq: issuance.headSeq,
-          role: input.row.role,
-          inviterUserId: inviter.userId,
-          inviterEncPubHex: inviterDevice.encPubHex,
-          inviterSigPubHex: inviterDevice.sigPubHex,
-          scopeKind: input.row.scopeKind,
-          scopeEnvironmentIds: input.row.scopeEnvironmentIds,
-        },
-        signatureHex: issuance.issueSignatureHex,
-      }),
-    ).pipe(
-      Effect.map(() => true as const),
-      Effect.catchTags({
-        CryptoInvalidInput: () => Effect.succeed(false as const),
-        CryptoKeyImport: () => Effect.succeed(false as const),
-        CryptoInviteIssueSignature: () => Effect.succeed(false as const),
-      }),
-      Effect.orDie,
+    // A failure means "this device's key does not verify the row"
+    const verified = yield* signatureVerifies(
+      "CryptoInviteIssueSignature",
+      cryptoEffect(() =>
+        verifyInviteIssueSignature({
+          context: {
+            suite: SUITE_ID,
+            inviteId: input.row.id,
+            projectId: input.verified.projectId,
+            linkPubHex: issuance.linkPubHex,
+            headHashHex: issuance.headHashHex,
+            headSeq: issuance.headSeq,
+            role: input.row.role,
+            inviterUserId: inviter.userId,
+            inviterEncPubHex: inviterDevice.encPubHex,
+            inviterSigPubHex: inviterDevice.sigPubHex,
+            scopeKind: input.row.scopeKind,
+            scopeEnvironmentIds: input.row.scopeEnvironmentIds,
+          },
+          signatureHex: issuance.issueSignatureHex,
+        }),
+      ),
     );
     if (verified) {
       return { ok: true } as const;
@@ -198,36 +219,24 @@ export const verifyAcceptanceBlock = Effect.fn("invite.verifyAcceptanceBlock")(f
     inviteeEncPubHex: input.acceptance.inviteeEncPubHex,
     inviteeSigPubHex: input.acceptance.inviteeSigPubHex,
   };
-  // A crypto failure folds to the block's rejection kind (the same
-  // folding the pre-bridge `!ok` checks made); a kind the verifiers
-  // cannot produce is an invariant break and dies
-  const linkVerified = yield* cryptoEffect(() =>
-    verifyInviteLinkSignature({
-      context,
-      linkSignatureHex: input.acceptance.linkSignatureHex,
-    }),
-  ).pipe(
-    Effect.map(() => true as const),
-    Effect.catchTags({
-      CryptoInvalidInput: () => Effect.succeed(false as const),
-      CryptoKeyImport: () => Effect.succeed(false as const),
-      CryptoInviteLinkSignature: () => Effect.succeed(false as const),
-    }),
-    Effect.orDie,
+  // A failure folds to the block's rejection kind
+  const linkVerified = yield* signatureVerifies(
+    "CryptoInviteLinkSignature",
+    cryptoEffect(() =>
+      verifyInviteLinkSignature({
+        context,
+        linkSignatureHex: input.acceptance.linkSignatureHex,
+      }),
+    ),
   );
   if (!linkVerified) {
     return { ok: false, which: "link" } as const;
   }
-  const verified = yield* cryptoEffect(() =>
-    verifyInviteAcceptSignature({ context, signatureHex: input.acceptance.signatureHex }),
-  ).pipe(
-    Effect.map(() => true as const),
-    Effect.catchTags({
-      CryptoInvalidInput: () => Effect.succeed(false as const),
-      CryptoKeyImport: () => Effect.succeed(false as const),
-      CryptoInviteAcceptSignature: () => Effect.succeed(false as const),
-    }),
-    Effect.orDie,
+  const verified = yield* signatureVerifies(
+    "CryptoInviteAcceptSignature",
+    cryptoEffect(() =>
+      verifyInviteAcceptSignature({ context, signatureHex: input.acceptance.signatureHex }),
+    ),
   );
   if (!verified) {
     return { ok: false, which: "accept" } as const;
