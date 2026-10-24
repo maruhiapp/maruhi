@@ -472,7 +472,7 @@
       "no-envs"
     ],
     "positionals": [
-      "ref"
+      "fp-or-words"
     ]
   },
   "device list": {
@@ -784,7 +784,7 @@
       "target",
       "env",
       "var",
-      "expandReads"
+      "expand-reads"
     ],
     "positionals": [],
     "subcommands": [
@@ -806,7 +806,7 @@
       "target",
       "env",
       "var",
-      "expandReads"
+      "expand-reads"
     ],
     "positionals": []
   },
@@ -930,7 +930,7 @@
       "ignore"
     ],
     "positionals": [
-      "paths"
+      "path"
     ]
   },
   "var": {

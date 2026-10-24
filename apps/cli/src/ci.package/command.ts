@@ -206,7 +206,7 @@ const withCiMirrorFallback = Effect.fn("ci-command.withCiMirrorFallback")(functi
   );
 });
 
-/** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
+/** `maruhi ci run -- <cmd>`'s body (verification lives in ci-lease.ts / lease-client.ts). */
 const ciRunCommand = Effect.fn("ci-command.ciRunCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;

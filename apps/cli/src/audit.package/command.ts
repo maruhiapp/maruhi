@@ -65,7 +65,7 @@ export const auditListConfig = {
     "Filter by variable ID (also matches var.read rows that list it)",
     VariableIdSchema,
   ),
-  expandReads: singleFlag(
+  "expand-reads": singleFlag(
     "expand-reads",
     "Print the variables listed by var.read rows, one line per variable (default: a count per row)",
   ),
@@ -178,7 +178,7 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     readonly target?: string | undefined;
     readonly env?: EnvironmentId | undefined;
     readonly var?: VariableId | undefined;
-    readonly expandReads?: boolean | undefined;
+    readonly "expand-reads"?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
       const { auditListOp } = yield* Effect.promise(() =>
@@ -198,7 +198,9 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
         project: values.project,
       });
       onExitCode(
-        yield* auditListOp(context, page, filters, { expandReads: values.expandReads ?? false }),
+        yield* auditListOp(context, page, filters, {
+          expandReads: values["expand-reads"] ?? false,
+        }),
       );
     });
 

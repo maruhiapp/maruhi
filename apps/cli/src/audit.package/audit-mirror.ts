@@ -180,7 +180,7 @@ function mirrorTrustOf(
  * event name is outside chain.*.
  *
  * On an honest server the only writer that sets chainSeq is
- * chainMirrorEvent, so this combination shows a forged provenance claim.
+ * chainMirrorEvents, so this combination shows a forged provenance claim.
  * Starting from the event name alone, a row that escaped one step outside
  * the namespace would display as a bare `chain_seq=N` and would not even
  * fall under verify's eventPrefix=chain. filter.

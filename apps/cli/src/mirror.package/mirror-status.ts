@@ -137,7 +137,7 @@ function describeMirrorStatus(
       ? []
       : [`A replication is in progress (the next page is sequence ${status.nextSequence})`];
   return [
-    `Mirror ${mirrorOrigin} of ${status.sourceOrigin ?? "an unknown source"} (marked ${status.markedAtMs === undefined ? "at an unknown time" : `${formatUtcMinutes(status.markedAtMs)} UTC`})`,
+    `Mirror ${mirrorOrigin} of ${status.sourceOrigin ?? "an unknown source"} (marked ${status.markedAtMs === undefined ? "at an unknown time" : formatUtcMinutes(status.markedAtMs)})`,
     verified === null
       ? "Server: unreachable (no verified view)"
       : `Server: chain head seq=${verified.state.headSeq} (the verified view)`,

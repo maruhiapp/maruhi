@@ -272,6 +272,10 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       expect(pair.env.logs.join("\n")).toContain(
         `Mirror ${pair.mirror.origin} is current for project ${built.projectId}`,
       );
+      // The time ends in its zone once (formatUtcMinutes prints "UTC")
+      expect(pair.env.logs).toContain(
+        `Last replication: chain head seq=${head.chainHeadSeq}, audit seq=${head.auditMaxSeq}, at 1970-01-01 00:00 UTC`,
+      );
       expect(pair.state.pages).toHaveLength(0);
       // A "current" tick is the status reads: no chain download, no
       // export (ruling H revision, round 4)
@@ -374,7 +378,9 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       0,
     );
     const logs = pair.env.logs.join("\n");
-    expect(logs).toContain(`Mirror ${pair.mirror.origin} of ${pair.source.origin}`);
+    expect(logs).toContain(
+      `Mirror ${pair.mirror.origin} of ${pair.source.origin} (marked 1970-01-01 00:00 UTC)`,
+    );
     expect(logs).toContain("Server: chain head seq=2 (the verified view)");
     expect(logs).toContain(
       "Mirror: chain head seq=1 — behind the verified view by 1 chain entry (seq 1 of 2); audit seq=4",

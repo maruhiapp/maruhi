@@ -15,7 +15,7 @@
 //   user_id and the key FP. Never bring provider IDs or emails into this
 //   layer
 // - The chain-mirror mapping (§3.4) shares its implementation with
-//   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
+//   @maruhi/core's chainMirrorEvents (the same implementation the CLI's
 //   mirror verification — `maruhi audit verify` — uses)
 
 import type { AuditEventRecord } from "@maruhi/core";

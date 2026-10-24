@@ -1,6 +1,6 @@
 // Acquiring a CI job's workload lease (CRYPTO_SPEC §9.1 / AUTH_SPEC §14) —
-// the shared front stage of `maruhi ci run` (ci-run.ts) and `maruhi ci
-// sync` (sync-ci.ts).
+// the shared front stage of `maruhi ci run` (ci-run.ts), `maruhi ci sync`
+// (sync-ci.ts) and `maruhi ci rotate` (ci-rotate.ts).
 //
 // The point of this module is that its **prerequisite structure is entirely
 // different** from a normal command:

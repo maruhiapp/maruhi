@@ -53,7 +53,7 @@ export const deviceApproveConfig = {
   ),
   "all-envs": singleFlag("all-envs", "Let the device hold keys for every environment (default)"),
   "no-envs": singleFlag("no-envs", "Let the device hold no environment keys (a vote-only device)"),
-  ref: Argument.String("fp-or-words").pipe(
+  "fp-or-words": Argument.String("fp-or-words").pipe(
     Argument.withDescription(
       "The new device's full 32-character fingerprint, or its 12 words, as shown by `maruhi device add`",
     ),
@@ -180,7 +180,7 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
         import("../device-revoke.ts").then((m) => ({ parseCapRole: m.parseCapRole })),
       );
 
-      const ref = yield* parseApproveRef(values.ref);
+      const ref = yield* parseApproveRef(values["fp-or-words"]);
       const roleCap = yield* parseCapRole(values.cap);
       const scope =
         (yield* scopeFromFlags({

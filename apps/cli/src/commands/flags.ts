@@ -83,7 +83,8 @@ export function singleFlag(name: string, description: string) {
  * diagnostics stale when a flag is added. `Param` is a public type
  * carrying `kind` (`"flag"` / `"argument"`), so they can be sorted
  * straight off the declaration listing. The name uses the object key (=
- * the spelling typed).
+ * the spelling typed: `--<key>` for a flag, `<key>` for a positional;
+ * command-specs.test.ts checks both against the command's --help).
  */
 export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
   const flags: string[] = [];

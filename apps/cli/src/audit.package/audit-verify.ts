@@ -219,7 +219,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   const ahead: number[] = [];
   for (const row of rows) {
     // chain_seq's presence is treated as the trust boundary ahead of the
-    // event name. The only writer of a genuine chain_seq is chainMirrorEvent,
+    // event name. The only writer of a genuine chain_seq is chainMirrorEvents,
     // so a row outside the namespace is a forged provenance claim that no
     // real op can reconcile against
     if (!row.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
@@ -230,7 +230,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
     }
     // Inside the namespace, an event name missing from the mapping is itself
     // evidence of forgery: a real op's mirror always lands in
-    // chainMirrorEvent's image. The row cannot proceed to chain_seq
+    // chainMirrorEvents' image. The row cannot proceed to chain_seq
     // reconciliation, so it is confirmed as a problem here and we move on
     if (!CHAIN_MIRROR_EVENTS.includes(row.event)) {
       problems.push(

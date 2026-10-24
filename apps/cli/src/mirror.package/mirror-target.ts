@@ -88,5 +88,5 @@ export function readMirrorStatus(input: {
 export function describeLastSync(status: MirrorStatus): string {
   return status.lastSync === undefined
     ? "No replication recorded since the mark (the replication history is shown to admins and owners)"
-    : `Last replication: chain head seq=${status.lastSync.chainHeadSeq}, audit seq=${status.lastSync.auditMaxSeq}, at ${formatUtcMinutes(status.lastSync.atMs)} (UTC)`;
+    : `Last replication: chain head seq=${status.lastSync.chainHeadSeq}, audit seq=${status.lastSync.auditMaxSeq}, at ${formatUtcMinutes(status.lastSync.atMs)}`;
 }

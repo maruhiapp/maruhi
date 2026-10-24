@@ -95,7 +95,7 @@ export const schemaVerifySnapshotConfig = {
   ),
 };
 
-/** `maruhi schema lint [paths...]` (matching against the code contract — design doc §1-7).
+/** `maruhi schema lint <path...>` (matching against the code contract — design doc §1-7).
  * @public
  */
 export const schemaLintConfig = {
@@ -108,7 +108,7 @@ export const schemaLintConfig = {
     // Express repetition in the declaration (0 or more — atLeast(0) gives readonly string[])
     Flag.atLeast(0),
   ),
-  paths: Argument.String("path").pipe(
+  path: Argument.String("path").pipe(
     Argument.withDescription("File or directory to scan for environment-variable references"),
     Argument.atLeast(1),
   ),
@@ -424,7 +424,7 @@ export function makeSchemaCommands() {
       );
 
       // The scan precedes the network (a wrong path / an unreadable tree drops before a round trip)
-      const scan = yield* scanPaths(values.paths);
+      const scan = yield* scanPaths(values.path);
       const context = yield* openMetadataEnvironment(values);
       yield* schemaLintOp({
         client: context.client,

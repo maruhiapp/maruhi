@@ -4,10 +4,11 @@
 //
 // The token is a bearer credential and is treated like a plaintext
 // value / key material: wrap it in `Redacted` and never put it on
-// logs, errors, or diagnostics (CLAUDE.md). Unwrapping happens in
-// exactly two places: claims reading (this file) and assembling the
-// lease request payload (ci-run.ts) (registered in redacted.test.ts's
-// inventory).
+// logs, errors, or diagnostics (CLAUDE.md). It is unwrapped only to
+// read its claims (this file) and to put it in the requests that carry
+// it to the server: the lease request (ci-lease.ts), and a rotation's
+// pre-flight and mint requests (ci-rotate.ts). Each site is registered
+// in redacted.test.ts's inventory.
 //
 // Claims reading needs only base64url decode + JSON.parse: signature
 // verification is the server's job (AUTH_SPEC §14-1); the client
@@ -111,14 +112,6 @@ function transportReason(error: HttpClientError.HttpClientError): string {
   return cause instanceof Error ? cause.message : error.message;
 }
 
-/**
- * Fetches a fresh GitHub Actions OIDC token for `audience`.
- *
- * The token is issued **immediately before** the lease request
- * (session-24 §8 SHOULD — minimizing the first-come binding's
- * exposure window). Since each call mints a fresh token, retrying
- * `token-replayed` (ci-run.ts) is just calling this function again.
- */
 /** The bound on the runner's issuance endpoint (the same as the API client's header bound). */
 const OIDC_FETCH_TIMEOUT_MS = 30_000;
 
@@ -148,6 +141,16 @@ const ISSUANCE_MARGIN_MS = 2000;
 /** The shortest bound worth giving the fetch; a token in hand with less life than this is no fallback. */
 const ISSUANCE_FLOOR_MS = 1000;
 
+/**
+ * Fetches a fresh GitHub Actions OIDC token for `audience`.
+ *
+ * Each caller fetches it **immediately before** the request that
+ * presents it: the lease request (session-24 §8 SHOULD — minimizing the
+ * first-come binding's exposure window) and a rotation's mint request
+ * (ci-rotate.ts's mintTokenFor — K-5). Since each call mints a fresh
+ * token, retrying `token-replayed` (ci-lease.ts) is just calling this
+ * function again.
+ */
 export const fetchGitHubOidcToken = Effect.fn("oidc-github.fetchGitHubOidcToken")(function* (
   audience: string,
   /** The bound on the fetch (default {@link OIDC_FETCH_TIMEOUT_MS}; shorter when a token in hand would expire first). */

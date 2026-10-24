@@ -3,7 +3,7 @@
 // A non-secret anchor file committed to the project's source repository:
 // the genesis hash (= projectId), the verified head (hash + seq), and each
 // environment's "chain-derived current epoch at that time". The receiving
-// client of a workload lease (§9.1) (ci-run.ts) accepts, on top of chain
+// client of a workload lease (§9.1) (ci-lease.ts) accepts, on top of chain
 // verification, only a view that "contains the anchor's head and has
 // environment epochs at or above the anchor" (SHOULD). This makes rollback
 // distribution to CI — the weakest client, floorless, automated, and
