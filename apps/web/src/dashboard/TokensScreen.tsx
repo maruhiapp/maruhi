@@ -10,38 +10,30 @@
 //   the only issuance path is the device in the device flow. The
 //   response structurally has no raw values or hashes —
 //   TokenSummarySchema)
-// - An expired token (expiresAtMs in the past) is displayed as Expired,
-//   as reported by the server (ruling CQ)
-// - Revocation is an inline two-step confirm (ruling CO). Because
-//   revoking your own token instantly 401s any running CLI / CI, the
-//   consequence note is always shown below the table
+// - A token whose server-reported expiresAtMs is past the client clock
+//   is marked Expired (ruling CQ — ExpiryCell)
+// - Revocation is confirmed in a modal dialog (ruling CO's state
+//   machine, with the confirm DP3 amendment 4 moved out of the row —
+//   revocation.tsx). Because revoking your own token instantly 401s any
+//   running CLI / CI, the consequence note is always shown below the
+//   table
 
 import { Code } from "@astryxdesign/core/Code";
-import { HStack, VStack } from "@astryxdesign/core/Layout";
-import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
+import { HStack } from "@astryxdesign/core/Layout";
+import { pixel, proportional, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { type ReactNode } from "react";
 
 import { DashboardShell } from "./DashboardShell.tsx";
+import { ExpiryCell, ServerTime, HexText } from "./display.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { shortId } from "./ids.ts";
-import {
-  Callout,
-  EmptyNotice,
-  ExpiryCell,
-  FailureNotice,
-  ServerTime,
-  HexText,
-  LoadingRow,
-  RevokeButton,
-  RevocationOutcome,
-  SectionBlock,
-} from "./shared.tsx";
+import { EmptyNotice } from "./resource-states.tsx";
+import { RevocableList, useRevocableList } from "./revocable-list.tsx";
+import { Callout } from "./sections.tsx";
 import { armedTokenName, tokenRevokedMessage } from "./token-text.ts";
 import type { TokenList, TokenSummary } from "./types.ts";
-import { type ResourceState, useApiResource } from "./use-api-resource.ts";
-import { type RevocationState, useRevocation } from "./use-revocation.ts";
 
 interface TokenRow extends Record<string, unknown> {
   id: string;
@@ -86,66 +78,50 @@ function toTokenRow(token: TokenSummary): TokenRow {
   };
 }
 
-function buildTokenColumns(
-  isLocked: boolean,
-  onArm: (id: string | undefined) => void,
-): TableColumn<TokenRow>[] {
-  return [
-    {
-      key: "name",
-      header: "Name",
-      width: proportional(1),
-      renderCell: (row: TokenRow) => (
-        <Text size="sm" wordBreak="break-all">
-          {row.name}
+/** The data columns (revocable-list.tsx appends the Actions column). */
+const TOKEN_COLUMNS: TableColumn<TokenRow>[] = [
+  {
+    key: "name",
+    header: "Name",
+    width: proportional(1),
+    renderCell: (row: TokenRow) => (
+      <Text size="sm" wordBreak="break-all">
+        {row.name}
+      </Text>
+    ),
+  },
+  {
+    key: "tokenPrefix",
+    header: "Prefix",
+    width: pixel(130),
+    renderCell: (row: TokenRow) => <HexText>{row.tokenPrefix}</HexText>,
+  },
+  {
+    key: "scopes",
+    header: "Scopes",
+    width: proportional(1),
+    renderCell: (row: TokenRow) => <ScopeChips token={row.token} />,
+  },
+  {
+    key: "lastUsedAtMs",
+    header: "Last used",
+    width: pixel(220),
+    renderCell: (row: TokenRow) =>
+      row.lastUsedAtMs === null ? (
+        <Text type="supporting" size="sm">
+          never
         </Text>
+      ) : (
+        <ServerTime ms={row.lastUsedAtMs} />
       ),
-    },
-    {
-      key: "tokenPrefix",
-      header: "Prefix",
-      width: pixel(130),
-      renderCell: (row: TokenRow) => <HexText>{row.tokenPrefix}</HexText>,
-    },
-    {
-      key: "scopes",
-      header: "Scopes",
-      width: proportional(1),
-      renderCell: (row: TokenRow) => <ScopeChips token={row.token} />,
-    },
-    {
-      key: "lastUsedAtMs",
-      header: "Last used",
-      width: pixel(220),
-      renderCell: (row: TokenRow) =>
-        row.lastUsedAtMs === null ? (
-          <Text type="supporting" size="sm">
-            never
-          </Text>
-        ) : (
-          <ServerTime ms={row.lastUsedAtMs} />
-        ),
-    },
-    {
-      key: "expiresAtMs",
-      header: "Expires",
-      width: pixel(260),
-      renderCell: (row: TokenRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
-    },
-    {
-      key: "actions",
-      header: "Actions",
-      width: pixel(200),
-      renderCell: (row: TokenRow) => (
-        <RevokeButton
-          onArm={() => onArm(row.id)}
-          isLocked={isLocked}
-          accessibleName={`Revoke token "${row.name}"`}
-        />
-      ),
-    },
-  ];
-}
+  },
+  {
+    key: "expiresAtMs",
+    header: "Expires",
+    width: pixel(260),
+    renderCell: (row: TokenRow) => <ExpiryCell expiresAtMs={row.expiresAtMs} />,
+  },
+];
 
 /** Static guidance on issuing (no issue UI here) + a note on the consequence of revoking (ruling CO). */
 function TokenNotes(): ReactNode {
@@ -159,72 +135,10 @@ function TokenNotes(): ReactNode {
   );
 }
 
-function TokensTable({
-  tokens,
-  isLocked,
-  onArm,
-}: {
-  tokens: ReadonlyArray<TokenSummary>;
-  isLocked: boolean;
-  onArm: (id: string | undefined) => void;
-}): ReactNode {
-  if (tokens.length === 0) {
-    return (
-      <EmptyNotice
-        title="No API tokens"
-        description="Tokens issued to you appear here, as reported by the server."
-        // The list's box has no heading (the page h1 doubles as it), so h2
-        headingLevel={2}
-        testId="token-empty"
-      />
-    );
-  }
-  return (
-    <Table
-      data={tokens.map(toTokenRow)}
-      columns={buildTokenColumns(isLocked, onArm)}
-      idKey="id"
-      density="balanced"
-      hasHover
-      dividers="rows"
-      data-testid="token-table"
-    />
-  );
-}
-
-function TokensResource({
-  revocation,
-  onArm,
-  reload,
-  state,
-}: {
-  revocation: RevocationState;
-  onArm: (id: string | undefined) => void;
-  reload: () => void;
-  state: ResourceState<TokenList>;
-}): ReactNode {
-  // Replacement form (ruling B-a). During the post-revocation re-fetch
-  // (refreshing) the previous list stays, and each row's Revoke is
-  // disabled the same as when one is in flight (prevents a double
-  // revocation on a pre-refetch row)
-  if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
-  if (state.kind === "failed") {
-    return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
-  }
-  return (
-    <TokensTable
-      tokens={state.value.tokens}
-      isLocked={revocation.pendingId !== undefined || state.refreshing}
-      onArm={onArm}
-    />
-  );
-}
-
 export function TokensScreen(): ReactNode {
-  const { state, reload } = useApiResource<TokenList>(apiPaths.tokens());
   // The revocation state lives outside the list resource (the header
   // comment of use-revocation.ts)
-  const { revocation, arm, confirm } = useRevocation(apiPaths.tokenRevoke, reload);
+  const list = useRevocableList<TokenList>(apiPaths.tokens(), apiPaths.tokenRevoke);
   return (
     <DashboardShell
       destination="tokens"
@@ -235,22 +149,36 @@ export function TokensScreen(): ReactNode {
         </Text>
       }
     >
-      <VStack gap={4} data-testid="token-list">
-        <SectionBlock>
-          <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
-        </SectionBlock>
-        {/* Confirmation is modal (AlertDialogAsyncAction template). The target's name is drawn from the list */}
-        <RevocationOutcome
-          revocation={revocation}
-          title={`Revoke ${armedTokenName(state, revocation.armedId)}?`}
-          description="Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement."
-          successMessage={tokenRevokedMessage(state, revocation.armedId)}
-          subject="token"
-          arm={arm}
-          confirm={confirm}
-        />
-        <TokenNotes />
-      </VStack>
+      <RevocableList
+        list={list}
+        testId="token-list"
+        loadingLabel="Loading tokens"
+        listSubject="token"
+        table={{
+          toRows: (value) => value.tokens.map(toTokenRow),
+          columns: TOKEN_COLUMNS,
+          tableTestId: "token-table",
+          empty: (
+            <EmptyNotice
+              title="No API tokens"
+              description="Tokens issued to you appear here, as reported by the server."
+              // The list's box has no heading (the page h1 doubles as it), so h2
+              headingLevel={2}
+              testId="token-empty"
+            />
+          ),
+          revokeName: (row) => `Revoke token "${row.name}"`,
+        }}
+        // The target's name is drawn from the list
+        revocationWording={{
+          title: `Revoke ${armedTokenName(list.state, list.revocation.armedId)}?`,
+          description:
+            "Any CLI or CI job still using this token is signed out immediately. Sign in again from the CLI to issue a replacement.",
+          successMessage: tokenRevokedMessage(list.state, list.revocation.armedId),
+          subject: "token",
+        }}
+        notes={<TokenNotes />}
+      />
     </DashboardShell>
   );
 }

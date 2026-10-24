@@ -72,10 +72,11 @@ import {
   KeyIcon,
   UserCircleIcon,
 } from "./icons.tsx";
+import { FailureNotice, LoadingRow } from "./resource-states.tsx";
 import { markResumeToDashboard } from "./resume.ts";
 import { spaPaths } from "./routes.ts";
+import { SECTION_GAP, ServerReportedNote } from "./sections.tsx";
 import { SessionExpiredContext } from "./session-expiry.ts";
-import { FailureNotice, LoadingRow, SECTION_GAP, ServerReportedNote } from "./shared.tsx";
 import type { Me } from "./types.ts";
 
 /** The sidebar's destinations (selection state = aria-current="page"). The project screen sits under Projects. */

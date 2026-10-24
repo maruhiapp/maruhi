@@ -2,7 +2,8 @@
 
 // The per-row state machine for revocation (DELETE) (ruling CO —
 // docs/notes/session-45.md). Shared between S8 (invites) and S9
-// (tokens).
+// (tokens), through revocable-list.tsx, and S11 (devices), which
+// revokes a device's token.
 //
 // - Arming is always a single row (arming another row or Cancel disarms)
 // - Confirming issues the DELETE (the api layer always attaches the
@@ -52,7 +53,7 @@ export function useRevocation(
   // accepted — this blocks the race where a late-arriving completion
   // overwrites another row's armed state and the failure looks like it
   // belongs to a different revocation. The UI side also disables other
-  // rows' Revoke by watching pendingId (RevokeControl's isLocked) — the
+  // rows' Revoke by watching pendingId (RevokeButton's isLocked) — the
   // guard is a second layer so we produce buttons that do not work
   // rather than invisible buttons
   const pendingRef = useRef(false);

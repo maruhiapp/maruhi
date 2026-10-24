@@ -288,6 +288,38 @@ function typeArgumentAt(source: string, start: number): string {
   throw new Error("unterminated type argument list");
 }
 
+/**
+ * The first argument of a type argument list. Nested `<…>` / `{…}` /
+ * `(…)` / `[…]` groups are blanked, innermost first, until none is
+ * left, so only the top-level commas remain to separate the arguments.
+ */
+function firstTypeArgument(typeArguments: string): string {
+  let flat = typeArguments;
+  for (let before = ""; flat !== before;) {
+    before = flat;
+    flat = flat.replace(/<[^<>]*>|\{[^{}]*\}|\([^()]*\)|\[[^[\]]*\]/g, (group) =>
+      "_".repeat(group.length),
+    );
+  }
+  const comma = flat.indexOf(",");
+  return comma === -1 ? typeArguments : typeArguments.slice(0, comma).trim();
+}
+
+/**
+ * The consumption entrances whose type arguments name the envelope.
+ * RevocableList's second argument is the screen's own row type, so only
+ * its first is swept.
+ */
+const ENVELOPE_ENTRANCES = [
+  "apiGet",
+  "useApiResource",
+  "useRevocableList",
+  "RevocableList",
+  "ApiResult",
+  "ResourceState",
+  "RevocableListState",
+] as const;
+
 describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
   const srcRoot = join(import.meta.dirname, "../../src");
   const typesSource = stripComments(readFileSync(join(srcRoot, TYPES_MODULE), "utf8"));
@@ -304,37 +336,55 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
   });
 
   it("names a types.ts export at every consumption site (no inline envelope in screens)", () => {
-    // Collect the type arguments of the consumption entrances
-    // (apiGet / useApiResource / ApiResult / ResourceState) across all
-    // of src/ and require each to be a types.ts export name —
-    // widening the check's reach from the single types.ts file to the
-    // whole consumption surface (pullfrog's point)
+    // Collect the envelope type arguments of the consumption entrances
+    // (ENVELOPE_ENTRANCES) across all of src/ and require each to be a
+    // types.ts export name — widening the check's reach from the single
+    // types.ts file to the whole consumption surface (pullfrog's point).
+    // RevocableList's own first type argument is swept too: tsc checks
+    // an explicit one only against the list it is given, so a
+    // hand-written supertype (`any`, or optional fields) would hide
+    // api-schema drift, and a useRevocableList called inline in the
+    // `list` prop infers its T from it
     const known = new Set(exportedNames);
-    // Out of scope: the 2 modules that declare the entrances (`<T>` /
-    // `<void>`) and types.ts itself
-    const entranceModules = new Set(
-      [TYPES_MODULE, "dashboard/api.ts", "dashboard/use-api-resource.ts"].map((p) =>
-        join(srcRoot, p),
-      ),
-    );
-    const sites: Array<{ file: string; typeArg: string }> = [];
+    // The 3 modules that declare the entrances pass only their own type
+    // parameter through (`<T>`, and api.ts's `<void>` for a response
+    // without a body); types.ts itself is out of scope
+    const passThrough = new Map<string, ReadonlySet<string>>([
+      [join(srcRoot, "dashboard/api.ts"), new Set(["T", "void"])],
+      [join(srcRoot, "dashboard/use-api-resource.ts"), new Set(["T"])],
+      [join(srcRoot, "dashboard/revocable-list.tsx"), new Set(["T"])],
+    ]);
+    const outOfScope = new Set([join(srcRoot, TYPES_MODULE)]);
+    const entrance = new RegExp(String.raw`\b(${ENVELOPE_ENTRANCES.join("|")})<`, "g");
+    const sites: Array<{ file: string; entrance: string; typeArg: string }> = [];
     for (const entry of readdirSync(srcRoot, { recursive: true, withFileTypes: true })) {
       const filePath = join(entry.parentPath, entry.name);
-      if (!isSweepTarget(entry, filePath, entranceModules)) continue;
+      if (!isSweepTarget(entry, filePath, outOfScope)) continue;
       const source = stripComments(readFileSync(filePath, "utf8"));
-      for (const match of source.matchAll(
-        /\b(?:apiGet|useApiResource|ApiResult|ResourceState)</g,
-      )) {
+      for (const match of source.matchAll(entrance)) {
+        const typeArgs = typeArgumentAt(source, match.index + match[0].length);
         sites.push({
           file: filePath.slice(srcRoot.length + 1),
-          typeArg: typeArgumentAt(source, match.index + match[0].length),
+          entrance: match[1] ?? "",
+          typeArg: match[1] === "RevocableList" ? firstTypeArgument(typeArgs) : typeArgs,
         });
       }
     }
-    expect(sites.length, "no consumption site found — the sweep pattern is stale").toBeGreaterThan(
-      0,
+    // Never passes vacuously: each entrance is found at least at its own
+    // declaration, and some site lies outside the declaring modules
+    expect(
+      ENVELOPE_ENTRANCES.filter((name) => !sites.some((site) => site.entrance === name)),
+      "entrance with no site — the sweep pattern is stale",
+    ).toEqual([]);
+    expect(
+      sites.filter((site) => !passThrough.has(join(srcRoot, site.file))).length,
+      "no consumption site outside the declaring modules",
+    ).toBeGreaterThan(0);
+    const offenders = sites.filter(
+      (site) =>
+        !known.has(site.typeArg) &&
+        passThrough.get(join(srcRoot, site.file))?.has(site.typeArg) !== true,
     );
-    const offenders = sites.filter((site) => !known.has(site.typeArg));
     expect(
       offenders,
       "consumption site whose type argument is not a types.ts export — derive it there",

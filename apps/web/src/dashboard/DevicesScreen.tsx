@@ -32,19 +32,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback } from "react";
 
 import { DashboardShell } from "./DashboardShell.tsx";
+import { HexText, ServerTime } from "./display.tsx";
 import { apiPaths } from "./endpoints.ts";
+import { EmptyNotice, FailureNotice, LoadingRow } from "./resource-states.tsx";
+import { RevokeButton, RevocationOutcome } from "./revocation.tsx";
 import { spaPaths } from "./routes.ts";
-import {
-  Callout,
-  EmptyNotice,
-  FailureNotice,
-  HexText,
-  LoadingRow,
-  RevokeButton,
-  RevocationOutcome,
-  SectionBlock,
-  ServerTime,
-} from "./shared.tsx";
+import { Callout, SectionBlock } from "./sections.tsx";
 import { armedTokenName, tokenRevokedMessage } from "./token-text.ts";
 import type { DeviceList, DeviceSummary, TokenList, TokenSummary } from "./types.ts";
 import { type ResourceState, useApiResource } from "./use-api-resource.ts";
