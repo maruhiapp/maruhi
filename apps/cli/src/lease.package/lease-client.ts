@@ -55,17 +55,17 @@ import {
 } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { RepositoryAnchor } from "./anchor.ts";
-import { checkRepositoryAnchor } from "./anchor.ts";
-import { verifyChainSnapshot, type VerifiedProject } from "./chain-sync.ts";
-import { requireChainEnvironment } from "./deks.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
-import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
-import { serverDisclosures, serverKeysDisclosing } from "./server-disclosure.ts";
-import type { PulledWire, VerifiedPulledValue } from "./values-verify.ts";
-import { verifyLeaseDistribution } from "./values.ts";
+import type { RepositoryAnchor } from "../anchor.ts";
+import { checkRepositoryAnchor } from "../anchor.ts";
+import { verifyChainSnapshot, type VerifiedProject } from "../chain-sync.ts";
+import { requireChainEnvironment } from "../deks.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { DeclaredVariable, DecryptedVariable } from "../pull.ts";
+import { decryptVerifiedValue, toDeclaredVariables } from "../pull.ts";
+import { serverDisclosures, serverKeysDisclosing } from "../server-disclosure.ts";
+import type { PulledWire, VerifiedPulledValue } from "../values-verify.ts";
+import { verifyLeaseDistribution } from "../values.ts";
 
 /** The wire shape of a lease response (the structural type of api-schema's LeaseResponseSchema). */
 export interface LeaseResponseWire {

@@ -18,11 +18,11 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
+import { logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { CliIo } from "../io.ts";
+import { enforceDeclaredPresence, ProcessRunner, runOp, typeAdvisoryWarnings } from "../run.ts";
 import { type CiLeaseInput, leaseEnvironments } from "./ci-lease.ts";
-import { logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { CliIo } from "./io.ts";
-import { enforceDeclaredPresence, ProcessRunner, runOp, typeAdvisoryWarnings } from "./run.ts";
 
 /** Input of `maruhi ci run` (all from explicit flags — session-25 §2). */
 interface CiRunInput extends CiLeaseInput {

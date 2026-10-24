@@ -25,11 +25,11 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { CiLeaseInput } from "../ci-lease.ts";
+import type { CiLeaseInput } from "../ci.package/index.ts";
 import { countNoun, displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
-import type { VerifiedLeaseMaterial } from "../lease-client.ts";
+import type { VerifiedLeaseMaterial } from "../lease.package/index.ts";
 import type { ProcessRunner } from "../run.ts";
 import type { SyncTarget } from "./sync-config.ts";
 import { DEFAULT_HTTP_RETRY, type HttpRetryPolicy, type IntegrationToken } from "./sync-http.ts";
@@ -69,7 +69,7 @@ export const ciSyncOp = Effect.fn("sync-ci.ciSyncOp")(function* (
 ): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
   const { leaseEnvironments } = yield* Effect.promise(() =>
-    import("../ci-lease.ts").then((m) => ({ leaseEnvironments: m.leaseEnvironments })),
+    import("../ci.package/index.ts").then((m) => ({ leaseEnvironments: m.leaseEnvironments })),
   );
   const {
     computePlan,

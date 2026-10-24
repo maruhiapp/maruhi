@@ -25,21 +25,21 @@ import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from 
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { loadRepositoryAnchor } from "./anchor.ts";
-import { makeApiClient, type MaruhiClient } from "./api.ts";
-import { countNoun, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import type { LeaseResponseWire, VerifiedLeaseMaterial } from "./lease-client.ts";
-import { verifyLeaseResponse } from "./lease-client.ts";
+import { loadRepositoryAnchor } from "../anchor.ts";
+import { makeApiClient, type MaruhiClient } from "../api.ts";
+import { countNoun, logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import type { LeaseResponseWire, VerifiedLeaseMaterial } from "../lease.package/index.ts";
+import { verifyLeaseResponse } from "../lease.package/index.ts";
 import {
   fetchGitHubOidcToken,
   issuanceBoundFor,
   readLeaseClaims,
   tokenExpiresAtMs,
-} from "./oidc-github.ts";
-import { noteServerDisclosure } from "./server-disclosure.ts";
+} from "../oidc-github.ts";
+import { noteServerDisclosure } from "../server-disclosure.ts";
 
 /** Input shared by the CI commands (all from explicit flags — session-25 §2). */
 export interface CiLeaseInput {

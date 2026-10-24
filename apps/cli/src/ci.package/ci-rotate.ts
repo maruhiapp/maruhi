@@ -41,23 +41,17 @@ import {
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { VerifiedProject } from "./chain-sync.ts";
-import {
-  type CiLeaseInput,
-  LEASE_NOT_FOUND_MESSAGE,
-  type LeasedEnvironments,
-  leaseEnvironmentsWithCredential,
-} from "./ci-lease.ts";
-import { cryptoErrorKind } from "./crypto-error-kind.ts";
-import { memberDevicesInOrder, ROLE_RANK } from "./dek-wrap.ts";
-import { countNoun, displayText, formatUtcDate, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import type { VerifiedLeaseMaterial } from "./lease-client.ts";
-import { fetchGitHubOidcToken, issuanceBoundFor, tokenExpiresAtMs } from "./oidc-github.ts";
-import type { DecryptedVariable } from "./pull.ts";
-import { type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { cryptoErrorKind } from "../crypto-error-kind.ts";
+import { memberDevicesInOrder, ROLE_RANK } from "../dek-wrap.ts";
+import { countNoun, displayText, formatUtcDate, logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import type { VerifiedLeaseMaterial } from "../lease.package/index.ts";
+import { fetchGitHubOidcToken, issuanceBoundFor, tokenExpiresAtMs } from "../oidc-github.ts";
+import type { DecryptedVariable } from "../pull.ts";
+import { type RotateConfig, type RotateRule, ruleFor } from "../rotate-config.ts";
 import {
   companionsOf,
   type CredentialValues,
@@ -68,9 +62,15 @@ import {
   rotateCredential,
   type RotationOutcome,
   type SqlRunner,
-} from "./rotate-connector.ts";
-import type { ProcessRunner } from "./run.ts";
-import { callConnector, connectorFailure } from "./var-rotate.ts";
+} from "../rotate-connector.ts";
+import type { ProcessRunner } from "../run.ts";
+import { callConnector, connectorFailure } from "../var-rotate.ts";
+import {
+  type CiLeaseInput,
+  LEASE_NOT_FOUND_MESSAGE,
+  type LeasedEnvironments,
+  leaseEnvironmentsWithCredential,
+} from "./ci-lease.ts";
 
 /** AUTH_SPEC §14-5: at most 16 facts of 256 characters each. */
 const MAX_FACTS = 16;
