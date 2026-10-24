@@ -34,7 +34,7 @@
     "oxlint-plugin-eslint": "1.89.0",
     "oxlint-tsgolint": "7.0.2005",
     "typescript": "7.0.2",
-    "vitest": "4.1.12"
+    "vitest": "5.0.5"
   },
   "overrides": {
     "@cloudflare/config>zod": "4.6.6",
