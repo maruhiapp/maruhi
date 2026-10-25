@@ -11,12 +11,12 @@
 
 import { type WrappedDek } from "@maruhi/api-schema";
 import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
-import type { SigningKeyPair } from "@maruhi/crypto";
+import type { SigningKeyPair, WrapRecipient } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
-import { wrapAndSignFor, type WrapRecipient } from "./dek-wrap.ts";
+import { wrapAndSignFor } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";

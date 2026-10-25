@@ -21,6 +21,7 @@ import { keysChecks } from "./checks/keys.ts";
 import { leaseWrapChecks } from "./checks/lease-wrap.ts";
 import { masterKeyWrapChecks } from "./checks/master-key-wrap.ts";
 import { metadataSignatureChecks } from "./checks/metadata-signature.ts";
+import { recipientSetsChecks } from "./checks/recipient-sets.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
 import { sealedValueChecks } from "./checks/sealed-value.ts";
@@ -33,7 +34,7 @@ import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
 // groups silently dropping out (removed from all-checks, early-returned, etc.) as an
 // explicit failure rather than a shrinking population. A change that deliberately
 // reduces checks lowers this value in the same change
-const MIN_TOTAL_CHECKS = 2774;
+const MIN_TOTAL_CHECKS = 2870;
 // The floor must stay close to the population, or a dropped group hides in the slack
 // (it once sat at 1699 against 2774 checks). When the count outgrows the floor by more
 // than this fraction, the second meta check fails and the change raises the floor to
@@ -64,6 +65,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await chainOpCoverageChecks());
   groups.push(await checkpointChecks());
   groups.push(await checkpointDigestChecks());
+  groups.push(recipientSetsChecks());
   groups.push(await valueSignatureChecks());
   groups.push(await metadataSignatureChecks());
   groups.push(await envManifestChecks());

@@ -2302,6 +2302,145 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- recipient-sets.json ---------------------------------------------------------
+// §6.2's R(E) and §5.3's W(E), recomputed from each fixture's verification
+// state by the set-builder definitions (E ∈ scope(m) ∩ scope(d) read as
+// E ∈ scope(m) ∧ E ∈ scope(d) — no effective-permission code), with the
+// key fingerprints re-derived (§3 / §9) and the shared-server-keys
+// fixture's three premises checked. Every list is compared as a set
+const scopeIncludes = (scope, environmentId) =>
+  scope.kind === "all" || scope.environments.includes(environmentId);
+// A recipient list as a set of (class, id, device fingerprint — members
+// only — and enc key) entries
+const recipientSet = (entries) =>
+  JSON.stringify(
+    entries
+      .map((entry) =>
+        JSON.stringify([
+          entry.recipient_class,
+          entry.recipient_id,
+          entry.key_fingerprint_hex ?? null,
+          entry.recipient_enc_pub_hex,
+        ]),
+      )
+      .toSorted(),
+  );
+const memberRecipient = ({ person, device }) => ({
+  recipient_class: "member",
+  recipient_id: person.user_id,
+  key_fingerprint_hex: device.key_fingerprint_hex,
+  recipient_enc_pub_hex: device.enc_pub_hex,
+});
+const holdsEncKeyOf = (person, grant) =>
+  person.devices.some((device) => device.enc_pub_hex === grant.server_enc_pub_hex);
+{
+  const doc = read("recipient-sets.json");
+  const rank = { reader: 0, member: 1, admin: 2, owner: 3 };
+  for (const [name, fixture] of Object.entries(doc.fixtures)) {
+    for (const person of fixture.members) {
+      for (const device of person.devices) {
+        const fingerprint = (
+          await sha256Bytes(fromHex(device.enc_pub_hex + device.sig_pub_hex))
+        ).slice(0, 16);
+        check(
+          `recipient-sets ${name}: ${device.label} fingerprint (§3)`,
+          toHex(fingerprint) === device.key_fingerprint_hex,
+        );
+      }
+    }
+    for (const grant of fixture.server_grants) {
+      const fingerprint = (await sha256Bytes(fromHex(grant.server_enc_pub_hex))).slice(0, 16);
+      check(
+        `recipient-sets ${name}: ${grant.label} fingerprint (§9)`,
+        toHex(fingerprint) === grant.server_key_fingerprint_hex,
+      );
+    }
+  }
+  for (const recipientCase of doc.cases) {
+    const fixture = doc.fixtures[recipientCase.fixture];
+    const environmentId = recipientCase.environment_id;
+    const receiving = fixture.members.flatMap((person) =>
+      person.devices
+        .filter(
+          (device) =>
+            scopeIncludes(person.scope, environmentId) &&
+            scopeIncludes(device.scope, environmentId),
+        )
+        .map((device) => ({ person, device })),
+    );
+    // One entry per wrap address (recipient id, enc key); members first, so
+    // an address a member shares with a server key stays the member's
+    const byAddress = new Map();
+    for (const entry of [
+      ...receiving.map(memberRecipient),
+      ...fixture.server_grants
+        .filter((grant) => grant.scope_environments.includes(environmentId))
+        .map((grant) => ({
+          recipient_class: "server",
+          recipient_id: grant.server_key_fingerprint_hex,
+          recipient_enc_pub_hex: grant.server_enc_pub_hex,
+        })),
+    ]) {
+      const address = JSON.stringify([entry.recipient_id, entry.recipient_enc_pub_hex]);
+      if (!byAddress.has(address)) {
+        byAddress.set(address, entry);
+      }
+    }
+    check(
+      `recipient-sets ${recipientCase.name}: R(E)`,
+      recipientSet([...byAddress.values()]) ===
+        recipientSet(recipientCase.expected_wrap_recipients),
+    );
+    const proposalRecipients = receiving
+      .filter(
+        ({ person, device }) => Math.min(rank[person.role], rank[device.role_cap]) >= rank.member,
+      )
+      .map(memberRecipient);
+    check(
+      `recipient-sets ${recipientCase.name}: W(E)`,
+      recipientSet(proposalRecipients) === recipientSet(recipientCase.expected_proposal_recipients),
+    );
+    const wrapSet = new Set(JSON.parse(recipientSet(recipientCase.expected_wrap_recipients)));
+    check(
+      `recipient-sets ${recipientCase.name}: W(E) ⊆ R(E)`,
+      JSON.parse(recipientSet(recipientCase.expected_proposal_recipients)).every((entry) =>
+        wrapSet.has(entry),
+      ),
+    );
+  }
+  // The premise of the shared-address case: one member is named by
+  // server-x's fingerprint and holds server-x's enc key; another holds
+  // server-y's enc key under its own user id; a third is named by
+  // server-z's fingerprint and holds another key
+  {
+    const shared = doc.fixtures["shared-server-keys"];
+    const [serverX, serverY, serverZ] = shared.server_grants;
+    check(
+      "recipient-sets shared-server-keys: a member named by server-x's fingerprint holds its enc key",
+      shared.members.some(
+        (person) =>
+          person.user_id === serverX.server_key_fingerprint_hex && holdsEncKeyOf(person, serverX),
+      ),
+    );
+    check(
+      "recipient-sets shared-server-keys: a member under another id holds server-y's enc key",
+      shared.members.some(
+        (person) =>
+          person.user_id !== serverY.server_key_fingerprint_hex && holdsEncKeyOf(person, serverY),
+      ),
+    );
+    check(
+      "recipient-sets shared-server-keys: a member named by server-z's fingerprint holds another key",
+      shared.members.some(
+        (person) =>
+          person.user_id === serverZ.server_key_fingerprint_hex &&
+          person.devices.length > 0 &&
+          !holdsEncKeyOf(person, serverZ),
+      ),
+    );
+  }
+}
+
 // --- master-key-wrap.json (§8 ledger — KEK / AES-GCM via WebCrypto, Open via panva hpke) ---
 // Beyond the "generate = hpke-js + WebCrypto / verify = panva +
 // WebCrypto" cross-check, verifies that (1) B and user_id are inherited

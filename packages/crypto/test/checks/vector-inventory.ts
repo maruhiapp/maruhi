@@ -30,6 +30,7 @@ import inviteLink from "../../test-vectors/invite-link.json" with { type: "json"
 import leaseWrap from "../../test-vectors/lease-wrap.json" with { type: "json" };
 import masterKeyWrap from "../../test-vectors/master-key-wrap.json" with { type: "json" };
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
+import recipientSets from "../../test-vectors/recipient-sets.json" with { type: "json" };
 import recoveryWrap from "../../test-vectors/recovery-wrap.json" with { type: "json" };
 import sealedValue from "../../test-vectors/sealed-value.json" with { type: "json" };
 import valueSignature from "../../test-vectors/value-signature.json" with { type: "json" };
@@ -390,6 +391,18 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
     label: "checkpoint-digest.cases",
     actual: checkpointDigest.cases,
     expected: ["declared-excluded", "all-declared-empty"],
+  },
+  {
+    label: "recipient-sets.cases",
+    actual: recipientSets.cases,
+    expected: [
+      "project-prod",
+      "project-dev",
+      "project-stage",
+      "project-fresh",
+      "shared-server-keys-prod",
+      "order-prod",
+    ],
   },
   {
     label: "dek-commitment.vectors",
@@ -915,6 +928,11 @@ const KEYED_COLLECTIONS: readonly {
   expected: readonly string[];
 }[] = [
   {
+    label: "recipient-sets.fixtures",
+    actual: Object.keys(recipientSets.fixtures),
+    expected: ["project", "shared-server-keys", "order"],
+  },
+  {
     label: "chain-entries.extended_chains",
     actual: Object.keys(chainEntries.extended_chains),
     expected: [
@@ -1075,6 +1093,7 @@ const CHAIN_INDEPENDENT_FILES: readonly { readonly label: string; readonly doc: 
   { label: "invite-accept-signature", doc: inviteAccept },
   { label: "lease-wrap", doc: leaseWrap },
   { label: "master-key-wrap", doc: masterKeyWrap },
+  { label: "recipient-sets", doc: recipientSets },
   { label: "recovery-wrap", doc: recoveryWrap },
   { label: "sealed-value", doc: sealedValue },
   { label: "variable-encryption", doc: variableEncryption },

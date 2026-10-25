@@ -218,6 +218,18 @@ export {
   type WithdrawPayload,
 } from "./internal.package/index.ts";
 
+// §6.2 / §5.3: the recipient sets of an environment — R(E), the destinations
+// of its DEK wraps (the device axis), and W(E), the recipients of its sealed
+// value proposals. The one definition behind the CLI's wrap sets and
+// proposals and the server's checks of both
+export {
+  deviceReceivesEnvironment,
+  type MemberDevice,
+  type ProposalRecipient,
+  proposalRecipientsOf,
+  type WrapRecipient,
+  wrapRecipientsOf,
+} from "./internal.package/index.ts";
 // AUDIT_SPEC §5.1: the audit-head rolling hash (the input of checkpoint's
 // audit_head_hash — §6.2). Generation = the project DO's acceptance side;
 // verification = the admin cross-check (AUDIT_SPEC §6) share this one

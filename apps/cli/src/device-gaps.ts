@@ -29,13 +29,12 @@
 
 import type { RecipientDek } from "@maruhi/api-schema";
 import { type EnvironmentId, type ProjectId } from "@maruhi/core";
-import type { ChainDevice, SigningKeyPair } from "@maruhi/crypto";
+import { type ChainDevice, deviceReceivesEnvironment, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEnvironmentFor } from "./backfill.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
-import { deviceReceivesEnvironment } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { devicesOf } from "./device-key.ts";
 import { displayText } from "./display.ts";

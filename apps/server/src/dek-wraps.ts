@@ -15,10 +15,10 @@ import { cryptoEffect } from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   decodeHex,
-  effectivePermissionOf,
+  deviceReceivesEnvironment,
   importSigningPublicKey,
-  scopeIncludesEnvironment,
   verifyDekWrapSignature,
+  wrapRecipientsOf,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -70,57 +70,24 @@ function wrapStorageKey(ref: {
 }
 
 /**
- * The member-side membership predicate of recipient set R(E) (CRYPTO_SPEC §6.2
- * — device axis; 2026-09-19 DK): E ∈ the device's effective scope (the
- * person's scope ∩ the device's scope — `effectivePermissionOf` is the only
- * computation point). Paired with the grant side's
- * `scopeEnvironmentIds.includes(E)`, the expected count (below) and the
- * recipient check (checkWrapRecipient) use the same predicate — "the check is,
- * across recipient classes, the single predicate 'identification (id + key) ∧
- * E ∈ effective scope'" (§6.2 / AUTH_SPEC §12-6).
- */
-export function deviceReceivesEnvironment(
-  member: ChainMember,
-  device: { readonly roleCap: ChainMember["role"]; readonly scope: ChainMember["scope"] },
-  environmentId: EnvironmentId,
-): boolean {
-  return scopeIncludesEnvironment(effectivePermissionOf(member, device).scope, environmentId);
-}
-
-/**
  * The expected recipient count of a complete wrap set for (environment, epoch)
- * (AUTH_SPEC §12-4 / §12-6) = recipient set R(E) (CRYPTO_SPEC §6.2 — device
- * axis): every device of each current member whose effective scope contains E,
- * plus the server keys of valid grant_servers whose disclosure scope contains
- * the environment. Both the exact match of initial registration and the count
- * check of composite requests use this single definition (the acceptance
- * boundary does not shift).
+ * (AUTH_SPEC §12-4 / §12-6) = the size of the recipient set R(E)
+ * (wrapRecipientsOf in @maruhi/crypto — the single definition of CRYPTO_SPEC
+ * §6.2, which the client's wrap set is built from): every device of each
+ * current member whose effective scope contains E, plus the server keys of
+ * valid grant_servers whose disclosure scope contains the environment. Both
+ * the exact match of initial registration and the count check of composite
+ * requests use it (the acceptance boundary does not shift). R(E) lists each
+ * wrap address (identifier + enc key) once, the granularity of the storage
+ * key (wrapStorageKey): a member's user_id and a valid grant's server key FP
+ * that collide with the same key can occupy only one slot, so they count
+ * once (the residual boundary of A-1)
  */
 export function expectedWrapRecipientCount(
   state: ChainState,
   environmentId: EnvironmentId,
 ): number {
-  // Because the storage key (= the registration path's duplicate-detection key
-  // wrapStorageKey) carries no recipient class, if a member's user_id and a
-  // valid grant's server key FP collide on the same key, those two recipients
-  // can only occupy one slot. The expected count uses the same granularity as
-  // the storage key — the deduplicated union of identifier + key (the residual
-  // boundary of A-1 is unchanged. With the key inside the primary key on the
-  // device axis, a collision shrank to "same id and same key")
-  const recipients = new Set<string>();
-  for (const [userId, member] of state.members) {
-    for (const device of member.devices.values()) {
-      if (deviceReceivesEnvironment(member, device, environmentId)) {
-        recipients.add(`${userId}:${device.encPubHex}`);
-      }
-    }
-  }
-  for (const [fingerprintHex, grant] of state.serverGrants) {
-    if (grant.scopeEnvironmentIds.includes(environmentId)) {
-      recipients.add(`${fingerprintHex}:${grant.serverEncPubHex}`);
-    }
-  }
-  return recipients.size;
+  return wrapRecipientsOf(state, environmentId).length;
 }
 
 /** Per-request wrap-count limit (shared by the registration and deletion paths). Returns null when ok. */
@@ -147,7 +114,9 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
  * public key strictly match the payload of a chain-derived valid grant_server,
  * and the target environment is inside the disclosure scope (out of scope is
  * the same 422). The reason-code order (identify → key → scope) is the same
- * across classes.
+ * across classes, and the scope test is R(E)'s own predicate (the member
+ * side is @maruhi/crypto's deviceReceivesEnvironment, the grant side its
+ * scope_environments), the one the expected count above applies.
  */
 function checkServerRecipient(
   state: ChainState,

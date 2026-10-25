@@ -90,6 +90,14 @@ export {
   type EnvValuesDigestSource,
   selectEnvValuesDigestEntries,
 } from "./values-digest.ts";
+export {
+  deviceReceivesEnvironment,
+  type MemberDevice,
+  type ProposalRecipient,
+  proposalRecipientsOf,
+  type WrapRecipient,
+  wrapRecipientsOf,
+} from "./recipient-set.ts";
 export { type AuditHeadRow, computeAuditHeadHash, computeAuditRowDigest } from "./audit-head.ts";
 export {
   buildDekCommitmentBytes,

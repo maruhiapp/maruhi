@@ -28,20 +28,18 @@ import {
   type UserId,
   type VariableId,
 } from "@maruhi/core";
-import type { ChainDevice, ChainMember } from "@maruhi/crypto";
+import type { ProposalRecipient } from "@maruhi/crypto";
 import {
   decodeHex,
-  effectivePermissionOf,
   encodeHex,
   importEncryptionPublicKey,
   isProposalId,
-  scopeIncludesEnvironment,
+  proposalRecipientsOf,
   sealProposedValue,
 } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { VerifiedProject } from "../chain-sync.ts";
 import {
   companionsOf,
   type CredentialValues,
@@ -57,7 +55,6 @@ import {
   type SqlRunner,
 } from "../connector.package/index.ts";
 import { cryptoErrorKind } from "../crypto-error-kind.ts";
-import { memberDevicesInOrder, ROLE_RANK } from "../dek-wrap.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";
@@ -112,32 +109,6 @@ export interface CiRotateResult {
   readonly expiresAtMs: number;
   /** Whether the proposal was sealed a second time after the recipients changed (O-7). */
   readonly resealed: boolean;
-}
-
-/** One recipient device of W(E) (CRYPTO_SPEC §5.3). */
-interface Recipient {
-  readonly member: ChainMember;
-  readonly device: ChainDevice;
-}
-
-/**
- * W(E): every device of each current member whose effective permission
- * (person ∩ device — §6.2) has role member or above and a scope that
- * includes E (R(E) minus readers, reader-capped devices, and server keys
- * — CRYPTO_SPEC §5.3). The same predicate as the server's acceptance
- * check; a set that differs is refused as recipients-mismatch.
- */
-function proposalRecipients(
-  verified: VerifiedProject,
-  environmentId: EnvironmentId,
-): readonly Recipient[] {
-  return memberDevicesInOrder(verified).filter(({ member, device }) => {
-    const effective = effectivePermissionOf(member, device);
-    return (
-      ROLE_RANK[effective.role] >= ROLE_RANK.member &&
-      scopeIncludesEnvironment(effective.scope, environmentId)
-    );
-  });
 }
 
 type ByName = ReadonlyMap<string, DecryptedVariable>;
@@ -278,7 +249,7 @@ function sealToRecipients(input: {
   readonly variableId: VariableId;
   readonly baseVersion: number;
   readonly bytes: Uint8Array;
-  readonly recipients: readonly Recipient[];
+  readonly recipients: readonly ProposalRecipient[];
 }): Effect.Effect<readonly SealedWrap[], CliError> {
   return Effect.forEach(input.recipients, ({ member, device }) =>
     Effect.gen(function* () {
@@ -466,7 +437,11 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
       ),
     );
   }
-  const recipients = proposalRecipients(material.verified, input.environmentId);
+  // W(E) (CRYPTO_SPEC §5.3): the devices whose effective permission has
+  // role member or above and E in scope. The server checks the sealed set
+  // against the same definition and refuses a different one as
+  // recipients-mismatch
+  const recipients = proposalRecipientsOf(material.verified.state, input.environmentId);
   if (recipients.length === 0) {
     return yield* Effect.fail(
       cliError(
@@ -537,8 +512,8 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
                   cliError("The lease returned no material (internal inconsistency)"),
                 );
               }
-              const againRecipients = proposalRecipients(
-                againMaterial.verified,
+              const againRecipients = proposalRecipientsOf(
+                againMaterial.verified.state,
                 input.environmentId,
               );
               const second = yield* sealAndMint({
@@ -581,7 +556,7 @@ interface SealAndMintInput {
   readonly outcome: RotationOutcome;
   readonly params: { readonly projectId: ProjectId; readonly environmentId: EnvironmentId };
   readonly lease: LeasedEnvironments;
-  readonly recipients: readonly Recipient[];
+  readonly recipients: readonly ProposalRecipient[];
   /** The token the mint presents (minted after the connector for the lease's key — K-5; `mintTokenFor`). */
   readonly token: Redacted.Redacted<string>;
 }
@@ -589,7 +564,7 @@ interface SealAndMintInput {
 interface Minted {
   readonly proposalId: string;
   readonly expiresAtMs: number;
-  readonly recipients: readonly Recipient[];
+  readonly recipients: readonly ProposalRecipient[];
   readonly resealed: boolean;
 }
 

@@ -8716,6 +8716,270 @@ def gen_checkpoint_digest():
     )
 
 
+# ---------------------------------------------------------------------------
+# recipient-sets.json — the recipient sets of an environment: R(E), the
+#     destinations of its DEK wraps (§6.2 — the device axis), and W(E), the
+#     recipients of its sealed value proposals (§5.3). No spec change: the
+#     CLI and the server each computed the sets until packages/crypto took
+#     the one definition (2026-10-24)
+#
+#   R(E) = {(m, d) | m a current member, d ∈ devices(m),
+#                    E ∈ scope(m) ∩ scope(d)}
+#          ∪ {valid grant_server g | E ∈ scope_environments(g)}
+#   W(E) = {(m, d) ∈ R(E) | min(role(m), role_cap(d)) ≥ member}
+#          — R(E) minus readers, reader-capped devices and the grants
+#
+# A DEK wrap is addressed by (recipient_user_id, recipient_enc_pub_hex):
+# §5's info binds the recipient id (a server key's FP — §9) and the Seal
+# goes to the enc key, §5.1's signed bytes bind both, and neither carries
+# the recipient class. So the wrap recipients are R(E) listed once per
+# address (AUTH_SPEC §12-6's slot): a member whose user_id is a granted
+# server key's FP and whose device holds that server key shares the grant's
+# address, and the address is listed as the member's (add_member's target
+# user_id is free-form — AUTH_SPEC §11-1 — and member-key uniqueness does
+# not cover server keys). The spec does not decide which class a shared
+# address takes; members first is what the CLI's wrap-set builder did (the
+# server counts the address once and accepts either class into its slot),
+# and README convention 33 lists what the choice decides and what it does
+# not. The same key under another id, or another key under the same id, is
+# another address.
+#
+# The inputs are verification states (§6.2's current members with their
+# active devices, and the valid grants), not chains: the sets read nothing
+# else. Every list is compared as a set (sorted here only to keep the file
+# stable); this file pins no order. It references no other file.
+
+
+def gen_recipient_sets():
+    role_rank = {"reader": 0, "member": 1, "admin": 2, "owner": 3}  # §6.2's role order
+    prod, dev, stage, fresh = "env-prod-0101", "env-dev-0102", "env-stage-0103", "env-fresh-0104"
+    all_scope = {"kind": "all"}
+
+    def listed(*environment_ids: str) -> dict:
+        return {"kind": "listed", "environments": list(environment_ids)}
+
+    def seed(label: str, kind: str) -> bytes:
+        return sha256(f"recipient-sets {kind} {label}".encode())
+
+    def server(label: str, scope_environments: list) -> dict:
+        key = make_server(seed(label, "server-enc"))
+        return {
+            "label": label,
+            "server_key_fingerprint_hex": key["fp_hex"],
+            "server_enc_pub_hex": key["enc_pub_hex"],
+            "scope_environments": scope_environments,
+        }
+
+    def device(label: str, role_cap: str, scope: dict, enc_seed: bytes | None = None) -> dict:
+        key = make_user(enc_seed or seed(label, "enc"), seed(label, "sig"))
+        return {
+            "label": label,
+            "key_fingerprint_hex": key["fp_hex"],
+            "enc_pub_hex": key["enc_pub_hex"],
+            "sig_pub_hex": key["sig_pub_hex"],
+            "role_cap": role_cap,
+            "scope": scope,
+        }
+
+    def member(user_id: str, role: str, scope: dict, devices: list) -> dict:
+        return {"user_id": user_id, "role": role, "scope": scope, "devices": devices}
+
+    def includes(scope: dict, environment_id: str) -> bool:
+        return scope["kind"] == "all" or environment_id in scope["environments"]
+
+    def receives(person: dict, dev_: dict, environment_id: str) -> bool:
+        # E ∈ scope(m) ∩ scope(d) ⟺ E ∈ scope(m) ∧ E ∈ scope(d)
+        return includes(person["scope"], environment_id) and includes(dev_["scope"], environment_id)
+
+    def member_entry(person: dict, dev_: dict) -> dict:
+        return {
+            "recipient_class": "member",
+            "recipient_id": person["user_id"],
+            "key_fingerprint_hex": dev_["key_fingerprint_hex"],
+            "recipient_enc_pub_hex": dev_["enc_pub_hex"],
+        }
+
+    def server_entry(grant: dict) -> dict:
+        return {
+            "recipient_class": "server",
+            "recipient_id": grant["server_key_fingerprint_hex"],
+            "recipient_enc_pub_hex": grant["server_enc_pub_hex"],
+        }
+
+    def stable(entries: list) -> list:
+        return sorted(entries, key=lambda e: (e["recipient_class"], e["recipient_id"], e["recipient_enc_pub_hex"]))
+
+    def wrap_recipients(fixture: dict, environment_id: str) -> list:
+        candidates = [
+            member_entry(person, dev_)
+            for person in fixture["members"]
+            for dev_ in person["devices"]
+            if receives(person, dev_, environment_id)
+        ] + [
+            server_entry(grant)
+            for grant in fixture["server_grants"]
+            if environment_id in grant["scope_environments"]
+        ]
+        by_address = {}
+        for entry in candidates:  # members first: a shared address stays the member's
+            by_address.setdefault((entry["recipient_id"], entry["recipient_enc_pub_hex"]), entry)
+        return stable(list(by_address.values()))
+
+    def proposal_recipients(fixture: dict, environment_id: str) -> list:
+        return stable([
+            member_entry(person, dev_)
+            for person in fixture["members"]
+            for dev_ in person["devices"]
+            if receives(person, dev_, environment_id)
+            and min(role_rank[person["role"]], role_rank[dev_["role_cap"]]) >= role_rank["member"]
+        ])
+
+    project = {
+        "members": [
+            member("user-owner-0101", "owner", all_scope, [
+                device("owner-0101 laptop", "owner", all_scope),
+                device("owner-0101 reader-capped tablet", "reader", all_scope),
+                device("owner-0101 dev box", "owner", listed(dev)),
+            ]),
+            member("user-admin-0102", "admin", listed(prod, dev), [
+                device("admin-0102 laptop", "owner", all_scope),
+                device("admin-0102 ci box", "member", listed(dev, stage)),
+            ]),
+            member("user-devmember-0103", "member", listed(dev), [
+                device("devmember-0103 laptop", "owner", all_scope),
+            ]),
+            member("user-prodreader-0104", "reader", listed(prod), [
+                device("prodreader-0104 laptop", "owner", all_scope),
+            ]),
+            member("user-emptyscope-0105", "member", listed(), [
+                device("emptyscope-0105 laptop", "owner", all_scope),
+            ]),
+            member("user-allmember-0106", "member", all_scope, [
+                device("allmember-0106 laptop", "owner", all_scope),
+                device("allmember-0106 parked box", "member", listed()),
+            ]),
+            member("user-prodbox-0107", "member", all_scope, [
+                device("prodbox-0107 prod box", "owner", listed(prod)),
+            ]),
+        ],
+        "server_grants": [
+            server("server-a", [prod, dev]),
+            server("server-b", [stage]),
+            server("server-c", []),
+            server("server-d", [prod, stage]),
+        ],
+    }
+
+    server_x = server("server-x", [prod])
+    server_y = server("server-y", [prod])
+    server_z = server("server-z", [prod])
+    shared = {
+        "members": [
+            member("user-owner-0201", "owner", all_scope, [
+                device("owner-0201 laptop", "owner", all_scope),
+            ]),
+            member(server_x["server_key_fingerprint_hex"], "member", all_scope, [
+                device("server-x-named member's laptop", "owner", all_scope,
+                       enc_seed=seed("server-x", "server-enc")),
+            ]),
+            member("user-sockreader-0203", "reader", all_scope, [
+                device("sockreader-0203 laptop", "owner", all_scope,
+                       enc_seed=seed("server-y", "server-enc")),
+            ]),
+            member(server_z["server_key_fingerprint_hex"], "member", all_scope, [
+                device("server-z-named member's laptop", "owner", all_scope),
+            ]),
+        ],
+        "server_grants": [server_x, server_y, server_z],
+    }
+    # The premise of the shared-address cases, checked here and by verify_reference.mjs
+    assert shared["members"][1]["devices"][0]["enc_pub_hex"] == server_x["server_enc_pub_hex"]
+    assert shared["members"][2]["devices"][0]["enc_pub_hex"] == server_y["server_enc_pub_hex"]
+    assert shared["members"][3]["devices"][0]["enc_pub_hex"] != server_z["server_enc_pub_hex"]
+
+    # Sets this fixture adds nothing to; the order check of
+    # test/checks/recipient-sets.ts reads it (this file pins no order).
+    # The two user ids sort one way in UTF-16 code-unit order and the
+    # other way case-insensitively, and the two grants' fingerprint order
+    # is the reverse of their enc-key order
+    order = {
+        "members": [
+            member("user-abe-0301", "member", all_scope, [
+                device("abe-0301 laptop", "owner", all_scope),
+            ]),
+            member("user-Zed-0302", "member", all_scope, [
+                device("Zed-0302 laptop", "owner", all_scope),
+            ]),
+        ],
+        "server_grants": [server("server-e", [prod]), server("server-f", [prod])],
+    }
+    order_a, order_z = (person["user_id"] for person in order["members"])
+    assert (order_z < order_a) != (order_z.lower() < order_a.lower())
+    grant_e, grant_f = order["server_grants"]
+    assert (grant_e["server_key_fingerprint_hex"] < grant_f["server_key_fingerprint_hex"]) != (
+        grant_e["server_enc_pub_hex"] < grant_f["server_enc_pub_hex"])
+
+    fixtures = {"project": project, "shared-server-keys": shared, "order": order}
+
+    def case(name: str, fixture: str, environment_id: str, note: str) -> dict:
+        return {
+            "name": name,
+            "fixture": fixture,
+            "environment_id": environment_id,
+            "expected_wrap_recipients": wrap_recipients(fixtures[fixture], environment_id),
+            "expected_proposal_recipients": proposal_recipients(fixtures[fixture], environment_id),
+            "note": note,
+        }
+
+    cases = [
+        case("project-prod", "project", prod,
+             "R(prod): owner-0101's laptop and its reader-capped tablet (a reader cap still "
+             "receives wraps), admin-0102's laptop, prodreader-0104's laptop (a reader receives "
+             "wraps), allmember-0106's laptop, prodbox-0107's prod box, server-a and server-d. Out: "
+             "owner-0101's dev box (device scope {dev}), admin-0102's ci box ({prod, dev} ∩ "
+             "{dev, stage} = {dev}), devmember-0103 (scope {dev}), emptyscope-0105 (listed {}), "
+             "allmember-0106's parked box (device scope listed {}), server-b and server-c. W(prod) "
+             "drops the reader-capped tablet, prodreader-0104 and both server keys"),
+        case("project-dev", "project", dev,
+             "R(dev): every device whose person and device scopes both list dev or are all — "
+             "owner-0101's three devices, admin-0102's laptop and ci box, devmember-0103, "
+             "allmember-0106's laptop — and server-a. prodbox-0107 is out although its person "
+             "scope is all: its only device lists prod. W(dev) keeps admin-0102's ci box (effective "
+             "role min(admin, member) = member) and drops the reader-capped tablet and server-a"),
+        case("project-stage", "project", stage,
+             "R(stage): admin-0102's ci box lists stage, but the person's scope {prod, dev} does "
+             "not, so the intersection excludes it — only the all-scope persons' all-scope devices "
+             "(owner-0101's laptop and tablet, allmember-0106's laptop), server-b and server-d"),
+        case("project-fresh", "project", fresh,
+             "an environment no listed scope and no grant names (a new environment: AUTH_SPEC "
+             "§12-4's creation composite wraps to exactly this): only the all-scope persons' "
+             "all-scope devices, and no server key"),
+        case("shared-server-keys-prod", "shared-server-keys", prod,
+             "the member named by server-x's fingerprint holds server-x's enc key on its device: "
+             "the same (recipient id, enc key) address as the grant, so R(prod) lists it once, as "
+             "the member's. sockreader-0203's device holds server-y's enc key under its own user "
+             "id, and the member named by server-z's fingerprint holds a key of its own: two "
+             "addresses each, so both the member's device and the grant are listed. W(prod) drops "
+             "sockreader-0203 (a reader) and the three grants, and keeps the server-x-named "
+             "member's laptop, whose enc key is server-x's (README convention 33)"),
+        case("order-prod", "order", prod,
+             "both members' laptops and both grants: the case adds no way in or out, and is there "
+             "for the order check (user-Zed-0302 precedes user-abe-0301 in UTF-16 code-unit order "
+             "only, and server-f's fingerprint precedes server-e's while its enc key does not). "
+             "W(prod) is the two laptops"),
+    ]
+
+    write(
+        "recipient-sets.json",
+        {
+            "description": "CRYPTO_SPEC §6.2 / §5.3: the recipient sets of an environment E. R(E) — the complete set of E's DEK-wrap destinations (§6.2, the device axis; read by §6.3 / §7 / AUTH_SPEC §12-4 / §12-6) — and W(E) — the recipients of E's sealed value proposals (§5.3). No spec change: the CLI and the server each computed the sets, and packages/crypto now holds the one definition. The inputs are verification states, not chains, and this file references no other file",
+            "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}, listed once per wrap address (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot); an address a member and a server key share is listed as the member's. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
+            "fixtures": fixtures,
+            "cases": cases,
+        },
+    )
+
+
 if __name__ == "__main__":
     gen_encoding()
     gen_variable_encryption()
@@ -8732,3 +8996,4 @@ if __name__ == "__main__":
     gen_invite_link()  # references chain-entries.json (the §6.5 issue signature)
     gen_recovery_wrap()
     gen_checkpoint_digest()  # §6.2 target selection of values_digest (standalone — references no other file)
+    gen_recipient_sets()  # §6.2 R(E) / §5.3 W(E) (standalone — references no other file)

@@ -3,9 +3,11 @@
 //
 // Shared implementation that generates the "complete wrap set" a composite
 // request (environment creation = epoch 1, rotation = new epoch) embeds
-// so it exactly matches the verified ChainState's "current member set +
-// server keys of valid grant_server whose disclosure scope contains the
-// target environment" (§12-4). The wrap-recipient match check (§6.3's
+// so it exactly matches the recipient set R(E) of the verified ChainState
+// (wrapRecipientsOf in @maruhi/crypto, the single definition of CRYPTO_SPEC
+// §6.2: the in-scope devices of the current members + the server keys of
+// valid grant_server whose disclosure scope contains the target
+// environment — §12-4). The wrap-recipient match check (§6.3's
 // ghost-member defense) has its main line on the client side; the
 // server's §12-6 verification is the auxiliary line (session-07 §5). The
 // recipient position of a server-addressed wrap's HPKE info /
@@ -30,8 +32,8 @@ import type {
   ChainMember,
   EffectivePermission,
   Role,
-  ServerGrant,
   SigningKeyPair,
+  WrapRecipient,
 } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -42,30 +44,21 @@ import {
   signDekWrap,
   SUITE_ID,
   wrapDek,
+  wrapRecipientsOf,
 } from "@maruhi/crypto";
 import { Data, Effect, Redacted } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
-import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
+import { ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
 /**
- * A wrap recipient (recipient class — AUTH_SPEC §12-6). A member's
- * identifier is the user_id; a server's identifier is the server key FP
- * (it goes verbatim into HPKE info / the recipient position of the §5.1
+ * A wrap recipient's identifier: a member's user_id, a server's key FP (it
+ * goes verbatim into HPKE info and the recipient position of the §5.1
  * signature target — CRYPTO_SPEC §9).
  */
-export type WrapRecipient =
-  | {
-      readonly kind: "member";
-      readonly member: ChainMember;
-      /** The device the wrap is sealed to (R(E) is a (person, device) pair — CRYPTO_SPEC §6.2, DK K4). */
-      readonly device: ChainDevice;
-    }
-  | { readonly kind: "server"; readonly grant: ServerGrant };
-
 function recipientId(recipient: WrapRecipient): UserId | KeyFingerprintHex {
   return recipient.kind === "member"
     ? recipient.member.userId
@@ -85,89 +78,6 @@ function recipientPositionOf(
 
 function recipientEncPubHex(recipient: WrapRecipient): string {
   return recipient.kind === "member" ? recipient.device.encPubHex : recipient.grant.serverEncPubHex;
-}
-
-/**
- * The member-side membership predicate of the recipient set R(E)
- * (CRYPTO_SPEC §6.2 — the device axis, 2026-09-19 DK): E ∈ the device's
- * effective scope (person's scope ∩ device's scope —
- * `effectivePermissionOf` is the only computation point). The same
- * predicate as the server's expected count (`expectedWrapRecipientCount`)
- * (design record §9 K4).
- */
-export function deviceReceivesEnvironment(
-  member: ChainMember,
-  device: ChainDevice,
-  environmentId: EnvironmentId,
-): boolean {
-  return scopeIncludesEnvironment(effectivePermissionOf(member, device).scope, environmentId);
-}
-
-/**
- * The recipients of the complete wrap set of target environment E = R(E)
- * (the single definition in CRYPTO_SPEC §6.2 — 2026-09-15 ES K4; device
- * expansion 2026-09-19 DK K4): { (m, d) | m a current member, d ∈
- * devices(m), E ∈ effective scope(m, d) } ∪ { valid grant g | E ∈
- * scope_environments(g) }. The check is the same "E ∈ scope" predicate
- * across recipient classes. Ordering is deterministic (members by user_id
- * ascending → devices by FP ascending → servers by FP ascending). Dedup
- * is at the storage-key granularity (identifier + enc key — same as the
- * server's `wrapStorageKey`). Environment creation, rotate composites,
- * and CAS-retry reuse judgment (sameWrapRecipientSet) all pass through
- * here. A wrap addressed to an out-of-scope device is refused by the
- * server with 422 `scope-out-of-range` (§12-6).
- */
-/** Every (member, device) pair of the verified state, members by user id and devices in their registry order (the deterministic recipient order). */
-export function memberDevicesInOrder(
-  verified: VerifiedProject,
-): readonly { readonly member: ChainMember; readonly device: ChainDevice }[] {
-  const pairs: { readonly member: ChainMember; readonly device: ChainDevice }[] = [];
-  for (const member of [...verified.state.members.values()].toSorted((a, b) =>
-    a.userId < b.userId ? -1 : 1,
-  )) {
-    for (const device of devicesOf(member)) {
-      pairs.push({ member, device });
-    }
-  }
-  return pairs;
-}
-
-function wrapRecipientsFor(
-  verified: VerifiedProject,
-  environmentId: EnvironmentId,
-): readonly WrapRecipient[] {
-  const seen = new Set<string>();
-  const recipients: WrapRecipient[] = [];
-  const push = (recipient: WrapRecipient) => {
-    const key = `${recipientId(recipient)}:${recipientEncPubHex(recipient)}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      recipients.push(recipient);
-    }
-  };
-  for (const { member, device } of memberDevicesInOrder(verified)) {
-    if (deviceReceivesEnvironment(member, device, environmentId)) {
-      push({ kind: "member", member, device });
-    }
-  }
-  for (const grant of [...verified.state.serverGrants.values()]
-    .filter((candidate) => candidate.scopeEnvironmentIds.includes(environmentId))
-    .toSorted((a, b) => (a.serverKeyFingerprintHex < b.serverKeyFingerprintHex ? -1 : 1))) {
-    push({ kind: "server", grant });
-  }
-  return recipients;
-}
-
-/**
- * The expected recipient count of the complete wrap set (pre-flight
- * self-check — the same predicate and the same dedup granularity as the
- * server's `expectedWrapRecipientCount`).
- */
-export function expectedWrapRecipientCount(
-  verified: VerifiedProject,
-  environmentId: EnvironmentId,
-): number {
-  return wrapRecipientsFor(verified, environmentId).length;
 }
 
 /** Result of building one wrap (a tagged Result with the real reason code — do not crush multiple causes into one generic message). */
@@ -276,10 +186,11 @@ export function wrapAndSignFor(input: {
 }
 
 /**
- * Builds the wrap set for one epoch: exactly the verified current member set
- * plus the server keys of active grants whose scope covers the environment
- * (§6.3 / §12-4), each wrap signed by the caller (§5.1).
- * Deterministic recipient order for reproducible requests.
+ * Builds the wrap set for one epoch: one wrap per recipient of R(E)
+ * (wrapRecipientsOf — the in-scope devices of the current members plus the
+ * server keys of active grants whose scope covers the environment — §6.2 /
+ * §6.3 / §12-4), each wrap signed by the caller (§5.1). The recipients come
+ * in wrapRecipientsOf's fixed order, so a request is reproducible.
  */
 export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(function* (input: {
   readonly verified: VerifiedProject;
@@ -289,7 +200,7 @@ export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(f
   readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.fn.Return<readonly WrappedDek[], CliError> {
-  const recipients = wrapRecipientsFor(input.verified, input.environmentId);
+  const recipients = wrapRecipientsOf(input.verified.state, input.environmentId);
   const wraps: WrappedDek[] = [];
   for (const recipient of recipients) {
     // Identifiers are chain-derived free-form strings — always neutralize before emitting to the terminal
@@ -325,8 +236,10 @@ export function sameWrapRecipientSet(
   b: VerifiedProject,
   environmentId: EnvironmentId,
 ): boolean {
-  const left = wrapRecipientsFor(a, environmentId);
-  const right = wrapRecipientsFor(b, environmentId);
+  // wrapRecipientsOf lists R(E) in one fixed order, so equal sets give
+  // equal lists
+  const left = wrapRecipientsOf(a.state, environmentId);
+  const right = wrapRecipientsOf(b.state, environmentId);
   if (left.length !== right.length) {
     return false;
   }

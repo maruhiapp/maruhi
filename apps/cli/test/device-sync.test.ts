@@ -8,15 +8,15 @@
 //     provenances (reserve / approved / observed) to the chain, and never reads
 //     or writes the registry (`GET /auth/devices`) (K4-3). A revoked record is
 //     never appended. Devices observed on the chain are recorded with provenance (K4-4)
-//  3. The expected count of the complete wrap set uses the same predicate as
-//     the server (effective scope × devices, storage-key granularity)
+//  3. Over a real chain, the one definition of the complete wrap set's
+//     recipients that the CLI and the server share (wrapRecipientsOf in
+//     @maruhi/crypto) counts each (person, device) pair whose effective
+//     scope (the person's scope ∩ the device's) contains E
 
-import { verifyChainWithHistory } from "@maruhi/crypto";
+import { verifyChainWithHistory, wrapRecipientsOf } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
-import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
-import { expectedWrapRecipientCount } from "../src/dek-wrap.ts";
 import {
   addScopedMemberOp,
   buildChain,
@@ -261,8 +261,8 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
   });
 });
 
-describe("the expected count of the complete wrap set (the server's same predicate — the R(E) device expansion)", () => {
-  it("counts (person, device) pairs whose effective scope contains E plus grants, at storage-key granularity", async () => {
+describe("the complete wrap set's recipients over a real chain (R(E) — the device expansion)", () => {
+  it("counts each (person, device) pair whose effective scope contains E", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -277,10 +277,10 @@ describe("the expected count of the complete wrap set (the server's same predica
     ]);
     const verified = await verifyChainWithHistory(built.entries);
     if (!verified.ok) throw new Error("chain");
-    const view = { state: verified.value.state } as VerifiedProject;
+    const { state } = verified.value;
     // env-a: owner's 1st device (all) + member = 2. owner's 2nd device does not hold env-a
-    expect(expectedWrapRecipientCount(view, testEnvironmentId("env-a"))).toBe(2);
+    expect(wrapRecipientsOf(state, testEnvironmentId("env-a"))).toHaveLength(2);
     // env-b: owner's 1st + 2nd devices = 2. member is out of scope
-    expect(expectedWrapRecipientCount(view, testEnvironmentId("env-b"))).toBe(2);
+    expect(wrapRecipientsOf(state, testEnvironmentId("env-b"))).toHaveLength(2);
   });
 });
