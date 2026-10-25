@@ -1074,86 +1074,47 @@ def gen_chain_entries():
         "a size-limit-violation × insufficient-role (admin) compound violation is judged by the structural check first (check-stage order: structure → authorization; same shape as create-env-commitment-format-precedes-role)",
     )
 
-    # --- Extended chain: the precondition state needed to pin the
-    # "re-grant rules → key duplication" order ---
-    # The state "an active grant exists AND the server enc key equals a
-    # current member's enc key" can only be created by adding a member
-    # that reuses the server enc key after the grant (seq 9) (in the
-    # reverse order duplicate-server-key rejects the grant first). This
-    # add_member itself is **valid** under the current consensus rules:
-    # §6.2's member-key uniqueness index covers only current members'
-    # keys; an active grant's server key is out of scope (an explicit
-    # line drawn by the spec — the reverse-direction collision ban
-    # remains a deferred item under §6.2's "note"). Same "derived
-    # chain" mechanics as value-signature.json's tenure_extension — the
-    # canonical chain in chain-entries itself is not changed
+    # --- Key uniqueness's second clause (2026-10-25 — CRYPTO_SPEC
+    # 0.22-draft §6.2): no current device's enc public key is a server
+    # key a grant has named, valid or since revoked. Until then the
+    # derived chain server-key-member-sock appended at seq 10 an
+    # add_member reusing the active grant's server enc key, which was
+    # valid, to pin re-grant rules → duplicate-server-key. That entry is
+    # now itself invalid and the pair can no longer co-occur (a
+    # re-grant's key is a valid grant's, which no current device can
+    # hold), so the chain and its two negatives are retired; the entry
+    # stays, byte for byte, as the first negative below. The holder is
+    # user-sock-0006: a server enc key with a fresh sig key
     sock_sig_sk = Ed25519PrivateKey.from_private_bytes(pat(0xB0, 32))
-    sock_sig_pub = sock_sig_sk.public_key().public_bytes(
+    sock_sig_pub_hex = sock_sig_sk.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
-    sock_fp = sha256(bytes.fromhex(server["enc_pub_hex"]) + sock_sig_pub)[:16]
-    sock = {
-        "sig_sk": sock_sig_sk,
-        "enc_pub_hex": server["enc_pub_hex"],  # reuse of the server enc key (intentional)
-        "sig_pub_hex": sock_sig_pub.hex(),
-        "fp_hex": sock_fp.hex(),
-    }
+    ).hex()
     sock_id = "user-sock-0006"
-    sock_add_entry = build_entry(
-        10, "add_member", owner_id, owner,
-        {"target_user_id": sock_id, "enc_pub_hex": sock["enc_pub_hex"],
-         "sig_pub_hex": sock["sig_pub_hex"], "role": "reader", **ALL},
-        t0 + 9000, head9,
-    )
-    extended_chains = {
-        "server-key-member-sock": {
-            "description": (
-                "A derived chain that appends to the canonical chain seq 1-9 "
-                "(grant active) an add_member for a member (user-sock-0006) "
-                "reusing the server enc key. This append is valid under the "
-                "current consensus rules (§6.2's member-key uniqueness indexes "
-                "only member keys; a grant_server's server key is out of "
-                "scope). Creates the state 'active grant × server key = member "
-                "key' and pins the check order re-grant rules → "
-                "duplicate-server-key"
-            ),
-            "base_seq": 9,
-            "entries": [sock_add_entry],
-            "keys": {
-                sock_id: {
-                    "enc_sk_seed_hex": pat(0x90, 32).hex(),  # = server_key's seed (reused)
-                    "sig_sk_seed_hex": pat(0xB0, 32).hex(),
-                    "enc_pub_hex": sock["enc_pub_hex"],
-                    "sig_pub_hex": sock["sig_pub_hex"],
-                    "key_fingerprint_hex": sock["fp_hex"],
-                },
-            },
-            "expected_members": {owner_id: member_state("owner", "all"),
-                                 admin_id: member_state("admin", "all"),
-                                 sock_id: member_state("reader", "all")},
-        },
-    }
-    sock_head = sock_add_entry["entry_hash_hex"]
 
-    def add_extended_authz(name, seq, prev_hex, payload, expected_reason, note):
-        entry = build_entry(seq, "grant_server", owner_id, owner, payload, t0 + 10000, prev_hex)
-        case = authz(name, entry, expected_reason, note)
-        case["verify_key_hex"] = owner["sig_pub_hex"]
-        case["chain"] = "server-key-member-sock"
-        authz_cases.append(case)
+    def server_key_holder_payload(enc_pub_hex: str, role: str = "reader") -> dict:
+        return {"target_user_id": sock_id, "enc_pub_hex": enc_pub_hex,
+                "sig_pub_hex": sock_sig_pub_hex, "role": role, **ALL}
 
-    add_extended_authz(
-        "authz-grant-narrowed-precedes-duplicate-key", 11, sock_head,
-        grant_payload_for(narrowed_scope, grant_lease_policy),
-        "grant-scope-narrowed",
-        "a scope-narrowed × server-key-duplicate (the sock member holds the same key) compound violation is judged by the re-grant rule first (§6.2 check order: re-grant rules → key duplication)",
+    def server_key_device_payload(enc_pub_hex: str) -> dict:
+        return {"enc_pub_hex": enc_pub_hex, "sig_pub_hex": sock_sig_pub_hex,
+                "role_cap": "member", **ALL}
+
+    add_authz(
+        "authz-add-member-granted-server-key", 10, head9, "add_member", owner_id, owner,
+        server_key_holder_payload(server["enc_pub_hex"]), t0 + 9000, "duplicate-member-key",
+        "an add_member whose enc public key is the active grant's (seq 9's) server key is rejected (§6.2 key uniqueness: no current device holds a key a grant has named)",
     )
-    add_extended_authz(
-        "authz-grant-duplicate-key-on-regrant", 11, sock_head,
-        grant_payload_for(grant_scope, []),
-        "duplicate-server-key",
-        "even with the scope unchanged (passing the re-grant rules), an entry is rejected if the server key duplicates a current member's key (the freedom to revise lease_policy does not bypass the key-duplication check)",
+    add_authz(
+        "authz-add-member-revoked-server-key", 13, head12, "add_member", owner_id, owner,
+        server_key_holder_payload(server["enc_pub_hex"]), t0 + 12000, "duplicate-member-key",
+        "seq 9's grant was revoked at seq 12, but its key stays named: an add_member reusing it is still rejected (§6.2 — a grant's key counts for the whole history; a verifier that compares only the valid grants' keys fails here)",
     )
+    add_authz(
+        "authz-add-device-granted-server-key", 10, head9, "add_device", admin_id, admin,
+        server_key_device_payload(server["enc_pub_hex"]), t0 + 9000, "duplicate-member-key",
+        "a current member (admin-0003) cannot put the active grant's server key in a device of their own (add_device is self-service at every role and the key is public in the grant's payload — §6.2 key uniqueness)",
+    )
+    extended_chains = {}
 
     # Environment-lifecycle chain binding (2026-08-03 — CRYPTO_SPEC
     # §6.2): a create_environment's environment_id is unique across the
@@ -1469,6 +1430,33 @@ def gen_chain_entries():
             # (an implementation keeping seq 9 fails here)
             "expected_server_grants": [grant_state(grant_scope, [], 10)],
             "note": "a re-grant with scope unchanged × lease_policy fully deleted is accepted and the policy is replaced by empty (no lease path) (the acceptance side of §6.3's re-grant two-layer rule; appended on the seq-9 head). The derived grant_seq advances to the re-grant entry's seq",
+        },
+    ]
+
+    # Key uniqueness counts a device only while it is current (§6.2), so
+    # no registration blocks a grant for good: user-member-0002's enc key
+    # (its holder was removed at seq 5) can become a server key. Its
+    # fingerprint follows the §9 server-key definition
+    removed_member_server_fp = sha256(bytes.fromhex(member["enc_pub_hex"]))[:16].hex()
+    removed_member_grant = {
+        "server_enc_pub_hex": member["enc_pub_hex"],
+        "server_key_fingerprint_hex": removed_member_server_fp,
+        "scope_environments": [PROD],
+        "scope_environments_lp_hex": scope_environments_lp_hex([PROD]),
+        "lease_policy": [],
+        "lease_policy_lp_hex": lease_policy_lp_hex([]),
+    }
+    valid_appends += [
+        {
+            "name": "grant-key-of-removed-member",
+            "entry": build_entry(13, "grant_server", owner_id, owner, removed_member_grant,
+                                 t0 + 12000, head12),
+            "expected_members": OWNER_ADMIN,
+            "expected_environments": base_environments,
+            "expected_server_grants": [dict(grant_state([PROD], [], 13),
+                                            server_key_fingerprint_hex=removed_member_server_fp,
+                                            server_enc_pub_hex=member["enc_pub_hex"])],
+            "note": "a server key that a removed member's device held (user-member-0002, removed at seq 5) is granted: duplicate-server-key compares only the current devices (§6.2 key uniqueness — a device counts only while it is current, so no registration blocks a grant for good)",
         },
     ]
 
@@ -3285,6 +3273,74 @@ def gen_chain_entries():
         chain="proposal-revoke-server-applied",
     )
 
+    # (12) Key uniqueness through four-eyes (2026-10-25 — CRYPTO_SPEC
+    #      0.22-draft §6.2): a grant applied by an approve names its key
+    #      at the approve's seq, and a pending proposal names none.
+    #      other-server's key (seed 0x9C) is granted only through a
+    #      proposal. owner-0001 first proposes adding user-sock-0006 as an
+    #      owner with that key (an owner-establishing add_member is always
+    #      a four-eyes target), then proposes the grant, and owner-0014's
+    #      approve applies the grant at seq 27
+    other_server = make_server(pat(0x9C, 32))
+    other_grant_payload = {
+        "server_enc_pub_hex": other_server["enc_pub_hex"],
+        "server_key_fingerprint_hex": other_server["fp_hex"],
+        "scope_environments": [PROD],
+        "scope_environments_lp_hex": scope_environments_lp_hex([PROD]),
+        "lease_policy": [],
+        "lease_policy_lp_hex": lease_policy_lp_hex([]),
+    }
+    keyed = extend(24, head24, [
+        ("propose", owner_id, propose_payload("add_member", server_key_holder_payload(
+            other_server["enc_pub_hex"], "owner"), EXPIRES), T24),                    # 25: votes [0001]
+        ("propose", owner_id, propose_payload("grant_server", other_grant_payload, EXPIRES),
+         t0 + 25000),                                                                  # 26: votes [0001]
+    ])
+    uniq_member_proposal, uniq_grant_proposal = keyed
+    extended_chains["server-key-grant-pending"] = chain_doc(
+        "owner-0001 proposes adding user-sock-0006 as an owner whose enc "
+        "key is other-server's (seq 25) and proposes granting that server "
+        "key (seq 26). Both stay pending (each has the proposer's vote, 1 "
+        "of quorum 2), so no grant names the key yet (§6.2 — a pending "
+        "proposal names none). The precondition chain for the positive "
+        "register-key-of-pending-grant-proposal",
+        24, keyed, members_24, canonical_policy,
+        pending_map((uniq_member_proposal, "owner", []), (uniq_grant_proposal, "owner", [])),
+        expected_environments=base_environments,
+        expected_server_grants=[],
+    )
+    keyed_applied = keyed + extend(26, uniq_grant_proposal["entry_hash_hex"], [
+        ("approve", owner2_id, approve_of(uniq_grant_proposal), t0 + 26000),      # 27: applies — the key is named
+    ])
+    keyed_head = keyed_applied[-1]["entry_hash_hex"]
+    extended_chains["server-key-grant-approved"] = chain_doc(
+        "Continues server-key-grant-pending: owner-0014's approve (seq 27) "
+        "applies the grant proposed at seq 26, so other-server's key is "
+        "named from seq 27 on, by an approve only (no grant_server entry "
+        "names it). The add_member proposal of seq 25 stays pending. The "
+        "precondition chain for the negatives "
+        "authz-add-device-approved-server-key and "
+        "authz-approve-add-member-key-named-after-proposal",
+        24, keyed_applied, members_24, canonical_policy,
+        pending_map((uniq_member_proposal, "owner", [])),
+        expected_environments=base_environments,
+        expected_server_grants=[dict(grant_state([PROD], [], 27),
+                                     server_key_fingerprint_hex=other_server["fp_hex"],
+                                     server_enc_pub_hex=other_server["enc_pub_hex"])],
+    )
+    add_es(
+        "authz-add-device-approved-server-key", 28, keyed_head, "add_device", owner_id,
+        server_key_device_payload(other_server["enc_pub_hex"]), t0 + 27000, "duplicate-member-key",
+        "a key granted only through an approve is named from the approve's seq, so a device holding it is rejected (§6.2 — a verifier that collects only directly appended grant_server entries fails here)",
+        chain="server-key-grant-approved",
+    )
+    add_es(
+        "authz-approve-add-member-key-named-after-proposal", 28, keyed_head, "approve", owner2_id,
+        approve_of(uniq_member_proposal), t0 + 27000, "duplicate-member-key",
+        "owner-0014's vote completes the add_member proposed at seq 25, but a grant named its enc key at seq 27: the application-time re-check rejects the approve (§6.2 four-eyes — the inner op's consensus rules are re-checked in the state at application time)",
+        chain="server-key-grant-approved",
+    )
+
     # --- The permissive side (valid_appends). Cases with a chain
     #     specifier attach to the tail of that derived chain ---
     def append_case(name, seq, prev_hex, op, actor_id, payload, ts, members, note,
@@ -3444,6 +3500,17 @@ def gen_chain_entries():
             policy_payload(POLICY_OPS, 2), t0 + 26000, members_24,
             "an off policy can be re-enabled by a single owner's direct append (off = same treatment as no policy)",
             policy=canonical_policy, chain="policy-off",
+        ),
+    ]
+
+    valid_appends += [
+        append_case(
+            "register-key-of-pending-grant-proposal", 27, keyed[-1]["entry_hash_hex"], "add_member",
+            owner_id, server_key_holder_payload(other_server["enc_pub_hex"]), t0 + 26000,
+            members_with(members_24, **{sock_id: member_state("reader", "all")}),
+            "a key that only a pending grant proposal names can be registered (§6.2 — a pending or withdrawn proposal names none; the add_member proposal of seq 25 reserves neither its user id nor its key either)",
+            pending=pending_map((uniq_member_proposal, "owner", []), (uniq_grant_proposal, "owner", [])),
+            chain="server-key-grant-pending",
         ),
     ]
 
@@ -3846,6 +3913,9 @@ def gen_chain_entries():
     add_dk("authz-add-device-duplicate-sig-key", 38, dk_head[37], "add_device", owner_id, recovered,
            dict(device_payload(fresh_device, "owner"), sig_pub_hex=owner3_readercap["sig_pub_hex"]), "duplicate-member-key",
            "a registration where only the sig public key matches someone else's (owner-0015's device L's) key is also rejected")
+    add_dk("authz-add-device-revoked-server-key", 38, dk_head[37], "add_device", owner_id, recovered,
+           server_key_device_payload(server["enc_pub_hex"]), "duplicate-member-key",
+           "the key of seq 9's grant (revoked at seq 12) stays named, so no device may hold it (§6.2 key uniqueness — a grant's key counts for the whole history)")
     add_dk("authz-add-device-unknown-environment", 38, dk_head[37], "add_device", owner_id, recovered,
            device_payload(fresh_device, "owner", "listed", [GHOST]), "unknown-environment",
            "each listed environment_id must be preceded by a create_environment (fail-closed on typos — the same reason code as scope)")
@@ -4357,6 +4427,17 @@ def gen_chain_entries():
         grant_payload_for([DEV], grant_lease_policy), t0 + 10000, "environment-deleted",
         "a re-grant naming only the deleted id (which also drops prod — a narrowing) is judged as environment-deleted before the re-grant rule",
         **ON_GRANTED,
+    )
+    # environment-deleted → duplicate-server-key, pinned on a key's first
+    # grant (§6.2 key uniqueness: the re-grant rule and key duplication
+    # never co-occur, so the old transitive pin through
+    # authz-grant-narrowed-precedes-duplicate-key is gone): admin-0003's
+    # enc key as the server key, naming the deleted env-stage-0003
+    add_es(
+        "authz-grant-deleted-precedes-duplicate-server-key", 21, deleted_head, "grant_server", owner_id,
+        duplicate_key_payload([STAGE], []), T20, "environment-deleted",
+        "a first grant whose key a current device holds (admin-0003's enc key) and whose scope names a deleted environment is judged as environment-deleted first (grant_server: … → environment-deleted → re-grant rule → duplicate-server-key)",
+        **ON_DELETED,
     )
     negatives += authz_cases[del_start:]
 
@@ -8732,17 +8813,12 @@ def gen_checkpoint_digest():
 # A DEK wrap is addressed by (recipient_user_id, recipient_enc_pub_hex):
 # §5's info binds the recipient id (a server key's FP — §9) and the Seal
 # goes to the enc key, §5.1's signed bytes bind both, and neither carries
-# the recipient class. So the wrap recipients are R(E) listed once per
-# address (AUTH_SPEC §12-6's slot): a member whose user_id is a granted
-# server key's FP and whose device holds that server key shares the grant's
-# address, and the address is listed as the member's (add_member's target
-# user_id is free-form — AUTH_SPEC §11-1 — and member-key uniqueness does
-# not cover server keys). The spec does not decide which class a shared
-# address takes; members first is what the CLI's wrap-set builder did (the
-# server counts the address once and accepts either class into its slot),
-# and README convention 33 lists what the choice decides and what it does
-# not. The same key under another id, or another key under the same id, is
-# another address.
+# the recipient class (AUTH_SPEC §12-6's slot). No two elements of R(E)
+# share an address: no two current devices share an enc key, and §6.2's key
+# uniqueness keeps every key a grant has named off them (2026-10-25). One
+# id can still name a member and a grant (add_member's target user_id is
+# free-form — AUTH_SPEC §11-1), with two keys: two addresses, both listed
+# (README convention 33).
 #
 # The inputs are verification states (§6.2's current members with their
 # active devices, and the valid grants), not chains: the sets read nothing
@@ -8770,8 +8846,8 @@ def gen_recipient_sets():
             "scope_environments": scope_environments,
         }
 
-    def device(label: str, role_cap: str, scope: dict, enc_seed: bytes | None = None) -> dict:
-        key = make_user(enc_seed or seed(label, "enc"), seed(label, "sig"))
+    def device(label: str, role_cap: str, scope: dict) -> dict:
+        key = make_user(seed(label, "enc"), seed(label, "sig"))
         return {
             "label": label,
             "key_fingerprint_hex": key["fp_hex"],
@@ -8810,7 +8886,7 @@ def gen_recipient_sets():
         return sorted(entries, key=lambda e: (e["recipient_class"], e["recipient_id"], e["recipient_enc_pub_hex"]))
 
     def wrap_recipients(fixture: dict, environment_id: str) -> list:
-        candidates = [
+        return stable([
             member_entry(person, dev_)
             for person in fixture["members"]
             for dev_ in person["devices"]
@@ -8819,11 +8895,7 @@ def gen_recipient_sets():
             server_entry(grant)
             for grant in fixture["server_grants"]
             if environment_id in grant["scope_environments"]
-        ]
-        by_address = {}
-        for entry in candidates:  # members first: a shared address stays the member's
-            by_address.setdefault((entry["recipient_id"], entry["recipient_enc_pub_hex"]), entry)
-        return stable(list(by_address.values()))
+        ])
 
     def proposal_recipients(fixture: dict, environment_id: str) -> list:
         return stable([
@@ -8870,32 +8942,20 @@ def gen_recipient_sets():
         ],
     }
 
-    server_x = server("server-x", [prod])
-    server_y = server("server-y", [prod])
+    # One recipient id for a member and a grant: the member's user id is
+    # server-z's fingerprint, and its device holds a key of its own
     server_z = server("server-z", [prod])
-    shared = {
+    named = {
         "members": [
             member("user-owner-0201", "owner", all_scope, [
                 device("owner-0201 laptop", "owner", all_scope),
-            ]),
-            member(server_x["server_key_fingerprint_hex"], "member", all_scope, [
-                device("server-x-named member's laptop", "owner", all_scope,
-                       enc_seed=seed("server-x", "server-enc")),
-            ]),
-            member("user-sockreader-0203", "reader", all_scope, [
-                device("sockreader-0203 laptop", "owner", all_scope,
-                       enc_seed=seed("server-y", "server-enc")),
             ]),
             member(server_z["server_key_fingerprint_hex"], "member", all_scope, [
                 device("server-z-named member's laptop", "owner", all_scope),
             ]),
         ],
-        "server_grants": [server_x, server_y, server_z],
+        "server_grants": [server_z],
     }
-    # The premise of the shared-address cases, checked here and by verify_reference.mjs
-    assert shared["members"][1]["devices"][0]["enc_pub_hex"] == server_x["server_enc_pub_hex"]
-    assert shared["members"][2]["devices"][0]["enc_pub_hex"] == server_y["server_enc_pub_hex"]
-    assert shared["members"][3]["devices"][0]["enc_pub_hex"] != server_z["server_enc_pub_hex"]
 
     # Sets this fixture adds nothing to; the order check of
     # test/checks/recipient-sets.ts reads it (this file pins no order).
@@ -8919,7 +8979,16 @@ def gen_recipient_sets():
     assert (grant_e["server_key_fingerprint_hex"] < grant_f["server_key_fingerprint_hex"]) != (
         grant_e["server_enc_pub_hex"] < grant_f["server_enc_pub_hex"])
 
-    fixtures = {"project": project, "shared-server-keys": shared, "order": order}
+    fixtures = {"project": project, "fingerprint-named-member": named, "order": order}
+    # Every fixture is a state a valid chain reaches (§6.2's key uniqueness:
+    # no two devices share an enc or a sig key, and no device holds a grant's
+    # key), checked here and by verify_reference.mjs
+    for fixture in fixtures.values():
+        devices = [dev_ for person in fixture["members"] for dev_ in person["devices"]]
+        for kind in ("enc_pub_hex", "sig_pub_hex"):
+            assert len({dev_[kind] for dev_ in devices}) == len(devices)
+        assert not {dev_["enc_pub_hex"] for dev_ in devices} & {
+            grant["server_enc_pub_hex"] for grant in fixture["server_grants"]}
 
     def case(name: str, fixture: str, environment_id: str, note: str) -> dict:
         return {
@@ -8954,14 +9023,11 @@ def gen_recipient_sets():
              "an environment no listed scope and no grant names (a new environment: AUTH_SPEC "
              "§12-4's creation composite wraps to exactly this): only the all-scope persons' "
              "all-scope devices, and no server key"),
-        case("shared-server-keys-prod", "shared-server-keys", prod,
-             "the member named by server-x's fingerprint holds server-x's enc key on its device: "
-             "the same (recipient id, enc key) address as the grant, so R(prod) lists it once, as "
-             "the member's. sockreader-0203's device holds server-y's enc key under its own user "
-             "id, and the member named by server-z's fingerprint holds a key of its own: two "
-             "addresses each, so both the member's device and the grant are listed. W(prod) drops "
-             "sockreader-0203 (a reader) and the three grants, and keeps the server-x-named "
-             "member's laptop, whose enc key is server-x's (README convention 33)"),
+        case("fingerprint-named-member-prod", "fingerprint-named-member", prod,
+             "the member whose user id is server-z's fingerprint holds a key of its own: one "
+             "recipient id with two enc keys is two wrap addresses, so R(prod) lists both the "
+             "member's laptop and server-z (an implementation that lists R(E) once per recipient "
+             "id drops one). W(prod) is the two laptops (README convention 33)"),
         case("order-prod", "order", prod,
              "both members' laptops and both grants: the case adds no way in or out, and is there "
              "for the order check (user-Zed-0302 precedes user-abe-0301 in UTF-16 code-unit order "
@@ -8973,7 +9039,7 @@ def gen_recipient_sets():
         "recipient-sets.json",
         {
             "description": "CRYPTO_SPEC §6.2 / §5.3: the recipient sets of an environment E. R(E) — the complete set of E's DEK-wrap destinations (§6.2, the device axis; read by §6.3 / §7 / AUTH_SPEC §12-4 / §12-6) — and W(E) — the recipients of E's sealed value proposals (§5.3). No spec change: the CLI and the server each computed the sets, and packages/crypto now holds the one definition. The inputs are verification states, not chains, and this file references no other file",
-            "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}, listed once per wrap address (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot); an address a member and a server key share is listed as the member's. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
+            "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}. A wrap is addressed by (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot) — and no two elements of R(E) share an address: no two current devices share an enc key, and §6.2's key uniqueness keeps every key a grant has named off them; a member and a grant may share a recipient_id, and are then two elements. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
             "fixtures": fixtures,
             "cases": cases,
         },
