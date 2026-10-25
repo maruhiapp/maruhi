@@ -54,12 +54,17 @@ export function wrapRefKey(ref: {
  * recipient_enc_pub_hex) — no class. A member's user_id (ULID) and a server's
  * FP (32 lowercase hex characters) never actually collide in format, but
  * add_member's target user_id is an intentionally unvalidated free-form string
- * (AUTH_SPEC §11-1), so neither the type nor the consensus rules guarantee it.
- * Checking a class-inclusive key would let the collision set "a member's
- * user_id = a valid grant's server key FP, with the same key" pass the
- * acceptance stage, hit a primary-key violation in the write phase = defect
- * (500), and block that environment's rotations and creations (A-1). Here we
- * fail it to a 422 (duplicate-recipient) before acceptance.
+ * (AUTH_SPEC §11-1), so the type does not separate them. Since 2026-10-25 the
+ * consensus rules do for the current devices: §6.2's key uniqueness keeps
+ * every key a grant has named off them, so past the recipient checks no
+ * member wrap and server wrap of one request share a slot. A stored member
+ * row can still hold a grant's slot (a member whose user_id is the server-key
+ * FP of its own enc key, removed, and that key granted afterwards — the A-1
+ * residue, which the class-agnostic stored-existence check answers with
+ * 409). The key mirrors the primary key, not the rules, so any duplicate slot
+ * fails to a 422 (duplicate-recipient) before acceptance, never to a
+ * primary-key violation in the write phase = defect (500) that would block
+ * that environment's rotations and creations (A-1).
  */
 function wrapStorageKey(ref: {
   readonly epoch: number;
@@ -77,11 +82,11 @@ function wrapStorageKey(ref: {
  * current member whose effective scope contains E, plus the server keys of
  * valid grant_servers whose disclosure scope contains the environment. Both
  * the exact match of initial registration and the count check of composite
- * requests use it (the acceptance boundary does not shift). R(E) lists each
- * wrap address (identifier + enc key) once, the granularity of the storage
- * key (wrapStorageKey): a member's user_id and a valid grant's server key FP
- * that collide with the same key can occupy only one slot, so they count
- * once (the residual boundary of A-1)
+ * requests use it (the acceptance boundary does not shift). No two elements
+ * of R(E) share a wrap address (identifier + enc key, the granularity of the
+ * storage key — wrapStorageKey): §6.2's key uniqueness keeps every key a
+ * grant has named off the current devices, so a member whose user_id is a
+ * grant's FP holds a key of its own and takes a slot of its own
  */
 export function expectedWrapRecipientCount(
   state: ChainState,

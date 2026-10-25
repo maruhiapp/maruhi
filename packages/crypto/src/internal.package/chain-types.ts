@@ -367,7 +367,8 @@ export interface WithdrawPayload {
  * scope_kind, scope_environments_lp_hex]`; the scope pair uses the same encoding
  * and structure rules as the member scope. Consensus: the actor's current device
  * signs (any role — readers included), the keys must not collide with any current
- * member's device keys (`duplicate-member-key`), listed environments must exist
+ * device's keys, nor the enc key with a server key a grant has named
+ * (`duplicate-member-key` — key uniqueness), listed environments must exist
  * (`unknown-environment`), and the cap must not exceed the signing device's own
  * cap (`device-cap-exceeded` — principle D2).
  */
@@ -566,6 +567,14 @@ export interface ChainState {
   readonly approvalPolicy: ApprovalPolicy | null;
   /** Pending proposals keyed by the `propose` entry hash (the §6.2 verification state). */
   readonly pendingProposals: ReadonlyMap<string, PendingProposal>;
+  /**
+   * Every server enc public key a grant has named, keyed by the key's hex
+   * with its server key fingerprint (CRYPTO_SPEC §6.2 key uniqueness — no
+   * current device may hold one): the key of each `grant_server` applied so
+   * far, directly or by the `approve` that brought its proposal to quorum,
+   * valid or since revoked. A pending or withdrawn proposal names none.
+   */
+  readonly namedServerKeys: ReadonlyMap<string, KeyFingerprintHex>;
   readonly headSeq: number;
   readonly headHashHex: string;
 }

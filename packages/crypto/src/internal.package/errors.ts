@@ -56,8 +56,9 @@ export type ChainInvalidReason =
   | "duplicate-approval"
   | "proposal-expired"
   | "proposal-void"
-  // Device keys (§6.2 — 2026-09-19 DK). Key uniqueness is
-  // duplicate-member-key; each id of a device scope is unknown-environment;
+  // Device keys (§6.2 — 2026-09-19 DK). A device key that breaks key
+  // uniqueness is duplicate-member-key; each id of a device scope is
+  // unknown-environment;
   // a signature by a revoked device is actor-key-mismatch; containment of
   // revoking another person's device reuses scope-not-contained
   | "unknown-device"

@@ -18,8 +18,14 @@
 // the internal implementation (`capWithinCap`) (the same discipline as
 // ES K4-I).
 
-import { cryptoPromise, type UserId } from "@maruhi/core";
-import type { ChainDevice, ChainMember, DeviceCap, SigningKeyPair } from "@maruhi/crypto";
+import { cryptoPromise, type KeyFingerprintHex, type UserId } from "@maruhi/core";
+import type {
+  ChainDevice,
+  ChainMember,
+  ChainState,
+  DeviceCap,
+  SigningKeyPair,
+} from "@maruhi/crypto";
 import { encodeHex, exportSigningPublicKey } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -148,6 +154,34 @@ export function ownDeviceByKeys(
   return [...member.devices.values()].find(
     (device) => device.encPubHex === encPubHex && device.sigPubHex === sigPubHex,
   );
+}
+
+/** Who already holds a key an entry would register: a current member's device, or a grant that named it. */
+export type RegisteredKeyHolder =
+  | { readonly kind: "device"; readonly userId: UserId }
+  | { readonly kind: "grant"; readonly serverKeyFingerprintHex: KeyFingerprintHex };
+
+/**
+ * The pre-flight judgment of key uniqueness (CRYPTO_SPEC §6.2 —
+ * duplicate-member-key) for an entry registering a device key (`add_member`
+ * for the target, `add_device`): the current member whose device holds
+ * either key (same kind), else the grant that named the enc key as its server
+ * key (valid or since revoked), else null. The chain verifier stays the final
+ * arbiter.
+ */
+export function registeredKeyHolderOf(
+  state: Pick<ChainState, "members" | "namedServerKeys">,
+  keys: { readonly encPubHex: string; readonly sigPubHex: string },
+): RegisteredKeyHolder | null {
+  for (const member of state.members.values()) {
+    for (const device of member.devices.values()) {
+      if (device.encPubHex === keys.encPubHex || device.sigPubHex === keys.sigPubHex) {
+        return { kind: "device", userId: member.userId };
+      }
+    }
+  }
+  const serverKeyFingerprintHex = state.namedServerKeys.get(keys.encPubHex);
+  return serverKeyFingerprintHex === undefined ? null : { kind: "grant", serverKeyFingerprintHex };
 }
 
 /** The member's devices in fingerprint order (deterministic recipient / display order). */

@@ -30,7 +30,7 @@ import type { IdentityBacking } from "../config.ts";
 import { ROLE_RANK } from "../dek-wrap.ts";
 import type { DekRecipient } from "../deks.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "../deks.ts";
-import { devicesOf, memberHasKeys } from "../device-key.ts";
+import { devicesOf, memberHasKeys, registeredKeyHolderOf } from "../device-key.ts";
 import { displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";
@@ -115,23 +115,23 @@ function addActorRejection(actor: ActorAuthority | undefined, role: Role): strin
   return null;
 }
 
-/** Early check of member-key uniqueness (§6.2 duplicate-member-key) (a reason when unmet). */
+/** Early check of key uniqueness (§6.2 duplicate-member-key) for the acceptance key (a reason when unmet). */
 function duplicateMemberKeyRejection(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
 ): string | null {
-  // The comparison target is every device key of the current member set (§6.2 — 2026-09-19 DK)
-  for (const member of verified.state.members.values()) {
-    for (const device of member.devices.values()) {
-      if (
-        device.encPubHex === acceptance.inviteeEncPubHex ||
-        device.sigPubHex === acceptance.inviteeSigPubHex
-      ) {
-        return `The acceptance key equals current member ${displayText(member.userId)}'s key (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
-      }
-    }
+  const holder = registeredKeyHolderOf(verified.state, {
+    encPubHex: acceptance.inviteeEncPubHex,
+    sigPubHex: acceptance.inviteeSigPubHex,
+  });
+  if (holder === null) {
+    return null;
   }
-  return null;
+  const held =
+    holder.kind === "device"
+      ? `equals current member ${displayText(holder.userId)}'s key`
+      : `is server key ${holder.serverKeyFingerprintHex}, which a grant has named, so no device may hold it`;
+  return `The acceptance key ${held} (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
 }
 
 /** The pre-append check of add_member (re-run after a CAS retry's resync as well). */

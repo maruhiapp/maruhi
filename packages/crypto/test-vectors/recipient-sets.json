@@ -1,6 +1,6 @@
 {
   "description": "CRYPTO_SPEC §6.2 / §5.3: the recipient sets of an environment E. R(E) — the complete set of E's DEK-wrap destinations (§6.2, the device axis; read by §6.3 / §7 / AUTH_SPEC §12-4 / §12-6) — and W(E) — the recipients of E's sealed value proposals (§5.3). No spec change: the CLI and the server each computed the sets, and packages/crypto now holds the one definition. The inputs are verification states, not chains, and this file references no other file",
-  "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}, listed once per wrap address (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot); an address a member and a server key share is listed as the member's. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
+  "recipient_rule": "R(E) = {(m, d) | m a current member, d ∈ devices(m), E ∈ scope(m) ∩ scope(d)} ∪ {valid grant_server g | E ∈ scope_environments(g)}. A wrap is addressed by (recipient_id, recipient_enc_pub_hex) — §5's info and §5.1's signed bytes bind those two and no recipient class (AUTH_SPEC §12-6's slot) — and no two elements of R(E) share an address: no two current devices share an enc key, and §6.2's key uniqueness keeps every key a grant has named off them; a member and a grant may share a recipient_id, and are then two elements. W(E) = the member devices of R(E) whose effective role min(role, role_cap) is member or above. A member entry is identified by (recipient_id = user_id, key_fingerprint_hex); a server entry by recipient_id = the server key fingerprint (§9). Every list is a set: compare it in any order",
   "fixtures": {
     "project": {
       "members": [
@@ -213,7 +213,7 @@
         }
       ]
     },
-    "shared-server-keys": {
+    "fingerprint-named-member": {
       "members": [
         {
           "user_id": "user-owner-0201",
@@ -227,44 +227,6 @@
               "key_fingerprint_hex": "150a72faf437f53feaa5db2941bc3d47",
               "enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77",
               "sig_pub_hex": "46c2612d02ffe827160e69cc7337ea9897c2980a9d351ed1dd28238d0c07644e",
-              "role_cap": "owner",
-              "scope": {
-                "kind": "all"
-              }
-            }
-          ]
-        },
-        {
-          "user_id": "de0341fe1e22659f6709e0eed04367a4",
-          "role": "member",
-          "scope": {
-            "kind": "all"
-          },
-          "devices": [
-            {
-              "label": "server-x-named member's laptop",
-              "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
-              "enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079",
-              "sig_pub_hex": "de599b88cda25a6f7cae2fbf0a05691126be6729d6b4a2f7472b30c9565bc37f",
-              "role_cap": "owner",
-              "scope": {
-                "kind": "all"
-              }
-            }
-          ]
-        },
-        {
-          "user_id": "user-sockreader-0203",
-          "role": "reader",
-          "scope": {
-            "kind": "all"
-          },
-          "devices": [
-            {
-              "label": "sockreader-0203 laptop",
-              "key_fingerprint_hex": "ee0e26f79f6ba94fbb0b5d97fae0e422",
-              "enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335",
-              "sig_pub_hex": "258e454bf77928b19528098d25b4bc16be2154645e9529f2e105d7ffc2ad6a52",
               "role_cap": "owner",
               "scope": {
                 "kind": "all"
@@ -293,18 +255,6 @@
         }
       ],
       "server_grants": [
-        {
-          "label": "server-x",
-          "server_key_fingerprint_hex": "de0341fe1e22659f6709e0eed04367a4",
-          "server_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079",
-          "scope_environments": ["env-prod-0101"]
-        },
-        {
-          "label": "server-y",
-          "server_key_fingerprint_hex": "844373a11a2fd7d79e13a8f0b3601a6b",
-          "server_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335",
-          "scope_environments": ["env-prod-0101"]
-        },
         {
           "label": "server-z",
           "server_key_fingerprint_hex": "e7e2b55b5ff929e4ffe7f725de87bbef",
@@ -635,16 +585,10 @@
       "note": "an environment no listed scope and no grant names (a new environment: AUTH_SPEC §12-4's creation composite wraps to exactly this): only the all-scope persons' all-scope devices, and no server key"
     },
     {
-      "name": "shared-server-keys-prod",
-      "fixture": "shared-server-keys",
+      "name": "fingerprint-named-member-prod",
+      "fixture": "fingerprint-named-member",
       "environment_id": "env-prod-0101",
       "expected_wrap_recipients": [
-        {
-          "recipient_class": "member",
-          "recipient_id": "de0341fe1e22659f6709e0eed04367a4",
-          "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
-          "recipient_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079"
-        },
         {
           "recipient_class": "member",
           "recipient_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
@@ -656,17 +600,6 @@
           "recipient_id": "user-owner-0201",
           "key_fingerprint_hex": "150a72faf437f53feaa5db2941bc3d47",
           "recipient_enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77"
-        },
-        {
-          "recipient_class": "member",
-          "recipient_id": "user-sockreader-0203",
-          "key_fingerprint_hex": "ee0e26f79f6ba94fbb0b5d97fae0e422",
-          "recipient_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335"
-        },
-        {
-          "recipient_class": "server",
-          "recipient_id": "844373a11a2fd7d79e13a8f0b3601a6b",
-          "recipient_enc_pub_hex": "0bfe18d5353fa204699d23f658cdb645cb47d539ac4b4dd9a51596e4906b7335"
         },
         {
           "recipient_class": "server",
@@ -677,12 +610,6 @@
       "expected_proposal_recipients": [
         {
           "recipient_class": "member",
-          "recipient_id": "de0341fe1e22659f6709e0eed04367a4",
-          "key_fingerprint_hex": "f966c34a599933bc6e2496ce031f197c",
-          "recipient_enc_pub_hex": "411bdd46e150c771aad938362fa07770848fc57b355a5f39c9ca1d00addde079"
-        },
-        {
-          "recipient_class": "member",
           "recipient_id": "e7e2b55b5ff929e4ffe7f725de87bbef",
           "key_fingerprint_hex": "bd340010503b32352ab35ce126840b26",
           "recipient_enc_pub_hex": "87a8a2ff0d1baa76e9096febd98811f2c1cc0837f176f1ff9f9f6aca8f93de1d"
@@ -694,7 +621,7 @@
           "recipient_enc_pub_hex": "717ae4107c23608e0ab6ce931f8fa1cdc48ac16dc1769a3e8abce453ed209b77"
         }
       ],
-      "note": "the member named by server-x's fingerprint holds server-x's enc key on its device: the same (recipient id, enc key) address as the grant, so R(prod) lists it once, as the member's. sockreader-0203's device holds server-y's enc key under its own user id, and the member named by server-z's fingerprint holds a key of its own: two addresses each, so both the member's device and the grant are listed. W(prod) drops sockreader-0203 (a reader) and the three grants, and keeps the server-x-named member's laptop, whose enc key is server-x's (README convention 33)"
+      "note": "the member whose user id is server-z's fingerprint holds a key of its own: one recipient id with two enc keys is two wrap addresses, so R(prod) lists both the member's laptop and server-z (an implementation that lists R(E) once per recipient id drops one). W(prod) is the two laptops (README convention 33)"
     },
     {
       "name": "order-prod",

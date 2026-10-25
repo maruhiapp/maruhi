@@ -27,9 +27,11 @@ import {
   createEnvironmentOp,
   environmentStatementFor,
   genesisOp,
+  grantServerOp,
   headOf,
   makeTestUser,
   removeMemberOp,
+  revokeServerOp,
   rotateEpochOp,
   testEnvironmentId,
   type BuiltChain,
@@ -994,6 +996,32 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", inviter.fingerprintHex], env.layer),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("duplicate-member-key");
+    expect(state.appendedEntries).toHaveLength(0);
+  });
+
+  it("rejects as duplicate-member-key before appending when the acceptance enc key is a server key a grant has named, revoked since (CRYPTO_SPEC §6.2 key uniqueness)", async () => {
+    const grant = await grantServerOp([ENV_ID], [], acceptor.encPubHex);
+    if (grant.op !== "grant_server") {
+      throw new Error("grantServerOp built another operation");
+    }
+    const built = await buildChain([
+      { actor: inviter, operation: genesisOp(inviter) },
+      { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: inviter, operation: grant },
+      { actor: inviter, operation: revokeServerOp(grant.payload.serverKeyFingerprintHex) },
+    ]);
+    const state = await makeAddServer({
+      built,
+      invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
+      ownDeks: [],
+    });
+    const env = await startAddEnv(state, built.projectId);
+    expect(
+      await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `The acceptance key is server key ${grant.payload.serverKeyFingerprintHex}, which a grant has named, so no device may hold it (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`,
+    );
     expect(state.appendedEntries).toHaveLength(0);
   });
 

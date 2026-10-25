@@ -20,6 +20,7 @@ import {
   commitmentOf,
   hexBytes,
   makeDek,
+  signEntryAt,
   vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
@@ -248,7 +249,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     expect(full.status).toBe(200);
   });
 
-  it("keeps cross-class recipients with distinct keys as separate slots, and rejects the same (id, key) pair with 422 duplicate-recipient", async () => {
+  it("keeps cross-class recipients with distinct keys as separate slots, and refuses a member holding the grant's key at the chain layer (422 duplicate-member-key)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
 
@@ -318,84 +319,39 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     ]);
 
     // The same id **and the same key** (the member's enc public key =
-    // the server key) is still one slot: the expected count is
-    // deduplicated at the stored-key granularity, and sending both-class
-    // wraps falls over at the pre-acceptance check with 422
-    // (duplicate-recipient) (letting it through the acceptance stage
-    // would hit a primary-key violation in the write phase = defect
-    // [500])
+    // the server key) never comes about: §6.2's key uniqueness keeps every
+    // key a grant has named off the current devices (2026-10-25), so the
+    // add_member is refused at chain-append time and no current member's
+    // device ever shares the grant's address
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: testUserId(fpHex) },
     });
     const sameKeySigPair = await generateSigningKeyPair();
-    await appendOperation(fixture, OWNER, {
-      op: "add_member",
-      payload: {
-        targetUserId: testUserId(fpHex),
-        encPubHex: SERVER_ENC_PUB_HEX,
-        sigPubHex: encodeHex(await exportSigningPublicKey(sameKeySigPair.publicKey)),
-        role: "member",
-        scopeKind: "all",
-        scopeEnvironmentIds: [],
+    const { entry } = await signEntryAt({
+      seq: fixture.head.seq + 1,
+      prevHashHex: fixture.head.hashHex,
+      actorUserId: OWNER,
+      operation: {
+        op: "add_member",
+        payload: {
+          targetUserId: testUserId(fpHex),
+          encPubHex: SERVER_ENC_PUB_HEX,
+          sigPubHex: encodeHex(await exportSigningPublicKey(sameKeySigPair.publicKey)),
+          role: "member",
+          scopeKind: "all",
+          scopeEnvironmentIds: [],
+        },
       },
     });
-    const dek3 = makeDek();
-    const memberWraps3 = await wrapDekForAll({
-      projectId,
-      environmentId: ENV,
-      epoch: 3,
-      dek: dek3,
-      recipientUserIds: ALL_MEMBERS,
-      signerUserId: MEMBER,
+    const refused = await requestJson("POST", "/chain/entries", token(OWNER), {
+      parentHeadHashHex: fixture.head.hashHex,
+      entry,
     });
-    const sameKeyWrap = await wrapDekTo({
-      projectId,
-      environmentId: ENV,
-      epoch: 3,
-      dek: dek3,
-      recipientUserId: fpHex,
-      recipientEncPubHex: SERVER_ENC_PUB_HEX,
-      signerUserId: MEMBER,
-    });
-    const collided = await rotateEnvironmentComposite(fixture, {
-      environmentId: ENV,
-      newEpoch: 3,
-      deks: [
-        ...memberWraps3,
-        sameKeyWrap,
-        await serverWrap({ epoch: 3, dek: dek3, fpHex, signerUserId: MEMBER }),
-      ],
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 3, dek3),
-      actorUserId: MEMBER,
-    });
-    expect(collided.status).toBe(422);
-    const body = (await collided.json()) as Record<string, unknown>;
-    expect(body["reason"]).toBe("duplicate-recipient");
-    const rows = await queryProjectDo(
-      projectId,
-      "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ? AND epoch = 3",
-      ENV,
-    );
-    expect(rows[0]?.["n"]).toBe(0);
-
-    // Operational recovery: remove_member on the colliding member makes
-    // the complete set satisfiable again, and the rotation goes through
-    await appendOperation(fixture, OWNER, {
-      op: "remove_member",
-      payload: { targetUserId: testUserId(fpHex) },
-    });
-    const recovered = await rotateEnvironmentComposite(fixture, {
-      environmentId: ENV,
-      newEpoch: 3,
-      deks: [
-        ...memberWraps3,
-        await serverWrap({ epoch: 3, dek: dek3, fpHex, signerUserId: MEMBER }),
-      ],
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 3, dek3),
-      actorUserId: MEMBER,
-    });
-    expect(recovered.status).toBe(200);
+    expect(refused.status).toBe(422);
+    const body = (await refused.json()) as { seq: number; reason: string };
+    expect(body.reason).toBe("duplicate-member-key");
+    expect(body.seq).toBe(fixture.head.seq + 1);
   });
 
   it("repairs a server wrap through delete → re-register (the §12-6 repair path)", async () => {
@@ -537,7 +493,8 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   });
 });
 
-const memberOf = (userId: string) =>
+/** A one-device member with its own key bytes (no two devices share a key — CRYPTO_SPEC §6.2 key uniqueness). */
+const memberOf = (userId: string, encByte: string, sigByte: string) =>
   [
     testUserId(userId),
     {
@@ -547,11 +504,11 @@ const memberOf = (userId: string) =>
       // One initial key = one device (the cap is structurally (owner, all) — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
-          "33".repeat(16),
+          `${encByte}${sigByte}`.repeat(8),
           {
-            keyFingerprintHex: testKeyFingerprintHex("33".repeat(16)),
-            encPubHex: "11".repeat(32),
-            sigPubHex: "22".repeat(32),
+            keyFingerprintHex: testKeyFingerprintHex(`${encByte}${sigByte}`.repeat(8)),
+            encPubHex: encByte.repeat(32),
+            sigPubHex: sigByte.repeat(32),
             roleCap: "owner" as const,
             scope: { kind: "all" as const },
             addedSeq: 1,
@@ -560,11 +517,7 @@ const memberOf = (userId: string) =>
       ]),
     },
   ] as const;
-const grantOf = (
-  fingerprintHex: string,
-  scope: readonly string[],
-  serverEncPubHex: string = "44".repeat(32),
-) =>
+const grantOf = (fingerprintHex: string, scope: readonly string[], serverEncPubHex: string) =>
   [
     testKeyFingerprintHex(fingerprintHex),
     {
@@ -577,41 +530,38 @@ const grantOf = (
   ] as const;
 
 describe("expectedWrapRecipientCount", () => {
-  it("counts the union deduplicated at the (id, key) stored-key granularity (the device axis — K3)", () => {
+  it("counts a member named by a grant's FP and that grant as two slots (the (id, key) device axis — K3)", () => {
     // add_member's target user_id is a free-form string with no existence
-    // check (AUTH_SPEC §11-1), so a member with the same string as the
-    // server-key FP can be created. The stored key is the device axis
-    // (id, enc public key), so different keys are separate slots (counted
-    // as 2); the same id and same key is one slot — the expected count
-    // must be computed at this granularity or the complete-set check
-    // fails permanently
+    // check (AUTH_SPEC §11-1), so a member can carry a grant's FP as its
+    // user_id. Its device key is its own (§6.2's key uniqueness keeps every
+    // key a grant has named off the current devices), and a wrap is
+    // addressed by (id, enc public key), so the member and the grant are
+    // two slots (counting by recipient id would give one). The state keeps
+    // that invariant: every key is distinct and both grants' keys are named
     const collidingFp = "ab".repeat(16);
     const otherFp = "cd".repeat(16);
     const state: ChainState = {
-      members: new Map([memberOf("user-1"), memberOf(collidingFp)]),
+      members: new Map([memberOf("user-1", "11", "21"), memberOf(collidingFp, "12", "22")]),
       serverGrants: new Map([
-        grantOf(collidingFp, ["env-a"]),
-        grantOf(otherFp, ["env-a", "env-b"]),
+        grantOf(collidingFp, ["env-a"], "44".repeat(32)),
+        grantOf(otherFp, ["env-a", "env-b"], "45".repeat(32)),
       ]),
       environments: new Map(),
       checkpoints: new Map(),
       approvalPolicy: null,
       pendingProposals: new Map(),
+      namedServerKeys: new Map([
+        ["44".repeat(32), testKeyFingerprintHex(collidingFp)],
+        ["45".repeat(32), testKeyFingerprintHex(otherFp)],
+      ]),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-a: {user-1, collidingFp (member key), collidingFp (server key), otherFp} — 4 slots
+    // env-a: {user-1, collidingFp (its device), collidingFp (the grant), otherFp} — 4 slots
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-a"))).toBe(4);
     // env-b: the only in-scope grant is otherFp
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-b"))).toBe(3);
     // Out-of-scope environments are members only
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-c"))).toBe(2);
-
-    // The same id and same key (the member's enc public key = the server key) is one slot
-    const sameKey: ChainState = {
-      ...state,
-      serverGrants: new Map([grantOf(collidingFp, ["env-a"], "11".repeat(32))]),
-    };
-    expect(expectedWrapRecipientCount(sameKey, testEnvironmentId("env-a"))).toBe(2);
   });
 });

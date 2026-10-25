@@ -642,9 +642,9 @@ async function authorizationChecks(c: Checks): Promise<void> {
 
 async function extendedChainChecks(c: Checks): Promise<void> {
   // extended_chains: the derived chain itself is accepted (the permissive
-  // boundary). server-key-member-sock pins the §6.2 line that "add_member's
-  // key-uniqueness index covers only current members' keys; active-grant
-  // server keys are out of scope". checkpoint-baseline pins a legitimate
+  // boundary). server-key-grant-pending / server-key-grant-approved pin when
+  // a grant names its key (§6.2 key uniqueness — an approve that applies the
+  // grant does, a pending proposal does not). checkpoint-baseline pins a legitimate
   // re-notarization at the same manifest_version (the equality side of
   // non-regression) and the "latest checkpoint per environment" derivation
   // (expected_checkpoints). The four-eyes family (proposal-* / stale-* /
@@ -660,6 +660,47 @@ async function extendedChainChecks(c: Checks): Promise<void> {
     c.push(
       `chain extended: ${name} verifies`,
       result.ok && extendedStateMatches(result.value, extended),
+    );
+  }
+}
+
+/**
+ * The keys grants have named, as ChainState exposes them to the CLI's early
+ * checks (§6.2 key uniqueness): seq 9's key stays named after its grant's
+ * revocation at seq 12, a pending grant proposal names none, and the approve
+ * that applies one names its key.
+ */
+async function namedServerKeysCheck(c: Checks): Promise<void> {
+  const grant = entryOfOp(9, "grant_server").payload;
+  const approvedGrant =
+    vectorExtendedChains["server-key-grant-approved"]?.expected_server_grants?.[0];
+  if (approvedGrant === undefined) {
+    c.push("chain semantic: named server keys", false, "vector missing");
+    return;
+  }
+  const seq9Key = `${grant.serverEncPubHex}:${grant.serverKeyFingerprintHex}`;
+  const approvedKey = `${approvedGrant.server_enc_pub_hex}:${approvedGrant.server_key_fingerprint_hex}`;
+  const cases: readonly (readonly [string, readonly ChainEntry[], readonly string[]])[] = [
+    ["a revoked grant's key stays named", typedEntries, [seq9Key]],
+    [
+      "a pending grant proposal names none",
+      extendedPrefix("server-key-grant-pending", 27),
+      [seq9Key],
+    ],
+    [
+      "an approve names its grant's key",
+      extendedPrefix("server-key-grant-approved", 28),
+      [seq9Key, approvedKey].toSorted(),
+    ],
+  ];
+  for (const [name, entries, expected] of cases) {
+    const result = await verifyChain(entries);
+    const named = result.ok
+      ? [...result.value.namedServerKeys].map(([enc, fingerprint]) => `${enc}:${fingerprint}`)
+      : [];
+    c.push(
+      `chain semantic: named server keys — ${name}`,
+      result.ok && named.toSorted().join(",") === expected.join(","),
     );
   }
 }
@@ -957,9 +998,11 @@ async function validAppendVectorCheck(
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
   // Pin the permissive-side boundaries of the consensus rules with the
   // vectors (valid_appends):
-  // (1) Member key uniqueness is prohibited only within "the current member
-  //     set" (§6.2) — a verifier that wrongly implements "no duplication
-  //     across all history" fails here
+  // (1) Key uniqueness (§6.2) counts a device only while it is current — a
+  //     verifier that wrongly implements "no duplication across all history"
+  //     fails here, including on granting a removed member's key — and a
+  //     server key only once a grant has named it (not while its grant is
+  //     only proposed)
   // (2) Environment lifecycle (§6.2) — create_environment of an unused ID
   //     and the first rotate (new_epoch 2) onto an already-created
   //     environment (epoch 1) are accepted
@@ -1594,6 +1637,7 @@ export async function chainNegativeChecks(): Promise<CheckResult[]> {
   await checkpointTamperChecks(c);
   await authorizationChecks(c);
   await extendedChainChecks(c);
+  await namedServerKeysCheck(c);
   await framingChecks(c);
   await semanticChecks(c);
   await regrantWideningCheck(c);
