@@ -197,14 +197,22 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
  * 15 = 42); the checkpoint tuples naming a deleted environment are the
  * checkpoint branch (21 + 3 = 24); policy-ops-delete-environment is a
  * closed-set literal (wireSchema 15 + 1 = 16); the scope / grant / propose
- * references are consensus rules over a replayed deletion (150 + 9 = 159)
+ * references are consensus rules over a replayed deletion (150 + 9 = 159),
+ * and #344's last two convention-27 precedence negatives (approval-required
+ * before unknown-server-grant / grant-scope-narrowed) are too (159 + 2 = 161)
+ *
+ * 2026-10-25 (§6.2 key uniqueness — test-vectors/README.md convention 34):
+ * the seven appended negatives (six duplicate-member-key, one
+ * environment-deleted before duplicate-server-key) are consensus rules, and
+ * the two retired with the derived chain server-key-member-sock were
+ * (161 + 7 − 2 = 166)
  */
 const EXPECTED_PARTITION = {
   checkpoint: 24,
   composite: 42,
   structureBeforeSignature: 1,
   wireSchema: 16,
-  consensus: 161,
+  consensus: 166,
 } as const;
 
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;

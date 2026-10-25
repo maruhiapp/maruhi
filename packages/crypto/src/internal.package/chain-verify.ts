@@ -134,14 +134,19 @@ interface MutableChainState {
   // basis for §6.3 checkpoint consistency)
   readonly checkpoints: Map<string, EnvironmentCheckpointState>;
   // Index of the enc / sig public keys of **every device key** in the
-  // current member set (member-key uniqueness — §6.2; extended to device
-  // sets by 2026-09-19 DK). Since the rule itself makes "each key belongs to
-  // at most one device" an invariant, the Set deletions in remove_member /
-  // revoke_device never erase another device's keys (sound).
+  // current member set (§6.2 key uniqueness, first clause; extended to
+  // device sets by 2026-09-19 DK). Since the rule itself makes "each key
+  // belongs to at most one device" an invariant, the Set deletions in
+  // remove_member / revoke_device never erase another device's keys (sound).
   // The hex values are normalized by the §6.1 shape check (decodeHex =
   // lowercase only), so string equality = byte equality
   readonly memberEncPubs: Set<string>;
   readonly memberSigPubs: Set<string>;
+  // Every server enc public key a grant has named → its fingerprint (§6.2
+  // key uniqueness, second clause — 2026-10-25): fed by every applied
+  // grant_server, direct or by approve, and never shrunk (revoke_server
+  // leaves the key named; a pending proposal names nothing)
+  readonly namedServerKeys: Map<string, KeyFingerprintHex>;
   // Four-eyes (§6.2): the current policy (null = off) and pending proposals
   // (proposal entry hash → proposal)
   approvalPolicy: ApprovalPolicy | null;
@@ -613,7 +618,7 @@ function actorContextOf(member: ChainMember, device: ChainDevice): ActorContext 
   return { userId: member.userId, device, permission: effectivePermissionOf(member, device) };
 }
 
-/** Adds/removes a device's keys on the index of every device key in the current member set (member-key uniqueness — §6.2). */
+/** Adds/removes a device's keys on the index of every device key in the current member set (§6.2 key uniqueness). */
 function indexDeviceKeys(state: MutableChainState, device: ChainDevice): void {
   state.memberEncPubs.add(device.encPubHex);
   state.memberSigPubs.add(device.sigPubHex);
@@ -622,6 +627,24 @@ function indexDeviceKeys(state: MutableChainState, device: ChainDevice): void {
 function unindexDeviceKeys(state: MutableChainState, device: ChainDevice): void {
   state.memberEncPubs.delete(device.encPubHex);
   state.memberSigPubs.delete(device.sigPubHex);
+}
+
+/**
+ * Key uniqueness (§6.2) for an entry that registers a device key
+ * (`duplicate-member-key`): either key equals a same-kind key of a current
+ * device, or the enc key is a server key a grant has named. Per individual
+ * key, not per FP: a sockpuppet reusing only one of the two keys is still
+ * rejected.
+ */
+function registersTakenKey(
+  state: MutableChainState,
+  keys: { readonly encPubHex: string; readonly sigPubHex: string },
+): boolean {
+  return (
+    state.memberEncPubs.has(keys.encPubHex) ||
+    state.memberSigPubs.has(keys.sigPubHex) ||
+    state.namedServerKeys.has(keys.encPubHex)
+  );
 }
 
 /** The first device key (genesis / add_member — cap is structurally (owner, all)). */
@@ -998,13 +1021,11 @@ function addMemberReason(
   if (state.members.has(p.targetUserId)) {
     return "duplicate-member";
   }
-  // Member-key uniqueness (§6.2): reject an add whose enc or sig matches
-  // a same-kind key of the current member set. The check is per individual
-  // key (not per FP — a sockpuppet reusing only one of the two keys is
-  // still rejected). The prohibition covers only the current member set;
-  // re-adding a removed member's same keys (the same person returning) is
-  // not rejected
-  if (state.memberEncPubs.has(p.encPubHex) || state.memberSigPubs.has(p.sigPubHex)) {
+  // Key uniqueness (§6.2). Among device keys the prohibition covers only
+  // the current devices: re-adding a removed member's same keys (the same
+  // person returning) is not rejected, unless a grant has named the enc key
+  // since
+  if (registersTakenKey(state, p)) {
     return "duplicate-member-key";
   }
   return memberScopeReason(operation, p.role, actor, undefined, state);
@@ -1053,8 +1074,9 @@ function removeMemberReason(
 
 /**
  * Consensus rules for add_device (§6.2 — 2026-09-19 DK). Check order
- * (fixed by the vectors): no role rule → duplicate-member-key (every
- * device key of the current member set) → unknown-environment →
+ * (fixed by the vectors): no role rule → duplicate-member-key (key
+ * uniqueness: every current device's keys, the actor's own included, and
+ * the server keys grants have named) → unknown-environment →
  * device-cap-exceeded (principle D2 — the new device's cap <= the signing
  * device's **own** cap; effective permissions are not compared)
  */
@@ -1064,7 +1086,7 @@ function addDeviceReason(
   state: MutableChainState,
 ): ChainInvalidReason | null {
   const p = operation.payload;
-  if (state.memberEncPubs.has(p.encPubHex) || state.memberSigPubs.has(p.sigPubHex)) {
+  if (registersTakenKey(state, p)) {
     return "duplicate-member-key";
   }
   return (
@@ -1124,9 +1146,11 @@ async function grantServerReason(
 ): Promise<ChainInvalidReason | null> {
   const p = operation.payload;
   // Authorization-stage check order (§6.2; fixed by the vectors): role
-  // rule → re-grant rule (§6.3) → server-key duplication. FP consistency
-  // is the payload's own self-consistency (§9) and is checked right after
-  // role (its historical position kept).
+  // rule → environment-deleted → re-grant rule (§6.3) → server-key
+  // duplication (the last two never fire on one entry: a re-grant's key is
+  // a valid grant's, which no current device holds). FP consistency is the
+  // payload's own self-consistency (§9) and is checked right after role
+  // (its historical position kept).
   // Server-key FP = SHA-256(server_enc_pub)[:16] (enc key only; §9 /
   // vector definition)
   const encPub = decodeHex(p.serverEncPubHex) ?? new Uint8Array(0);
@@ -1158,12 +1182,10 @@ async function grantServerReason(
       return "grant-scope-narrowed";
     }
   }
-  // Server-key uniqueness (§6.2): a grant whose server enc public key
-  // matches a current member's enc public key is rejected (the
-  // recipient-class-crossing version of "key → subject" reverse-lookup
-  // uniqueness). The reverse direction (reusing an active grant's server
-  // key in add_member) remains explicitly out of scope in the spec (the
-  // "note" of §6.2 member-key uniqueness)
+  // Key uniqueness (§6.2), the grant side: a grant whose server enc public
+  // key a current device holds is rejected (the recipient-class-crossing
+  // version of "key → subject" reverse-lookup uniqueness). The registration
+  // side is registersTakenKey
   return state.memberEncPubs.has(p.serverEncPubHex) ? "duplicate-server-key" : null;
 }
 
@@ -1449,6 +1471,8 @@ function applyGrantServer(
   seq: number,
 ): void {
   const p = operation.payload;
+  // The key stays named after a revoke_server (§6.2 key uniqueness)
+  state.namedServerKeys.set(p.serverEncPubHex, p.serverKeyFingerprintHex);
   state.serverGrants.set(p.serverKeyFingerprintHex, {
     serverKeyFingerprintHex: p.serverKeyFingerprintHex,
     serverEncPubHex: p.serverEncPubHex,
@@ -2017,6 +2041,7 @@ function sealChainState(
     checkpoints,
     approvalPolicy: state.approvalPolicy,
     pendingProposals: freezePendingProposals(state.pendingProposals),
+    namedServerKeys: new Map(state.namedServerKeys),
     headSeq,
     headHashHex,
   };
@@ -2036,6 +2061,7 @@ async function verifyChainCore(
     checkpoints: new Map(),
     memberEncPubs: new Set(),
     memberSigPubs: new Set(),
+    namedServerKeys: new Map(),
     approvalPolicy: null,
     pendingProposals: new Map(),
   };

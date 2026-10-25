@@ -24,6 +24,7 @@ import {
   buildChain,
   createEnvironmentOp,
   genesisOp,
+  grantServerOp,
   hexBytes,
   type TestUser,
 } from "./support/crypto.ts";
@@ -168,6 +169,31 @@ describe("maruhi device approve", () => {
     expect(approveLogs.indexOf("fp words:")).toBeLessThan(
       approveLogs.indexOf("Compare them with the screen"),
     );
+  });
+
+  it("refuses a key whose enc public key a grant has named as its server key, before appending (CRYPTO_SPEC §6.2 key uniqueness)", async () => {
+    const grant = await grantServerOp([ENV_ID], [], dev2.encPubHex);
+    if (grant.op !== "grant_server") {
+      throw new Error("grantServerOp built another operation");
+    }
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+      { actor: owner, operation: grant },
+    ]);
+    const { server, state } = await makeServer({
+      built,
+      withEnvironment: true,
+      requests: [requestRowOf(dev2)],
+    });
+    const env = await startEnv(server.origin, built.projectId, owner);
+    expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `The key's enc public key is server key ${grant.payload.serverKeyFingerprintHex}, which a grant has named, so no device may hold it (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2)`,
+    );
+    expect(state.appended).toEqual([]);
+    expect(state.registryPuts).toEqual([]);
+    expect(state.requestCancels).toEqual([]);
   });
 
   it("the 12 words can also be compared; `--cap` / `--env` become the device's cap (K4-6)", async () => {

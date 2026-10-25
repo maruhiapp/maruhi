@@ -293,6 +293,7 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
       checkpoints: new Map(),
       approvalPolicy: null,
       pendingProposals: new Map(),
+      namedServerKeys: new Map(),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };

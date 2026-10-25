@@ -9,12 +9,12 @@
 //
 // The pre-flight checks are a copy of the consensus rules (§6.2) and do
 // not wait for the server's 422: actor = the current device matching
-// the signing key (device-key.ts), key uniqueness across all devices of
-// current members, existence of the `listed` environments, monotonicity
-// (cap vs cap — principle D2), revocation = the target being a current
-// device, last-device protection, and for others the role rule (the
-// same two stages as `remove_member`) plus the principle-1 inclusion
-// (the **person's** scope).
+// the signing key (device-key.ts), key uniqueness (every current device's
+// keys and the server keys grants have named), existence of the `listed`
+// environments, monotonicity (cap vs cap — principle D2), revocation =
+// the target being a current device, last-device protection, and for
+// others the role rule (the same two stages as `remove_member`) plus the
+// principle-1 inclusion (the **person's** scope).
 //
 // Backfill (§7 "device-addition backfill"): for each environment in the
 // new device's **effective scope** (person ∩ device), unwrap every
@@ -52,7 +52,12 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
-import { capWithinSignerCap, describeCap, ownDeviceBySigningKey } from "./device-key.ts";
+import {
+  capWithinSignerCap,
+  describeCap,
+  ownDeviceBySigningKey,
+  registeredKeyHolderOf,
+} from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import {
@@ -102,19 +107,18 @@ function appendWithCas(input: {
   );
 }
 
-/** Pre-flight judgment of key uniqueness (§6.2 — no duplicate same-kind public key across all devices of current members). */
+/** Pre-flight judgment of key uniqueness (§6.2 duplicate-member-key — registeredKeyHolderOf). */
 function duplicateKeyRejection(
   verified: VerifiedProject,
   candidate: DeviceCandidate,
 ): string | null {
-  for (const member of verified.state.members.values()) {
-    for (const device of member.devices.values()) {
-      if (device.encPubHex === candidate.encPubHex || device.sigPubHex === candidate.sigPubHex) {
-        return `The key is already registered as a device of ${displayText(member.userId)} (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2)`;
-      }
-    }
+  const holder = registeredKeyHolderOf(verified.state, candidate);
+  if (holder === null) {
+    return null;
   }
-  return null;
+  return holder.kind === "device"
+    ? `The key is already registered as a device of ${displayText(holder.userId)} (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2)`
+    : `The key's enc public key is server key ${holder.serverKeyFingerprintHex}, which a grant has named, so no device may hold it (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2)`;
 }
 
 /** `add_device` pre-flight checks → sign (null if already registered). */
