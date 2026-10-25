@@ -54,13 +54,17 @@ export function wrapRefKey(ref: {
  * recipient_enc_pub_hex) — no class. A member's user_id (ULID) and a server's
  * FP (32 lowercase hex characters) never actually collide in format, but
  * add_member's target user_id is an intentionally unvalidated free-form string
- * (AUTH_SPEC §11-1), so the type does not separate them. The consensus rules
- * do since 2026-10-25: §6.2's key uniqueness keeps every key a grant has named
- * off the current devices, so past the recipient checks a member wrap and a
- * server wrap never share a slot. The key mirrors the primary key, not the
- * rules, so any duplicate slot fails to a 422 (duplicate-recipient) before
- * acceptance, never to a primary-key violation in the write phase = defect
- * (500) that would block that environment's rotations and creations (A-1).
+ * (AUTH_SPEC §11-1), so the type does not separate them. Since 2026-10-25 the
+ * consensus rules do for the current devices: §6.2's key uniqueness keeps
+ * every key a grant has named off them, so past the recipient checks no
+ * member wrap and server wrap of one request share a slot. A stored member
+ * row can still hold a grant's slot (a member whose user_id is the server-key
+ * FP of its own enc key, removed, and that key granted afterwards — the A-1
+ * residue, which the class-agnostic stored-existence check answers with
+ * 409). The key mirrors the primary key, not the rules, so any duplicate slot
+ * fails to a 422 (duplicate-recipient) before acceptance, never to a
+ * primary-key violation in the write phase = defect (500) that would block
+ * that environment's rotations and creations (A-1).
  */
 function wrapStorageKey(ref: {
   readonly epoch: number;

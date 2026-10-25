@@ -202,17 +202,17 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
  * before unknown-server-grant / grant-scope-narrowed) are too (159 + 2 = 161)
  *
  * 2026-10-25 (§6.2 key uniqueness — test-vectors/README.md convention 34):
- * the seven appended negatives (six duplicate-member-key, one
- * environment-deleted before duplicate-server-key) are consensus rules, and
+ * the fifteen appended negatives (the grant clause's refusals, its
+ * check-order pins and the grant side's re-checks) are consensus rules, and
  * the two retired with the derived chain server-key-member-sock were
- * (161 + 7 − 2 = 166)
+ * (161 + 15 − 2 = 174)
  */
 const EXPECTED_PARTITION = {
   checkpoint: 24,
   composite: 42,
   structureBeforeSignature: 1,
   wireSchema: 16,
-  consensus: 166,
+  consensus: 174,
 } as const;
 
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;

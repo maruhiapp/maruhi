@@ -321,8 +321,8 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     // The same id **and the same key** (the member's enc public key =
     // the server key) never comes about: §6.2's key uniqueness keeps every
     // key a grant has named off the current devices (2026-10-25), so the
-    // add_member is refused at chain-append time and no member slot ever
-    // coincides with the grant's
+    // add_member is refused at chain-append time and no current member's
+    // device ever shares the grant's address
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: testUserId(fpHex) },
@@ -493,7 +493,8 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   });
 });
 
-const memberOf = (userId: string) =>
+/** A one-device member with its own key bytes (no two devices share a key — CRYPTO_SPEC §6.2 key uniqueness). */
+const memberOf = (userId: string, encByte: string, sigByte: string) =>
   [
     testUserId(userId),
     {
@@ -503,11 +504,11 @@ const memberOf = (userId: string) =>
       // One initial key = one device (the cap is structurally (owner, all) — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
-          "33".repeat(16),
+          `${encByte}${sigByte}`.repeat(8),
           {
-            keyFingerprintHex: testKeyFingerprintHex("33".repeat(16)),
-            encPubHex: "11".repeat(32),
-            sigPubHex: "22".repeat(32),
+            keyFingerprintHex: testKeyFingerprintHex(`${encByte}${sigByte}`.repeat(8)),
+            encPubHex: encByte.repeat(32),
+            sigPubHex: sigByte.repeat(32),
             roleCap: "owner" as const,
             scope: { kind: "all" as const },
             addedSeq: 1,
@@ -516,11 +517,7 @@ const memberOf = (userId: string) =>
       ]),
     },
   ] as const;
-const grantOf = (
-  fingerprintHex: string,
-  scope: readonly string[],
-  serverEncPubHex: string = "44".repeat(32),
-) =>
+const grantOf = (fingerprintHex: string, scope: readonly string[], serverEncPubHex: string) =>
   [
     testKeyFingerprintHex(fingerprintHex),
     {
@@ -533,31 +530,34 @@ const grantOf = (
   ] as const;
 
 describe("expectedWrapRecipientCount", () => {
-  it("counts the union at the (id, key) stored-key granularity (the device axis — K3)", () => {
+  it("counts a member named by a grant's FP and that grant as two slots (the (id, key) device axis — K3)", () => {
     // add_member's target user_id is a free-form string with no existence
-    // check (AUTH_SPEC §11-1), so a member with the same string as the
-    // server-key FP can be created. Its device key is not the grant's
-    // (§6.2's key uniqueness keeps every key a grant has named off the
-    // current devices), and the stored key is the device axis (id, enc
-    // public key), so the member and the grant are separate slots (counted
-    // as 2)
+    // check (AUTH_SPEC §11-1), so a member can carry a grant's FP as its
+    // user_id. Its device key is its own (§6.2's key uniqueness keeps every
+    // key a grant has named off the current devices), and a wrap is
+    // addressed by (id, enc public key), so the member and the grant are
+    // two slots (counting by recipient id would give one). The state keeps
+    // that invariant: every key is distinct and both grants' keys are named
     const collidingFp = "ab".repeat(16);
     const otherFp = "cd".repeat(16);
     const state: ChainState = {
-      members: new Map([memberOf("user-1"), memberOf(collidingFp)]),
+      members: new Map([memberOf("user-1", "11", "21"), memberOf(collidingFp, "12", "22")]),
       serverGrants: new Map([
-        grantOf(collidingFp, ["env-a"]),
-        grantOf(otherFp, ["env-a", "env-b"]),
+        grantOf(collidingFp, ["env-a"], "44".repeat(32)),
+        grantOf(otherFp, ["env-a", "env-b"], "45".repeat(32)),
       ]),
       environments: new Map(),
       checkpoints: new Map(),
       approvalPolicy: null,
       pendingProposals: new Map(),
-      namedServerKeys: new Map(),
+      namedServerKeys: new Map([
+        ["44".repeat(32), testKeyFingerprintHex(collidingFp)],
+        ["45".repeat(32), testKeyFingerprintHex(otherFp)],
+      ]),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-a: {user-1, collidingFp (member key), collidingFp (server key), otherFp} — 4 slots
+    // env-a: {user-1, collidingFp (its device), collidingFp (the grant), otherFp} — 4 slots
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-a"))).toBe(4);
     // env-b: the only in-scope grant is otherFp
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-b"))).toBe(3);

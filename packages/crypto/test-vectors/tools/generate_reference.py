@@ -1114,6 +1114,22 @@ def gen_chain_entries():
         server_key_device_payload(server["enc_pub_hex"]), t0 + 9000, "duplicate-member-key",
         "a current member (admin-0003) cannot put the active grant's server key in a device of their own (add_device is self-service at every role and the key is public in the grant's payload — §6.2 key uniqueness)",
     )
+    # Check-order pins: the grant clause is part of duplicate-member-key and
+    # sits where the device-key comparison does. The reason code is the
+    # same, so the adjacent-pair pins cannot see a misplaced comparison;
+    # these place it on both sides (the scope family's side and add_device's
+    # follow in their sections)
+    add_authz(
+        "authz-add-member-role-precedes-named-key", 13, head12, "add_member", admin_id, admin,
+        server_key_holder_payload(server["enc_pub_hex"], "admin"), t0 + 12000, "insufficient-role",
+        "the role rule (only an owner may grant admin) is judged before key uniqueness's grant clause (§6.2 check-order pin — a verifier that compares the named server keys before the role rules fails here)",
+    )
+    add_authz(
+        "authz-add-member-duplicate-user-precedes-named-key", 13, head12, "add_member", owner_id, owner,
+        dict(server_key_holder_payload(server["enc_pub_hex"], "member"), target_user_id=admin_id),
+        t0 + 12000, "duplicate-member",
+        "a duplicate target user_id is judged before key uniqueness's grant clause (§6.2 check-order pin)",
+    )
     extended_chains = {}
 
     # Environment-lifecycle chain binding (2026-08-03 — CRYPTO_SPEC
@@ -1377,7 +1393,7 @@ def gen_chain_entries():
                                  member_id: member_state("member", "all")},
             "expected_environments": base_environments,
             "expected_server_grants": [],
-            "note": "re-adding a removed member under the same user_id and same keys (the same person returning) is accepted (§6.2's banned range is the current member set only)",
+            "note": "re-adding a removed member under the same user_id and same keys (the same person returning) is accepted (§6.2 key uniqueness: among device keys only the current ones count, and no grant has named this enc key — the counterpart is authz-readd-member-key-named-since)",
         },
         {
             "name": "reuse-removed-member-key-new-user",
@@ -2345,6 +2361,13 @@ def gen_chain_entries():
         "a key-duplicate × unknown-environment compound violation is judged as key duplication first (add_member: … → duplicate-member-key → unknown-environment)",
     )
     add_es(
+        "authz-add-member-named-key-precedes-unknown-environment", 20, head19, "add_member", owner_id,
+        add_payload(newcomer_id, {"enc_pub_hex": server["enc_pub_hex"], "sig_pub_hex": sock_sig_pub_hex},
+                    "member", "listed", [GHOST]),
+        T19, "duplicate-member-key",
+        "a named-server-key (seq 9's, revoked at seq 12) × unknown-environment compound violation is judged as duplicate-member-key first: key uniqueness's grant clause precedes the scope family like its device-key comparison (a verifier that compares the named server keys after the scope checks fails here)",
+    )
+    add_es(
         "authz-add-member-unknown-environment-precedes-scope-role-mismatch", 20, head19, "add_member", owner_id,
         add_payload(newcomer_id, newcomer, "owner", "listed", [GHOST]), T19, "unknown-environment",
         "an unknown-environment × listed-owner compound violation is judged as unknown-environment first (add_member: unknown-environment → scope-role-mismatch)",
@@ -2562,6 +2585,12 @@ def gen_chain_entries():
         propose_payload("set_approval_policy", policy_payload(POLICY_OPS, 4), EXPIRES), T24,
         "approval-quorum-unreachable",
         "a proposal whose inner op (a policy change) fails reachability (owners 3 < 4) is invalid at the proposal stage",
+    )
+    add_es(
+        "authz-propose-inner-named-key", 25, head24, "propose", owner_id,
+        propose_payload("add_member", server_key_holder_payload(server["enc_pub_hex"], "owner"), EXPIRES),
+        T24, "duplicate-member-key",
+        "a proposal whose inner add_member (owner-establishing — a four-eyes target) registers seq 9's server key, which a grant has named, is invalid at the proposal stage (§6.2 — the inner op's consensus rules, key uniqueness included, are checked when proposed and again when applied)",
     )
     add_es(
         "authz-policy-single-owner", 13, head12, "set_approval_policy", owner_id,
@@ -3514,6 +3543,61 @@ def gen_chain_entries():
         ),
     ]
 
+    # (13) The mirror of authz-approve-add-member-key-named-after-proposal:
+    #      a grant proposed while its key is free, completed after a device
+    #      took the key. The registration is the positive
+    #      register-key-of-pending-grant-proposal's entry, byte for byte
+    registered = keyed + extend(26, keyed[-1]["entry_hash_hex"], [
+        ("add_member", owner_id, server_key_holder_payload(other_server["enc_pub_hex"]),
+         t0 + 26000),                                                                  # 27: the key is a current device's
+    ])
+    extended_chains["server-key-registered-before-grant"] = chain_doc(
+        "Continues server-key-grant-pending with the entry of the positive "
+        "register-key-of-pending-grant-proposal (seq 27): owner-0001 adds "
+        "user-sock-0006 as a reader whose enc key is other-server's, which "
+        "only the pending grant proposal of seq 26 names. Both proposals "
+        "stay pending. The precondition chain for the negative "
+        "authz-approve-grant-key-registered-after-proposal",
+        24, registered, members_with(members_24, **{sock_id: member_state("reader", "all")}),
+        canonical_policy,
+        pending_map((uniq_member_proposal, "owner", []), (uniq_grant_proposal, "owner", [])),
+        expected_environments=base_environments,
+        expected_server_grants=[],
+    )
+    add_es(
+        "authz-approve-grant-key-registered-after-proposal", 28, registered[-1]["entry_hash_hex"],
+        "approve", owner2_id, approve_of(uniq_grant_proposal), t0 + 27000, "duplicate-server-key",
+        "owner-0014's vote completes the grant proposed at seq 26, but a current device has held its server key since seq 27: the application-time re-check rejects the approve (§6.2 key uniqueness, the grant side)",
+        chain="server-key-registered-before-grant",
+    )
+
+    # (14) The returning member under the grant clause: the first clause
+    #      lets a removed member back with its own keys
+    #      (readd-removed-member-same-key), but a grant that named the enc
+    #      key since keeps it out. The grant is the positive
+    #      grant-key-of-removed-member's entry, byte for byte
+    regranted = extend(12, head12, [
+        ("grant_server", owner_id, removed_member_grant, t0 + 12000),            # 13: user-member-0002's enc key is named
+    ])
+    extended_chains["removed-member-key-granted"] = chain_doc(
+        "Appends the entry of the positive grant-key-of-removed-member to "
+        "the canonical chain seq 1-12: owner-0001 grants the enc key of "
+        "user-member-0002 (removed at seq 5) as a server key at seq 13, so "
+        "the key is named from seq 13 on. The precondition chain for the "
+        "negative authz-readd-member-key-named-since",
+        12, regranted, OWNER_ADMIN, None, {},
+        expected_environments=base_environments,
+        expected_server_grants=[dict(grant_state([PROD], [], 13),
+                                     server_key_fingerprint_hex=removed_member_server_fp,
+                                     server_enc_pub_hex=member["enc_pub_hex"])],
+    )
+    add_es(
+        "authz-readd-member-key-named-since", 14, regranted[-1]["entry_hash_hex"], "add_member",
+        owner_id, add_payload(member_id, member, "member"), t0 + 13000, "duplicate-member-key",
+        "user-member-0002 returns under its own user_id with its own keys, but a grant named its enc key at seq 13: the first clause would let it back (readd-removed-member-same-key on the canonical chain), and the grant clause refuses it (§6.2 — a device counts only while it is current, a grant's key for the whole history)",
+        chain="removed-member-key-granted",
+    )
+
     negatives += authz_cases[es_start:]
 
     # =========================================================================
@@ -3946,6 +4030,12 @@ def gen_chain_entries():
     add_dk("authz-add-device-duplicate-key-precedes-unknown-environment", 38, dk_head[37], "add_device", owner_id, recovered,
            device_payload(reserve, "owner", "listed", [GHOST]), "duplicate-member-key",
            "a key-duplicate × unknown-environment compound violation is judged as duplicate-member-key first (add_device: duplicate-member-key → unknown-environment)")
+    add_dk("authz-add-device-actor-not-member-precedes-named-key", 38, dk_head[37], "add_device", devmember_id, devmember,
+           dict(server_key_device_payload(server["enc_pub_hex"]), role_cap="reader"), "actor-not-member",
+           "a non-member × named-server-key compound violation is judged by the actor rule first (add_device: actor rule → duplicate-member-key, whose grant clause sits with its device-key comparison)")
+    add_dk("authz-add-device-named-key-precedes-unknown-environment", 38, dk_head[37], "add_device", owner_id, recovered,
+           dict(server_key_device_payload(server["enc_pub_hex"]), **scope_fields("listed", [GHOST])), "duplicate-member-key",
+           "a named-server-key × unknown-environment compound violation is judged as duplicate-member-key first (add_device: duplicate-member-key → unknown-environment — a verifier that compares the named server keys after the scope check fails here)")
     add_dk("authz-add-device-unknown-environment-precedes-cap", 38, dk_head[37], "add_device", owner3_id, owner3_readercap,
            device_payload(fresh_device, "owner", "listed", [GHOST]), "unknown-environment",
            "an unknown-environment × cap-exceeded (a reader's device creating an owner) compound violation is judged as unknown-environment first (add_device: unknown-environment → device-cap-exceeded)")

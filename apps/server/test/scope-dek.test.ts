@@ -243,7 +243,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
   });
 });
 
-const memberOf = (userId: string, scope: MemberScope) =>
+/** A one-device member with its own key bytes (no two devices share a key — CRYPTO_SPEC §6.2 key uniqueness). */
+const memberOf = (userId: string, encByte: string, sigByte: string, scope: MemberScope) =>
   [
     testUserId(userId),
     {
@@ -254,11 +255,11 @@ const memberOf = (userId: string, scope: MemberScope) =>
       // — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
-          "33".repeat(16),
+          `${encByte}${sigByte}`.repeat(8),
           {
-            keyFingerprintHex: testKeyFingerprintHex("33".repeat(16)),
-            encPubHex: "11".repeat(32),
-            sigPubHex: "22".repeat(32),
+            keyFingerprintHex: testKeyFingerprintHex(`${encByte}${sigByte}`.repeat(8)),
+            encPubHex: encByte.repeat(32),
+            sigPubHex: sigByte.repeat(32),
             roleCap: "owner" as const,
             scope: { kind: "all" as const },
             addedSeq: 1,
@@ -273,9 +274,12 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
     const fp = testKeyFingerprintHex("ab".repeat(16));
     const state: ChainState = {
       members: new Map([
-        memberOf("user-all", { kind: "all" }),
-        memberOf("user-dev", { kind: "listed", environmentIds: [testEnvironmentId("env-dev")] }),
-        memberOf("user-none", { kind: "listed", environmentIds: [] }),
+        memberOf("user-all", "11", "21", { kind: "all" }),
+        memberOf("user-dev", "12", "22", {
+          kind: "listed",
+          environmentIds: [testEnvironmentId("env-dev")],
+        }),
+        memberOf("user-none", "13", "23", { kind: "listed", environmentIds: [] }),
       ]),
       serverGrants: new Map([
         [
@@ -293,7 +297,7 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
       checkpoints: new Map(),
       approvalPolicy: null,
       pendingProposals: new Map(),
-      namedServerKeys: new Map(),
+      namedServerKeys: new Map([["44".repeat(32), fp]]),
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
