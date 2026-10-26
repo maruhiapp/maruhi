@@ -27,7 +27,7 @@
   "devDependencies": {
     "@astryxdesign/build": "0.7.3",
     "@astryxdesign/cli": "0.7.3",
-    "@babel/core": "8.0.7",
+    "@babel/core": "8.0.9",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/crypto": "workspace:*",
     "@stylexjs/babel-plugin": "0.19.1",
