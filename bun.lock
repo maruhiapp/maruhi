@@ -459,7 +459,7 @@
 
     "@funstack/static": ["@funstack/static@1.3.3", "", { "dependencies": { "@funstack/skill-installer": "^1.1.0", "@vitejs/plugin-rsc": "^0.5.38", "react-error-boundary": "^6.1.6", "rsc-html-stream": "^0.0.8", "srvx": "^1.0.5" }, "peerDependencies": { "@funstack/router": "^1.6.0", "react": "^19.2.3", "react-dom": "^19.2.3", "vite": "^7.0.0 || ^8.0.0" }, "optionalPeers": ["@funstack/router"], "bin": { "funstack-static-skill-installer": "dist/bin/skill-installer.mjs" } }, "sha512-KtX9nYWfrX8LYnjV5+SRNR0R4BT5/SSCmFJmCddkte2HdeVVxY/lqvxiGvqNC7cp803Mden8vKKWQCAl6NOPXQ=="],
 
-    "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
+    "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
 
     "@humanfs/core": ["@humanfs/core@0.19.2", "", { "dependencies": { "@humanfs/types": "^0.15.0" } }, "sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA=="],
 
