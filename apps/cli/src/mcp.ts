@@ -318,14 +318,21 @@ function readSchema(
  * negotiates down to 2025-11-25 anyway), and every revision here carries the
  * two primitives used (tools, resources).
  */
-const PROTOCOLS = [
+export const PROTOCOLS = [
   McpProtocol.v2025_11_25,
   McpProtocol.v2025_06_18,
   McpProtocol.v2025_03_26,
   McpProtocol.v2024_11_05,
 ] as const;
 
-function serverLayer(
+/**
+ * The registration layer: the schema toolkit (one `get_schema` tool) and the
+ * two schema resources. Effect 4.1 builds registrations through the
+ * transport's `registrations` option (they are built before the server reads
+ * its first request), and `McpTest.makeClient` consumes this same layer in
+ * tests, so the registrations live apart from the transport here.
+ */
+export function registrationsLayer(
   flags: CommonFlags,
   read: (environment: string | undefined) => Effect.Effect<SchemaResult, CliError>,
 ) {
@@ -358,16 +365,20 @@ function serverLayer(
     McpServer.toolkit(SchemaToolkit).pipe(Layer.provide(handlers)),
     defaultResource,
     environmentResource,
-  ).pipe(
-    Layer.provide(
-      McpServer.layerStdio({
-        name: "maruhi",
-        version: CLI_VERSION,
-        instructions: MCP_INSTRUCTIONS,
-        protocols: PROTOCOLS,
-      }),
-    ),
   );
+}
+
+function serverLayer(
+  flags: CommonFlags,
+  read: (environment: string | undefined) => Effect.Effect<SchemaResult, CliError>,
+) {
+  return McpServer.layerStdio({
+    name: "maruhi",
+    version: CLI_VERSION,
+    instructions: MCP_INSTRUCTIONS,
+    protocols: PROTOCOLS,
+    registrations: registrationsLayer(flags, read),
+  });
 }
 
 /** A failure's user-facing text: a CliError's message, anything else by type name only (failure.ts). */
