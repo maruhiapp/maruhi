@@ -295,7 +295,8 @@ export const maruhiApi = HttpApi.make("maruhi")
   // layer is provided without `includeDetails`, so no field paths or
   // schema reasons are exposed). The declared endpoint errors are NOT
   // converted: their `{_tag, reason, …}` bodies are the AUTH_SPEC
-  // contract both first-party clients decode (see the 4.1 upgrade note)
+  // contract both first-party clients decode (the boundary is pinned
+  // by apps/server/test/problem-details.test.ts)
   .middleware(HttpApiMiddleware.ProblemDetails);
 
 // Load-time sweep (AUTH_SPEC §12-10 (1)): checks at import time that

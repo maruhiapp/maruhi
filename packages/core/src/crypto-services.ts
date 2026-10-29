@@ -1,25 +1,30 @@
-// The single seam through which Effect-structured code draws secure
-// randomness and message digests (Effect 4.1's `effect/crypto`
-// services).
+// The seam through which the Effect-structured code in core and the
+// server draws secure randomness and message digests (Effect 4.1's
+// `effect/crypto` services).
 //
 // Why a seam: randomness and hashing used to be ambient WebCrypto calls
 // (`crypto.getRandomValues` / `crypto.subtle.digest`) scattered across
 // core and the server. Routing them through the `SecureRandom` /
-// `Digest` services makes every draw auditable at one point and lets
-// tests substitute deterministic implementations with `Layer.mock` —
-// the same "bind the policy to one place" shape as egress.ts.
+// `Digest` services makes every draw in that scope auditable at one
+// point and lets tests substitute deterministic implementations with
+// `Layer.mock` — the same "bind the policy to one place" shape as
+// egress.ts.
 //
 // Both layers are the WebCrypto variants: they draw from the
 // `WebCrypto` reference, which defaults to `globalThis.crypto`, so the
 // same layer runs unchanged on workerd, in the browser and under Bun.
 // No platform package is involved.
 //
-// Scope: this seam serves Effect-structured code only. Genuinely
-// synchronous call sites (the audit Durable Object's synchronous
-// storage API, Drizzle statement construction, an in-memory grant map)
-// cannot yield a service; those keep a plain-function surface in the
-// server's ids.ts, documented there. The spec-pinned E2EE core
-// (@maruhi/crypto) is untouched: it does not consume these services.
+// Scope: this seam serves the Effect-structured code in core and the
+// server. Genuinely synchronous call sites (the audit Durable Object's
+// synchronous storage API, Drizzle statement construction, an in-memory
+// grant map) cannot yield a service; those keep a plain-function
+// surface in the server's ids.ts, documented there. The CLI is also
+// out of scope for now: its remaining ambient draws are mostly
+// protocol-adjacent values produced inside plain helpers (WebAuthn
+// ceremony values, SigV4 hashing, TLS certificate material) rather
+// than Effect programs. The spec-pinned E2EE core (@maruhi/crypto) is
+// untouched: it does not consume these services.
 
 import { Layer } from "effect";
 import { Digest, SecureRandom } from "effect/crypto";
