@@ -56,6 +56,7 @@ import {
 import { ChainInvalidError } from "@maruhi/core";
 import { Schema, SchemaIssue } from "effect";
 import { HttpClientError } from "effect/http";
+import { HttpApiError } from "effect/http-api";
 
 import { displayText } from "./display.ts";
 import { CliError, cliError } from "./errors.ts";
@@ -257,6 +258,21 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
 
 // A CliError is returned as-is at toCliError's entry (so the usage flag is not dropped)
 const renderers: readonly Renderer[] = [
+  // Framework-level RFC 9457 problems (Effect 4.1's ProblemDetails
+  // middleware on the API): the server could not decode the request
+  // (400) or could not encode its response (500). The wording asserts
+  // neither side's fault — like renderSchemaFailure below, which the
+  // pre-4.1 schema-error channel fed — and the problem's own fields
+  // (a generic detail only) are never passed through
+  when(
+    isInstanceOf(HttpApiError.BadRequestProblem),
+    () =>
+      "Some data does not match the schema (the server could not decode the request). Check the values you provided, and that the CLI and server versions match",
+  ),
+  when(
+    isInstanceOf(HttpApiError.InternalServerErrorProblem),
+    () => "The server failed to produce a response. Try again, and check for a server update",
+  ),
   when(
     isInstanceOf(UnauthorizedError),
     // Expiry folds into the same 401 as revocation (AUTH_SPEC §6 — W3a:

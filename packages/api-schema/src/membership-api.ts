@@ -8,7 +8,13 @@
 
 import { OrgIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+import {
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiMiddleware,
+  HttpApiSchema,
+} from "effect/http-api";
 
 import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";
@@ -282,7 +288,15 @@ export const maruhiApi = HttpApi.make("maruhi")
   // Mirrors (AUTH_SPEC §11-7 — PF2; the mark, the promotion and the replication pages; never session-allowed)
   .add(mirrorGroup)
   // The only unauthenticated group (credential = the OIDC token itself — AUTH_SPEC §14-1)
-  .add(leaseGroup);
+  .add(leaseGroup)
+  // RFC 9457 problem details for the framework-level failures only:
+  // a request that fails decoding becomes a 400 problem and a response
+  // that fails encoding a 500 problem (both with a generic detail — the
+  // layer is provided without `includeDetails`, so no field paths or
+  // schema reasons are exposed). The declared endpoint errors are NOT
+  // converted: their `{_tag, reason, …}` bodies are the AUTH_SPEC
+  // contract both first-party clients decode (see the 4.1 upgrade note)
+  .middleware(HttpApiMiddleware.ProblemDetails);
 
 // Load-time sweep (AUTH_SPEC §12-10 (1)): checks at import time that
 // the payload of every registered security-critical endpoint refuses
