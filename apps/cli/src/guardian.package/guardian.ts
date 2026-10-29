@@ -369,7 +369,7 @@ export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (inpu
   }
   // Changing the ledger requires opening the reserve key (CRYPTO_SPEC §8 revision (4))
   const reserve = yield* input.openReserve(context.session, context.client);
-  const groupId = newLedgerId();
+  const groupId = yield* newLedgerId();
   const prepared = yield* prepareGroup({
     wardUserId: context.session.userId,
     reserve,

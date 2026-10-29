@@ -12,6 +12,7 @@
 // match.
 
 import { Context, Data, Effect, Option, Schema } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
 
 import type { UserId } from "./identity.ts";
 import { ProjectIdSchema } from "./project.ts";
@@ -195,11 +196,14 @@ export interface IssuedSession {
 /** AUTH_SPEC §8: session issuance, verification, revocation (§5). */
 export interface SessionServiceShape {
   /** Issues a 256-bit session. Only the hash is stored in the DB; the raw value is returned only here. */
-  readonly issueSession: (userId: UserId, authMethod: AuthMethod) => Effect.Effect<IssuedSession>;
+  readonly issueSession: (
+    userId: UserId,
+    authMethod: AuthMethod,
+  ) => Effect.Effect<IssuedSession, never, SecureRandom.SecureRandom | Digest.Digest>;
   /** Resolves a principal from a raw cookie value. Revoked, unknown, and expired are treated as anonymous. */
-  readonly resolveSession: (rawValue: string) => Effect.Effect<Principal>;
+  readonly resolveSession: (rawValue: string) => Effect.Effect<Principal, never, Digest.Digest>;
   /** Revokes the session of a raw cookie value (logout). */
-  readonly revokeSession: (rawValue: string) => Effect.Effect<void>;
+  readonly revokeSession: (rawValue: string) => Effect.Effect<void, never, Digest.Digest>;
 }
 
 export class SessionService extends Context.Service<SessionService, SessionServiceShape>()(
@@ -238,11 +242,15 @@ export interface TokenServiceShape {
     name: string,
     scopes: readonly TokenScope[],
     ttlMs: number,
-  ) => Effect.Effect<IssuedToken, TokenLimitReachedError>;
+  ) => Effect.Effect<
+    IssuedToken,
+    TokenLimitReachedError,
+    SecureRandom.SecureRandom | Digest.Digest
+  >;
   /** Resolves a principal from a `maruhi_pat_…` token. Failures are treated as anonymous. */
-  readonly resolveApiToken: (rawToken: string) => Effect.Effect<Principal>;
+  readonly resolveApiToken: (rawToken: string) => Effect.Effect<Principal, never, Digest.Digest>;
   /** Revokes the presented token itself (AUTH_SPEC §6's v1 line). */
-  readonly revokePresentedToken: (rawToken: string) => Effect.Effect<void>;
+  readonly revokePresentedToken: (rawToken: string) => Effect.Effect<void, never, Digest.Digest>;
 }
 
 export class TokenService extends Context.Service<TokenService, TokenServiceShape>()(

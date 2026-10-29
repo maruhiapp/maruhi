@@ -5,6 +5,7 @@
 // The only stub is the GitHub API (vitest.config.ts's
 // outboundService fake).
 
+import { cryptoServicesLayer } from "@maruhi/core";
 import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
 import { Effect } from "effect";
@@ -681,7 +682,11 @@ describe("CLI login (AUTH_SPEC §4 — the server-brokered web-flow handoff)", (
     // expired". Typed differently from recombination (invalid)
     const started = await startCliFlow();
     const key = await flowSigningKeyFromDb();
-    const expiredToken = await createFlowToken(key, started.flowId, Date.now() - 1_000);
+    const expiredToken = await Effect.runPromise(
+      createFlowToken(key, started.flowId, Date.now() - 1_000).pipe(
+        Effect.provide(cryptoServicesLayer),
+      ),
+    );
     const response = await pollCliFlow(started.flowId, expiredToken);
     expect(response.status).toBe(410);
     expect(((await response.json()) as Record<string, unknown>)["_tag"]).toBe("CliFlowExpired");

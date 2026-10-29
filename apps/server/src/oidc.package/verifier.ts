@@ -18,8 +18,8 @@
 //   5. Presence of required claims and time checks (clock skew ±60s)
 
 import { LeaseUnauthorizedError, LeaseUnavailableError } from "@maruhi/api-schema";
-import { encodeHex } from "@maruhi/crypto";
 import { Context, Effect } from "effect";
+import { Digest } from "effect/crypto";
 
 import { decodeBase64Url, decodeBase64UrlJson } from "./base64url.ts";
 import type { AllowedAlg } from "./jwk.ts";
@@ -94,7 +94,11 @@ export interface OidcVerifierShape {
   readonly verify: (
     token: string,
     nowMs: number,
-  ) => Effect.Effect<VerifiedOidcToken, LeaseUnauthorizedError | LeaseUnavailableError>;
+  ) => Effect.Effect<
+    VerifiedOidcToken,
+    LeaseUnauthorizedError | LeaseUnavailableError,
+    Digest.Digest
+  >;
 }
 
 export class OidcVerifier extends Context.Service<OidcVerifier, OidcVerifierShape>()(
@@ -309,11 +313,15 @@ export function makeOidcVerifier(
       }
       // The first-come-binding key is a hash of **the signed bytes**
       // (not the raw token — see signingInputHashHex's doc). Computed
-      // only after signature verification passes
-      const digest = yield* Effect.promise(() =>
-        crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
+      // only after signature verification passes. The hash goes through
+      // the `Digest` service (crypto-services seam); a failed digest is
+      // an environment defect, as a rejected `crypto.subtle.digest`
+      // promise was before
+      const signingInputHashHex = yield* Effect.orDie(
+        Effect.flatMap(Digest.Digest, (digest) =>
+          digest.digestHex(Digest.sha256, parsed.signingInput),
+        ),
       );
-      const signingInputHashHex = encodeHex(new Uint8Array(digest));
       return {
         issuer,
         subject,

@@ -31,6 +31,7 @@ export {
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "./crypto-errors.ts";
+export { cryptoServicesLayer } from "./crypto-services.ts";
 export { type EgressRequestInit, egressHttpClientLayer } from "./egress.ts";
 export { ulid } from "./ids.ts";
 export {

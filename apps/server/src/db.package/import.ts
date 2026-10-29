@@ -16,9 +16,11 @@
 // Drizzle stays inside this package (ADR-0006).
 
 import type { OrgId, ProjectId, ProviderUserId, UserId } from "@maruhi/core";
+import { cryptoServicesLayer } from "@maruhi/core";
 import { and, eq, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
+import { Effect } from "effect";
 
 import { newOrgId } from "../ids.ts";
 import { orgAuditInsert, userAuditInsert } from "./audit.ts";
@@ -258,9 +260,17 @@ export async function provisionImportedProject(
   const db = drizzle(d1);
   const statements: BatchItem<"sqlite">[] = [];
   const orgOf = new Map<UserId, OrgId>();
-  for (const identity of classified.toCreate) {
+  // The org ids are drawn through the SecureRandom service (ids.ts).
+  // This entry point is a plain async function (the restore worker's
+  // boundary), so the composed crypto-services layer is provided here
+  // rather than threaded through the signature
+  const creations = await Effect.runPromise(
+    Effect.forEach(classified.toCreate, (identity) =>
+      Effect.map(newOrgId(nowMs), (orgId) => ({ identity, orgId })),
+    ).pipe(Effect.provide(cryptoServicesLayer)),
+  );
+  for (const { identity, orgId } of creations) {
     const { userId } = identity;
-    const orgId = newOrgId(nowMs);
     orgOf.set(userId, orgId);
     const actor = { userId };
     statements.push(

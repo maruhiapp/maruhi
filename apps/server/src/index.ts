@@ -15,10 +15,11 @@
 //     as request context
 
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
-import { SessionService, TokenService } from "@maruhi/core";
-import { Clock, Context, Effect, FileSystem, Layer, Path } from "effect";
+import { cryptoServicesLayer, SessionService, TokenService } from "@maruhi/core";
+import { Clock, Context, Effect, FileSystem, Layer, Path, Scope } from "effect";
+import { Digest, SecureRandom } from "effect/crypto";
 import { Etag, HttpPlatform, HttpRouter } from "effect/http";
-import { HttpApiBuilder } from "effect/http-api";
+import { HttpApiBuilder, HttpApiMiddleware } from "effect/http-api";
 
 import {
   authMiddlewareImpl,
@@ -77,7 +78,19 @@ type RequestServices =
   | SessionService
   | TokenService
   | ServerKey
-  | OidcVerifier;
+  | OidcVerifier
+  | SecureRandom.SecureRandom
+  | Digest.Digest;
+
+// The crypto services as plain service values for the per-request
+// context: the AuthMiddleware's `requires` are global requires of the
+// HttpApi, satisfied from this context rather than from a Layer. Built
+// once at module scope (the WebCrypto layers are stateless — they draw
+// from `globalThis.crypto` per call). The scope is deliberately never
+// closed: the layers register no finalizers, and the values live for
+// the isolate's lifetime like the rest of the per-env services
+const cryptoServicesContext: Context.Context<SecureRandom.SecureRandom | Digest.Digest> =
+  Effect.runSync(Layer.buildWithScope(cryptoServicesLayer, Scope.makeUnsafe()));
 
 function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
@@ -103,6 +116,7 @@ function buildServices(env: Env): Context.Context<RequestServices> {
     Context.add(OidcVerifier, makeOidcVerifier()),
     Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
     Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
+    Context.merge(cryptoServicesContext),
   );
 }
 
@@ -139,7 +153,15 @@ function handlerFor(env: Env): EnvHandler {
     Layer.provide(exportLive),
     Layer.provide(mirrorLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
+    // RFC 9457 rendering of framework-level failures (declared on the
+    // API in @maruhi/api-schema). Default options: the 400 problem's
+    // detail stays generic — no per-field reasons leave the server
+    Layer.provide(HttpApiMiddleware.layerProblemDetails()),
     Layer.provide(platformContext),
+    // Handler-level crypto-service requirements (SecureRandom / Digest)
+    // are discharged here; the middleware's are global requires and ride
+    // the per-request context instead (buildServices)
+    Layer.provide(cryptoServicesLayer),
     Layer.provide(Layer.succeedContext(services)),
   );
   // Disable Effect's default HTTP logger (HttpMiddleware.logger —

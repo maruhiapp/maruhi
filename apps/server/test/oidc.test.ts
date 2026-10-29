@@ -19,6 +19,7 @@
 // is driven by `TestClock` (no traffic to the real network).
 
 import { Effect, ManagedRuntime } from "effect";
+import { Digest } from "effect/crypto";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
@@ -113,12 +114,24 @@ const makeTestRuntime = async (): Promise<TestRuntime> => {
 const advance = (rt: TestRuntime, ms: number) => rt.runPromise(TestClock.adjust(ms));
 
 /** Fold the outcome into a tagged value, run under `rt` with `fetch` installed. */
-const run = <A, E>(rt: TestRuntime, fetch: typeof globalThis.fetch, effect: Effect.Effect<A, E>) =>
+const run = <A, E>(
+  rt: TestRuntime,
+  fetch: typeof globalThis.fetch,
+  effect: Effect.Effect<A, E, Digest.Digest>,
+) =>
   rt.runPromise(
-    Effect.match(effect.pipe(Effect.provideService(FetchHttpClient.Fetch, fetch)), {
-      onSuccess: (value: A) => ({ ok: true as const, value }),
-      onFailure: (error: E) => ({ ok: false as const, error }),
-    }),
+    Effect.match(
+      effect.pipe(
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+        // The verifier's signing-input hash goes through the Digest
+        // service since the Effect 4.1 migration
+        Effect.provide(Digest.layerWebCrypto),
+      ),
+      {
+        onSuccess: (value: A) => ({ ok: true as const, value }),
+        onFailure: (error: E) => ({ ok: false as const, error }),
+      },
+    ),
   );
 
 /** Resolve under `rt` with `fetch`, expecting a key or null (the non-failure verdicts). */

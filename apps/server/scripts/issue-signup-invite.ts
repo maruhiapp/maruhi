@@ -15,6 +15,9 @@
 // Usage (from apps/server):
 //   bun run scripts/issue-signup-invite.ts [--days 7] [--origin https://your.deployment]
 
+import { cryptoServicesLayer } from "@maruhi/core";
+import { Effect } from "effect";
+
 import { randomBase62, sha256Hex, ulid } from "../src/ids.ts";
 
 const SIGNUP_CODE_PREFIX = "maruhi_sgn_";
@@ -35,9 +38,16 @@ const origin = readFlag("origin") ?? "<your-deployment-origin>";
 
 const nowMs = Date.now();
 const expiresAtMs = nowMs + days * 24 * 60 * 60 * 1000;
-const id = ulid(nowMs);
-const code = SIGNUP_CODE_PREFIX + randomBase62();
-const tokenHash = await sha256Hex(code);
+// The id generators are Effects over the crypto services since the 4.1
+// migration; this script is a runtime root, so it provides the layer
+const { id, code, tokenHash } = await Effect.runPromise(
+  Effect.gen(function* () {
+    const drawnId = yield* ulid(nowMs);
+    const drawnCode = SIGNUP_CODE_PREFIX + (yield* randomBase62());
+    const drawnHash = yield* Effect.orDie(sha256Hex(drawnCode));
+    return { id: drawnId, code: drawnCode, tokenHash: drawnHash };
+  }).pipe(Effect.provide(cryptoServicesLayer)),
+);
 
 const insertSql = `INSERT INTO signup_invites (id, token_hash, status, expires_at, created_at) VALUES ('${id}', '${tokenHash}', 'pending', ${String(expiresAtMs)}, ${String(nowMs)});`;
 

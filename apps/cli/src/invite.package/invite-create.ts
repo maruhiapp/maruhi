@@ -22,6 +22,7 @@ import {
   SUITE_ID,
 } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
+import { SecureRandom } from "effect/crypto";
 
 import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
 import type { MaruhiClient } from "../api.ts";
@@ -174,8 +175,8 @@ const signIssuance = Effect.fn("invite-create.signIssuance")(function* (input: {
   readonly role: InviteRole;
   readonly scope: ScopePayloadFields;
   readonly signingKey: MasterKeys["sigKeyPair"]["privateKey"];
-}): Effect.fn.Return<SignedIssuance, CliError> {
-  const inviteId = ulid();
+}): Effect.fn.Return<SignedIssuance, CliError, SecureRandom.SecureRandom> {
+  const inviteId = yield* ulid();
   const seed = generateInviteLinkSeed();
   const linkKey = yield* cryptoEffect(() => deriveInviteLinkKeyPair(seed)).pipe(
     Effect.mapError(() => cliError("Failed to derive the invite link key")),
@@ -222,7 +223,11 @@ export const inviteCreateOp = Effect.fn("invite-create.inviteCreateOp")(function
   readonly expectedGithubLogin: string | null;
   /** One's own GitHub login (the link's `il=` — material for the invitee-side backing check). */
   readonly inviterLogin: string | null;
-}): Effect.fn.Return<InviteCreateSummary, CliError, CliIo | PinStore | Stdio.Stdio> {
+}): Effect.fn.Return<
+  InviteCreateSummary,
+  CliError,
+  CliIo | PinStore | Stdio.Stdio | SecureRandom.SecureRandom
+> {
   const io = yield* CliIo;
   const pinStore = yield* PinStore;
   // An invite link's seed is displayed as the link (that is the

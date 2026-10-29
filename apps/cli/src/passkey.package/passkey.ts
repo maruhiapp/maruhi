@@ -34,6 +34,7 @@ import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
 import { Duration, Effect, Stdio } from "effect";
+import { SecureRandom } from "effect/crypto";
 import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
@@ -268,7 +269,11 @@ export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input
   readonly client: MaruhiClient;
   readonly reserve: ReserveKeys;
   readonly label?: string | undefined;
-}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+}): Effect.fn.Return<
+  void,
+  CliError,
+  CliIo | Stdio.Stdio | HttpClient.HttpClient | SecureRandom.SecureRandom
+> {
   const io = yield* CliIo;
   yield* ensurePasskeyCeremonyAllowed(io, "register");
   const rows = yield* fetchPasskeyRows(input.client);
@@ -282,7 +287,7 @@ export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input
   // wrap_id is bound by AAD, so it is issued before encryption.
   // prf_salt is a per-registration random (a public parameter).
   // The user handle is a per-registration random too (ruling G)
-  const wrapId = newLedgerId();
+  const wrapId = yield* newLedgerId();
   const prfSaltHex = encodeHex(crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES)));
   const outcome = yield* runPrfCeremony(
     {

@@ -31,7 +31,7 @@ import { and, desc, eq, inArray, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
-import { randomHex } from "../ids.ts";
+import { randomHexSync } from "../ids.ts";
 import { tryD1 } from "./errors.ts";
 import { loginFailedWindows, orgAuditEvents, userAuditEvents } from "./schema.ts";
 
@@ -76,7 +76,7 @@ function rowOf(event: D1AuditEventInput, serverTs: number) {
   const payload = auditPayloadWith(event.actor, event.payload);
   return {
     // The wire row identifier (AUDIT_SPEC §5.1 row_id — §7's opaque cursor)
-    rowId: randomHex(16),
+    rowId: randomHexSync(16),
     serverTs,
     event: event.event,
     actorType: "user",
@@ -136,7 +136,7 @@ export function guardedAuditSelectColumns(
     // The wire row identifier (AUDIT_SPEC §5.1 row_id). A guarded insert
     // produces at most one row, so a constant picked at statement-build
     // time suffices
-    rowId: sql<string>`${randomHex(16)}`.as("row_id"),
+    rowId: sql<string>`${randomHexSync(16)}`.as("row_id"),
     serverTs: sql<number>`${input.nowMs}`.as("server_ts"),
     event: sql<string>`${input.event}`.as("event"),
     actorType: sql<string>`'user'`.as("actor_type"),
