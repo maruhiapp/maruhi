@@ -1,6 +1,6 @@
-// The seam through which the Effect-structured code in core and the
-// server draws secure randomness and message digests (Effect 4.1's
-// `effect/crypto` services).
+// The seam through which the Effect-structured code in core, the
+// server and the CLI draws secure randomness and message digests
+// (Effect 4.1's `effect/crypto` services).
 //
 // Why a seam: randomness and hashing used to be ambient WebCrypto calls
 // (`crypto.getRandomValues` / `crypto.subtle.digest`) scattered across
@@ -15,15 +15,17 @@
 // same layer runs unchanged on workerd, in the browser and under Bun.
 // No platform package is involved.
 //
-// Scope: this seam serves the Effect-structured code in core and the
-// server. Genuinely synchronous call sites (the audit Durable Object's
-// synchronous storage API, Drizzle statement construction, an in-memory
-// grant map) cannot yield a service; those keep a plain-function
-// surface in the server's ids.ts, documented there. The CLI is also
-// out of scope for now: its remaining ambient draws are mostly
-// protocol-adjacent values produced inside plain helpers (WebAuthn
-// ceremony values, SigV4 hashing, TLS certificate material) rather
-// than Effect programs. The spec-pinned E2EE core (@maruhi/crypto) is
+// Scope: this seam serves the Effect-structured code in core, the
+// server and the CLI — the CLI's live and test layers provide it, and
+// its Effect-structured id draws (ulid, newLedgerId) go through it.
+// What stays outside is narrower. Genuinely synchronous call sites
+// (the audit Durable Object's synchronous storage API, Drizzle
+// statement construction, an in-memory grant map) cannot yield a
+// service; those keep a plain-function surface in the server's
+// ids.ts, documented there. The CLI's protocol-adjacent draws inside
+// plain helpers (WebAuthn ceremony values, SigV4 hashing, TLS
+// certificate material) likewise stay ambient: they are not produced
+// by Effect programs. The spec-pinned E2EE core (@maruhi/crypto) is
 // untouched: it does not consume these services.
 
 import { Layer } from "effect";
