@@ -16,7 +16,7 @@
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "importlint": "import-lint",
-    "lint": "vp lint",
+    "lint": "vp lint --deny-warnings",
     "prepare": "effect-tsgo patch --oxlint --no-typescript",
     "test": "vitest run",
     "test:app-unit": "bun scripts/test-suite.mjs run app-unit",

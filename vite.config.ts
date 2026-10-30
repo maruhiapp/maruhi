@@ -69,7 +69,17 @@ export default defineConfig({
     // Effect values are not thenables, so dropped Effects are guarded
     // by the effecttsgo rules above, not by no-floating-promises.
     // typeCheck makes `vp check` run the full typecheck as well.
-    options: { typeAware: true, typeCheck: true },
+    // Strictness: severities default to error (the two categories above
+    // are the only ones enabled, both at error; no rule in this config
+    // sits at warn), and denyWarnings makes any warning-level finding
+    // fail the gate — the pass bar is zero warnings, matching the old
+    // Effect gate's --strict. The `lint` script passes --deny-warnings
+    // as well, so the flag shows at the call site too. Every rule left
+    // off below or in an override is listed in PR #451's "Lint
+    // strictness" section with its reason (all are carryovers from the
+    // two .oxlintrc.json files or the Effect gate, each with the reason
+    // recorded where it was introduced).
+    options: { typeAware: true, typeCheck: true, denyWarnings: true },
     rules: {
       "typescript/await-thenable": "error",
       "typescript/no-array-delete": "error",

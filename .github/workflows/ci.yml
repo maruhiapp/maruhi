@@ -216,8 +216,11 @@ jobs:
           # diagnostics (@effect/tsgo's effecttsgo preset) over the programs
           # that use Effect: a dropped Effect, an unhandled error or
           # requirement, a bare `yield` in a generator — the gate that used
-          # to be the separate step 3b (scripts/effect-diagnostics.mjs)
-          - name: 2. Lint (vp lint, type-aware + Effect diagnostics)
+          # to be the separate step 3b (scripts/effect-diagnostics.mjs).
+          # `bun run lint` is `vp lint --deny-warnings` and the config sets
+          # denyWarnings too: a warning-level finding fails this step (the
+          # pass bar is zero warnings)
+          - name: 2. Lint (vp lint, type-aware + Effect diagnostics, warnings fail)
             run: bun run lint
 
           - name: 3. Typecheck (vp check)
