@@ -27,7 +27,7 @@
 // hand-written parsers), DB row mapping inside the server's repository
 // service (the Drizzle column types), generation (a new user id, the
 // subject the provider's API returns) and, for a fingerprint, computation
-// from the keys. `.oxlintrc.json` enforces this: the schemas and `decode*`
+// from the keys. `vite.config.ts` enforces this: the schemas and `decode*`
 // mints below may be imported only by the listed mint sites.
 
 import type { KeyFingerprintHex, UserId } from "@maruhi/crypto";
@@ -108,7 +108,7 @@ export const KeyFingerprintHexSchema = Schema.String.pipe(
  * Mints a {@link KeyFingerprintHex} where no Schema field does the decoding.
  * Its shipped users are the server's stored-row decoders (the data store's
  * and the audit store's reads); a new caller is a new mint site for
- * `.oxlintrc.json`. Also the format check behind the computed mints below.
+ * `vite.config.ts`. Also the format check behind the computed mints below.
  * Throws on a malformed value.
  */
 export const decodeKeyFingerprintHex: (value: string) => KeyFingerprintHex =

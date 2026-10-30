@@ -21,7 +21,12 @@
 // configs, like the web e2e vitest.config.ts, intentionally match no
 // rule and fail if added to `projects:`).
 //
-// Requires Bun. `run` spawns `bun x vitest`.
+// Requires Bun. `run` spawns `vp test` (vite-plus) — except the server
+// suite, which spawns `bun x vitest`: the server suite runs on
+// @cloudflare/vitest-plugin (workerd), whose runner does not start
+// under vite-plus's bundled vitest copy (every test file fails with
+// "Vitest failed to find the runner"; verified in the vite-plus
+// migration, 2026-10-30).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -164,11 +169,21 @@ switch (command) {
     }
     const names = partition()[suite];
     const passthrough = extra[0] === "--" ? extra.slice(1) : extra;
-    const result = spawnSync(
-      "bun",
-      ["x", "vitest", "run", ...names.flatMap((n) => ["--project", n]), ...passthrough],
-      { cwd: ROOT, stdio: "inherit" },
-    );
+    const projects = names.flatMap((n) => ["--project", n]);
+    const result =
+      suite === "server"
+        ? spawnSync("bun", ["x", "vitest", "run", ...projects, ...passthrough], {
+            cwd: ROOT,
+            stdio: "inherit",
+          })
+        : spawnSync(
+            join(ROOT, "node_modules/.bin/vp"),
+            ["test", "run", ...projects, ...passthrough],
+            {
+              cwd: ROOT,
+              stdio: "inherit",
+            },
+          );
     process.exit(result.status ?? 1);
     break;
   }

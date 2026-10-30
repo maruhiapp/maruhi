@@ -208,21 +208,23 @@ jobs:
               --ignore GHSA-238p-pmpm-9mq7
               --ignore GHSA-rj75-hqrm-r3gf
 
-          - name: 1. Format (oxfmt)
+          - name: 1. Format (vp fmt)
             run: bun run fmt:check
 
-          # Type-aware (oxlint-tsgolint, `options.typeAware` in .oxlintrc.json)
-          - name: 2. Lint (oxlint, type-aware)
+          # Type-aware (oxlint-tsgolint via vite-plus; the lint block of
+          # vite.config.ts). The lint also carries the Effect-aware
+          # diagnostics (@effect/tsgo's effecttsgo preset) over the programs
+          # that use Effect: a dropped Effect, an unhandled error or
+          # requirement, a bare `yield` in a generator — the gate that used
+          # to be the separate step 3b (scripts/effect-diagnostics.mjs).
+          # `bun run lint` is `vp lint --deny-warnings` and the config sets
+          # denyWarnings too: a warning-level finding fails this step (the
+          # pass bar is zero warnings)
+          - name: 2. Lint (vp lint, type-aware + Effect diagnostics, warnings fail)
             run: bun run lint
 
-          - name: 3. Typecheck (tsc)
+          - name: 3. Typecheck (vp check)
             run: bun run typecheck
-
-          # Effect-aware diagnostics (@effect/tsgo) over the programs that use
-          # Effect: a dropped Effect, an unhandled error or requirement, a bare
-          # `yield` in a generator (scripts/effect-diagnostics.mjs)
-          - name: 3b. Effect diagnostics (@effect/tsgo)
-            run: bun run lint:effect
 
           - name: 4. ImportLint
             run: bunx import-lint --format github

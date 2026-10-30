@@ -8,10 +8,9 @@
     "build": "bunx --bun blume build && bun run scripts/postbuild.ts",
     "deploy": "bun run build && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision",
     "dev": "bunx --bun blume dev",
-    "e2e": "vitest run",
+    "e2e": "vp test run",
     "preview": "cf dev --port 8789",
     "theme:build": "bun run scripts/build-theme.ts",
-    "typecheck": "tsc --noEmit",
     "validate": "bunx --bun blume validate --strict"
   },
   "dependencies": {
@@ -21,7 +20,6 @@
     "@types/node": "26.6.5",
     "cf": "1.0.0-beta.20",
     "playwright": "1.64.1",
-    "vitest": "5.0.5",
     "wrangler": "4.152.0"
   }
 }

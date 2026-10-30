@@ -15,7 +15,7 @@
 // (these schemas, also behind CLI arguments; `decode*` for hand-written
 // parsers and generated ids), DB row mapping inside the server's repository
 // service (the Drizzle column types) and the data store's branded column
-// reads. `.oxlintrc.json` enforces this: the schemas and `decode*` mints
+// reads. `vite.config.ts` enforces this: the schemas and `decode*` mints
 // below may be imported only by the listed mint sites.
 //
 // Every exported `is*` guard is a non-narrowing predicate. The only
@@ -32,7 +32,7 @@
 // row ids. A `value is` guard would let any file mint one brand from another
 // domain's same-shaped string — the very confusion the brands exist to
 // prevent. Minting is consolidated in the schemas and `decode*` below
-// (`.oxlintrc.json`-restricted); a boolean check mints nothing, so it needs
+// (`vite.config.ts`-restricted); a boolean check mints nothing, so it needs
 // no restriction.
 
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/crypto";
