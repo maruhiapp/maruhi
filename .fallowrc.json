@@ -10,8 +10,9 @@
   // Tools referenced only from CLI / lint config are never imported, so they
   // are excluded from unused-dependency checks
   // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
-  // via @astryxdesign/build / the oxlint config; @effect/tsgo is the
-  // effect-tsgo CLI run by scripts/effect-diagnostics.mjs)
+  // via @astryxdesign/build / the oxlint config in vite.config.ts;
+  // @effect/tsgo supplies the effecttsgo oxlint preset that vite.config.ts
+  // imports and the patched tsgolint the root `prepare` script applies)
   "ignoreDependencies": [
     "@effect/tsgo",
     "@import-lint/cli",

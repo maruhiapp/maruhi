@@ -95,7 +95,7 @@ describe("egressHttpClientLayer", () => {
 
 describe("outbound clients are built only in packages/core/src/egress.ts", () => {
   // The import of FetchHttpClient / BunHttpClient is pinned by oxlint
-  // (.oxlintrc.json no-restricted-imports); a client built from scratch with
+  // (vite.config.ts no-restricted-imports); a client built from scratch with
   // HttpClient.make / makeWith would bypass both, so it is pinned here
   const repoRoot = join(import.meta.dirname, "../../..");
   const sourceRoots = ["apps", "packages"].flatMap((group) =>

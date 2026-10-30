@@ -150,11 +150,11 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
     // type-only import is spelled `import type`, so a value import
     // mixing in is mechanically checkable. This is the web half of the
     // Effect fence (CLAUDE.md "Architecture"); the crypto half is the
-    // packages/crypto override of no-restricted-imports in .oxlintrc.json.
+    // packages/crypto override of no-restricted-imports in vite.config.ts.
     // @effect/* and @maruhi/core are Effect code too, and are swept for a
     // second reason: the root config's outbound-HTTP and identity-mint
-    // bans (its `apps/*/src/**` override) do not reach this tree (see
-    // .oxlintrc.json), so this sweep refuses their value imports here,
+    // bans (its shipped-source override) do not reach this tree (see
+    // vite.config.ts), so this sweep refuses their value imports here,
     // and the next test any @maruhi/crypto specifier, test-support
     // included
     const srcRoot = join(import.meta.dirname, "../../src");

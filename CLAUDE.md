@@ -102,7 +102,7 @@ leaks every secret. Therefore:
   api-schema). The two trusted leaves — `packages/crypto` and the shipped web
   bundle (`apps/web/src`) — are Effect-free by contract. crypto imports nothing
   from `effect` / `@effect/*`, not even types (the `packages/crypto` override
-  of `no-restricted-imports` in `.oxlintrc.json`); the web bundle takes types
+  of `no-restricted-imports` in `vite.config.ts`); the web bundle takes types
   only (`import type`, the value-import tripwire in
   `apps/web/test/unit/endpoints.test.ts` — rulings BR / CD). Branded types are
   used only where they carry an invariant
@@ -122,7 +122,7 @@ leaks every secret. Therefore:
 | CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
 | IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
 | LP / docs | Blume (ADR-0008 revision 1 — the LP is also Blume). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
-| Lint/Format | oxlint (type-aware via oxlint-tsgolint) + @effect/tsgo diagnostics + oxfmt + ImportLint + fallow + React Doctor |
+| Lint/Format | vite-plus (`vp`: oxfmt + oxlint (type-aware via oxlint-tsgolint) + built-in typecheck; Effect diagnostics via @effect/tsgo's effecttsgo preset) + ImportLint + fallow + React Doctor |
 
 ## Monorepo layout
 
@@ -155,10 +155,13 @@ apps/
 
 ## Quality gate (always pass before committing)
 
-1. `check:english` → 2. `oxfmt` → 3. `oxlint` (type-aware) → 4. `tsc --noEmit`
-   (+ Effect diagnostics, `lint:effect`) → 5. ImportLint → 6. fallow (baseline) → 7. React Doctor (web only, full scan, warnings block)
-   → 8. **tests** (Vitest: crypto/core/CLI in the normal environment,
-   server/DO via `@cloudflare/vitest-plugin` [formerly vitest-pool-workers])
+1. `check:english` → 2. `vp fmt` (oxfmt) → 3. `vp lint` (oxlint, type-aware;
+   the Effect diagnostics of the former `lint:effect` gate ride along via the
+   effecttsgo preset) → 4. `vp check` typecheck → 5. ImportLint → 6. fallow (baseline) → 7. React Doctor (web only, full scan, warnings block)
+   → 8. **tests** (Vitest via `vp test`: crypto/core/CLI in the normal environment,
+   server/DO via `@cloudflare/vitest-plugin` [formerly vitest-pool-workers] on
+   the standalone vitest — its runner does not start under vite-plus's
+   bundled copy)
 
 - Respect ImportLint's `@public` directory encapsulation. If a direct import of
   an internal module feels necessary, that is a public-API design gap — consult

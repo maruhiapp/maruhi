@@ -56,7 +56,7 @@ export type SignupDenialReason = (typeof SIGNUP_DENIAL_REASONS)[number];
 // user-id columns of the same shape, and the brand is what keeps one out of
 // the other's positions. Minted only at trust boundaries — this schema (wire
 // decode), a branded Drizzle column, or generation (`newOrgId` on the
-// server); `.oxlintrc.json` pins the mint sites.
+// server); `vite.config.ts` pins the mint sites.
 // ---------------------------------------------------------------------------
 
 /** Schema for an organization id (AUTH_SPEC §9 `organizations.id`). Decoding mints an {@link OrgId}. */
