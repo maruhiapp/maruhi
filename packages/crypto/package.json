@@ -9,18 +9,16 @@
     "./test-support": "./test/support/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:bun": "bun test/run-in-bun.ts",
-    "test:workerd": "vitest run --config vitest.workerd.config.ts",
-    "typecheck": "tsc --noEmit"
+    "test:workerd": "vitest run --config vitest.workerd.config.ts"
   },
   "dependencies": {
     "hpke": "1.1.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.7",
-    "@vitest/browser-playwright": "5.0.5",
-    "vitest": "5.0.5"
+    "@vitest/browser-playwright": "5.0.5"
   }
 }

@@ -5,15 +5,14 @@
   "license": "FSL-1.1-MIT",
   "type": "module",
   "scripts": {
-    "build": "vite build && bun run scripts/write-headers.ts",
-    "dev": "vite dev",
+    "build": "vp build && bun run scripts/write-headers.ts",
+    "dev": "vp dev",
     "doctor": "react-doctor . --blocking warning --no-telemetry",
     "doctor:astryx": "astryx doctor",
-    "e2e": "vitest run",
+    "e2e": "vp test run",
     "preview": "cd ../server && bun x cf dev --port 8788",
     "screenshots": "bun run test/screenshots.ts",
-    "theme:build": "astryx theme build theme/maruhi.ts -o theme/maruhi.css",
-    "typecheck": "tsc --noEmit"
+    "theme:build": "astryx theme build theme/maruhi.ts -o theme/maruhi.css"
   },
   "dependencies": {
     "@astryxdesign/core": "0.7.3",
@@ -40,8 +39,7 @@
     "effect": "4.1.0",
     "playwright": "1.64.1",
     "react-doctor": "0.9.18",
-    "vite": "8.3.5",
-    "vitest": "5.0.5",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
     "wrangler": "4.152.0"
   },
   "astryx": {
