@@ -21,7 +21,7 @@ import { stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
-import { egressHttpClientLayer } from "@maruhi/core";
+import { cryptoServicesLayer, egressHttpClientLayer } from "@maruhi/core";
 import { Duration, Effect, Layer, Redacted } from "effect";
 import { agentInfo } from "std-env";
 
@@ -985,6 +985,9 @@ export function liveLayer(): Layer.Layer<CliServices> {
       ? makeAgentKeychain(agentSocket)
       : makeBunKeychain();
   return Layer.mergeAll(
+    // The crypto services (SecureRandom / Digest) behind @maruhi/core's
+    // id generation
+    cryptoServicesLayer,
     // argv and terminal presence (the argument layer and the judgment material for value displayability)
     BunStdio.layer,
     // The secondary layer for value displayability (the first boundary is the Stdio TTY judgment above)

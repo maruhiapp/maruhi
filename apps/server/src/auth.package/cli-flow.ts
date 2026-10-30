@@ -21,8 +21,10 @@
 // short-lived login-flow credentials only).
 
 import { decodeHex, encodeHex, encodeLengthPrefixed } from "@maruhi/crypto";
+import { Effect } from "effect";
+import { SecureRandom } from "effect/crypto";
 
-import { constantTimeEqual } from "../ids.ts";
+import { constantTimeEqual, randomHex } from "../ids.ts";
 
 /** Flow lifetime (AUTH_SPEC §4-1 (1) drafted value: 15 minutes). */
 export const CLI_FLOW_TTL_MS = 15 * 60 * 1000;
@@ -71,33 +73,43 @@ async function macHex(
 // alphabet). Since 256 % 32 = 0, taking the mod of byte values is unbiased
 const USER_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/** Comparison code (`XXXX-XXXX`). A friction device shown on both the CLI and the approval page. */
-export function generateUserCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  let code = "";
-  for (const [index, byte] of bytes.entries()) {
-    if (index === 4) {
-      code += "-";
-    }
-    code += USER_CODE_ALPHABET[byte % 32];
-  }
-  return code;
-}
+/**
+ * Comparison code (`XXXX-XXXX`). A friction device shown on both the CLI and the approval page.
+ * The draw goes through the `SecureRandom` service (ids.ts / crypto-services seam).
+ */
+export const generateUserCode = (): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
+  Effect.flatMap(SecureRandom.SecureRandom, (random) =>
+    Effect.map(random.randomBytes(8), (bytes) => {
+      let code = "";
+      for (const [index, byte] of bytes.entries()) {
+        if (index === 4) {
+          code += "-";
+        }
+        code += USER_CODE_ALPHABET[byte % 32];
+      }
+      return code;
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // flowToken (§4-1 (1) — CLI-only bearer. Never on the browser channel)
 // ---------------------------------------------------------------------------
 
 /** Issues a self-contained flowToken (a MAC covering 256-bit randomness + flowId + expiry). */
-export async function createFlowToken(
+export const createFlowToken = (
   key: CryptoKey,
   flowId: string,
   expiresAtMs: number,
-): Promise<string> {
-  const random = encodeHex(crypto.getRandomValues(new Uint8Array(FLOW_TOKEN_RANDOM_BYTES)));
-  const mac = await macHex(key, FLOW_TOKEN_DOMAIN, [flowId, random, expiresAtMs]);
-  return `${FLOW_TOKEN_VERSION}.${expiresAtMs}.${random}.${mac}`;
-}
+): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
+  Effect.flatMap(randomHex(FLOW_TOKEN_RANDOM_BYTES), (random) =>
+    // macHex is WebCrypto HMAC (a protocol operation, not a randomness
+    // draw); a rejection stays a defect, as when this was a plain
+    // Promise function
+    Effect.map(
+      Effect.promise(() => macHex(key, FLOW_TOKEN_DOMAIN, [flowId, random, expiresAtMs])),
+      (mac) => `${FLOW_TOKEN_VERSION}.${expiresAtMs}.${random}.${mac}`,
+    ),
+  );
 
 /**
  * Stateless verification for poll (§4-1 (5)): MAC, **pairwise match of the

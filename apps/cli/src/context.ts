@@ -18,6 +18,7 @@ import {
 } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Duration, Effect, type Stdio } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
 import type { HttpClient } from "effect/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
@@ -88,7 +89,11 @@ export type CliServices =
   | HttpClient.HttpClient
   | OwnDeviceStore
   | ProxyAcceptStore
-  | SqlRunner;
+  | SqlRunner
+  // The crypto services (@maruhi/core's seam): ULID generation draws
+  // through SecureRandom. Digest rides along in the composed layer
+  | SecureRandom.SecureRandom
+  | Digest.Digest;
 
 /** Flags shared by data commands (server / project / environment overrides). */
 export interface CommonFlags {

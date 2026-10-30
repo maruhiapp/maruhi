@@ -14,6 +14,7 @@
 import type { Principal, TokenServiceShape } from "@maruhi/core";
 import { anonymousPrincipal, TokenLimitReachedError } from "@maruhi/core";
 import { Clock, Effect } from "effect";
+import { Digest } from "effect/crypto";
 
 import type { ApiTokenRecord } from "../auth-domain.ts";
 import type { TokenRepoShape } from "../db.package/index.ts";
@@ -29,8 +30,12 @@ function displayPrefix(rawToken: string): string {
   return rawToken.slice(0, TOKEN_PREFIX.length + 4);
 }
 
-const hashOf = (rawToken: string): Effect.Effect<string> =>
-  Effect.promise(() => sha256Hex(rawToken));
+// A failed digest is an environment defect (as a rejected
+// `crypto.subtle.digest` promise was before the services migration), so
+// it is folded into the defect channel: the shape's error channel stays
+// as declared, exactly as with `Effect.promise`.
+const hashOf = (rawToken: string): Effect.Effect<string, never, Digest.Digest> =>
+  Effect.orDie(sha256Hex(rawToken));
 
 /** Maps a hash-matched record onto a principal (expired / mismatched become anonymous). */
 function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: number): Principal {
@@ -73,9 +78,9 @@ function resolveByHash(tokens: TokenRepoShape, tokenHash: string): Effect.Effect
 export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
   return {
     issueToken: Effect.fn("token.issueToken")(function* (userId, name, scopes, ttlMs) {
-      const rawToken = TOKEN_PREFIX + randomBase62();
+      const rawToken = TOKEN_PREFIX + (yield* randomBase62());
       const tokenHash = yield* hashOf(rawToken);
-      const tokenId = ulid();
+      const tokenId = yield* ulid();
       const createdAtMs = yield* Clock.currentTimeMillis;
       // expires_at is fixed at issuance (AUTH_SPEC §6 — deliberately
       // asymmetric to the session §5 sliding renewal: tokens are forced

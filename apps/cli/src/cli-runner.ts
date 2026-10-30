@@ -34,6 +34,9 @@ const unusedEnvironment = Layer.mergeAll(
     Terminal.make({
       columns: Effect.succeed(80),
       rows: Effect.succeed(24),
+      size: Effect.die(
+        "the argument layer must not observe the terminal size (interaction goes through CliIo.promptLine)",
+      ),
       readInput: Effect.die(
         "the argument layer must not read interactive input (interaction goes through CliIo.promptLine)",
       ),

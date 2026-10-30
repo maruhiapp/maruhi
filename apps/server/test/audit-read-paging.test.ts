@@ -12,9 +12,10 @@
 //  3. self (D1): only one's own rows. The token requirement is the same
 //     level as §13-2 (`*` × admin)
 
-import { ulid } from "@maruhi/core";
+import { cryptoServicesLayer, ulid } from "@maruhi/core";
 import { encodeHex } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { INVITE_AUDIT_EVENTS } from "../src/db.package/index.ts";
@@ -145,7 +146,7 @@ async function issueInvite(role: string): Promise<string> {
   // The server does not verify the issuance document (format check only —
   // AUTH_SPEC §15-2), so for the audit read tests we just make the id and
   // link public key unique while matching the format
-  const id = ulid();
+  const id = await Effect.runPromise(ulid().pipe(Effect.provide(cryptoServicesLayer)));
   const linkPubHex = encodeHex(crypto.getRandomValues(new Uint8Array(32)));
   const response = await requestJson("POST", "/invites", token(OWNER), {
     id,

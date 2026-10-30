@@ -23,6 +23,7 @@ import {
 import type { Principal } from "@maruhi/core";
 import { anonymousPrincipal, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect, Option } from "effect";
+import { Digest } from "effect/crypto";
 import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { HttpApiMiddleware } from "effect/http-api";
 
@@ -52,7 +53,7 @@ export function parseBearerToken(authorization: string): string | null {
  */
 const resolvePrincipal = Effect.fn("middleware.resolvePrincipal")(function* (
   request: HttpServerRequest.HttpServerRequest,
-): Effect.fn.Return<Principal, never, SessionService | TokenService> {
+): Effect.fn.Return<Principal, never, SessionService | TokenService | Digest.Digest> {
   const authorization = request.headers["authorization"];
   if (authorization !== undefined) {
     const rawToken = parseBearerToken(authorization);
@@ -131,7 +132,7 @@ function refreshSessionCookie(
 export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
   RequestAuth,
   readonly [typeof UnauthorizedError, typeof ForbiddenError],
-  SessionService | TokenService
+  SessionService | TokenService | Digest.Digest
 > = Effect.fn("middleware.authMiddlewareImpl")(function* (httpEffect, options) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const principal = yield* resolvePrincipal(request);

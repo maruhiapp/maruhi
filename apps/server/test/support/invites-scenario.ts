@@ -9,7 +9,7 @@
 // setupDataProject (base-chain replay included) in register form (the same
 // live-binding pattern as data-scenario.ts).
 
-import { ulid } from "@maruhi/core";
+import { cryptoServicesLayer, ulid } from "@maruhi/core";
 import type {
   InviteAcceptSignatureContext,
   InviteIssueContext,
@@ -32,6 +32,7 @@ import {
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { beforeEach, expect } from "vitest";
 
 import { BASE, bearer, JSON_HEADERS } from "./auth.ts";
@@ -128,7 +129,8 @@ export async function makeIssuePayload(
   const inviter = await signingKeyPairOf(actorUserId);
   const context: InviteIssueContext = {
     suite: SUITE_ID,
-    inviteId: overrides?.id ?? ulid(),
+    inviteId:
+      overrides?.id ?? (await Effect.runPromise(ulid().pipe(Effect.provide(cryptoServicesLayer)))),
     projectId: testProjectId(projectId),
     linkPubHex: encodeHex(linkKey.value.publicKeyRaw),
     headHashHex: fixture.head.hashHex,

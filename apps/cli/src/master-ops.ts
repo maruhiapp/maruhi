@@ -30,6 +30,7 @@ import {
   wrapMasterBlob,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
+import { SecureRandom } from "effect/crypto";
 
 import { cliError, type CliError } from "./errors.ts";
 import { serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
@@ -91,11 +92,10 @@ export const sealForRequester = Effect.fn("master-ops.sealForRequester")(functio
 /**
  * The ledger's client-issued id (ULID). wrap_id / group_id are
  * bound by AAD / info, so the client decides them before encryption
- * (AUTH_SPEC §13-9).
+ * (AUTH_SPEC §13-9). The draw goes through the SecureRandom service
+ * (@maruhi/core's ulid).
  */
-export function newLedgerId(): string {
-  return ulid();
-}
+export const newLedgerId = (): Effect.Effect<string, never, SecureRandom.SecureRandom> => ulid();
 
 /** hex (32 bytes) → key material. A malformed server response is refused as an implementation bug / tampering. */
 export function decodeWrapped(input: {

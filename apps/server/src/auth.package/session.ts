@@ -10,6 +10,7 @@
 import type { Principal, SessionServiceShape } from "@maruhi/core";
 import { anonymousPrincipal } from "@maruhi/core";
 import { Clock, Effect } from "effect";
+import { Digest } from "effect/crypto";
 
 import type { SessionRepoShape } from "../db.package/index.ts";
 import { randomHex, sha256Hex } from "../ids.ts";
@@ -23,8 +24,12 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
-const hashOf = (rawValue: string): Effect.Effect<string> =>
-  Effect.promise(() => sha256Hex(rawValue));
+// A failed digest is an environment defect (as a rejected
+// `crypto.subtle.digest` promise was before the services migration), so
+// it is folded into the defect channel: the shape's error channel stays
+// empty, exactly as with `Effect.promise`.
+const hashOf = (rawValue: string): Effect.Effect<string, never, Digest.Digest> =>
+  Effect.orDie(sha256Hex(rawValue));
 
 function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effect<Principal> {
   return Effect.flatMap(sessions.findByHash(idHash), (record) =>
@@ -53,7 +58,7 @@ function resolveRecord(sessions: SessionRepoShape, idHash: string): Effect.Effec
 export function makeSessionService(sessions: SessionRepoShape): SessionServiceShape {
   return {
     issueSession: Effect.fn("session.issueSession")(function* (userId, authMethod) {
-      const rawValue = randomHex(32);
+      const rawValue = yield* randomHex(32);
       const idHash = yield* hashOf(rawValue);
       const now = yield* Clock.currentTimeMillis;
       const expiresAtMs = now + SESSION_TTL_MS;

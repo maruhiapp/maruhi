@@ -4,7 +4,7 @@
 // Instance memory only: the read follows the issuance within the same
 // request, and an eviction in between fails that lease with a 500.
 
-import { randomHex } from "../ids.ts";
+import { randomHexSync } from "../ids.ts";
 
 /** How long an issued lease's chain read stays open (it follows within the same request). */
 const LEASE_CHAIN_GRANT_TTL_MS = 60_000;
@@ -32,7 +32,9 @@ export class LeaseChainGrants {
         this.#grants.delete(token);
       }
     }
-    const token = randomHex(32);
+    // Synchronous in-memory map: the draw cannot go through the
+    // SecureRandom service (see ids.ts's randomHexSync note)
+    const token = randomHexSync(32);
     this.#grants.set(token, { head, expiresAtMs: nowMs + this.#ttlMs });
     return token;
   }

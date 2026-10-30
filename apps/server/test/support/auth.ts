@@ -8,9 +8,17 @@
 // resolves them as existing users).
 
 import type { TokenScope } from "@maruhi/core";
+import { cryptoServicesLayer } from "@maruhi/core";
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
+import { Effect } from "effect";
+import { Digest, SecureRandom } from "effect/crypto";
 
 import { randomBase62, sha256Hex, ulid } from "../../src/ids.ts";
+
+/** Runs an ids.ts generator effect with the real crypto services (the ids are Effects since the 4.1 migration). */
+const runIds = (
+  effect: Effect.Effect<string, never, SecureRandom.SecureRandom | Digest.Digest>,
+): Promise<string> => Effect.runPromise(effect.pipe(Effect.provide(cryptoServicesLayer)));
 
 export const BASE = "https://example.com";
 export const JSON_HEADERS = { "content-type": "application/json" };
@@ -100,9 +108,9 @@ export async function setSignupPolicy(value: string): Promise<void> {
 export async function seedSignupInvite(options?: {
   readonly expiresAtMs?: number;
 }): Promise<{ readonly id: string; readonly code: string }> {
-  const id = ulid();
-  const code = `maruhi_sgn_${randomBase62()}`;
-  const tokenHash = await sha256Hex(code);
+  const id = await runIds(ulid());
+  const code = `maruhi_sgn_${await runIds(randomBase62())}`;
+  const tokenHash = await runIds(Effect.orDie(sha256Hex(code)));
   await env.DB.prepare(
     "INSERT INTO signup_invites (id, token_hash, status, expires_at, created_at) VALUES (?, ?, 'pending', ?, ?)",
   )

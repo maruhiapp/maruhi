@@ -3,10 +3,11 @@
 // §1–§3, §9-1).
 
 import type { SignupPolicy } from "@maruhi/api-schema";
-import type { OrgRole, ProviderUserId, UserId } from "@maruhi/core";
+import type { OrgId, OrgRole, ProviderUserId, UserId } from "@maruhi/core";
 import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Data, Effect, Ref } from "effect";
+import { SecureRandom } from "effect/crypto";
 
 import type { ResolvedUser, SignupGateResult, UserOrg, VerifiedIdentity } from "../auth-domain.ts";
 import { newOrgId, newUserId } from "../ids.ts";
@@ -52,7 +53,7 @@ interface IdentityRepoShape {
     identity: VerifiedIdentity,
     nowMs: number,
     signupInviteTokenHash: string | null,
-  ) => Effect.Effect<SignupGateResult>;
+  ) => Effect.Effect<SignupGateResult, never, SecureRandom.SecureRandom>;
   /**
    * Lookup only (never creates — AUTH_SPEC §4-1 (4) (ii), ruling DH).
    * Used by the browser leg of CLI login: a missing account ends in
@@ -235,9 +236,30 @@ function createUserBatch(
   identity: VerifiedIdentity,
   nowMs: number,
   gate: SignupGate,
+): Effect.Effect<
+  UserId,
+  InsertConflictError | SignupGateLostError | D1FailureError,
+  SecureRandom.SecureRandom
+> {
+  // The two ids are drawn through the SecureRandom service first; the
+  // batch itself is then built synchronously, as before
+  return Effect.flatMap(newUserId(nowMs), (userId) =>
+    Effect.map(newOrgId(nowMs), (orgId) => ({ userId, orgId })),
+  ).pipe(
+    Effect.flatMap(({ userId, orgId }) =>
+      createUserBatchWithIds(db, identity, nowMs, gate, userId, orgId),
+    ),
+  );
+}
+
+function createUserBatchWithIds(
+  db: Db,
+  identity: VerifiedIdentity,
+  nowMs: number,
+  gate: SignupGate,
+  userId: UserId,
+  orgId: OrgId,
 ): Effect.Effect<UserId, InsertConflictError | SignupGateLostError | D1FailureError> {
-  const userId = newUserId(nowMs);
-  const orgId = newOrgId(nowMs);
   const actor: D1AuditActor = { userId };
   const chained = sql`changes() = 1`;
   // Every following statement is an INSERT…SELECT chained on the
@@ -457,8 +479,10 @@ export function makeIdentityRepo(db: Db): IdentityRepoShape {
     nowMs: number,
     signupInviteTokenHash: string | null,
     attempt = 0,
-  ): Effect.Effect<SignupGateResult, D1Error> => {
-    const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult, D1Error> =>
+  ): Effect.Effect<SignupGateResult, D1Error, SecureRandom.SecureRandom> => {
+    const attemptCreate = (
+      gate: SignupGate,
+    ): Effect.Effect<SignupGateResult, D1Error, SecureRandom.SecureRandom> =>
       createUserBatch(db, identity, nowMs, gate).pipe(
         Effect.map((userId): SignupGateResult => ({ userId, created: true })),
         Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),

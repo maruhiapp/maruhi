@@ -160,7 +160,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
-        const state = randomHex(16);
+        const state = yield* randomHex(16);
         const signupCode = query.signup_code;
         if (signupCode === undefined) {
           // A plain start (login, or signup under open) behaves as before
@@ -182,7 +182,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           );
         }
         const identities = yield* IdentityRepo;
-        const tokenHash = yield* Effect.promise(() => sha256Hex(signupCode));
+        const tokenHash = yield* Effect.orDie(sha256Hex(signupCode));
         const valid = yield* identities.hasPendingSignupInvite(
           tokenHash,
           yield* Clock.currentTimeMillis,

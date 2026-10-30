@@ -25,6 +25,7 @@ import {
 import type { TokenScope, UserId } from "@maruhi/core";
 import { parseTokenScopes, TokenService } from "@maruhi/core";
 import { Clock, Effect, Option } from "effect";
+import { Digest, SecureRandom } from "effect/crypto";
 import type { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -83,14 +84,17 @@ const DEFAULT_TOKEN_SCOPES: readonly TokenScope[] = [{ project: "*", permission:
  * value in bringing in cache coherency (cross-isolate drift on manual
  * rotation).
  */
-const flowSigningKey: Effect.Effect<CryptoKey, never, FlowSigningKeyRepo> = Effect.gen(
-  function* () {
-    const repo = yield* FlowSigningKeyRepo;
-    const keyHex = yield* repo.getOrCreate(randomHex(32), yield* Clock.currentTimeMillis);
-    // Malformed form (only ever written by our own generation path) is a defect
-    return yield* Effect.promise(() => importFlowSigningKey(keyHex));
-  },
-);
+const flowSigningKey: Effect.Effect<
+  CryptoKey,
+  never,
+  FlowSigningKeyRepo | SecureRandom.SecureRandom
+> = Effect.gen(function* () {
+  const repo = yield* FlowSigningKeyRepo;
+  const candidateKeyHex = yield* randomHex(32);
+  const keyHex = yield* repo.getOrCreate(candidateKeyHex, yield* Clock.currentTimeMillis);
+  // Malformed form (only ever written by our own generation path) is a defect
+  return yield* Effect.promise(() => importFlowSigningKey(keyHex));
+});
 
 /**
  * Response for scriptless HTML pages (§4-1 (4) — same delivery
@@ -196,9 +200,13 @@ const admitAndRenderApproval = Effect.fn("handlers-auth-cli.admitAndRenderApprov
   params: CliVerifyParams,
   userId: UserId,
   identityLabel: string,
-): Effect.fn.Return<HttpServerResponse.HttpServerResponse, never, CliFlowRepo | OpsRepo> {
-  const ticket = randomHex(32);
-  const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
+): Effect.fn.Return<
+  HttpServerResponse.HttpServerResponse,
+  never,
+  CliFlowRepo | OpsRepo | SecureRandom.SecureRandom | Digest.Digest
+> {
+  const ticket = yield* randomHex(32);
+  const ticketHash = yield* Effect.orDie(sha256Hex(ticket));
   const scopes = parseTokenScopes(params.scopesJson);
   if (scopes === null) {
     // The only signer is the server (cliStart JSON.stringify's
@@ -268,7 +276,15 @@ export const handleCliCallback = Effect.fn("handlers-auth-cli.handleCliCallback"
 ): Effect.fn.Return<
   HttpServerResponse.HttpServerResponse,
   never,
-  WorkerEnv | GitHubApi | IdentityRepo | CliFlowRepo | FlowSigningKeyRepo | D1AuditRepo | OpsRepo
+  | WorkerEnv
+  | GitHubApi
+  | IdentityRepo
+  | CliFlowRepo
+  | FlowSigningKeyRepo
+  | D1AuditRepo
+  | OpsRepo
+  | SecureRandom.SecureRandom
+  | Digest.Digest
 > {
   // (i)-a: restore the flow-binding cookie (state match + vsig
   //    re-verification)
@@ -341,12 +357,12 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
         const key = yield* flowSigningKey;
         const nowMs = yield* Clock.currentTimeMillis;
-        const flowId = randomHex(16);
+        const flowId = yield* randomHex(16);
         const expiresAtMs = nowMs + CLI_FLOW_TTL_MS;
         const params: CliVerifyParams = {
           flowId,
           expiresAtMs,
-          userCode: generateUserCode(),
+          userCode: yield* generateUserCode(),
           tokenName: payload.tokenName ?? DEFAULT_TOKEN_NAME,
           scopesJson: JSON.stringify(payload.scopes ?? DEFAULT_TOKEN_SCOPES),
           expiresInDays: payload.expiresInDays ?? DEFAULT_TOKEN_TTL_DAYS,
@@ -354,7 +370,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // The server stores nothing at this point (record-free —
         // ruling DH). Authenticity is carried by the two MAC systems:
         // flowToken (whose signed content includes flowId) and vsig
-        const flowToken = yield* Effect.promise(() => createFlowToken(key, flowId, expiresAtMs));
+        const flowToken = yield* createFlowToken(key, flowId, expiresAtMs);
         const vsig = yield* Effect.promise(() => computeVsig(key, params));
         const origin = requestOrigin(request);
         return {
@@ -395,7 +411,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // The state carries the `cli.` prefix to tell callback this is
         // the CLI branch; the cookie carries state + the vsig-signed
         // parameter set (flow binding)
-        const state = `${CLI_STATE_PREFIX}${randomHex(16)}`;
+        const state = `${CLI_STATE_PREFIX}${yield* randomHex(16)}`;
         const bound = verificationQuery(params, query.vsig);
         bound.set("state", state);
         return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
@@ -419,7 +435,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         ) {
           return uniformErrorPage();
         }
-        const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
+        const ticketHash = yield* Effect.orDie(sha256Hex(ticket));
         const flows = yield* CliFlowRepo;
         // CAS of awaiting → approved | denied. The credential is the
         // single latest ticket (unknown, expired, or used uniformly

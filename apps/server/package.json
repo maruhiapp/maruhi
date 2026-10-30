@@ -18,7 +18,7 @@
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
     "drizzle-orm": "1.0.0-rc.5",
-    "effect": "4.0.6"
+    "effect": "4.1.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.7",

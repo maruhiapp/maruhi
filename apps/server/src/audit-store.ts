@@ -33,7 +33,7 @@ import { queryEvents } from "./audit-store-query.ts";
 import type { AuditRotationRead } from "./audit-store-rotation-read.ts";
 import { makeRotationRead } from "./audit-store-rotation-read.ts";
 import { AUDIT_ROW_COLUMNS, toAuditHeadRow } from "./audit-store-rows.ts";
-import { randomHex } from "./ids.ts";
+import { randomHexSync } from "./ids.ts";
 import { ServerLoggerLive } from "./server-logger.ts";
 
 /**
@@ -262,7 +262,7 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
       const seq = nextSeq();
       try {
         // row_id = the wire row identifier (16 bytes random — AUDIT_SPEC §5.1 / §7)
-        sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, randomHex(16), ...eventBindings(event));
+        sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, randomHexSync(16), ...eventBindings(event));
       } catch (error) {
         nextSeqCache = null;
         throw error;
@@ -283,7 +283,7 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
             INSERT_COLUMNS + chunk.map(() => VALUES_ROW).join(", "),
             ...chunk.flatMap((event, index) => [
               seq + index,
-              randomHex(16),
+              randomHexSync(16),
               ...eventBindings(event),
             ]),
           );

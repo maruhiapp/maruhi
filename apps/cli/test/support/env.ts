@@ -7,6 +7,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { cryptoServicesLayer } from "@maruhi/core";
 import { Effect, Layer, Redacted, Sink, Stdio, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -252,6 +253,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const fingerprintBookPath = fingerprintBookPathOf(configPath);
   const fingerprintBook = makeFileFingerprintBook(fingerprintBookPath);
   const layer = Layer.mergeAll(
+    // The crypto services, as in production (live.ts)
+    cryptoServicesLayer,
     // argv is passed per run by runCli (cli-runner.ts remounts it onto Stdio).
     // What gets fixed here is terminal detection — the primary boundary for
     // whether values may be displayed (agent-gate.ts)
