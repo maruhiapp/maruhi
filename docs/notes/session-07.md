@@ -1,5 +1,7 @@
 # Session 07 notes (variable-value API + audit log — AUTH_SPEC §12 / AUDIT_SPEC implementation)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-02. Prerequisites: PR #16 / #17 merged (D1 + auth foundation + chain API authorization).
 Scope: the data-plane API for environments, variables, and DEK wraps (spec ruling → AUTH_SPEC §12 →
 implementation) plus the project-DO side of the audit log (AUDIT_SPEC §3.3 / §3.4 / §5.1).

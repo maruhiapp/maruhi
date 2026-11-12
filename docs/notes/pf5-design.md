@@ -1,5 +1,7 @@
 # PF5 design record — the MCP server (2026-09-30 design session)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 **Position**: the ROADMAP H series "no-revision group", second item =
 **PF5: MCP server (a thin wrapper of `maruhi schema`, distributes no values)**
 (order VH → PF5 → PF4 → PF6 — 2026-09-14 owner ruling; the 2026-08-30 "after

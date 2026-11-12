@@ -1,5 +1,7 @@
 # Session 11 notes (CLI MVP: login / key management / §6.3 sync checks / §5.1 distribution-time verification / pull / run / push / environment management)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-03. Prerequisites: PR #22 (§6.2 member-key uniqueness — merge = owner approval),
 #23 (ROADMAP), #24 (empty `deks: []` → 400) confirmed merged before starting.
 Scope: all task-specified items 1–7 (foundation / login / key management / sync checks /

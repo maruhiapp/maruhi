@@ -1,5 +1,7 @@
 # Session 14 notes (value-authenticity implementation — implementation PR-2 of the session-12 spec)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-04. Prerequisites: confirmed PR #28 (implementation PR-1 = DEK authenticity, merge `3250571`) and
 PR #29 (docs sync `808c61e`) are ancestors before starting.
 Scope: session-12.md §9's **PR-2 = value signing (option A + C minimal core)**. Per the approved

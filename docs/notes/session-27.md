@@ -1,5 +1,7 @@
 # Session 27 notes (Phase 2 Wave 3 D — head gossip + environment manifest + checkpoint design exploration and spec drafting. docs/spec-only)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-18. Premise: Wave 2 fully complete (A1 #63 / A2 #65 / replay
 first-come binding #67 / B1a #68 / B1b #69 / B2 #70 / C1 #71 / A3 #79) on main.
 Scope: **design exploration and spec drafting only**. No changes to

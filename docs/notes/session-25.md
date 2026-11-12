@@ -1,5 +1,7 @@
 # Session 25 notes (Phase 2 Wave 2 A3 — CLI CI mode + setup-maruhi action)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-17. Prerequisites: main with Wave 2's A1 (PR #63) / A2 (PR #65) /
 replay first-binding (PR #67) / B1a (#68) / B1b (#69) / B2 (#70) / C1 (#71)
 merged.

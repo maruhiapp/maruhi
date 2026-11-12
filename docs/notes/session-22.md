@@ -1,5 +1,7 @@
 # Session 22 memo (Phase 2 planning + R1–R3 design exploration + spec drafting)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-12. Prerequisite: main with PR #55 + the LICENSE set (ADR-0003 settled) merged.
 Branch: `claude/maruhi-phase-2-features-yzi01b`.
 Scope: the plan ruling for Phase 2 "feature development" (owner-approved), the R1–R3 design exploration

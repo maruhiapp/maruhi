@@ -1,5 +1,7 @@
 # Session 45: W3b — implementation rulings for the revocation-family screens (S8 invite management, S9 token management) (CN onward)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30. Target PR: PR-W3b (design doc §7's item 6 — **web only**.
 No server / CLI / crypto changes; api-schema is consumed via existing exports
 only). The final PR of the W series, consuming W3a's (PR #108) API. The

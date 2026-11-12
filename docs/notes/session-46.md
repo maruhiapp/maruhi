@@ -1,5 +1,7 @@
 # Session 46: S0 — the ruling record of the value-free schema (full) design + spec revisions
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30. Purpose: settle S0's major rulings (drafting the value-free-schema spec — a spec-and-docs-only PR; implementation is S1 onward) through "multiple options → upward-compatibility exploration → 3 rounds of comparison → autonomous choice", and record the rejected options with reasons. The round-1 material is docs/notes/value-free-schema.md (§1 the owner's already-decided items, §2–§5 the 8-round exploration, §6 open questions 1–12). The ruling symbols continue session-45's (…CQ) numbering, starting at **CR**.
 
 Premises (not moved — owner ruling 2026-08-30): the full (name / type / description / required) implementation / MCP delivery deferred / `.env.schema` file is not made authoritative / H0 (hosted design + ADR-0014 revision) comes right after S0 — formalizing the order and the ROADMAP reorganization are H0's job. The starting point is the exploration memo §4's recommendation (the extension route = automatic inheritance via manifest coverage, including the correction from finding F).

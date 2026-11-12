@@ -1,5 +1,7 @@
 # PF6 design record — minimal upstream rotation (2026-10-02 design and implementation session)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 **Position**: the ROADMAP H series "no-revision group", last item =
 **PF6: minimal upstream rotation (R1 runbooks + R2 `maruhi var rotate <var>`
 + R3 a checklist right after `member remove` + R9 expiring values)** (order

@@ -1,5 +1,7 @@
 # Web dashboard screen design (W0 — within ADR-0018's frame)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Position: the origin W0 of Wave 3 W (ROADMAP Phase 2 / session-22 §1). This document settles
 `apps/web` (hosted / self-hosted-bundled keyless web)'s **screen set, information architecture,
 permission/visibility axes, API gap analysis, and implementation split** as the design document.

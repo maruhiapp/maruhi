@@ -1,5 +1,7 @@
 # PF3 — Project export / self-host migration (design record)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-10-02. Owner-delegated session (the owner asked for every open
 point to be ruled after an exhaustion loop, for competitor parity, and
 for no compatibility to be kept — zero users). ROADMAP item PF3 ("export /

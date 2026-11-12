@@ -8,7 +8,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - A Playwright bump also updates the Chrome Headless Shell version and SHA-256 pinned in `scripts/install-headless-shell.sh`, which CI and the Cursor Cloud environment install the tests' browser from (the procedure is in the script). `bun run check` fails until the version is the one the new Playwright expects; a stale SHA-256 fails the script
 - `cf`, the Cloudflare CLI behind `cf dev`, the deploys and the e2e suites, runs on Node.js: 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x. `bunx cf` uses the `node` on `PATH`; with Bun alone, `cf dev` and `cf deploy` stop with "cloudflare.config.ts loading is not supported on Bun"
 - Install dependencies with `bun install`
-- Run the full quality gate before committing: `bun run check` (oxfmt → oxlint → tsc → Effect diagnostics → ImportLint → fallow → React Doctor → tests)
+- Run the full quality gate before committing: `bun run check` (check:english → vp fmt (oxfmt) → vp lint (oxlint, type-aware; the Effect diagnostics ride along via the effecttsgo preset) → vp check typecheck → ImportLint → fallow → React Doctor → tests)
 
 ### Repository layout
 
@@ -33,7 +33,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `cf dev`; CI runs them as separate steps:
   - `bun run --filter @maruhi/web build && bun run --filter @maruhi/web e2e`
   - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
-- To run one package or one file: `cd apps/cli && bun x vitest run test/push-create.test.ts`
+- To run one package or one file: `cd apps/cli && vp test run test/push-create.test.ts`
 
 For development rules, see [CLAUDE.md](CLAUDE.md) and [docs/adr/](docs/adr/). In particular:
 

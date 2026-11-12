@@ -1,5 +1,7 @@
 # Session 37 notes (PR-M4 implementation — head declarations / gossip = making split views detectable)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-28. Target: session-27 §14's PR-M4 (the final piece of the
 implementation split — independent of M1–M3). Prerequisites: PR-M1, PR-F1–F4,
 PR-M2 (#99), PR-M3 (#100) merged. This PR implements CRYPTO_SPEC §6.6 (head

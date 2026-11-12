@@ -1,5 +1,7 @@
 # Session 10 notes (member-key uniqueness on the chain = option B of the session-09 ruling. Crypto layer + 2 pieces of cleanup)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-03. Prerequisites: PR #21 merged (2-E = DEK wrap registration
 signatures. With the merge, CRYPTO_SPEC §5.1 — including the signer_user_id
 binding = option A — is owner-approved).

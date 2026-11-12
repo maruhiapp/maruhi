@@ -1,5 +1,7 @@
 # Session 04 memo (packages/crypto implementation — Phase 1 kickoff)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-02. Prerequisite: all of session 03's PRs (#8–#11) are merged to main.
 Scope: packages/crypto (the E2EE core) only. CRYPTO_SPEC-conformant + all test vectors passing.
 

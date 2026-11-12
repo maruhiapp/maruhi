@@ -1,5 +1,7 @@
 # Session 42: W2a — design rulings for the project-list API (BI–BL)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-29. Purpose: record of design rulings in PR-W2a (web-dashboard-design.md §7).
 Target: S4 (project list)'s missing API — "the list of projects where the caller is a
 chain-derived member" — its server-side derivation form, endpoint spec, and the projection's

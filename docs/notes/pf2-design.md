@@ -1,5 +1,7 @@
 # PF2 — Mirror: a read replica in your own Cloudflare account (design record)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-10-02. Owner-delegated session (every open point ruled after an
 exhaustion loop; competitor parity; zero users, no compatibility kept).
 ROADMAP item PF2 ("the answer to read-side availability. Spec revision

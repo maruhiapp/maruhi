@@ -1,5 +1,7 @@
 # PF4 design record — `maruhi proxy run` (2026-10-01 design and implementation session)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 **Position**: the ROADMAP H series "no-revision group", third item =
 **PF4: `maruhi proxy run` (credential brokering + short-lived connectors)**
 (order VH → PF5 → PF4 → PF6 — 2026-09-14 owner ruling). The ROADMAP entry

@@ -1,5 +1,7 @@
 # Session 06 notes (auth / identity foundation — real AUTH_SPEC implementation + org integration)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-02. Prerequisites: PR #14 / #15 merged (chain persistence, append API).
 Scope: real implementation of AUTH_SPEC §2–§6 (D1 + Drizzle, GitHub OAuth, sessions /
 tokens), authorization wiring of the chain API (specified as §11), full rework of the

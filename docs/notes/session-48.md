@@ -1,5 +1,7 @@
 # Session 48: gap 9 — the ruling record on the CLI-login scaling path (the web-flow handoff)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-31. Purpose: ruling on hosted-design.md §8 gap 9 (the CLI-login scaling path — an open-beta release condition) and session-47 §11's handoff (positioning BYO App). Format: **a dialogue ruling with the owner present** (unlike the previous sessions' "autonomous choice → post-approval", this proceeded: stage 1 = stop at fact-checking → stage 2 = present the option comparison → the owner picks the direction → a final zero-based exploration confirms convergence. This PR's merge constitutes formal approval). The ruling symbols continue session-47's (…DE) numbering, starting at **DF**. Deliverable mapping: AUTH_SPEC 0.17-draft (a full §4 revision + follow-ups in §3 / §6 / §13-2 / §15-2) / AUDIT_SPEC vocabulary follow-up / hosted-design.md additions (§2-2, §3-4, §8 gap 9, §9 H1b) / ROADMAP (H1b added) / this ruling record. **No implementation is included** (implementation stage = H1b).
 
 ---

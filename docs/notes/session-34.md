@@ -1,5 +1,7 @@
 # Session 34 notes (PR-F4 implementation — test hardening / cross-layer regression)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-28. Target: session-31 §6's PR-F4 (M1-T1 / the rest of M1-T2 /
 F1×F2×F3 cross-layer regression). Prerequisites: PR-F1 (#87), F2 (#88), F3
 (#96 / #97) are merged to main, and main is the 2-G′ "boundary-checkpoint

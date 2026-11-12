@@ -1,5 +1,7 @@
 # VH design record — value history and rollback (2026-09-27 design session)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 **Position**: the ROADMAP H series "no-revision group" head = **VH: value
 history display and rollback** (order VH → PF5 → PF4 → PF6 — 2026-09-14 owner
 ruling). This record carries the overall picture, the option enumeration and

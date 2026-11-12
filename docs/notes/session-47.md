@@ -1,5 +1,7 @@
 # Session 47: H0 — the hosted-deployment design + the ruling record of the ADR-0014 revision
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30. Purpose: settle H0's major rulings (designing the hosted cloud version + replacing ADR-0014 decision 5 + the ADR-0009 re-judgment — a docs-only PR of ADRs / ROADMAP / notes; implementation is H1+ / S1+) through "multiple options → upward-compatibility exploration → 3 rounds of comparison → autonomous choice", and record the rejected options with reasons. The ruling symbols continue session-46's (…CX) numbering, starting at **CY**. Deliverable mapping: ADR-0014 revision 1 / the ADR-0009 re-judgment record / docs/notes/hosted-design.md (design, gaps, the implementation split H1–H6) / the ROADMAP reorganization (making the H series a real schedule, formalizing the S1–S3 gate).
 
 Premises (not moved — owner ruling 2026-08-30): (1) the docs site (Wave 3 G) is deferred (2) the hosted cloud version takes top priority — "complete it as a service" (3) the value-free schema is the full implementation, MCP delivery deferred (S0 = the spec landed in PR #112). The previous session's recommendations (unapproved — ruled on by this PR): publication is bundled as a trust-story component by GA / dogfooding starts in parallel / the schema implementation (S1–S5) lands before the beta opens.
