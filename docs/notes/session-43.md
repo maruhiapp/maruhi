@@ -1,5 +1,7 @@
 # Session 43: W2 — implementation rulings for the read dashboard (S3–S7) (BM onward)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-29. Purpose: recording the implementation-level rulings of PR-W2
 (web-dashboard-design.md §7). Norms = ADR-0018 (revisions 1 · 2) ·
 web-dashboard-design.md (§4 display discipline · §5 visibility matrix) · AUTH_SPEC

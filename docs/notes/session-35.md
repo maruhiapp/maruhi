@@ -1,5 +1,7 @@
 # Session 35 notes (PR-M2 implementation — standalone checkpoint acceptance / audit-head cumulative hash / CLI periodic issuance)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-28. Target: session-27 §14's PR-M2 (= the M2 body).
 Prerequisites: PR-F1 (#87), F2 (#88), F3 (#96 / #97), F4 (#98) are merged to
 main. Standalone checkpoints have so far been fail-closed by CompositeRequired,

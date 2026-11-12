@@ -1,5 +1,7 @@
 # Session 33 notes (PR-F3 implementation — early landing of 2-G′ boundary checkpoints)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-27. Target: PR-F3 of session-31 §6 (the PR-F3 allocation of M1-A6 / M1-B1 / M1-T2).
 Ruling 2 is the owner-approved option 2-G′ (session-32 §5-1), and the spec revisions
 (CRYPTO_SPEC §4.3 / §6.2–§6.4, AUTH_SPEC §12-4 / §16-2) are merged via PR #83 family = approved.

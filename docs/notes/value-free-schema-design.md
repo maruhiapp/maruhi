@@ -1,5 +1,7 @@
 # Value-free schema — the CLI / auxiliary-surface design and the implementation split (S0 draft)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30 (session 46 — rulings CR–CX are in docs/notes/session-46.md). Position: **a design document**. The norms for signing, acceptance, and verification are solely CRYPTO_SPEC §4.2 (layout v2), §4.3, §6.3, §14 and AUTH_SPEC §12 (especially §12-5, §12-11); this document pins the CLI / auxiliary-surface design and the implementation split (S1 onward). The merge of this PR (specs and docs only) constitutes owner approval.
 
 Out of scope (owner-decided 2026-08-30): MCP delivery (added later as a thin wrapper, after measuring demand) / brokering, agent leases, no-reveal / anything hosted-related (H0 onward).

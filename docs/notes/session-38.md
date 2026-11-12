@@ -1,5 +1,7 @@
 # Session 38 notes (admin audit-matching CLI + bounding the audit-head lazy extension)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-28. Target: the 2 remaining items of PR-M2 (#99) — (1)
 AUDIT_SPEC §6's admin audit matching (`maruhi audit reconcile`), (2) turning
 `ensureHeadCurrent` (audit-head lazy extension) into a bounded contract

@@ -1,5 +1,7 @@
 # web-design-pass — rulings for the DP series (design pass)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Status: drafted 2026-09-03, owner-ruled (the premises of DP1 / DP2). The design document for ROADMAP.md's "DP series".
 Each of DP1–DP5's PRs implements this document as the source of truth; if something changes, revise this file first.
 

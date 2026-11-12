@@ -1,5 +1,7 @@
 # Session 39 notes (W0: Web dashboard screen design + re-ruling ADR-0018 revision 1's item 5)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-28. Target: W0, the starting point of Wave 3's W (screen design — ROADMAP
 Phase 2 / session-22 §1) + a re-ruling of ADR-0018 revision 1's item 5 handoff (the
 boundary of token issuance and raw-value display). No implementation — only design, rulings,

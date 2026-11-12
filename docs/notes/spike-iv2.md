@@ -1,5 +1,7 @@
 # K0 spike: IV2's backing source (the GitHub signing-keys API / `gh ssh-key add`) — items for the owner to verify on their own machine
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Status: 2026-09-13 — K0 of IV (supplement 21). **From this environment (Claude Code's remote execution environment), `api.github.com`'s user-family paths are blocked by the proxy and could not be measured** (403 "sessions are bound to their configured repositories"). K5 was implemented from GitHub's public documentation, and the tests are pinned against a fake server (`githubSigningKeysHandler` in `test/support/invite.ts`). This note is the list of "what the implementation assumed" and "what the owner should verify on their own machine", and the wording gets corrected based on the results (the remainder of supplement 21-5).
 
 ## 0. What the implementation assumed (unverified — documentary knowledge)

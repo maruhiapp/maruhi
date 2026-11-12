@@ -1,5 +1,7 @@
 # Design of the hosted cloud edition (H0 — within the frame of ADR-0014 revision 1)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30 (session 47 — rulings CY through DE are in docs/notes/session-47.md). Positioning:
 **design document** (same format as W0's docs/notes/web-dashboard-design.md). The norms
 (ordering, experience requirements, guardrails) are ADR-0014 revision 1, and the auth-provider

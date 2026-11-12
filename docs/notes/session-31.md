@@ -1,5 +1,7 @@
 # Session 31 notes (PR-M1 environment manifest — post-merge audit and handoff of the fix work)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-19. Subject: PR #81 (`a69cf63`, implementation head `885ab69`).
 Form: **audit and handoff only**. The PR adding these notes does not fix the
 implementation. Fixes happen in a separate chat · separate PR.

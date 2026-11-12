@@ -1,5 +1,7 @@
 # hosted-ops — H3: design of the operations foundation (monitoring/alerts / backup / restore drill)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Status: drafted 2026-09-02 (bundled with the H3 implementation PR #137). **The restore drill (§5-3 / O7) was performed on the real system on 2026-09-03 — matching cross-checks complete H3** (the drill record is §5-3, measured values are in §4-2 / §1, and human-task completion dates are in §7). Lowers hosted-design.md §5 (ruling DC) into "implementable form".
 Internal document. **An operator-side-only** stage; the product's wire and acceptance surfaces (AUTH_SPEC / AUDIT_SPEC) are unchanged.
 The record of design exploration (candidates, superior-alternative search, rejected options, primary-source verification) lives in this document (no separate session note is created).

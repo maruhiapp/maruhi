@@ -1,5 +1,7 @@
 # Spike C results: the E2EE round trip + selecting an HPKE library
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-01. A ROADMAP Phase 0 verification spike. Input for CRYPTO_SPEC undecided item #1 (the HPKE library choice).
 **The throwaway code lives in `spikes/spike-c/` and is not product code. No code was placed in `packages/crypto` at all.**
 The final selection is made by a human (this memo goes only as far as a recommendation).

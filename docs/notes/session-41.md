@@ -1,5 +1,7 @@
 # Session 41: W1 — implementation rulings for the statically reduced form (/invite + per-path CSP) (BA–BH)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-29. Purpose: record of implementation rulings in PR-W1 (web-dashboard-design.md
 §7). The norm = AUTH_SPEC §15-3 (invite-link landing point = fully static, fragment not
 interpreted — PR #103 merged = owner-approved) and ADR-0018 revision 2, item 5. What this

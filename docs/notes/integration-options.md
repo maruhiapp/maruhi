@@ -1,5 +1,7 @@
 # Design options for the integration surfaces — sync destinations, upstream rotation, SDK, dynamic secrets (+ value-bearing GUI)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Status: drafted 2026-09-04 (deliberation memo). **Reflected on the ROADMAP by a same-day owner ruling**: value-bearing GUI = not doing, sync destinations = filed as the SY series as an invite-only beta gate (SY1–SY5 — ahead of H4 [legal]. Includes the second PaaS wave and GitHub Actions secrets) + SY6 [= this memo's option S4, change notification] demoted to demand-driven, sync is in the free tier, Windows is outside the gate, upstream rotation / SDK / dynamic secrets / SSO = ROADMAP "demand-driven" section (server-side issuance of dynamic secrets is decided as not doing), practical Windows support = Phase 2 CLI distribution item. Of the §8 handoffs, 1 (whether S5 ships hosted = it does not) and 6 (the no-value ui comes first) were resolved by the same ruling; 2–5 are ruled on in the implementation PRs.
 The starting point is the trailing points in docs/notes/competitive-analysis.md §4. The owner's policy (2026-09-04): SSO / SCIM wait for enterprise demand (put an inquiry-only Enterprise slot on the pricing table), ignore SOC 2, do want sync destinations, decide the rest after lining up and evaluating options.
 

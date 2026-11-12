@@ -1,5 +1,7 @@
 # Session 44: W3a — token-management API + default-TTL implementation rulings (CE–CH)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-30. Target PR: PR-W3a (design document §7's 5 — server → api-schema →
 CLI, no web changes). The format is the usual "multiple candidates → superior-alternative
 search → 3-round comparison → autonomous selection" (session-27 §14's format. The codes

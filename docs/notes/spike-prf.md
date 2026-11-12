@@ -1,5 +1,7 @@
 # K0 spike: obtaining a passkey PRF (a localhost page + a CLI listener)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Status: 2026-09-12 — the pre-spike of KL3 K5 (passkey PRF). Only **the scope checkable inside this environment** (a Bun listener / Chromium's virtual authenticators) was performed. Items that can only be checked on real hardware (the browser × authenticator support table, port forwarding under Codespaces / WSL) belong to the owner's deferred K0 and are **only enumerated here as "unverified"** (the 2026-09-12 ruling at the end of integration-options.md supplement 19-7). The implementation ruling record is supplement 20 of the same file.
 
 Throwaway code (not committed to the repository): a `node:http` listener on Bun, Playwright (borrowed by absolute path from `apps/site`'s devDependencies — no dependency was added to the CLI) + the bundled Chromium's CDP `WebAuthn.addVirtualAuthenticator`.

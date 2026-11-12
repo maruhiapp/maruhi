@@ -1,5 +1,7 @@
 # Session 24 notes (ruling on in-lifetime replay of OIDC tokens)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-15. Prerequisites: main with PR #66 in (`39a3371`).
 Branch: `claude/maruhi-oidc-replay-ruling-jiwfhb`.
 Scope: the owner ruling on **in-lifetime replay of OIDC tokens**, which PR #65

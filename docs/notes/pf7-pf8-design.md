@@ -1,5 +1,7 @@
 # PF7 / PF8 design record — scheduled rotation and the `exec` connector (2026-10-02 design and implementation session)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 **Position**: the ROADMAP H series PF index, the two items added by the
 2026-10-02 owner ruling "before the release": **PF7: scheduled rotation**
 (PF7a = the cheap intermediates `rotation list --fail-on-due` and the

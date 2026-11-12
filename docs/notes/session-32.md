@@ -1,5 +1,7 @@
 # Session 32 notes (spec drafting of session-31 ruling 1 and proving the strict acceptance path)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-19. Target: spec drafting of ruling 1 among the 3 owner rulings in
 session-31 (post-PR-M1-merge audit) §7. Format: spec revision + record of technical verification.
 Implementation (PR-F1–F4) happens in a separate PR after spec approval.

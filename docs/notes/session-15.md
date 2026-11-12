@@ -1,5 +1,7 @@
 # Session 15 notes (name-authenticity implementation — implementation PR-3 of the session-12 spec)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-04. Prerequisites: confirmed PR #30 (implementation PR-2 = value authenticity.
 squash merge `9b9fec1`) is an ancestor before starting.
 Scope: session-12.md §9's **PR-3 = metadata statements (option D)**. Per the approved

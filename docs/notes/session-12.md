@@ -1,5 +1,7 @@
 # Session 12 notes (authenticity of values, DEKs, and variable metadata — threat analysis and crypto-spec revision. docs/spec-only)
 
+> **Dated record.** This note preserves the design and session state at its date and is kept with its original wording; it does not describe the current codebase. For current facts, see CLAUDE.md and the specifications under docs/.
+
 Date: 2026-08-03. Premise: started after confirming PR #25 (CLI MVP) was merged.
 Scope: **specification review and drafting only**. Implementation code and the real test-vector
 files in `packages/crypto`, server, CLI, etc. are not changed. Merging this PR = the owner's
