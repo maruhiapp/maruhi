@@ -187,6 +187,16 @@ jobs:
           #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
           #     selector parsing) via blume > @tailwindcss/typography, which pins
           #     6.0.10 — build-time CSS over the repository's own stylesheets
+          #   GHSA-3g3m-2fjr-6pw4: glob@13.0.6 (AbortSignal cancellation bypass)
+          #     via blume > @astrojs/vercel > @vercel/nft, which pins glob@^13.0.0;
+          #     the fix (glob@14) is out of range and @vercel/nft's latest still
+          #     pins ^13 — build-time file tracing over the repository's own
+          #     tree only, and no deploys to Vercel (same chain as above)
+          #   GHSA-g3hv-75wg-m249: minimatch@10.2.6 (globparts amplification
+          #     DoS) via eslint, @eslint/config-array and glob, all pinning ^10;
+          #     the fix (minimatch@11) is out of range for every parent and the
+          #     latest eslint still pins ^10 — lint/build-time pattern matching
+          #     over the repository's own file paths only
           # Removed as stale (2026-10-23): the braces@3.0.3 ignore
           # (GHSA-vfj7-8cjw-p6xm) — GitHub withdrew the advisory on 2026-10-23,
           # so bun audit no longer reports it.
@@ -207,6 +217,8 @@ jobs:
               --ignore GHSA-9wv6-86v2-598j
               --ignore GHSA-238p-pmpm-9mq7
               --ignore GHSA-rj75-hqrm-r3gf
+              --ignore GHSA-3g3m-2fjr-6pw4
+              --ignore GHSA-g3hv-75wg-m249
 
           - name: 1. Format (vp fmt)
             run: bun run fmt:check
