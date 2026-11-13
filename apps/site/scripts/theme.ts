@@ -65,7 +65,8 @@ const HEX = "#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?";
  */
 function themeTokenBlock(css: string): string {
   const layerAt = css.indexOf("@layer astryx-theme {");
-  const scopeAt = layerAt < 0 ? -1 : css.indexOf(":scope {", layerAt);
+  const themeAt = layerAt < 0 ? -1 : css.indexOf('@scope ([data-astryx-theme="maruhi"])', layerAt);
+  const scopeAt = themeAt < 0 ? -1 : css.indexOf(":scope {", themeAt);
   if (scopeAt < 0) {
     throw new Error(
       "apps/web/theme/maruhi.css: theme token block (:scope in @layer astryx-theme) not found",
