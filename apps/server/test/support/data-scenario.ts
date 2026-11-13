@@ -159,7 +159,32 @@ export async function nextVariableStatement(input: {
   });
 }
 
-/** Variable rename (PATCH with statement). On 204, advances the record. */
+/** Variable rename and deletion share sendVariableStatement below. */
+/**
+ * Sends a variable statement with its manifest (PATCH for rename, DELETE
+ * for deletion). On 204, advances the recorded statement and the manifest
+ * record.
+ */
+async function sendVariableStatement(
+  method: "PATCH" | "DELETE",
+  variableId: string,
+  actorUserId: string,
+  statement: WireVariableMetaStatement,
+): Promise<Response> {
+  const { manifest, record } = await manifestForStatement(statement, actorUserId);
+  const response = await requestJson(
+    method,
+    `/environments/${ENV}/variables/${variableId}`,
+    token(actorUserId),
+    { statement, manifest },
+  );
+  if (response.status === 204) {
+    varStatements.set(variableId, { statement, authorUserId: actorUserId });
+    record();
+  }
+  return response;
+}
+
 export async function renameVariableRequest(
   variableId: string,
   name: string,
@@ -171,18 +196,7 @@ export async function renameVariableRequest(
     status: "active",
     authorUserId: actorUserId,
   });
-  const { manifest, record } = await manifestForStatement(statement, actorUserId);
-  const response = await requestJson(
-    "PATCH",
-    `/environments/${ENV}/variables/${variableId}`,
-    token(actorUserId),
-    { statement, manifest },
-  );
-  if (response.status === 204) {
-    varStatements.set(variableId, { statement, authorUserId: actorUserId });
-    record();
-  }
-  return response;
+  return sendVariableStatement("PATCH", variableId, actorUserId, statement);
 }
 
 /** Variable deletion (DELETE with a status-deleted statement). On 204, advances the record. */
@@ -201,18 +215,7 @@ export async function deleteVariableRequest(
     status: "deleted",
     authorUserId: actorUserId,
   });
-  const { manifest, record } = await manifestForStatement(statement, actorUserId);
-  const response = await requestJson(
-    "DELETE",
-    `/environments/${ENV}/variables/${variableId}`,
-    token(actorUserId),
-    { statement, manifest },
-  );
-  if (response.status === 204) {
-    varStatements.set(variableId, { statement, authorUserId: actorUserId });
-    record();
-  }
-  return response;
+  return sendVariableStatement("DELETE", variableId, actorUserId, statement);
 }
 
 /**

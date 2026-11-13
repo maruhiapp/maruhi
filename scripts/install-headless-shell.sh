@@ -39,8 +39,8 @@
 # Usage: scripts/install-headless-shell.sh
 set -euo pipefail
 
-CHROME_HEADLESS_SHELL_VERSION="156.0.8078.4"
-CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256="c3e50596aef52c58f8fda3c6b3411c33d34c88b177b3ed1c2243359fd3b8ba20"
+CHROME_HEADLESS_SHELL_VERSION="158.0.8127.18"
+CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256="18352d22cb0cdf520cbff2ad8c41391f0e02a72886cb53b0fde4bdfc4bd075d6"
 
 die() {
   # A workflow command, so the reason is annotated on the GitHub Actions run

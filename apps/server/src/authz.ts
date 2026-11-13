@@ -9,7 +9,7 @@
 //   §11-2); if it covers it but the permission level is insufficient: 403
 
 import { ForbiddenError, ProjectNotFoundError } from "@maruhi/api-schema";
-import type { AuthenticatedPrincipal, ProjectId, TokenPermission } from "@maruhi/core";
+import type { AuthenticatedPrincipal, ProjectId, TokenPermission, TokenScope } from "@maruhi/core";
 import { permissionAtLeast, scopePermissionFor } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -154,9 +154,19 @@ export function ensureKeyMaterialAccess(
   if (principal.kind === "session") {
     return Effect.fail(new ForbiddenError({ reason: "session-not-allowed" }));
   }
-  const allowed = principal.scopes.some(
-    (scope) => scope.project === "*" && scope.permission === "admin",
-  );
+  return ensureWildcardAdminScope(principal.scopes);
+}
+
+/**
+ * The `*` × admin scope requirement on the token-principal side of the
+ * access classes above and below: an account-wide admin scope is the only
+ * token credential that may proceed. Callers pass the scopes of an
+ * already-narrowed token principal (sessions are handled before).
+ */
+function ensureWildcardAdminScope(
+  scopes: readonly TokenScope[],
+): Effect.Effect<void, ForbiddenError> {
+  const allowed = scopes.some((scope) => scope.project === "*" && scope.permission === "admin");
   return allowed
     ? Effect.void
     : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
@@ -178,12 +188,7 @@ export function ensureSelfAuditAccess(
   if (principal.kind === "session") {
     return Effect.void;
   }
-  const allowed = principal.scopes.some(
-    (scope) => scope.project === "*" && scope.permission === "admin",
-  );
-  return allowed
-    ? Effect.void
-    : Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
+  return ensureWildcardAdminScope(principal.scopes);
 }
 
 /**

@@ -8,7 +8,7 @@ Project-specific guidance for AI coding agents.
 - Order of consideration for customization: ① defineTheme in `apps/web/theme/` (including adding variants) → ② xstyle → ③ a composed wrapper in `ui.package` → ④ a new bespoke component in `ui.package` (Astryx public APIs only) → ⑤ an issue / PR to upstream (facebook/astryx)
 
 <!-- ASTRYX:START -->
-Astryx v0.7.3 · 173 components
+Astryx v0.7.15 · 174 components
 CLI: run every command as `bunx astryx <cmd>` (shown below as `astryx ...`).
 
 SETUP (once, in app entry e.g. main.tsx) — without these, components render unstyled:
@@ -20,6 +20,7 @@ WORKFLOW — start every page from a template, never from scratch:
 2. `astryx template <name> <path>` — scaffold it; keep its frame, gap and padding; replace the content.
 3. `astryx template <Block>` for parts it lacks; `astryx component <Name>` to read props before using one.
 Changing an existing page? Keep it: skip step 2 and add blocks/components inside its sections.
+Before you deliver a build, run `astryx doctor --built <dir>`; don't deliver it if it fails.
 
 RULES:
 - No <div> — components handle all layout and spacing.

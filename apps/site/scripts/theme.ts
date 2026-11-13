@@ -55,11 +55,39 @@ export const copiedAssets = ["favicon.svg", "logo.svg", "og.png", "apple-touch-i
 const HEX = "#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?";
 
 /**
+ * Returns the theme's own token block: the `:scope { ... }` rule inside the
+ * maruhi `@scope` of `@layer astryx-theme`, where the generator declares
+ * the theme's custom properties. Since @astryxdesign 0.7.15 the generator
+ * also writes concrete light-dark pairs into component-state rules outside
+ * this block (a selected item's --color-text-secondary, for example,
+ * carries the neutral value, not the brand one), so brand extraction must
+ * read only this block; whole-file uniqueness no longer holds.
+ */
+function themeTokenBlock(css: string): string {
+  const layerAt = css.indexOf("@layer astryx-theme {");
+  const scopeAt = layerAt < 0 ? -1 : css.indexOf(":scope {", layerAt);
+  if (scopeAt < 0) {
+    throw new Error(
+      "apps/web/theme/maruhi.css: theme token block (:scope in @layer astryx-theme) not found",
+    );
+  }
+  const openAt = css.indexOf("{", scopeAt);
+  let depth = 0;
+  for (let i = openAt; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) return css.slice(openAt + 1, i);
+    }
+  }
+  throw new Error("apps/web/theme/maruhi.css: theme token block is not closed");
+}
+
+/**
  * Extracts exactly one `--<token>: light-dark(<hex>, <hex>)` declaration
- * from maruhi.css. The same token name is re-declared as a `var(...)`
- * reference in variant scopes, so uniqueness is required only for the hex
- * light-dark form (multiple differing pairs means the generation rule's
- * premise changed — fail).
+ * from the theme token block. Uniqueness is required within the block
+ * (multiple differing pairs means the generation rule's premise changed —
+ * fail).
  */
 function pickPair(css: string, token: string): ModePair {
   const re = new RegExp(`--${token}:\\s*light-dark\\((${HEX}),\\s*(${HEX})\\)`, "g");
@@ -86,18 +114,19 @@ function pickLength(css: string, token: string): string {
   return [...values][0]!;
 }
 
-/** Extracts the brand tokens from maruhi.css's body. */
+/** Extracts the brand tokens from maruhi.css's theme token block. */
 export function extractBrand(webThemeCss: string): BrandTokens {
+  const block = themeTokenBlock(webThemeCss);
   return {
-    accent: pickPair(webThemeCss, "color-accent"),
-    onAccent: pickPair(webThemeCss, "color-on-accent"),
-    background: pickPair(webThemeCss, "color-background-body"),
-    surface: pickPair(webThemeCss, "color-background-surface"),
-    popover: pickPair(webThemeCss, "color-background-popover"),
-    foreground: pickPair(webThemeCss, "color-text-primary"),
-    mutedForeground: pickPair(webThemeCss, "color-text-secondary"),
-    border: pickPair(webThemeCss, "color-border"),
-    radius: pickLength(webThemeCss, "radius-element"),
+    accent: pickPair(block, "color-accent"),
+    onAccent: pickPair(block, "color-on-accent"),
+    background: pickPair(block, "color-background-body"),
+    surface: pickPair(block, "color-background-surface"),
+    popover: pickPair(block, "color-background-popover"),
+    foreground: pickPair(block, "color-text-primary"),
+    mutedForeground: pickPair(block, "color-text-secondary"),
+    border: pickPair(block, "color-border"),
+    radius: pickLength(block, "radius-element"),
   };
 }
 
