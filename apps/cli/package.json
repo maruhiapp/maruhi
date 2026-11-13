@@ -16,11 +16,11 @@
     "build:npm": "bun scripts/build-npm.ts"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.1.0",
+    "@effect/platform-bun": "4.1.4",
     "@maruhi/api-schema": "workspace:*",
     "@maruhi/core": "workspace:*",
     "@maruhi/crypto": "workspace:*",
-    "effect": "4.1.0",
+    "effect": "4.1.4",
     "std-env": "4.3.0"
   },
   "devDependencies": {
