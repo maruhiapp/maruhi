@@ -637,36 +637,25 @@ export async function verifyVariableStatements(
     readonly ids: Set<string>;
   }>
 > {
-  // Parallel signature verifications; the checks replay in input order so
-  // the first reported failure is unchanged (P-5).
-  const outcomes = await Promise.all(
-    statements.map((statement) =>
-      verifyVariableStatement(
-        verified,
-        environmentId,
-        statement,
-        `variable ${displayText(statement.variableId)}'s meta statement`,
-      ),
-    ),
+  const outcomes = await verifyStatementsInParallel(
+    verified,
+    environmentId,
+    statements,
+    (statement) => `variable ${displayText(statement.variableId)}'s meta statement`,
   );
   const seenIds = new Set<string>();
   const values: VerifiedVariableStatement[] = [];
   for (const [index, statement] of statements.entries()) {
-    if (statement.environmentId !== environmentId) {
-      return {
-        kind: "rejected",
-        evidence: true,
-        message: `Variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
-      };
+    const refusal = refuseMismatchedOrDuplicate(
+      statement,
+      environmentId,
+      seenIds,
+      `Variable ${displayText(statement.variableId)}`,
+      (candidate) => seenIds.has(candidate.variableId),
+    );
+    if (refusal !== null) {
+      return refusal;
     }
-    if (seenIds.has(statement.variableId)) {
-      return {
-        kind: "rejected",
-        evidence: true,
-        message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
-      };
-    }
-    seenIds.add(statement.variableId);
     const outcome = outcomes[index]!;
     if (outcome.kind !== "ok") {
       return outcome;
@@ -690,6 +679,56 @@ export async function verifyVariableStatements(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
+type StatementVerification = VerifyOutcome<{
+  readonly signedBytesHashHex: string;
+  readonly layout: WireStatementLayout;
+}>;
+
+// Parallel signature verifications; the checks replay in input order so
+// the first reported failure is unchanged (P-5).
+async function verifyStatementsInParallel(
+  verified: VerifiedProject,
+  environmentId: EnvironmentId,
+  statements: readonly DistributedVariableMetaStatement[],
+  describe: (statement: DistributedVariableMetaStatement) => string,
+): Promise<readonly StatementVerification[]> {
+  return Promise.all(
+    statements.map((statement) =>
+      verifyVariableStatement(verified, environmentId, statement, describe(statement)),
+    ),
+  );
+}
+
+// The coordinate and duplicate refusals shared by the live and declared
+// lists, applied before any per-list judgment: a statement served under
+// coordinates other than the requested context, or a variable ID served
+// twice, is refused. Returns the refusal, or null when the statement
+// passes (its ID is then recorded in seenIds).
+function refuseMismatchedOrDuplicate(
+  statement: DistributedVariableMetaStatement,
+  environmentId: EnvironmentId,
+  seenIds: Set<string>,
+  subject: string,
+  isDuplicate: (statement: DistributedVariableMetaStatement) => boolean,
+): VerifyOutcome<never> | null {
+  if (statement.environmentId !== environmentId) {
+    return {
+      kind: "rejected",
+      evidence: true,
+      message: `${subject} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
+    };
+  }
+  if (isDuplicate(statement)) {
+    return {
+      kind: "rejected",
+      evidence: true,
+      message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
+    };
+  }
+  seenIds.add(statement.variableId);
+  return null;
+}
+
 /**
  * Verifying the declaredVariables (§12-7) of a value-bearing response. The
  * implementation point of CRYPTO_SPEC §6.3's value-distribution
@@ -708,36 +747,25 @@ export async function verifyDeclaredStatements(
     readonly ids: Set<string>;
   }>
 > {
-  // Parallel signature verifications; the checks replay in input order so
-  // the first reported failure is unchanged (P-5).
-  const outcomes = await Promise.all(
-    declared.map((statement) =>
-      verifyVariableStatement(
-        verified,
-        environmentId,
-        statement,
-        `declared variable ${displayText(statement.variableId)}'s meta statement`,
-      ),
-    ),
+  const outcomes = await verifyStatementsInParallel(
+    verified,
+    environmentId,
+    declared,
+    (statement) => `declared variable ${displayText(statement.variableId)}'s meta statement`,
   );
   const seenIds = new Set<string>();
   const values: VerifiedVariableStatement[] = [];
   for (const [index, statement] of declared.entries()) {
-    if (statement.environmentId !== environmentId) {
-      return {
-        kind: "rejected",
-        evidence: true,
-        message: `Declared variable ${displayText(statement.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
-      };
+    const refusal = refuseMismatchedOrDuplicate(
+      statement,
+      environmentId,
+      seenIds,
+      `Declared variable ${displayText(statement.variableId)}`,
+      (candidate) => seenIds.has(candidate.variableId) || activeIds.has(candidate.variableId),
+    );
+    if (refusal !== null) {
+      return refusal;
     }
-    if (seenIds.has(statement.variableId) || activeIds.has(statement.variableId)) {
-      return {
-        kind: "rejected",
-        evidence: true,
-        message: `Duplicate variable IDs within one response (an inconsistent server response): ${statement.variableId}`,
-      };
-    }
-    seenIds.add(statement.variableId);
     if (statement.status !== "declared") {
       // An active appearing here = the value of a verified active
       // statement is missing from the value-bearing response (a value

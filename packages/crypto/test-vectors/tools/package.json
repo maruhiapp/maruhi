@@ -13,6 +13,6 @@
   "devDependencies": {
     "@hpke/core": "1.9.0",
     "@hpke/dhkem-x25519": "1.8.0",
-    "hpke": "1.1.7"
+    "hpke": "1.1.8"
   }
 }

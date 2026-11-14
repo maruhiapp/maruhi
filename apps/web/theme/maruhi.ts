@@ -83,5 +83,3 @@ export const maruhiTheme = defineTheme({
     "--color-on-accent": [ON_VERMILION_LIGHT, ON_VERMILION_DARK],
   },
 });
-
-export default maruhiTheme;

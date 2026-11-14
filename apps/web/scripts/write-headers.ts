@@ -69,7 +69,7 @@ const hashes = inlineScripts.map(
 // because the text exists only at runtime: the web e2e hashes the live
 // element and requires this value, so an Astryx upgrade that changes the
 // rules fails there instead of shipping a refused stylesheet.
-const astryxLayerSlideRulesHash = "'sha256-6SjltZZHbimwo1Hbgahxv8D9b/3lyMZxSgBbD6dRcUQ='";
+const astryxLayerSlideRulesHash = "'sha256-/i2+VVt2qoVh0Ag9OWwyc9593DCZeYGAv6SliqVbheY='";
 
 const csp = [
   "default-src 'none'",

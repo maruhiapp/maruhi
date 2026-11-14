@@ -33,28 +33,28 @@ const program = Effect.gen(function* () {
     extraEnv: { WRANGLER_SEND_METRICS: "false" },
     stdin: Redacted.make(new TextEncoder().encode(value), { label: "sync-stdin" }),
   });
-  const missing = yield* runner
-    .exec({
-      command: ["maruhi-probe-not-installed-9f3c"],
-      cwd: process.cwd(),
-      extraEnv: {},
-      stdin: Redacted.make(new Uint8Array(0), { label: "sync-stdin" }),
-    })
-    .pipe(
-      Effect.map(() => "unexpectedly started"),
-      Effect.catch((error) => Effect.succeed(error.message)),
-    );
-  const badCwd = yield* runner
-    .exec({
-      command: ["sh", "-c", "true"],
-      cwd: "/nonexistent-maruhi-probe-dir",
-      extraEnv: {},
-      stdin: Redacted.make(new Uint8Array(0), { label: "sync-stdin" }),
-    })
-    .pipe(
-      Effect.map(() => "unexpectedly started"),
-      Effect.catch((error) => Effect.succeed(error.message)),
-    );
+  // Spawns that must not start: resolves to the typed error's message, or
+  // to "unexpectedly started" when the spawn succeeds.
+  const failedSpawnMessage = (input: { command: readonly string[]; cwd: string }) =>
+    runner
+      .exec({
+        command: input.command,
+        cwd: input.cwd,
+        extraEnv: {},
+        stdin: Redacted.make(new Uint8Array(0), { label: "sync-stdin" }),
+      })
+      .pipe(
+        Effect.map(() => "unexpectedly started"),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+  const missing = yield* failedSpawnMessage({
+    command: ["maruhi-probe-not-installed-9f3c"],
+    cwd: process.cwd(),
+  });
+  const badCwd = yield* failedSpawnMessage({
+    command: ["sh", "-c", "true"],
+    cwd: "/nonexistent-maruhi-probe-dir",
+  });
   // The rotation connector's script capture (captureScript): stdout is
   // the credential and is read whole up to 1 MiB; past that the script is
   // stopped and nothing of it is kept (D-6)
