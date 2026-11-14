@@ -17,7 +17,7 @@
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { cryptoServicesLayer, SessionService, TokenService } from "@maruhi/core";
 import { Clock, Context, Effect, FileSystem, Layer, Path, Scope } from "effect";
-import { Digest, SecureRandom } from "effect/crypto";
+import { Digest, SecureRandom, Signature } from "effect/crypto";
 import { Etag, HttpPlatform, HttpRouter } from "effect/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/http-api";
 
@@ -80,7 +80,8 @@ type RequestServices =
   | ServerKey
   | OidcVerifier
   | SecureRandom.SecureRandom
-  | Digest.Digest;
+  | Digest.Digest
+  | Signature.Signature;
 
 // The crypto services as plain service values for the per-request
 // context: the AuthMiddleware's `requires` are global requires of the
@@ -89,8 +90,9 @@ type RequestServices =
 // from `globalThis.crypto` per call). The scope is deliberately never
 // closed: the layers register no finalizers, and the values live for
 // the isolate's lifetime like the rest of the per-env services
-const cryptoServicesContext: Context.Context<SecureRandom.SecureRandom | Digest.Digest> =
-  Effect.runSync(Layer.buildWithScope(cryptoServicesLayer, Scope.makeUnsafe()));
+const cryptoServicesContext: Context.Context<
+  SecureRandom.SecureRandom | Digest.Digest | Signature.Signature
+> = Effect.runSync(Layer.buildWithScope(cryptoServicesLayer, Scope.makeUnsafe()));
 
 function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
@@ -158,9 +160,9 @@ function handlerFor(env: Env): EnvHandler {
     // detail stays generic — no per-field reasons leave the server
     Layer.provide(HttpApiMiddleware.layerProblemDetails()),
     Layer.provide(platformContext),
-    // Handler-level crypto-service requirements (SecureRandom / Digest)
-    // are discharged here; the middleware's are global requires and ride
-    // the per-request context instead (buildServices)
+    // Handler-level crypto-service requirements (SecureRandom / Digest /
+    // Signature) are discharged here; the middleware's are global
+    // requires and ride the per-request context instead (buildServices)
     Layer.provide(cryptoServicesLayer),
     Layer.provide(Layer.succeedContext(services)),
   );

@@ -2,7 +2,7 @@
 //
 // Only AUTH_SPEC §14-1's authentication stage (OIDC token
 // verification) is confined here. The internals — base64url decoding,
-// the JWK → WebCrypto mapping, the JWKS cache — stay inside the
+// the JWK → effect/jose key import, the JWKS cache — stay inside the
 // boundary; from the outside it looks like a single operation,
 // "token → verified claims".
 //

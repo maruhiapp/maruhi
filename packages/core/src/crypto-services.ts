@@ -1,14 +1,15 @@
 // The seam through which the Effect-structured code in core, the
-// server and the CLI draws secure randomness and message digests
-// (Effect 4.1's `effect/crypto` services).
+// server and the CLI draws secure randomness, message digests and
+// asymmetric signature verification (Effect 4.1's `effect/crypto`
+// services).
 //
 // Why a seam: randomness and hashing used to be ambient WebCrypto calls
 // (`crypto.getRandomValues` / `crypto.subtle.digest`) scattered across
 // core and the server. Routing them through the `SecureRandom` /
-// `Digest` services makes every draw in that scope auditable at one
-// point and lets tests substitute deterministic implementations with
-// `Layer.mock` — the same "bind the policy to one place" shape as
-// egress.ts.
+// `Digest` / `Signature` services makes every draw in that scope
+// auditable at one point and lets tests substitute deterministic
+// implementations with `Layer.mock` — the same "bind the policy to one
+// place" shape as egress.ts.
 //
 // Both layers are the WebCrypto variants: they draw from the
 // `WebCrypto` reference, which defaults to `globalThis.crypto`, so the
@@ -29,12 +30,20 @@
 // untouched: it does not consume these services.
 
 import { Layer } from "effect";
-import { Digest, SecureRandom } from "effect/crypto";
+import { Digest, SecureRandom, Signature } from "effect/crypto";
 
 /**
  * The composed crypto-services layer for runtime roots (the server's
  * HttpApi assembly, the CLI's live layer, test environments). Provides
- * `SecureRandom` and `Digest` backed by WebCrypto.
+ * `SecureRandom`, `Digest` and `Signature` backed by WebCrypto. The
+ * `Signature` layer's own `SecureRandom` requirement is provided to it
+ * inside the composition, so the layer requires nothing from its
+ * environment.
  */
-export const cryptoServicesLayer: Layer.Layer<SecureRandom.SecureRandom | Digest.Digest> =
-  Layer.mergeAll(SecureRandom.layerWebCrypto, Digest.layerWebCrypto);
+export const cryptoServicesLayer: Layer.Layer<
+  SecureRandom.SecureRandom | Digest.Digest | Signature.Signature
+> = Layer.mergeAll(
+  SecureRandom.layerWebCrypto,
+  Digest.layerWebCrypto,
+  Signature.layerWebCrypto.pipe(Layer.provide(SecureRandom.layerWebCrypto)),
+);
