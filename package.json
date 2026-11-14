@@ -7,6 +7,8 @@
   ],
   "type": "module",
   "scripts": {
+    "alchemy:deploy": "alchemy deploy --stage prod",
+    "alchemy:plan": "alchemy plan --stage prod",
     "check": "bun run check:english && bun run fmt:check && bun run lint && bun run typecheck && bun run importlint && bun run fallow:audit && bun run fallow:baselines && bun run doctor && bun run test",
     "check:english": "bun scripts/check-english.mjs --all",
     "doctor": "bun run --filter @maruhi/web doctor",
@@ -26,9 +28,12 @@
     "typecheck": "vp check --no-fmt --no-lint"
   },
   "devDependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.87",
     "@effect/tsgo": "0.68.1",
     "@import-lint/cli": "0.1.10",
     "@stylexjs/eslint-plugin": "0.19.2",
+    "alchemy": "2.0.0-beta.87",
+    "effect": "4.1.4",
     "fallow": "3.42.0",
     "oxlint-plugin-eslint": "1.93.0",
     "typescript": "7.0.2",

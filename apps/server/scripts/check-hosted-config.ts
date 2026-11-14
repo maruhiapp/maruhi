@@ -19,10 +19,19 @@
 // silently, so CI (8c) checks that "hosted's declarations include the top-level
 // declarations, and same-named declarations are equal" — on both config files.
 //
+// PR4 adds a third carrier of the hosted shape: alchemy.run.ts at the repo
+// root declares the hosted worker (and the apex site) for Alchemy. The
+// program cannot be evaluated here — it needs the stack runtime and account
+// state — so its load-bearing literals are read from the source text and
+// compared against the cf hosted worker above (itself parity-checked
+// against the wrangler mirror). Extraction fails closed: a pattern that no
+// longer matches is a failure, so a reformat cannot hide a drift.
+//
 // Run: `bun scripts/check-hosted-config.ts` (in apps/server. Node side — reads
 // the effective config of both environments via wrangler's unstable_readConfig
 // and evaluates cloudflare.config.ts / wrangler.config.ts directly).
 
+import { readFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 
 import type { UnwrapConfig } from "cf/config";
@@ -450,6 +459,239 @@ if (cRestore.doBindings["DRILL_PROJECT_CHAIN"] === undefined) {
 // database would provision the import somewhere the product never reads
 expectSame("cf restore: d1 (must equal the hosted worker's)", cRestore.d1, cHosted.d1);
 
+// ---------------------------------------------------------------------------
+// alchemy.run.ts (repo root) — the hosted worker and the apex site as
+// Alchemy declarations. Compared against the cf hosted worker; the site
+// worker's literals are pinned here by value (its serving fields mirror
+// apps/site/cloudflare.config.ts; its assets directory is the build
+// output the removed cf deploy script passed positionally).
+// ---------------------------------------------------------------------------
+
+const alchemySource = readFileSync(new URL("../../../alchemy.run.ts", import.meta.url), "utf8");
+
+function alchemyLiteral(label: string, pattern: RegExp): string {
+  const match = alchemySource.match(pattern);
+  if (match?.[1] === undefined) {
+    failures.push(`alchemy.run.ts: ${label}: pattern not found (extraction fails closed)`);
+    return "";
+  }
+  return match[1];
+}
+
+/** String-only path normalization ("." / ".." segments) for comparing
+ * directories recorded relative to different bases */
+function normalizeRepoPath(path: string): string {
+  const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (segment === "..") {
+      out.pop();
+    } else {
+      out.push(segment);
+    }
+  }
+  return out.join("/");
+}
+
+function alchemyStrings(label: string, pattern: RegExp): string[] {
+  const match = alchemySource.match(pattern);
+  if (match?.[1] === undefined) {
+    failures.push(`alchemy.run.ts: ${label}: pattern not found (extraction fails closed)`);
+    return [];
+  }
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
+}
+
+expectSame(
+  "alchemy: hosted worker name",
+  alchemyLiteral("hosted worker name", /Cloudflare\.Worker\("HostedServer", \{\s*name: "([^"]+)"/),
+  cHosted.name,
+);
+expectSame(
+  "alchemy: site worker name",
+  alchemyLiteral("site worker name", /Cloudflare\.Worker\("Site", \{\s*name: "([^"]+)"/),
+  "maruhi-site",
+);
+// Both workers pin their custom domain (the hosted one is the single auth
+// origin; the site's is the apex)
+expectSame(
+  "alchemy: worker domains",
+  [...alchemySource.matchAll(/domain: "([^"]+)"/g)].map((m) => m[1]),
+  [cHosted.routes[0], "maruhi.app"],
+);
+// The stack name feeds the provider's physical naming and metadata
+// bindings; the hosted entry must be the cf hosted worker's entrypoint,
+// rooted at the repository
+expectSame(
+  "alchemy: stack name",
+  alchemyLiteral("stack name", /Alchemy\.Stack\(\s*"([^"]+)"/),
+  "maruhi",
+);
+expectSame(
+  "alchemy: hosted main",
+  alchemyLiteral("hosted main", /main: "([^"]+)"/),
+  `apps/server/${cHosted.entrypoint ?? ""}`,
+);
+// Assets directories, normalized to repo-root-relative paths: the cf
+// hosted worker's is recorded relative to apps/server (via the bundler
+// shim); the site's is pinned by value (the build output directory)
+expectSame(
+  "alchemy: assets directories (hosted, then site)",
+  [...alchemySource.matchAll(/directory: "([^"]+)"/g)].map((m) => m[1]),
+  [normalizeRepoPath(`apps/server/${cHosted.assets?.directory ?? ""}`), "apps/site/dist"],
+);
+// D1 / R2 are lookup-only in Alchemy; the lookup keys must name the same
+// database and bucket the cf hosted config binds
+expectSame(
+  "alchemy: D1 lookup name",
+  alchemyLiteral("D1 lookup", /D1\.Database\.lookup\(\{\s*name: "([^"]+)"/),
+  cHosted.d1?.name,
+);
+expectSame(
+  "alchemy: R2 lookup name",
+  alchemyLiteral("R2 lookup", /R2\.Bucket\.lookup\(\{\s*name: "([^"]+)"/),
+  cHosted.r2["OPS_BACKUP_BUCKET"],
+);
+// The same-worker DO: the DurableObjectLike literal must name the class the
+// cf hosted worker binds as PROJECT_CHAIN, a sqlite export of that worker
+if (!alchemySource.includes('kind: "Cloudflare.DurableObject"')) {
+  failures.push('alchemy.run.ts: PROJECT_CHAIN: kind "Cloudflare.DurableObject" not found');
+}
+const alchemyDoClass = alchemyLiteral("DO className", /className: "([^"]+)"/);
+expectSame(
+  "alchemy: PROJECT_CHAIN class",
+  alchemyDoClass,
+  cHosted.doBindings["PROJECT_CHAIN"]?.className,
+);
+expectSame(
+  "alchemy: PROJECT_CHAIN storage",
+  alchemyLiteral("DO storage", /storage: "([^"]+)"/),
+  "sqlite",
+);
+if (!cHosted.doExports.includes(alchemyDoClass)) {
+  failures.push(
+    `alchemy.run.ts: PROJECT_CHAIN class (${alchemyDoClass}) must be a sqlite export of the cf hosted worker`,
+  );
+}
+// Rate limits: compared as a record keyed by env binding name, like the
+// cf <-> wrangler comparison — a set of (namespace, limit, period) triples
+// would not see two bindings' values swapped, nor two namespaces with
+// identical triples exchanged
+const alchemyRateLimitDecls = new Map<
+  string,
+  { namespace: string; limit: number; period: number }
+>();
+for (const m of alchemySource.matchAll(
+  /const (\w+) = Cloudflare\.RateLimit\("[^"]+", \{\s*namespaceId: (\d+),\s*simple: \{ limit: (\d+), period: (\d+) \}/g,
+)) {
+  alchemyRateLimitDecls.set(m[1] ?? "", {
+    namespace: m[2] ?? "",
+    limit: Number(m[3]),
+    period: Number(m[4]),
+  });
+}
+const alchemyRateLimits: Record<string, { namespace: string; limit: number; period: number }> = {};
+for (const m of alchemySource.matchAll(/([A-Z][A-Z_]+): (\w+),/g)) {
+  const decl = alchemyRateLimitDecls.get(m[2] ?? "");
+  if (decl !== undefined) {
+    alchemyRateLimits[m[1] ?? ""] = decl;
+  }
+}
+if (Object.keys(alchemyRateLimits).length !== alchemyRateLimitDecls.size) {
+  failures.push(
+    "alchemy.run.ts: rate limits: every RateLimit declaration must be bound under an env name (extraction fails closed)",
+  );
+}
+expectSame("alchemy: rate limits", alchemyRateLimits, cHosted.rateLimits);
+expectSame("alchemy: crons", alchemyStrings("crons", /crons: \[([^\]]+)\]/), [...cHosted.crons]);
+// The runtime contract, again: one compatibility date (the COMPATIBILITY
+// const and the site block both pin it) with both Node compat layers off
+expectSame(
+  "alchemy: compatibility dates",
+  [...alchemySource.matchAll(/date: "([^"]+)"/g)].map((m) => m[1]),
+  [cHosted.compatibilityDate, cHosted.compatibilityDate],
+);
+expectSame(
+  "alchemy: compatibility flags",
+  alchemyStrings("compatibility flags", /flags: \[([^\]]+)\]/),
+  [...cHosted.compatibilityFlags],
+);
+expectSame(
+  "alchemy: cpuMs",
+  Number(alchemyLiteral("cpuMs", /cpuMs: ([\d_]+)/).replaceAll("_", "")),
+  cHosted.cpuMs,
+);
+expectSame(
+  "alchemy: hosted runWorkerFirst",
+  alchemyStrings("runWorkerFirst", /runWorkerFirst: \[([^\]]+)\]/),
+  [...(cHosted.assets?.runWorkerFirst ?? [])],
+);
+expectSame(
+  "alchemy: assets htmlHandling (hosted, then site)",
+  [...alchemySource.matchAll(/htmlHandling: "([^"]+)"/g)].map((m) => m[1]),
+  [cHosted.assets?.htmlHandling, "drop-trailing-slash"],
+);
+expectSame(
+  "alchemy: assets notFoundHandling (hosted, then site)",
+  [...alchemySource.matchAll(/notFoundHandling: "([^"]+)"/g)].map((m) => m[1]),
+  [cHosted.assets?.notFoundHandling, "404-page"],
+);
+// The hosted observability values, compared field by field (field:value
+// extractions; the enabled and logs.enabled patterns are additionally
+// anchored to the observability block's shape)
+expectSame(
+  "alchemy: observability.enabled",
+  alchemyLiteral("observability enabled", /observability: \{\s*enabled: (true|false)/),
+  String(cHosted.observability?.enabled),
+);
+expectSame(
+  "alchemy: observability.redactQueryString",
+  alchemyLiteral("redactQueryString", /redactQueryString: (true|false)/),
+  String(cHosted.observability?.redactQueryString),
+);
+expectSame(
+  "alchemy: observability.logs.invocationLogs",
+  alchemyLiteral("invocationLogs", /invocationLogs: (true|false)/),
+  String(cHosted.observability?.invocationLogs),
+);
+expectSame(
+  "alchemy: observability.logs.headSamplingRate",
+  Number(alchemyLiteral("headSamplingRate", /headSamplingRate: ([\d.]+)/)),
+  cHosted.observability?.headSamplingRate,
+);
+// Norm carries no logs.enabled (the wrangler view has no such field); the
+// cf hosted config sets it true, and the Alchemy declaration must match
+if (!/logs: \{ enabled: true,/.test(alchemySource)) {
+  failures.push("alchemy.run.ts: observability.logs.enabled must be true (cf hosted parity)");
+}
+// workersDev is asserted positively on both workers: an omitted prop is
+// read by the provider as enabled (workers.dev would return as a second
+// auth origin), so absence must fail, not pass
+expectSame(
+  "alchemy: workersDev (hosted, then site)",
+  [...alchemySource.matchAll(/workersDev: (true|false)/g)].map((m) => m[1]),
+  ["false", "false"],
+);
+// Every Workers Secret the hosted worker carries must be declared as a
+// Redacted config: an Alchemy upload rebuilds the binding list from the
+// program, so an undeclared secret binding would be dropped on deploy.
+// The list is the one in wrangler.jsonc's hosted comment (GITHUB_CLIENT_ID
+// is registered as a secret too, by the unified-registration ruling).
+for (const secret of [
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "SERVER_ENC_KEY_IKM",
+  "OPS_ALERT_WEBHOOK_URL",
+]) {
+  // Anchored to the env entry itself: the secret must be bound under its
+  // own env name, not merely named somewhere in the file
+  if (!new RegExp(`${secret}: yield\\* Config\\.Redacted\\("${secret}"\\)`).test(alchemySource)) {
+    failures.push(
+      `alchemy.run.ts: hosted secret ${secret} must be declared as ${secret}: yield* Config.Redacted("${secret}")`,
+    );
+  }
+}
+
 if (failures.length > 0) {
   for (const failure of failures) {
     console.error(`check-hosted-config: ${failure}`);
@@ -457,5 +699,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "check-hosted-config: hosted mirrors the top-level bindings and cloudflare.config.ts matches wrangler.jsonc",
+  "check-hosted-config: hosted mirrors the top-level bindings, cloudflare.config.ts matches wrangler.jsonc, and alchemy.run.ts matches the hosted worker",
 );
