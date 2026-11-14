@@ -1,0 +1,3 @@
+Partials for the Render MDX component live here as .mdx files (see
+src/components/Render.astro). This placeholder keeps the directory in git:
+the content loader warns on every build when its base directory is absent.
