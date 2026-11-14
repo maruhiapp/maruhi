@@ -7,7 +7,7 @@ export function GET() {
   const body = [
     "User-agent: *",
     // No Content Signals line: maruhi has not decided an AI-use policy, so
-    // robots.txt makes no such declaration (the scaffold's default line
+    // this file makes no such declaration (the scaffold's default line
     // declared ai-train=yes; a policy statement is the owner's to make).
     "Allow: /",
     "",
