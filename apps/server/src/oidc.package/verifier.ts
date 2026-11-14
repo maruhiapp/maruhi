@@ -18,13 +18,15 @@
 //   5. Presence of required claims and time checks (clock skew ±60s)
 
 import { LeaseUnauthorizedError, LeaseUnavailableError } from "@maruhi/api-schema";
-import { Context, Effect } from "effect";
-import { Digest } from "effect/crypto";
+import { Context, Effect, Exit, Result } from "effect";
+import { Digest, Signature } from "effect/crypto";
+import { Base64Url } from "effect/encoding";
+import { Jws } from "effect/jose";
 
-import { decodeBase64Url, decodeBase64UrlJson } from "./base64url.ts";
-import type { AllowedAlg } from "./jwk.ts";
-import { verifyJwsSignature } from "./jwk.ts";
 import { type JwksCacheShape, makeJwksCache } from "./jwks.ts";
+
+/** JWS `alg` values this deployment accepts (AUTH_SPEC §14-1). */
+type AllowedAlg = "RS256" | "ES256";
 
 /**
  * The supported-issuer list (§14-1): **a static configuration uniform
@@ -97,7 +99,7 @@ export interface OidcVerifierShape {
   ) => Effect.Effect<
     VerifiedOidcToken,
     LeaseUnauthorizedError | LeaseUnavailableError,
-    Digest.Digest
+    Digest.Digest | Signature.Signature
   >;
 }
 
@@ -141,7 +143,6 @@ interface ParsedToken {
   readonly alg: AllowedAlg;
   readonly kid: string | null;
   readonly claims: Readonly<Record<string, unknown>>;
-  readonly signature: Uint8Array;
   readonly signingInput: Uint8Array;
 }
 
@@ -149,8 +150,47 @@ interface ParsedToken {
 interface DecodedSegments {
   readonly header: Readonly<Record<string, unknown>>;
   readonly claims: Readonly<Record<string, unknown>>;
-  readonly signature: Uint8Array;
   readonly signingInput: Uint8Array;
+}
+
+const BASE64URL_SEGMENT = /^[A-Za-z0-9_-]*$/;
+
+/**
+ * Decodes one base64url segment. Returns null for anything malformed.
+ *
+ * Decoding itself is `effect/encoding`'s, but the segment is first
+ * held to the strict shape the JWS compact serialization requires
+ * (RFC 7515 Appendix C): characters outside the alphabet and invalid
+ * lengths (mod 4 == 1) are rejected up front, because the upstream
+ * decoder is lenient about `=` padding and CR/LF — and a lenient
+ * decode must not create a path that "passes as different bytes" (the
+ * signed content is the raw segment strings, and lenient decoding
+ * would create a gap between the verified bytes and the restored
+ * value).
+ */
+function decodeBase64Url(segment: string): Uint8Array | null {
+  if (!BASE64URL_SEGMENT.test(segment) || segment.length % 4 === 1) {
+    return null;
+  }
+  const decoded = Base64Url.decode(segment);
+  return Result.isSuccess(decoded) ? decoded.success : null;
+}
+
+/**
+ * Decodes one base64url segment as UTF-8 JSON. Returns null for
+ * anything malformed (the UTF-8 decode is fatal, for the same reason
+ * as above).
+ */
+function decodeSegmentJson(segment: string): unknown {
+  const bytes = decodeBase64Url(segment);
+  if (bytes === null) {
+    return null;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -173,16 +213,19 @@ function decodeSegments(token: string): DecodedSegments | null {
   ) {
     return null;
   }
-  const header = asRecord(decodeBase64UrlJson(headerSegment));
-  const claims = asRecord(decodeBase64UrlJson(payloadSegment));
-  const signature = decodeBase64Url(signatureSegment);
-  if (header === null || claims === null || signature === null) {
+  const header = asRecord(decodeSegmentJson(headerSegment));
+  const claims = asRecord(decodeSegmentJson(payloadSegment));
+  // The signature segment is only form-checked here (the strict shape
+  // above): its bytes are consumed by effect/jose's own parse when the
+  // signature is verified, never by this stage
+  const signatureWellFormed =
+    BASE64URL_SEGMENT.test(signatureSegment) && signatureSegment.length % 4 !== 1;
+  if (header === null || claims === null || !signatureWellFormed) {
     return null;
   }
   return {
     header,
     claims,
-    signature,
     signingInput: new TextEncoder().encode(`${headerSegment}.${payloadSegment}`),
   };
 }
@@ -224,7 +267,6 @@ function parseToken(token: string): Effect.Effect<ParsedToken, LeaseUnauthorized
     alg: alg as AllowedAlg,
     kid: typeof kid === "string" ? kid : null,
     claims: decoded.claims,
-    signature: decoded.signature,
     signingInput: decoded.signingInput,
   });
 }
@@ -287,19 +329,20 @@ export function makeOidcVerifier(
       }
       // The header's alg is used only for the match check against
       // "the expectation derived from the JWK" (never an input to
-      // branching — jwk.ts's design)
-      if (parsed.alg !== resolved.binding.headerAlg) {
+      // branching — the key resolved above carries the algorithm the
+      // JWK side determined, and effect/jose's verify enforces the
+      // same equality again internally)
+      if (parsed.alg !== resolved.key.algorithm) {
         return yield* unauthorized("unsupported-alg");
       }
-      const verified = yield* Effect.promise(() =>
-        verifyJwsSignature({
-          key: resolved.key,
-          binding: resolved.binding,
-          signature: parsed.signature,
-          signingInput: parsed.signingInput,
-        }),
-      );
-      if (!verified) {
+      // Signature verification itself is effect/jose's: it re-parses
+      // the compact serialization and verifies over the received
+      // segment strings. Any failure of it — an invalid signature, a
+      // header its parser refuses, a failing crypto service — is the
+      // same verdict the old WebCrypto call's `false` / rejection
+      // produced: the token does not verify
+      const verification = yield* Effect.exit(Jws.verify(token, resolved.key));
+      if (!Exit.isSuccess(verification)) {
         return yield* unauthorized("signature-invalid");
       }
       yield* checkTimes(parsed.claims, nowMs);

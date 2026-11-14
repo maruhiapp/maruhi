@@ -34,10 +34,58 @@
 // cold start — not worth the management cost of stored data.
 
 import { egressHttpClientLayer } from "@maruhi/core";
-import { Clock, Data, Deferred, Effect, Exit, Schema, Stream, SynchronizedRef } from "effect";
+import {
+  Clock,
+  Data,
+  Deferred,
+  Effect,
+  Exit,
+  Option,
+  Schema,
+  Stream,
+  SynchronizedRef,
+} from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { Jwk } from "effect/jose";
 
-import { algorithmForJwk, importJwk, type Jwk } from "./jwk.ts";
+/** One JWKS entry, as fetched (the raw JSON object). */
+type JwkRecord = Readonly<Record<string, unknown>>;
+
+/**
+ * Derives the verification algorithm from the JWK itself — **a design
+ * that structurally closes off alg confusion**: the algorithm a key
+ * may verify is always decided from the JWK side's kty / crv, and the
+ * token header's `alg` is used only for a match check against the
+ * expectation derived from them (verifier.ts). An implementation that
+ * branches on the header's `alg` lets an attacker-chosen value pick
+ * the verification path (`none`, substitution to HMAC); here the
+ * branch input is only the server-fetched JWKS, so that path does not
+ * exist.
+ *
+ * The allowed algorithms are RS256 / ES256 only (§14-1). Symmetric-key
+ * algs and `none` have no corresponding JWK-side kty and are
+ * unreachable. Returns null when the key is not one this deployment
+ * can use — an unusable key is skipped during selection rather than
+ * making the whole JWKS unusable (issuers may publish keys for
+ * algorithms we do not accept).
+ */
+/** Whether the JWK's declared `alg` (when it declares one) names `allowed`. */
+const declaresAlg = (jwk: JwkRecord, allowed: "RS256" | "ES256"): boolean =>
+  jwk["alg"] === undefined || jwk["alg"] === allowed;
+
+function algorithmForJwk(jwk: JwkRecord): "RS256" | "ES256" | null {
+  // `use` is optional, but when declared it must be "sig"
+  if (jwk["use"] !== undefined && jwk["use"] !== "sig") {
+    return null;
+  }
+  if (jwk["kty"] === "RSA") {
+    return declaresAlg(jwk, "RS256") ? "RS256" : null;
+  }
+  if (jwk["kty"] === "EC" && jwk["crv"] === "P-256") {
+    return declaresAlg(jwk, "ES256") ? "ES256" : null;
+  }
+  return null;
+}
 
 /** TTL of a discovery document (jwks_uri is effectively immutable, so it is long). */
 const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -96,10 +144,14 @@ class JwksUnavailableError extends Data.TaggedError("JwksUnavailable")<{
   readonly reason: "fetch" | "status" | "decode" | "too-large" | "timeout" | "cooldown";
 }> {}
 
-/** A resolved verification key (a JWK and the algorithm binding derived from it). */
+/**
+ * A resolved verification key: the JWK imported through effect/jose.
+ * The key carries the algorithm {@link algorithmForJwk} derived from
+ * the JWK side, so the verifier's alg match check and the signature
+ * verification both read it from the key, never from the token.
+ */
 export interface ResolvedVerificationKey {
-  readonly key: CryptoKey;
-  readonly binding: NonNullable<ReturnType<typeof algorithmForJwk>>;
+  readonly key: Jwk.PublicKey;
 }
 
 export interface JwksCacheShape {
@@ -118,7 +170,7 @@ export interface JwksCacheShape {
 }
 
 interface CachedJwks {
-  readonly keys: readonly Jwk[];
+  readonly keys: readonly JwkRecord[];
   readonly fetchedAtMs: number;
   readonly forcedRefreshAtMs: number;
 }
@@ -174,9 +226,9 @@ const DiscoveryDocument = Schema.Struct({
  * rejects a non-object entry wholesale (503), the verdict the
  * pre-Effect code reached when `algorithmForJwk` dereferenced `null`.
  * A Record keeps every declared JWK field (x/y/key_ops are consumed by
- * importJwk, not just the ones we pattern-match on); a key whose fields
- * we cannot use is skipped later by selectJwk (issuers may publish
- * algorithms we do not accept).
+ * the effect/jose import in resolveKey, not just the ones we
+ * pattern-match on); a key whose fields we cannot use is skipped later
+ * by selectJwk (issuers may publish algorithms we do not accept).
  */
 const JwksDocument = Schema.Struct({
   keys: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
@@ -296,10 +348,10 @@ function jwksUriOf(document: typeof DiscoveryDocument.Type, issuer: string): str
 }
 
 /** Pick the usable key matching `kid` (a missing kid is allowed only when there is exactly one key). */
-function selectJwk(keys: readonly Jwk[], kid: string | null): Jwk | null {
+function selectJwk(keys: readonly JwkRecord[], kid: string | null): JwkRecord | null {
   const usable = keys.filter((jwk) => algorithmForJwk(jwk) !== null);
   if (kid !== null) {
-    return usable.find((jwk) => jwk.kid === kid) ?? null;
+    return usable.find((jwk) => jwk["kid"] === kid) ?? null;
   }
   // A token without a kid is accepted only when the candidate is uniquely
   // determined. Trying every key would make verification "any key passes" and
@@ -606,12 +658,22 @@ export function makeJwksCache(): JwksCacheShape {
       if (jwk === null) {
         return null;
       }
-      const binding = algorithmForJwk(jwk);
-      if (binding === null) {
+      const algorithm = algorithmForJwk(jwk);
+      if (algorithm === null) {
         return null;
       }
-      const key = yield* Effect.promise(() => importJwk(jwk, binding));
-      return key === null ? null : { key, binding };
+      // The import is effect/jose's: it re-checks the JWK's declared
+      // metadata (`use` / `alg` / `key_ops`) against the algorithm the
+      // JWK side determined, refuses JWKs carrying private members,
+      // and validates the key material. A key it refuses is skipped
+      // (null), the verdict the old WebCrypto import's failure
+      // produced
+      const publicJwk = Schema.decodeUnknownOption(Jwk.PublicJwk)(jwk);
+      if (Option.isNone(publicJwk)) {
+        return null;
+      }
+      const key = yield* Effect.option(Jwk.importPublic(publicJwk.value, algorithm));
+      return Option.isNone(key) ? null : { key: key.value };
     }, Effect.provide(defaultHttpClientLayer)),
   };
 }

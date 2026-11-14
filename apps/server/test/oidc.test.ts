@@ -18,8 +18,9 @@
 // detached load fiber inherits it), whose called URLs are tallied. Time
 // is driven by `TestClock` (no traffic to the real network).
 
+import { cryptoServicesLayer } from "@maruhi/core";
 import { Effect, ManagedRuntime } from "effect";
-import { Digest } from "effect/crypto";
+import { Digest, Signature } from "effect/crypto";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
@@ -117,15 +118,16 @@ const advance = (rt: TestRuntime, ms: number) => rt.runPromise(TestClock.adjust(
 const run = <A, E>(
   rt: TestRuntime,
   fetch: typeof globalThis.fetch,
-  effect: Effect.Effect<A, E, Digest.Digest>,
+  effect: Effect.Effect<A, E, Digest.Digest | Signature.Signature>,
 ) =>
   rt.runPromise(
     Effect.match(
       effect.pipe(
         Effect.provideService(FetchHttpClient.Fetch, fetch),
-        // The verifier's signing-input hash goes through the Digest
-        // service since the Effect 4.1 migration
-        Effect.provide(Digest.layerWebCrypto),
+        // The verifier's crypto services (the signing-input hash's
+        // Digest, effect/jose's Signature) come from the same composed
+        // layer production wires
+        Effect.provide(cryptoServicesLayer),
       ),
       {
         onSuccess: (value: A) => ({ ok: true as const, value }),
