@@ -6,12 +6,13 @@
 // (Astro → `astro dev`), which serves the source tree, not the built
 // output, and applies none of the production serving semantics (the
 // _headers of Workers Static Assets, htmlHandling, notFoundHandling).
-// Production deploys evaluate cloudflare.config.ts (worker name,
-// compatibility date, assets handling) plus wrangler.config.ts (the
-// assets directory). Rendering those values into the config format
-// `wrangler dev` reads keeps preview and e2e serving the same bytes the
-// same way production does — generated from the cf config, never a
-// second hand-kept copy.
+// Production deploys evaluate the Alchemy declaration (alchemy.run.ts
+// at the repo root — ADR-0012 revision 1); cloudflare.config.ts's
+// serving fields mirror it (the drift check in apps/server pins the
+// values), and wrangler.config.ts supplies the assets directory.
+// Rendering those values into the config format `wrangler dev` reads
+// keeps preview and e2e serving the same bytes the same way production
+// does — generated from the cf config, never a second hand-kept copy.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
