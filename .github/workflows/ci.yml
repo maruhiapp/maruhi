@@ -15,7 +15,7 @@
 #   parallel group B (tests + builds): steps 7b–7d + the per-suite vitest
 #     members 7e–7h, 8 (web dist), 8d (site dist)
 #   parallel group C (build dependents): 8b/8c server dry-runs (one step —
-#     cf builds share apps/server/.cloudflare) + 8d2/8e (site dist)
+#     cf builds share apps/server/.cloudflare) + 8d2 (site dist)
 #   `wait: headless-shell`
 #   parallel group D (e2e): 9, 9b, 11 — Playwright + crypto 3-environment
 name: ci
@@ -349,18 +349,19 @@ jobs:
           # apex site (apps/site — Nimbus. LP + docs, DP2; ADR-0008 revision 2).
           # Runs astro build + scripts/postbuild.ts (style-attribute
           # externalization, inline-hash CSP, zero-external-reference mechanical
-          # checks, _headers) through the build path, then group C validates the
-          # standalone cf config (maruhi-site — Static Assets only) with the
-          # same dry-run as the product Worker (8b).
+          # checks, _headers) through the build path. The site deploys via
+          # Alchemy (alchemy.run.ts at the repo root; ADR-0012 revision 1),
+          # so group C no longer dry-runs its cf config.
           - name: 8d. Site build (Nimbus + CSP headers)
             run: bun run --filter @maruhi/site build
 
       # Group C — dependents of the group-B builds: the server dry-runs read
       # apps/web/dist/public (assets.directory in apps/server/wrangler.jsonc),
       # the site steps read apps/site/dist. 8b/8c stay one step: every
-      # `cf deploy` build writes apps/server/.cloudflare/output, so the three
-      # dry-runs cannot run concurrently with each other (the site steps touch
-      # apps/site/.cloudflare — a different directory — and run in parallel)
+      # `cf deploy` build writes apps/server/.cloudflare/output, so the two
+      # remaining dry-runs cannot run concurrently with each other (the site
+      # steps touch apps/site/.cloudflare — a different directory — and run
+      # in parallel)
       - parallel:
           # Config validity check for the combined serving layout (W2 ruling BM —
           # server bundles the web assets). A credential-free local verification
@@ -368,16 +369,17 @@ jobs:
           # exists and cloudflare.config.ts is consistent (path-space coverage is
           # checked by apps/server/test/serving-topology.test.ts in step 7h)
           #
-          # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
-          # environment and the restore worker through the same path, and confirm
-          # via scripts/check-hosted-config.ts that the hosted environment has not
-          # drifted from the outermost bindings. The environments wrangler's
+          # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): the self-host
+          # and restore workers still deploy through this path. The hosted
+          # worker is an Alchemy declaration (ADR-0012 revision 1): it is
+          # covered by the drift check below (scripts/check-hosted-config.ts
+          # compares alchemy.run.ts against this config), so its cf dry-run
+          # is gone. The environments wrangler's
           # `--env` selected are cf `--mode`s of one cloudflare.config.ts
-          - name: 8b/8c. Server deploy dry-runs + drift check (combined / hosted / restore)
+          - name: 8b/8c. Server deploy dry-runs + drift check (combined / restore)
             working-directory: apps/server
             run: |
               bunx cf deploy --dry-run
-              bunx cf deploy --dry-run --mode hosted
               bunx cf deploy --dry-run --mode restore
               bun scripts/check-hosted-config.ts
 
@@ -388,15 +390,14 @@ jobs:
           - name: 8d2. Site content validation (nimbus-docs lint)
             run: bun run --filter @maruhi/site validate
 
-          # The positional dist matters: without it, cf's Astro framework
-          # autoconfig delegates the build to `astro build` and then demands
-          # the @astrojs/cloudflare adapter's Build Output, which this
-          # prebuilt static-assets deploy (ADR-0008) does not produce. The
-          # positional form deploys the dist/ 8d built, under the worker
-          # cloudflare.config.ts declares
-          - name: 8e. Site deploy dry-run (static assets config)
-            run: bunx cf deploy --dry-run dist
-            working-directory: apps/site
+          # No Alchemy plan step here (ADR-0012 revision 1): this workflow
+          # holds no secrets by supply-chain policy
+          # (apps/cli/test/workflows-supply-chain.test.ts), and evaluating
+          # the Alchemy program needs the account credentials plus the four
+          # hosted secret values. The plan is an operator step before deploys
+          # (docs/notes/hosted-ops.md, ops task O9); CI covers the
+          # declaration statically — typecheck, lint, and the drift check
+          # in 8b/8c above
 
       # Publishes the background install's $GITHUB_ENV write
       # (PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) to the e2e group and fails the
