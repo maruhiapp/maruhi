@@ -1,7 +1,10 @@
-// e2e for the apex site (LP + docs — Blume). The built dist (+
-// scripts/postbuild.ts's _headers) is served under **the same cf
-// config as production** (apps/site/cloudflare.config.ts — Workers Static
-// Assets only), and Playwright (Chromium) pins the following (the
+// e2e for the apex site (LP + docs — Nimbus on Astro). The built dist (+
+// scripts/postbuild.ts's _headers) is served under **the same serving
+// semantics as production** (apps/site/cloudflare.config.ts — Workers
+// Static Assets only — rendered to a wrangler config by
+// scripts/wrangler-config.ts; `cf dev` itself delegates to `astro dev`
+// on an Astro project and would serve the source tree instead), and
+// Playwright (Chromium) pins the following (the
 // verification items of docs/notes/web-design-pass.md §4):
 //   1. all requests same-origin (zero outbound traffic — "say nothing")
 //   2. zero CSP violations; `script-src 'self'` / `style-src 'self'`
@@ -20,6 +23,7 @@ import { createServer } from "node:net";
 import { type Browser, chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { writeWranglerConfig } from "../scripts/wrangler-config.ts";
 import { accent, background } from "../theme/tokens.ts";
 
 function getFreePort(): Promise<number> {
@@ -76,7 +80,7 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
     ]);
     if (timedOut) {
       console.error(
-        `cf dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- cf dev output ---\n${wranglerOutput()}`,
+        `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler dev output ---\n${wranglerOutput()}`,
       );
       proc.kill("SIGKILL");
       await exited;
@@ -90,20 +94,27 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
 beforeAll(async () => {
   const port = await getFreePort();
   BASE = `http://127.0.0.1:${port}`;
-  wranglerProcess = spawn("bunx", ["cf", "dev", "--port", String(port)], {
-    cwd: import.meta.dirname + "/..",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, CI: "1" },
-  });
+  wranglerProcess = spawn(
+    "bunx",
+    ["wrangler", "dev", "--config", writeWranglerConfig(), "--port", String(port)],
+    {
+      cwd: import.meta.dirname + "/..",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, CI: "1" },
+    },
+  );
   wranglerProcess.stdout?.on("data", (chunk: Buffer) => wranglerLogs.push(chunk.toString()));
   wranglerProcess.stderr?.on("data", (chunk: Buffer) => wranglerLogs.push(chunk.toString()));
   try {
     await waitForServer(BASE, 60_000);
   } catch (cause) {
     await stopWrangler(wranglerProcess);
-    throw new Error(`cf dev did not become ready\n--- cf dev output ---\n${wranglerOutput()}`, {
-      cause,
-    });
+    throw new Error(
+      `wrangler dev did not become ready\n--- wrangler dev output ---\n${wranglerOutput()}`,
+      {
+        cause,
+      },
+    );
   }
   // CI and Cursor Cloud (the SHA-256-verified headless shell from
   // scripts/install-headless-shell.sh) and Claude Code on the web (its
@@ -129,12 +140,18 @@ function observe(page: Page): { requests: string[]; violations: string[] } {
   return { requests, violations };
 }
 
+/** Style attributes in shipped HTML, ignoring script / style bodies. */
+const styleAttributesIn = (html: string): number =>
+  html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>|<style\b[^>]*>[\s\S]*?<\/style>/g, "")
+    .match(/\sstyle\s*=/g)?.length ?? 0;
+
 const foreignOrigins = (requests: string[]): string[] =>
   [...new Set(requests.map((u) => new URL(u).origin))].filter(
     (origin) => origin !== new URL(BASE).origin,
   );
 
-const themeCss = readFileSync(new URL("../theme.css", import.meta.url), "utf8");
+const brandCss = readFileSync(new URL("../src/styles/brand.css", import.meta.url), "utf8");
 
 describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.config.ts)", () => {
   it("serves the landing page with a self-only CSP and security headers", async () => {
@@ -145,19 +162,22 @@ describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.conf
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("style-src 'self'");
     expect(csp).not.toContain("unsafe-inline");
-    expect(csp).not.toContain("unsafe-eval");
+    expect(csp).not.toContain("'unsafe-eval'");
+    // Pagefind's search index is a WebAssembly module; compiling it is
+    // gated on this allowance, which permits no JavaScript eval
+    expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("strict-transport-security")).toContain("max-age=");
-    // blume.config.ts `poweredBy: false`: the build stack is not advertised
+    // The build stack is not advertised
     expect(res.headers.get("x-powered-by")).toBeNull();
-    // postbuild.ts keeps the _headers Blume emitted (the top Link header)
+    // The top Link header (Nimbus's agent-discovery block in _headers)
     expect(res.headers.get("link")).toContain("llms.txt");
   });
 
-  it("keeps Blume's charset rule for raw Markdown mirrors", async () => {
-    const res = await fetch(`${BASE}/docs/getting-started.md`);
+  it("keeps the charset rule for raw Markdown mirrors", async () => {
+    const res = await fetch(`${BASE}/docs/getting-started/index.md`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("charset=utf-8");
     expect(await res.text()).toContain("maruhi login");
@@ -179,7 +199,7 @@ describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.conf
     }
   });
 
-  it("normalizes trailing slashes to Blume's link format and serves the 404 page", async () => {
+  it("normalizes trailing slashes to the site's link format and serves the 404 page", async () => {
     const ok = await fetch(`${BASE}/docs/getting-started`, { redirect: "manual" });
     expect(ok.status).toBe(200);
     const slashed = await fetch(`${BASE}/docs/getting-started/`, { redirect: "manual" });
@@ -193,7 +213,7 @@ describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.conf
   });
 });
 
-describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
+describe("site e2e: landing page (custom page under strict CSP)", () => {
   it("loads with zero external requests and zero CSP violations", async () => {
     const page = await browser.newPage();
     const { requests, violations } = observe(page);
@@ -203,10 +223,11 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     expect(violations).toEqual([]);
     // The self-hosted woff2 fonts are actually fetched
     expect(requests.some((u) => u.endsWith(".woff2"))).toBe(true);
-    // No inline style attributes / external stylesheets (style-src 'self' +
-    // only the Astro Fonts hash)
-    const inlineStyleAttrs = await page.evaluate(() => document.querySelectorAll("[style]").length);
-    expect(inlineStyleAttrs).toBe(0);
+    // No style attributes in the shipped HTML (postbuild.ts externalizes
+    // them at build time; the live DOM is not the measure — the chrome's
+    // client code legitimately sets style properties at runtime, e.g. the
+    // theme script's color-scheme on <html>)
+    expect(styleAttributesIn(await (await fetch(BASE)).text())).toBe(0);
     await page.close();
   });
 
@@ -350,7 +371,7 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
 
   it("keeps the space between text and the inline elements that follow a line break", async () => {
     // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
-    // element, so the source writes `{" "}` there (pages/index.astro). A
+    // element, so the source writes `{" "}` there (src/pages/index.astro). A
     // missing one renders glued words such as "Docs ·License"
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });
@@ -394,7 +415,7 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
       .first()
       .evaluate((el) => getComputedStyle(el).fontFamily);
     expect(codeFont).toContain("Martian Mono");
-    // Loaded family names (the Astro Fonts API hashes the family name)
+    // Loaded family names (brand.css @font-face uses the literal names)
     const loaded = await page.evaluate(() =>
       [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family),
     );
@@ -415,17 +436,18 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
       const tokens = await page.evaluate(() => {
         const style = getComputedStyle(document.documentElement);
         return {
-          theme: document.documentElement.dataset["theme"],
-          accent: style.getPropertyValue("--blume-accent").trim(),
-          background: style.getPropertyValue("--blume-background").trim(),
+          mode: document.documentElement.dataset["mode"],
+          accent: style.getPropertyValue("--nb-primary").trim(),
+          background: style.getPropertyValue("--nb-background").trim(),
         };
       });
-      expect(tokens.theme).toBe(scheme);
+      // The theme script sets data-mode="dark", and removes it for light
+      expect(tokens.mode).toBe(scheme === "dark" ? "dark" : undefined);
       expect(tokens.accent.toLowerCase()).toBe(expectedAccent.toLowerCase());
       expect(tokens.background.toLowerCase()).toBe(expectedBackground.toLowerCase());
-      // The generated theme.css (a mapping of apps/web/theme/maruhi.css)
+      // The generated brand.css (a mapping of apps/web/theme/maruhi.css)
       // carries the same value
-      expect(themeCss.toLowerCase()).toContain(expectedAccent.toLowerCase());
+      expect(brandCss.toLowerCase()).toContain(expectedAccent.toLowerCase());
       // CTA button background = accent (accent is used sparingly — one kind
       // of button)
       const cta = await page
@@ -449,62 +471,66 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     const page = await browser.newPage({ colorScheme: "dark" });
     const { requests, violations } = observe(page);
     await page.goto(BASE, { waitUntil: "networkidle" });
-    // Blume's theme toggle (inserts a transition-suppression <style> via
-    // JS — hash-allowed)
-    await page.locator("[data-blume-theme-toggle]").first().click();
-    await expect(page.evaluate(() => document.documentElement.dataset["theme"])).resolves.toBe(
-      "light",
+    // Nimbus's theme toggle (data-mode flips dark → light)
+    await page.locator("[data-nb-theme-toggle]").first().click();
+    await expect(page.evaluate(() => document.documentElement.dataset["mode"])).resolves.toBe(
+      undefined,
     );
-    // Search (Orama — local index /blume-search.json)
-    await page.locator("[data-blume-search-open]").first().click();
-    const input = page.locator("[data-blume-search-input]").first();
+    // Search (Pagefind — local index under /pagefind/)
+    await page.locator("[data-search-trigger]").first().click();
+    const input = page.locator("[data-search-input]").first();
     await input.fill("self-hosting");
-    await page.locator("a[href='/docs/self-hosting']").first().waitFor({ timeout: 15_000 });
+    await page
+      .locator("[data-search-results] a[href*='/docs/self-hosting']")
+      .first()
+      .waitFor({ timeout: 15_000 });
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
     await page.close();
   });
 });
 
-describe("site e2e: docs (/docs — Blume default chrome)", () => {
+describe("site e2e: docs (/docs — Nimbus chrome)", () => {
   it("opens /docs and a nested page with zero external requests and zero CSP violations", async () => {
     const page = await browser.newPage();
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    // The docs index cards (MDX <Card href>) resolve to real routes
-    // including basePath
+    // The docs index cards (MDX <Card href> in the article body) resolve
+    // to real routes under /docs
     for (const target of [
       "/docs/getting-started",
       "/docs/deploy-targets",
       "/docs/github-actions",
       "/docs/self-hosting",
     ]) {
-      await expect(page.locator(`a[data-blume-card][href='${target}']`).count()).resolves.toBe(1);
+      await expect(
+        page.locator(`article a[href='${target}']`).count(),
+      ).resolves.toBeGreaterThanOrEqual(1);
     }
-    // A link from the body to the LP (site root) is an absolute URL not
-    // rewritten by basePath
+    // No link points at the LP's access section through /docs
     await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
-    // ...and so is the banner's link to the LP's access section
-    await expect(page.locator("[data-blume-banner] a").first().getAttribute("href")).resolves.toBe(
+    // The banner's link to the LP's access section is absolute
+    await expect(page.locator("[data-slot='banner'] a").first().getAttribute("href")).resolves.toBe(
       "https://maruhi.app/#access",
     );
-    await page.locator("a[data-blume-card][href='/docs/getting-started']").click();
+    await page.locator("article a[href='/docs/getting-started']").first().click();
     await page.locator("h1", { hasText: "Getting started" }).waitFor();
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
-    // Shiki token colors and the chrome's inline style attributes have been
-    // externalized to classes by postbuild.ts (the precondition for not
-    // using 'unsafe-inline' in style-src-attr). Code blocks stay colored
-    await expect(page.evaluate(() => document.querySelectorAll("[style]").length)).resolves.toBe(0);
+    // No style attributes in the shipped HTML (postbuild.ts externalizes
+    // them at build time — the precondition for not using 'unsafe-inline'
+    // in style-src-attr), and Nimbus's Shiki tokens carry nb-shiki-*
+    // classes. Code blocks stay colored
+    expect(styleAttributesIn(await (await fetch(`${BASE}/docs/getting-started`)).text())).toBe(0);
     const tokenColor = await page
-      .locator("pre code span[class*='sa-']")
+      .locator("pre code span[class*='nb-shiki-']")
       .first()
       .evaluate((el) => getComputedStyle(el).color);
     const bodyColor = await page.locator("body").evaluate((el) => getComputedStyle(el).color);
     expect(tokenColor).not.toBe(bodyColor);
-    // No "Open in chat" to third-party AI (ai.openInChat: false)
+    // No "Open in chat" to third-party AI
     await expect(
       page.locator("a[href^='https://chatgpt.com'], a[href^='https://claude.ai']").count(),
     ).resolves.toBe(0);
@@ -512,68 +538,72 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
   });
 
   it("emits llms.txt and the sitemap with the apex origin, and no analytics", async () => {
+    // The apex llms.txt points at the docs section document, which lists
+    // every page with its raw-Markdown URL
     const llms = await (await fetch(`${BASE}/llms.txt`)).text();
-    expect(llms).toContain("https://maruhi.app/docs/getting-started");
-    expect(llms).toContain("https://maruhi.app/docs/deploy-targets");
-    expect(llms).toContain("https://maruhi.app/docs/github-actions");
-    expect(llms).toContain("https://maruhi.app/docs/environment-scopes");
-    expect(llms).toContain("https://maruhi.app/docs/four-eyes");
-    expect(llms).toContain("https://maruhi.app/docs/devices");
-    expect(llms).toContain("https://maruhi.app/docs/value-history");
-    expect(llms).toContain("https://maruhi.app/docs/rotation");
-    const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
+    expect(llms).toContain("https://maruhi.app/docs/llms.txt");
+    const docsLlms = await (await fetch(`${BASE}/docs/llms.txt`)).text();
+    for (const slug of [
+      "getting-started",
+      "deploy-targets",
+      "github-actions",
+      "environment-scopes",
+      "four-eyes",
+      "devices",
+      "value-history",
+      "rotation",
+    ]) {
+      expect(docsLlms).toContain(`https://maruhi.app/docs/${slug}/index.md`);
+    }
+    const sitemap = await (await fetch(`${BASE}/sitemap-0.xml`)).text();
     expect(sitemap).toContain("<loc>https://maruhi.app/</loc>");
-    expect(sitemap).toContain("<loc>https://maruhi.app/docs</loc>");
+    expect(sitemap).toContain("<loc>https://maruhi.app/docs/</loc>");
     const html = await (await fetch(`${BASE}/docs`)).text();
     expect(html).not.toMatch(/posthog|_vercel\/insights|plausible|googletagmanager/i);
-    // blume.config.ts `feedback: false`: no widget whose only channel is analytics
-    expect(html).not.toContain("data-blume-page-feedback");
   });
 });
 
-describe('site e2e: docs last-modified dates (blume.config.ts `lastModified: "git"`)', () => {
-  it("shows the page's last git commit date and emits it as schema.org dateModified", async () => {
-    // The committer date of the newest commit touching the page, as Blume
-    // reads it. Needs full history (CI's check job uses fetch-depth: 0); a
-    // shallow clone would date every page at the boundary commit
+describe("site e2e: docs last-modified dates (git author date)", () => {
+  it("shows the page's last git commit date in the page actions and the sitemap", async () => {
+    // The author date of the newest commit touching the page, as Nimbus's
+    // getLastUpdated reads it (%aI — Blume used the committer date).
+    // Needs full history (CI's check job uses fetch-depth: 0); a shallow
+    // clone would date every page at the boundary commit
     const committed = execFileSync(
       "git",
-      ["log", "-1", "--format=%cI", "--", "docs/getting-started.mdx"],
+      ["log", "-1", "--format=%aI", "--", "src/content/docs/getting-started.mdx"],
       { cwd: `${import.meta.dirname}/..`, encoding: "utf8" },
     ).trim();
     expect(committed).not.toBe("");
     const iso = new Date(committed).toISOString();
     const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
-    expect(html).toMatch(new RegExp(`Last updated on <time datetime="${iso}">`));
-    const graphs = [
-      ...html.matchAll(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/gs),
-    ].map((match) => JSON.stringify(JSON.parse(match[1] ?? "null")));
-    expect(graphs.some((graph) => graph.includes(`"dateModified":"${iso}"`))).toBe(true);
-    const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
+    expect(html).toContain(`<time datetime="${iso}">`);
+    const sitemap = await (await fetch(`${BASE}/sitemap-0.xml`)).text();
     expect(sitemap).toContain(
-      `<loc>https://maruhi.app/docs/getting-started</loc><lastmod>${iso.slice(0, 10)}</lastmod>`,
+      `<loc>https://maruhi.app/docs/getting-started/</loc><lastmod>${iso}</lastmod>`,
     );
   });
 });
 
 describe("site e2e: related pages and the footer copyright", () => {
-  it("shows a docs page's related cards and the copyright in Blume's footer", async () => {
+  it("shows a docs page's related cards and the copyright in the docs footer", async () => {
     const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
-    const related = /<nav[^>]*data-blume-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
-    // The order and targets of apps/site/docs/getting-started.mdx `related:`
+    const related = /<nav[^>]*data-site-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    // The order and targets of apps/site/src/content/docs/getting-started.mdx
+    // `related:`
     expect([...related.matchAll(/href="(\/docs\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([
       "/docs/deploy-targets",
       "/docs/devices",
       "/docs/invite-a-teammate",
       "/docs/linux-keychain",
     ]);
-    expect(html).toMatch(/<footer[^>]*data-blume-footer[\s\S]*© 2026 maruhi contributors/);
+    expect(html).toMatch(/<footer[^>]*data-site-footer[\s\S]*© 2026 maruhi contributors/);
   });
 
   it("prints the copyright once in the landing page's own footer, with no second footer", async () => {
     const html = await (await fetch(`${BASE}/`)).text();
     expect(html.match(/<footer\b/g)).toHaveLength(1);
-    expect(html).not.toContain("data-blume-footer");
+    expect(html).not.toContain("data-site-footer");
     expect(html.match(/© 2026 maruhi contributors/g)).toHaveLength(1);
   });
 });

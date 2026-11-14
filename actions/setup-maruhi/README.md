@@ -18,7 +18,7 @@ macOS runners are supported (`linux-x64` / `linux-arm64` / `darwin-x64` /
 > deploy; dispatched by `maruhi push` plus a schedule), and required reviewers
 > on production through GitHub Environments — is
 > [maruhi.app/docs/github-actions](https://maruhi.app/docs/github-actions)
-> (source: `apps/site/docs/github-actions.mdx`). This README is the action's
+> (source: `apps/site/src/content/docs/github-actions.mdx`). This README is the action's
 > reference.
 
 ## Requirements

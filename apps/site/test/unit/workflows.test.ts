@@ -38,8 +38,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const siteRoot = join(import.meta.dirname, "..", "..");
-const page = readFileSync(join(siteRoot, "docs", "github-actions.mdx"), "utf8");
-const deployTargetsPage = readFileSync(join(siteRoot, "docs", "deploy-targets.mdx"), "utf8");
+const page = readFileSync(join(siteRoot, "src", "content", "docs", "github-actions.mdx"), "utf8");
+const deployTargetsPage = readFileSync(
+  join(siteRoot, "src", "content", "docs", "deploy-targets.mdx"),
+  "utf8",
+);
 
 /** The ```yaml blocks of a page, in document order. */
 function yamlBlocks(markdown: string): string[] {

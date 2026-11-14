@@ -76,9 +76,12 @@ function helpIndex(text: string): ReadonlyMap<string, CommandSpec> {
 
 const commands = helpIndex(help);
 const globalFlags = new Set(["--help", "--version"]);
-const pages = readdirSync(join(siteRoot, "docs")).filter((name) => name.endsWith(".mdx"));
+const pages = readdirSync(join(siteRoot, "src", "content", "docs")).filter((name) =>
+  name.endsWith(".mdx"),
+);
 
-const pageText = (page: string): string => readFileSync(join(siteRoot, "docs", page), "utf8");
+const pageText = (page: string): string =>
+  readFileSync(join(siteRoot, "src", "content", "docs", page), "utf8");
 
 /** A page's ```sh blocks (contents). */
 function shellBlocks(markdown: string): string[] {

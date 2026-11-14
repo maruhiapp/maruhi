@@ -20,9 +20,12 @@ worker-configuration.d.ts
 # packaging/homebrew/maruhi.example.rb is committed as a shape example
 packaging/homebrew/maruhi.rb
 
-# Blume's generated runtime (apps/site — blume dev / build recreates it)
-.blume/
-.blume-verify/
+# Astro's generated types/cache, the Nimbus integration's generated
+# page-collections cache, and the built site (apps/site — astro dev /
+# build recreates them)
+apps/site/.astro/
+apps/site/.nimbus/
+apps/site/dist/
 
 # Dashboard screenshots (output of apps/web/test/screenshots.ts — temporary
 # files for attaching to PRs)

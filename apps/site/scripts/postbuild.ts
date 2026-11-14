@@ -1,34 +1,30 @@
-// Post-processing of `blume build` (ruling D — docs/notes/
+// Post-processing of `astro build` (ruling D — docs/notes/
 // web-design-pass.md §4 "rulings made while implementing DP2"). Finishes the
 // shipped output (dist/) for Workers Static Assets. Three stages:
 //
-//   1. **Externalizing style attributes**: Blume's docs pages carry inline
+//   1. **Externalizing style attributes**: the docs pages carry inline
 //      `style` attributes on Shiki tokens (`style="--shiki-light:…"`) and on
-//      parts of the chrome (sidebar indents, CardGroup column counts).
+//      parts of the Nimbus chrome (page-title sizing, banner colors).
 //      Attribute inline styles cannot be allowed by a CSP hash (that needs
 //      `'unsafe-hashes'` + enumerating every attribute value), so each
 //      attribute value is mapped to a class (`.sa-<hash>`) written into one
 //      CSS file, and the HTML side is rewritten to a class reference (the
 //      same technique as Shiki's official `transformerStyleToClass`, applied
-//      to the shipped output — Blume does not expose transformers). As a
-//      result, no `style` attribute remains in the HTML.
+//      to the shipped output — the framework does not expose transformers).
+//      As a result, no `style` attribute remains in the HTML.
 //   2. **CSP and inline hashes**: `default-src 'none'` baseline; no
-//      `'unsafe-inline'` for script or style. The inline scripts Blume's
-//      chrome ships (theme init / header handling / nav / ClientRouter's
-//      style loading) and the `@font-face` `<style>` the Astro Fonts API
-//      (`<Font>`) always emits have deterministic content, so they are
-//      allowed individually via SHA-256 hashes collected from the shipped
-//      output (same scheme as apps/web/scripts/write-headers.ts). Every
-//      other inline style is pinned to external CSS by the blume.config.ts
-//      integration (`build.inlineStylesheets: 'never'`). The
-//      transition-suppression `<style>` Blume's theme toggle inserts on
-//      click is a fixed string, so its hash is added after confirming it
-//      exists.
+//      `'unsafe-inline'` for script or style. The inline scripts the chrome
+//      ships (theme init / header handling / nav / ClientRouter's style
+//      loading) have deterministic content, so they are allowed individually
+//      via SHA-256 hashes collected from the shipped output (same scheme as
+//      apps/web/scripts/write-headers.ts). Every other inline style is
+//      pinned to external CSS by astro.config.ts
+//      (`build.inlineStylesheets: 'never'`).
 //   3. **Mechanical check for zero external references and `_headers`**:
 //      "say nothing" (CLAUDE.md §1-5) — verify the shipped output's src /
 //      href never point outside, then append the `/*` security headers while
-//      keeping the `_headers` Blume emitted (charset for .md / .txt, the top
-//      Link header).
+//      keeping the `_headers` public/ ships (charset for .md / .txt, the top
+//      Link header, the /_astro cache rule).
 // Violations fail the build (throw). The checks ride on the quality-gate
 // path (the site build step in CI).
 import { createHash } from "node:crypto";
@@ -41,7 +37,7 @@ const siteOrigin = "https://maruhi.app";
 const htmlFiles = readdirSync(distDir, { recursive: true, encoding: "utf8" })
   .filter((name) => name.endsWith(".html"))
   .map((name) => join(distDir, name));
-if (htmlFiles.length === 0) throw new Error(`no HTML in ${distDir} — run blume build first`);
+if (htmlFiles.length === 0) throw new Error(`no HTML in ${distDir} — run astro build first`);
 
 const sha256base64 = (body: string): string =>
   `'sha256-${createHash("sha256").update(body, "utf8").digest("base64")}'`;
@@ -162,7 +158,7 @@ if (styleRules.size > 0) {
   const link = `<link rel="stylesheet" href="/_astro/${cssName}">`;
   for (const [file, html] of rewritten) {
     // Inject link only into pages that reference an externalized class
-    // (after Blume's other stylesheets = just before </head>)
+    // (after the other stylesheets = just before </head>)
     if (!html.includes('class="sa-') && !html.includes(" sa-")) continue;
     if (!html.includes("</head>"))
       throw new Error(`${file}: no </head> to inject the style-attributes stylesheet`);
@@ -190,7 +186,6 @@ const isJavaScriptType = (attrs: string): boolean => {
 
 const scriptHashes = new Set<string>();
 const styleHashes = new Set<string>();
-const inlineScriptBodies: string[] = [];
 const externalRefs: string[] = [];
 const allowedExternalHref = [
   "https://github.com/maruhiapp/maruhi",
@@ -210,7 +205,6 @@ for (const [file, html] of rewritten) {
     }
     if (body.length === 0 || !isJavaScriptType(attrs)) continue;
     scriptHashes.add(sha256base64(body));
-    inlineScriptBodies.push(body);
   }
   for (const m of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
     const body = m[1] ?? "";
@@ -259,26 +253,16 @@ if (externalRefs.length > 0) {
 }
 if (scriptHashes.size === 0)
   throw new Error(
-    "no inline scripts found — Blume's output format may have changed. Revisit CSP generation",
+    "no inline scripts found — Nimbus's output format may have changed. Revisit CSP generation",
   );
-
-// The transition-suppression style inserted by Blume's theme toggle
-// (Header.astro's inline script). Its body must be confirmed inside the
-// shipped output's inline scripts before its hash is allowed (a change in a
-// Blume update fails this)
-const themeToggleStyle = "*,*::before,*::after{transition:none!important}";
-if (!inlineScriptBodies.some((body) => body.includes(themeToggleStyle))) {
-  throw new Error(
-    "Blume's theme toggle script lacks the expected transition-suppression style string (did a Blume update change it?). " +
-      "Match postbuild.ts's themeToggleStyle to the real thing",
-  );
-}
-styleHashes.add(sha256base64(themeToggleStyle));
 
 // ---- 3. `_headers` ----
 const csp = [
   "default-src 'none'",
-  `script-src 'self' ${[...scriptHashes].toSorted().join(" ")}`,
+  // 'wasm-unsafe-eval' is Pagefind's allowance: the search index is a
+  // WebAssembly module, and WebAssembly.instantiate() is gated on it. It
+  // permits compiling same-origin Wasm only — no JavaScript eval
+  `script-src 'self' 'wasm-unsafe-eval' ${[...scriptHashes].toSorted().join(" ")}`,
   `style-src 'self' ${[...styleHashes].toSorted().join(" ")}`,
   "img-src 'self' data:",
   "font-src 'self'",
@@ -298,24 +282,21 @@ const cspLine = `  Content-Security-Policy: ${csp}`;
 if (cspLine.length > HEADERS_LINE_LIMIT) {
   throw new Error(
     `the _headers CSP line is ${cspLine.length} characters, over Cloudflare's limit of ${HEADERS_LINE_LIMIT}. ` +
-      "The number of distinct inline scripts / styles grew (a Blume update?) — revisit the hash set",
+      "The number of distinct inline scripts / styles grew (a Nimbus update?) — revisit the hash set",
   );
 }
 
-// The _headers Blume emitted (charset for /docs/*.md etc., the top Link
-// header) is kept and the `/*` security headers are appended (a request that
-// matches several blocks inherits the headers of all of them). Blume 2 also
-// ships a scoped `Content-Security-Policy: sandbox` for `/blume-assets/*.svg`.
-// `/*` matches those paths too, so Cloudflare comma-joins the two CSPs there
-// and the browser enforces both policies (stricter, intended). The
-// double-run tripwire therefore checks only for our own `/*` block. HSTS is
-// apex-only (includeSubDomains / preload are a zone-operations decision = a
-// human task)
+// The _headers public/ ships (charset for /docs/*.md etc., the top Link
+// header, the /_astro cache rule) is kept and the `/*` security headers are
+// appended (a request that matches several blocks inherits the headers of
+// all of them). The double-run tripwire checks for our own `/*` block.
+// HSTS is apex-only (includeSubDomains / preload are a zone-operations
+// decision = a human task)
 const headersPath = join(distDir, "_headers");
 const existing = existsSync(headersPath) ? readFileSync(headersPath, "utf8").trimEnd() : "";
 if (/^\/\*\n {2}Content-Security-Policy:/m.test(existing)) {
   throw new Error(
-    "_headers already has a /* CSP (double run?). Delete dist and redo from blume build",
+    "_headers already has a /* CSP (double run?). Delete dist and redo from astro build",
   );
 }
 const securityBlock = `/*
@@ -324,7 +305,25 @@ const securityBlock = `/*
   Referrer-Policy: no-referrer
   Strict-Transport-Security: max-age=31536000
 `;
-writeFileSync(headersPath, `${existing}${existing === "" ? "" : "\n\n"}${securityBlock}`);
+
+// The agent-facing twins and the discovery header: the raw .md twins of
+// the docs pages, llms.txt / llms-full.txt and robots.txt get explicit
+// charset'd content types (exact paths, generated from the shipped file
+// list — no splat-pattern ambiguity), and `/` carries the Link header
+// pointing agents at llms.txt. Blume emitted equivalents of these; Nimbus
+// does not, so they are generated here.
+const twinBlocks = readdirSync(distDir, { recursive: true, encoding: "utf8" })
+  .filter((name) => name.endsWith(".md") || name.endsWith(".txt"))
+  .toSorted()
+  .map(
+    (name) =>
+      `/${name.replaceAll("\\", "/")}\n  Content-Type: ${name.endsWith(".md") ? "text/markdown" : "text/plain"}; charset=utf-8`,
+  );
+const linkBlock = `/\n  Link: </llms.txt>; rel="describedby"; type="text/plain", </llms-full.txt>; rel="describedby"; type="text/plain"`;
+writeFileSync(
+  headersPath,
+  `${existing}\n\n${[linkBlock, ...twinBlocks, securityBlock].join("\n\n")}`,
+);
 
 const written = readFileSync(headersPath, "utf8");
 if (!written.includes(`Content-Security-Policy: ${csp}`))
