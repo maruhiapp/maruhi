@@ -51,6 +51,10 @@ import { Jwk } from "effect/jose";
 /** One JWKS entry, as fetched (the raw JSON object). */
 type JwkRecord = Readonly<Record<string, unknown>>;
 
+/** Whether the JWK's declared `alg` (when it declares one) names `allowed`. */
+const declaresAlg = (jwk: JwkRecord, allowed: "RS256" | "ES256"): boolean =>
+  jwk["alg"] === undefined || jwk["alg"] === allowed;
+
 /**
  * Derives the verification algorithm from the JWK itself — **a design
  * that structurally closes off alg confusion**: the algorithm a key
@@ -69,10 +73,6 @@ type JwkRecord = Readonly<Record<string, unknown>>;
  * making the whole JWKS unusable (issuers may publish keys for
  * algorithms we do not accept).
  */
-/** Whether the JWK's declared `alg` (when it declares one) names `allowed`. */
-const declaresAlg = (jwk: JwkRecord, allowed: "RS256" | "ES256"): boolean =>
-  jwk["alg"] === undefined || jwk["alg"] === allowed;
-
 function algorithmForJwk(jwk: JwkRecord): "RS256" | "ES256" | null {
   // `use` is optional, but when declared it must be "sig"
   if (jwk["use"] !== undefined && jwk["use"] !== "sig") {

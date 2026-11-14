@@ -36,8 +36,9 @@ import { Digest, SecureRandom, Signature } from "effect/crypto";
  * The composed crypto-services layer for runtime roots (the server's
  * HttpApi assembly, the CLI's live layer, test environments). Provides
  * `SecureRandom`, `Digest` and `Signature` backed by WebCrypto. The
- * `Signature` layer draws its randomness from the same `SecureRandom`
- * service, so the layer requires nothing from its environment.
+ * `Signature` layer's own `SecureRandom` requirement is provided to it
+ * inside the composition, so the layer requires nothing from its
+ * environment.
  */
 export const cryptoServicesLayer: Layer.Layer<
   SecureRandom.SecureRandom | Digest.Digest | Signature.Signature

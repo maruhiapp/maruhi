@@ -143,6 +143,7 @@ interface ParsedToken {
   readonly alg: AllowedAlg;
   readonly kid: string | null;
   readonly claims: Readonly<Record<string, unknown>>;
+  readonly signature: Uint8Array;
   readonly signingInput: Uint8Array;
 }
 
@@ -150,6 +151,7 @@ interface ParsedToken {
 interface DecodedSegments {
   readonly header: Readonly<Record<string, unknown>>;
   readonly claims: Readonly<Record<string, unknown>>;
+  readonly signature: Uint8Array;
   readonly signingInput: Uint8Array;
 }
 
@@ -215,17 +217,14 @@ function decodeSegments(token: string): DecodedSegments | null {
   }
   const header = asRecord(decodeSegmentJson(headerSegment));
   const claims = asRecord(decodeSegmentJson(payloadSegment));
-  // The signature segment is only form-checked here (the strict shape
-  // above): its bytes are consumed by effect/jose's own parse when the
-  // signature is verified, never by this stage
-  const signatureWellFormed =
-    BASE64URL_SEGMENT.test(signatureSegment) && signatureSegment.length % 4 !== 1;
-  if (header === null || claims === null || !signatureWellFormed) {
+  const signature = decodeBase64Url(signatureSegment);
+  if (header === null || claims === null || signature === null) {
     return null;
   }
   return {
     header,
     claims,
+    signature,
     signingInput: new TextEncoder().encode(`${headerSegment}.${payloadSegment}`),
   };
 }
@@ -267,6 +266,7 @@ function parseToken(token: string): Effect.Effect<ParsedToken, LeaseUnauthorized
     alg: alg as AllowedAlg,
     kid: typeof kid === "string" ? kid : null,
     claims: decoded.claims,
+    signature: decoded.signature,
     signingInput: decoded.signingInput,
   });
 }
@@ -340,8 +340,21 @@ export function makeOidcVerifier(
       // segment strings. Any failure of it — an invalid signature, a
       // header its parser refuses, a failing crypto service — is the
       // same verdict the old WebCrypto call's `false` / rejection
-      // produced: the token does not verify
-      const verification = yield* Effect.exit(Jws.verify(token, resolved.key));
+      // produced: the token does not verify.
+      //
+      // One adaptation: effect/jose's parser requires **canonical**
+      // base64url segments (the unused trailing bits zeroed), while
+      // this design deliberately accepts a malleated signature
+      // segment — a byte-identical re-spelling of its last character
+      // (see signingInputHashHex's doc: the first-come binding is
+      // built on such tokens passing verification). Only the
+      // signature segment can differ this way in a token that
+      // verifies at all (the signed content is header.payload, whose
+      // spelling the signature itself binds), so the signature
+      // segment is re-encoded canonically from its decoded bytes and
+      // the signed content passes through byte-for-byte
+      const canonicalToken = `${token.slice(0, token.lastIndexOf("."))}.${Base64Url.encode(parsed.signature)}`;
+      const verification = yield* Effect.exit(Jws.verify(canonicalToken, resolved.key));
       if (!Exit.isSuccess(verification)) {
         return yield* unauthorized("signature-invalid");
       }
