@@ -1,17 +1,18 @@
-// Pins the "Related pages" cards (Blume `related:` frontmatter) at the foot of
-// every docs page. Blume renders cards only for the links a page lists — it
-// generates none — so a new page that forgets the field silently ships
-// without them. Every page but the index (which opens with its own cards)
-// names 2–4 other docs pages, each in the `/docs/<slug>` form the body links
-// use. Whether a target page exists is `blume validate`'s job (CI 8d2); this
-// check also pins that the slug names a page in this directory, so a
-// renamed page fails here first.
+// Pins the "Related pages" cards (`related:` frontmatter) at the foot of
+// every docs page. The docs route (src/pages/docs/[...slug].astro) renders
+// cards only for the links a page lists — it generates none — so a new page
+// that forgets the field silently ships without them. Every page but the
+// index (which opens with its own cards) names 2–4 other docs pages, each
+// in the `/docs/<slug>` form the body links use. Whether a target page
+// exists is `nimbus-docs lint`'s job (CI 8d2); this check also pins that
+// the slug names a page in this directory, so a renamed page fails here
+// first.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-const docsDir = join(import.meta.dirname, "..", "..", "docs");
+const docsDir = join(import.meta.dirname, "..", "..", "src", "content", "docs");
 const slugs = readdirSync(docsDir)
   .filter((name) => name.endsWith(".mdx"))
   .map((name) => name.slice(0, -".mdx".length));
@@ -26,7 +27,7 @@ function relatedOf(slug: string): string[] {
     : [...String(block[1]).matchAll(/^ {2}- (.+)$/gm)].map((m) => String(m[1]));
 }
 
-describe("docs related pages (Blume related: frontmatter)", () => {
+describe("docs related pages (related: frontmatter)", () => {
   for (const slug of slugs.filter((name) => name !== "index")) {
     it(`${slug} lists 2–4 other docs pages`, () => {
       const related = relatedOf(slug);

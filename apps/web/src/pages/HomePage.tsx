@@ -1,7 +1,7 @@
 // Server component (baked into the RSC payload at build time).
 //
 // `my.maruhi.app/` is the top of the product origin (TCB). The LP and
-// docs moved to apex `maruhi.app` (apps/site — Blume), so this page
+// docs moved to apex `maruhi.app` (apps/site — Nimbus), so this page
 // carries only minimal guidance (logo + a funnel to the dashboard + a
 // link to the product site) (DP2 ruling F — docs/notes/web-design-pass.md
 // §4). The e2e checks drive `to-dashboard` for SPA navigation and MPA

@@ -1,0 +1,31 @@
+---
+/*
+ * The site's logo in the header: the maruhi mark (㊙ in a vermilion
+ * circle). Light uses the original /logo.svg; dark uses the generated
+ * /logo-dark.svg (fill swapped to the dark accent by
+ * apps/site/scripts/build-theme.ts). Both files live in public/; the
+ * theme script sets <html data-mode>, and the swap is pure CSS.
+ */
+interface Props { class?: string }
+const { class: cls = "h-6 w-6" } = Astro.props;
+---
+
+<span class:list={["maruhi-logo", cls]} aria-hidden="true">
+  <img class="logo-light" src="/logo.svg" alt="" />
+  <img class="logo-dark" src="/logo-dark.svg" alt="" />
+</span>
+
+<style>
+  .maruhi-logo {
+    display: inline-block;
+  }
+  .maruhi-logo img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  :global(html[data-mode="dark"]) .maruhi-logo .logo-light,
+  :global(html:not([data-mode="dark"])) .maruhi-logo .logo-dark {
+    display: none;
+  }
+</style>

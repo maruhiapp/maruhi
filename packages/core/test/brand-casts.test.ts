@@ -49,9 +49,9 @@ const ALLOWED_COUNTS: Readonly<Record<string, number>> = {
 
 /**
  * Every file under `dir` (repo-relative), never descending into
- * node_modules, dist or a dot-directory (.blume, .cloudflare, .wrangler, …).
+ * node_modules, dist or a dot-directory (.astro, .cloudflare, .wrangler, …).
  * Those hold installed or generated files only, and CI's parallel group B
- * builds into them while this test runs (apps/site/.blume/src is generated
+ * builds into them while this test runs (apps/site/.astro/types.d.ts is generated
  * TypeScript), so walking them would race the build.
  */
 function walk(dir: string): string[] {

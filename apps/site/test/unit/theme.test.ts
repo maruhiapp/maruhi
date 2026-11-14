@@ -31,13 +31,13 @@ describe("site theme artifacts", () => {
     // The logo SVG's fill = the light-side accent (DP1 ruling A)
     const logo = readFileSync(join(repoRoot, paths.webLogo), "utf8");
     expect(logo.toLowerCase()).toContain(`fill="${brand.accent.light.toLowerCase()}"`);
-    // The generated theme.css carries the accent of both modes
+    // The generated brand.css carries the accent of both modes
     const css = readFileSync(join(repoRoot, paths.themeCss), "utf8");
-    expect(css).toContain(`--blume-accent: ${brand.accent.light.toLowerCase()};`);
-    expect(css).toContain(`--blume-accent: ${brand.accent.dark.toLowerCase()};`);
-    // Raw hex lives only in the generated artifacts (blume.config.ts
+    expect(css).toContain(`--nb-primary: ${brand.accent.light.toLowerCase()};`);
+    expect(css).toContain(`--nb-primary: ${brand.accent.dark.toLowerCase()};`);
+    // Raw hex lives only in the generated artifacts (astro.config.ts
     // references tokens.ts)
-    const config = readFileSync(join(repoRoot, "apps/site/blume.config.ts"), "utf8");
+    const config = readFileSync(join(repoRoot, "apps/site/astro.config.ts"), "utf8");
     expect(config.replace(/\/\/.*$/gm, "")).not.toMatch(/#[0-9a-fA-F]{6}\b/);
   });
 });

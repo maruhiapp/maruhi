@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # fallow audit needs to compare against the base branch, and fallow
-          # health / Blume's lastModified read the full history
+          # health / Nimbus's lastUpdated read the full history
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -175,28 +175,18 @@ jobs:
           # --ignore covers transitive deps of maintainer-side toolchains that only
           # run at build/test time and can't be fixed by an in-range update
           # (ignores are per-ID; new advisories still get detected):
-          #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0 (ReDoS) — a strict pin via
-          #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
-          #     no execution path. A name-scoped override to 6.3.0 would drag in
-          #     router (express 5 line, ^8), so it is not taken (same source)
-          #   GHSA-238p-pmpm-9mq7: katex@0.16.47 (prototype pollution bypassing
-          #     trust restrictions; low) via blume > mermaid, which pins
-          #     katex@^0.16.47 — the docs site renders only the repository's own
-          #     Markdown at build time and deploys static assets only
-          #     (apps/site/cloudflare.config.ts has no worker script)
-          #   GHSA-rj75-hqrm-r3gf: postcss-selector-parser@6.0.10 (quadratic
-          #     selector parsing) via blume > @tailwindcss/typography, which pins
-          #     6.0.10 — build-time CSS over the repository's own stylesheets
-          #   GHSA-3g3m-2fjr-6pw4: glob@13.0.6 (AbortSignal cancellation bypass)
-          #     via blume > @astrojs/vercel > @vercel/nft, which pins glob@^13.0.0;
-          #     the fix (glob@14) is out of range and @vercel/nft's latest still
-          #     pins ^13 — build-time file tracing over the repository's own
-          #     tree only, and no deploys to Vercel (same chain as above)
           #   GHSA-g3hv-75wg-m249: minimatch@10.2.6 (globparts amplification
           #     DoS) via eslint, @eslint/config-array and glob, all pinning ^10;
           #     the fix (minimatch@11) is out of range for every parent and the
           #     latest eslint still pins ^10 — lint/build-time pattern matching
           #     over the repository's own file paths only
+          # Removed as stale (2026-11-14): the path-to-regexp@6.1.0 ignore
+          # (GHSA-9wv6-86v2-598j — the tree's only copy is 6.3.0 since the
+          # Blume → Nimbus replacement, ADR-0008 revision 2), the katex ignore
+          # (GHSA-238p-pmpm-9mq7 — mermaid / katex left the tree with Blume),
+          # the postcss-selector-parser@6 ignore (GHSA-rj75-hqrm-r3gf — the
+          # tree's only copy is 7.1.6) and the glob@13 ignore
+          # (GHSA-3g3m-2fjr-6pw4 — @vercel/nft left the tree with Blume).
           # Removed as stale (2026-10-23): the braces@3.0.3 ignore
           # (GHSA-vfj7-8cjw-p6xm) — GitHub withdrew the advisory on 2026-10-23,
           # so bun audit no longer reports it.
@@ -214,10 +204,6 @@ jobs:
           - name: Audit (bun audit)
             run: >-
               bun audit
-              --ignore GHSA-9wv6-86v2-598j
-              --ignore GHSA-238p-pmpm-9mq7
-              --ignore GHSA-rj75-hqrm-r3gf
-              --ignore GHSA-3g3m-2fjr-6pw4
               --ignore GHSA-g3hv-75wg-m249
 
           - name: 1. Format (vp fmt)
@@ -304,7 +290,7 @@ jobs:
       # to its suite). 7b/7c/7d read the tools project's node_modules installed
       # once by the prefix (see Install dependencies), so they run in parallel
       # read-only. The builds produce apps/web/dist (8) and apps/site/dist (8d)
-      # for groups C and D, and write apps/site/.blume and node_modules caches
+      # for groups C and D, and write apps/site/.astro and node_modules caches
       # while the tests run: a test that walks the tree must skip build output
       # (brand-casts.test.ts prunes node_modules, dist and dot-directories).
       # Nine members — under the 10-step cap.
@@ -360,14 +346,13 @@ jobs:
           - name: 8. Web build (vite + CSP headers)
             run: bun run --filter @maruhi/web build
 
-          # apex site (apps/site — Blume. LP + docs, DP2). Runs blume build +
-          # scripts/postbuild.ts (style-attribute externalization, inline-hash CSP,
-          # zero-external-reference mechanical checks, _headers) through the build
-          # path, then group C validates the standalone cf config (maruhi-site —
-          # Static Assets only) with the same dry-run as the product Worker (8b).
-          # Blume runs on Bun via bunx --bun (avoids depending on the CI's Node
-          # version for its Node 22.12+ requirement — web-design-pass.md §4 ruling J)
-          - name: 8d. Site build (Blume + CSP headers)
+          # apex site (apps/site — Nimbus. LP + docs, DP2; ADR-0008 revision 2).
+          # Runs astro build + scripts/postbuild.ts (style-attribute
+          # externalization, inline-hash CSP, zero-external-reference mechanical
+          # checks, _headers) through the build path, then group C validates the
+          # standalone cf config (maruhi-site — Static Assets only) with the
+          # same dry-run as the product Worker (8b).
+          - name: 8d. Site build (Nimbus + CSP headers)
             run: bun run --filter @maruhi/site build
 
       # Group C — dependents of the group-B builds: the server dry-runs read
@@ -396,14 +381,21 @@ jobs:
               bunx cf deploy --dry-run --mode restore
               bun scripts/check-hosted-config.ts
 
-          # Validates internal links / anchors / asset references (Blume's
-          # validate. --external is not passed and external URLs are never hit —
-          # "say nothing" applies to CI too). --strict also fails on warnings
-          - name: 8d2. Site link validation (blume validate)
+          # Prose lint + MDX / frontmatter / internal-link validation
+          # (nimbus-docs lint, with the internal-link and frontmatter-shape
+          # rules at error in astro.config.ts). External URLs are never hit —
+          # "say nothing" applies to CI too
+          - name: 8d2. Site content validation (nimbus-docs lint)
             run: bun run --filter @maruhi/site validate
 
+          # The positional dist matters: without it, cf's Astro framework
+          # autoconfig delegates the build to `astro build` and then demands
+          # the @astrojs/cloudflare adapter's Build Output, which this
+          # prebuilt static-assets deploy (ADR-0008) does not produce. The
+          # positional form deploys the dist/ 8d built, under the worker
+          # cloudflare.config.ts declares
           - name: 8e. Site deploy dry-run (static assets config)
-            run: bunx cf deploy --dry-run
+            run: bunx cf deploy --dry-run dist
             working-directory: apps/site
 
       # Publishes the background install's $GITHUB_ENV write

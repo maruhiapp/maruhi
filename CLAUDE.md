@@ -121,7 +121,7 @@ leaks every secret. Therefore:
 | Frontend | React + FunStack (funstack-static + funstack-router) + Astryx (StyleX-based. ADR-0013) |
 | CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
 | IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
-| LP / docs | Blume (ADR-0008 revision 1 — the LP is also Blume). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
+| LP / docs | Nimbus on Astro (ADR-0008 revision 2). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
 | Lint/Format | vite-plus (`vp`: oxfmt + oxlint (type-aware via oxlint-tsgolint) + built-in typecheck; Effect diagnostics via @effect/tsgo's effecttsgo preset) + ImportLint + fallow + React Doctor |
 
 ## Monorepo layout
@@ -135,7 +135,7 @@ apps/
   server/        # Workers + DO + D1. Effect HttpApi
   cli/           # `effect/cli` + Effect. `maruhi` / `mh` binaries
   web/           # FunStack dashboard (product origin my.maruhi.app)
-  site/          # Blume. LP (/) + docs (/docs) on apex maruhi.app. Independent cf config
+  site/          # Nimbus (Astro). LP (/) + docs (/docs) on apex maruhi.app. Independent cf config
 ```
 
 ### CLI source layout (`apps/cli/src`)

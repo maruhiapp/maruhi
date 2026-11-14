@@ -5,7 +5,7 @@
 //   A. Live documents: CLAUDE.md, AGENTS.md, README.md, CONTRIBUTING.md,
 //      docs/*.md (except dated records — DEEPSEC_FINDINGS_* and
 //      *_REVIEW_*, and docs/adr/ + docs/notes/ are not scanned at all),
-//      and apps/site/docs/.
+//      and apps/site/src/content/docs/.
 //   B. Comments (// and block) inside apps/*/src and packages/*/src.
 //
 // Token classes: a token containing "/" resolves as a repo path — either
@@ -131,7 +131,7 @@ function targetDocs(): readonly string[] {
         name.endsWith(".md") && !name.startsWith("DEEPSEC_FINDINGS_") && !/_REVIEW_/.test(name),
     )
     .map((name) => join("docs", name));
-  const siteDocs = walk(join(repoRoot, "apps", "site", "docs")).map((path) =>
+  const siteDocs = walk(join(repoRoot, "apps", "site", "src", "content", "docs")).map((path) =>
     path.slice(repoRoot.length + 1),
   );
   return ["CLAUDE.md", "AGENTS.md", "README.md", "CONTRIBUTING.md", ...rootDocs, ...siteDocs];

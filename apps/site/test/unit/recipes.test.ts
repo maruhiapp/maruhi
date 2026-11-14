@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const siteRoot = join(import.meta.dirname, "..", "..");
-const page = readFileSync(join(siteRoot, "docs", "deploy-targets.mdx"), "utf8");
+const page = readFileSync(join(siteRoot, "src", "content", "docs", "deploy-targets.mdx"), "utf8");
 const shimBin = join(import.meta.dirname, "shims", "bin");
 
 /** The ```sh blocks of the page, in document order. */
