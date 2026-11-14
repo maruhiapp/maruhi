@@ -38,7 +38,8 @@
 // read a page at a time) do-snapshot-export.ts, and the restore
 // do-snapshot-restore.ts.
 
-import { Schema } from "effect";
+import { Result, Schema } from "effect";
+import { Base64 } from "effect/encoding";
 
 export const SNAPSHOT_FORMAT = "maruhi-do-snapshot";
 export const SNAPSHOT_FORMAT_VERSION = 1;
@@ -184,23 +185,20 @@ export function encodeScalar(value: unknown): SnapshotScalar {
     return value;
   }
   if (value instanceof ArrayBuffer) {
-    let binary = "";
-    for (const byte of new Uint8Array(value)) {
-      binary += String.fromCharCode(byte);
-    }
-    return { b64: btoa(binary) };
+    return { b64: Base64.encode(new Uint8Array(value)) };
   }
   throw new Error("unsupported SQLite value type in snapshot");
 }
 
 export function decodeScalar(value: SnapshotScalar): number | string | null | ArrayBuffer {
   if (value !== null && typeof value === "object") {
-    const binary = atob(value.b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    const decoded = Base64.decode(value.b64);
+    if (Result.isFailure(decoded)) {
+      // A snapshot holding an undecodable scalar is corrupt; fail
+      // loudly, as the old throwing `atob` did
+      throw new Error("invalid base64 in snapshot scalar");
     }
-    return bytes.buffer;
+    return Uint8Array.from(decoded.success).buffer;
   }
   return value;
 }

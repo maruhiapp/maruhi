@@ -6,6 +6,16 @@
 // (crypto-services.ts) so tests can substitute a deterministic source
 // with `Layer.mock`; the ULID algorithm and output format are unchanged
 // from the previous ambient-WebCrypto implementation.
+//
+// The service's own `ulid` is deliberately not used: it reads the
+// ambient Clock and encodes a 10-byte draw as a bit stream, while this
+// implementation takes the caller's explicit logical time (the db
+// layer threads one `nowMs` through an operation, and the id embeds
+// that same instant) and maps a 16-byte draw byte-by-byte — a mapping
+// the format-invariance tests in core/test/ids.test.ts pin. Adopting
+// it would desync id timestamps from row timestamps and change the
+// byte→string mapping for the same draw, for the sole gain of
+// same-millisecond monotonicity, which no consumer relies on.
 
 import { Effect } from "effect";
 import { SecureRandom } from "effect/crypto";
