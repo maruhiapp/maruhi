@@ -388,8 +388,14 @@ jobs:
           - name: 8d2. Site content validation (nimbus-docs lint)
             run: bun run --filter @maruhi/site validate
 
+          # The positional dist matters: without it, cf's Astro framework
+          # autoconfig delegates the build to `astro build` and then demands
+          # the @astrojs/cloudflare adapter's Build Output, which this
+          # prebuilt static-assets deploy (ADR-0008) does not produce. The
+          # positional form deploys the dist/ 8d built, under the worker
+          # cloudflare.config.ts declares
           - name: 8e. Site deploy dry-run (static assets config)
-            run: bunx cf deploy --dry-run
+            run: bunx cf deploy --dry-run dist
             working-directory: apps/site
 
       # Publishes the background install's $GITHUB_ENV write
