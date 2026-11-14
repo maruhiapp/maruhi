@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 // crypto / core / cli run in the normal environment; server uses
 // @cloudflare/vitest-plugin (a real workerd environment).
-// The web (dashboard) and site (LP + docs — Blume) e2e are separate
+// The web (dashboard) and site (LP + docs — Nimbus) e2e are separate
 // steps that assume a built dist.
 export default defineConfig({
   test: {

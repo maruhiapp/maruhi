@@ -13,17 +13,15 @@
   // via @astryxdesign/build / the oxlint config in vite.config.ts;
   // @effect/tsgo supplies the effecttsgo oxlint preset that vite.config.ts
   // imports and the patched tsgolint the root `prepare` script applies).
-  // sharp and pagefind (apps/site) are the same class: Astro's default
-  // image service loads sharp at build time, and the Nimbus integration
-  // runs the pagefind binary after the build to index the site; neither is
-  // ever imported from site code
+  // pagefind (apps/site) is the same class: the Nimbus integration runs
+  // the pagefind binary after the build to index the site; it is never
+  // imported from site code
   "ignoreDependencies": [
     "@effect/tsgo",
     "@import-lint/cli",
     "oxlint-plugin-eslint",
     "@stylexjs/unplugin",
     "@stylexjs/eslint-plugin",
-    "sharp",
     "pagefind"
   ],
   // The scoped overrides in package.json are security pins, not leftovers:

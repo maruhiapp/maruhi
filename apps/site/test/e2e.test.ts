@@ -578,6 +578,7 @@ describe("site e2e: docs last-modified dates (git author date)", () => {
     const iso = new Date(committed).toISOString();
     const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
     expect(html).toContain(`<time datetime="${iso}">`);
+    expect(html).toContain(`"dateModified":"${iso}"`);
     const sitemap = await (await fetch(`${BASE}/sitemap-0.xml`)).text();
     expect(sitemap).toContain(
       `<loc>https://maruhi.app/docs/getting-started/</loc><lastmod>${iso}</lastmod>`,

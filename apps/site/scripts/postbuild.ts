@@ -22,9 +22,14 @@
 //      (`build.inlineStylesheets: 'never'`).
 //   3. **Mechanical check for zero external references and `_headers`**:
 //      "say nothing" (CLAUDE.md §1-5) — verify the shipped output's src /
-//      href never point outside, then append the `/*` security headers while
-//      keeping the `_headers` public/ ships (charset for .md / .txt, the top
-//      Link header, the /_astro cache rule).
+//      href never point outside, then append this stage's own blocks to
+//      `_headers`: exact-path charset rules for the shipped .md / .txt
+//      files, a Link header for `/`, and the `/*` security headers. What
+//      is already there is kept: public/ ships only the /_astro cache
+//      rule, and the Nimbus integration appends its agent-discovery block
+//      (Link / Content-Type for the discovery documents, pattern charset
+//      rules) during the build — a few values therefore appear twice,
+//      once per layer, with identical content.
 // Violations fail the build (throw). The checks ride on the quality-gate
 // path (the site build step in CI).
 import { createHash } from "node:crypto";
@@ -286,10 +291,12 @@ if (cspLine.length > HEADERS_LINE_LIMIT) {
   );
 }
 
-// The _headers public/ ships (charset for /docs/*.md etc., the top Link
-// header, the /_astro cache rule) is kept and the `/*` security headers are
-// appended (a request that matches several blocks inherits the headers of
-// all of them). The double-run tripwire checks for our own `/*` block.
+// The _headers already in dist (public/'s /_astro cache rule plus the
+// agent-discovery block the Nimbus integration appended during the build)
+// is kept; this stage's charset / Link blocks and the `/*` security
+// headers are appended (a request that matches several blocks inherits
+// the headers of all of them). The double-run tripwire checks for our
+// own `/*` block.
 // HSTS is apex-only (includeSubDomains / preload are a zone-operations
 // decision = a human task)
 const headersPath = join(distDir, "_headers");
