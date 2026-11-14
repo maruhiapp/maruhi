@@ -23,7 +23,7 @@
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { AuditEventInput } from "../src/audit-store.ts";
 import { makeAuditStore } from "../src/audit-store.ts";

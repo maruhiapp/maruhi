@@ -22,7 +22,7 @@
 
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   isMutationTracked,

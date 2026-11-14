@@ -4,7 +4,7 @@
 // 2015-08-30T12:36:00Z): the canonical request hash, the derived signing
 // key, and the signature are the documented values.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { amzDate, signingKey, signV4 } from "../src/sigv4.ts";
 

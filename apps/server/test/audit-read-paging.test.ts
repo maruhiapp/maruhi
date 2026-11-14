@@ -16,7 +16,7 @@ import { cryptoServicesLayer, ulid } from "@maruhi/core";
 import { encodeHex } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { INVITE_AUDIT_EVENTS } from "../src/db.package/index.ts";
 import type { WireAuditEvent } from "./support/audit-read-scenario.ts";

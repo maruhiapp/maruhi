@@ -6,7 +6,7 @@
 import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer, Redacted } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { CliError } from "../src/errors.ts";
 import { HTTP_PRESETS } from "../src/sync.package/sync-http-presets.ts";

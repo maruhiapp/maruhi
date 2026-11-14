@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { ChainInvalidError, CryptoContractViolationError, cryptoEffect } from "../src/index.ts";
 

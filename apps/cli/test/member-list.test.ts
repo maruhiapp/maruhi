@@ -10,7 +10,7 @@
 //     schema`). It also doesn't require a master key (the keyless class)
 //  3. `project verify`'s member rows carry the same scope column
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";

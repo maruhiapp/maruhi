@@ -19,7 +19,7 @@ import {
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { dataRejectionError, unwrapDataOutcome } from "../src/data/data-http.ts";
 import type { DataRejection } from "../src/data/data-rejection.ts";

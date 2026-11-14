@@ -9,7 +9,7 @@ import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {

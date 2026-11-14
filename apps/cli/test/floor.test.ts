@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { cliError } from "../src/errors.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";

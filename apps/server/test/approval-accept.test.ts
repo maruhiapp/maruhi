@@ -22,7 +22,7 @@ import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_PENDING_PROPOSALS, MAX_PROPOSAL_LIFETIME_MS } from "../src/policy.ts";
 import { addMemberOperation, hexBytes, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";

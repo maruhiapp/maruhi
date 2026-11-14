@@ -6,7 +6,7 @@
 import { unwrapDek, verifyDekWrapSignature } from "@maruhi/crypto";
 import { testKeyFingerprintHex, unwrapResult } from "@maruhi/crypto/test-support";
 import { Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { wrapAndSignFor } from "../src/dek-wrap.ts";
 import {

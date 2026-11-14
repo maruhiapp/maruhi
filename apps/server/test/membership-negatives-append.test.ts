@@ -8,7 +8,7 @@
 // top of the scenario module).
 
 import type { ChainEntry } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   toWireEntry,

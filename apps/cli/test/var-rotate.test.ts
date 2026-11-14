@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { decryptVariable } from "@maruhi/crypto";
 import { Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { type CliServices, runCli } from "../src/cli.ts";
 import { IssuerEndpoints } from "../src/connector.package/connector-shared.ts";

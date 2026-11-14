@@ -2,7 +2,7 @@
 // runbook's tool — hosted-ops.md §5-1 (3)) with a synthetic dump. Reproduces
 // with minimal input the shape in which a raw import fails (child table ->
 // parent table order; `PRAGMA defer_foreign_keys` not taking effect).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { reorderD1Dump, UnclassifiedStatementsError } from "../scripts/reorder-d1-dump.lib.ts";
 

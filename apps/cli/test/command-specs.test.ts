@@ -4,7 +4,7 @@
 //
 // - The golden pins the table itself, key order included
 //   (JSON.stringify serializes insertion order, so a reordered entry is a
-//   diff). Regenerate with `UPDATE_GOLDEN=1 bunx vitest run --project cli
+//   diff). Regenerate with `UPDATE_GOLDEN=1 bunx vp test run --project cli
 //   test/command-specs.test.ts` and read the diff in review
 // - The tree walk compares the table against the Command structure
 //   makeRootCommand actually builds (the public `name` / `subcommands`
@@ -18,7 +18,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { CommandSpec } from "../src/cli-formatter.ts";
 import { runCli } from "../src/cli.ts";

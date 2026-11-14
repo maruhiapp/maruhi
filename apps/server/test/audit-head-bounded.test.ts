@@ -18,7 +18,7 @@
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { AuditEventInput, AuditHeadExtensionOutcome } from "../src/audit-store.ts";
 import { makeAuditStore, MAX_HEAD_EXTENSION_CHUNKS_PER_CALL } from "../src/audit-store.ts";

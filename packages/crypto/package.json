@@ -10,15 +10,16 @@
   },
   "scripts": {
     "test": "vp test run",
-    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:browser": "vp test run --config vitest.browser.config.ts",
     "test:bun": "bun test/run-in-bun.ts",
-    "test:workerd": "vitest run --config vitest.workerd.config.ts"
+    "test:workerd": "vp test run --config vitest.workerd.config.ts"
   },
   "dependencies": {
     "hpke": "1.1.8"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.8.1",
-    "@vitest/browser-playwright": "5.1.0"
+    "@vitest/browser-playwright": "5.1.0",
+    "vitest": "5.1.0"
   }
 }

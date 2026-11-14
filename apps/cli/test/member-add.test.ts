@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";

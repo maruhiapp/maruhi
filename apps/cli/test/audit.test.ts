@@ -22,7 +22,7 @@ import type { ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { verifyChainWithHistory } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

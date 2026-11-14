@@ -19,7 +19,7 @@ import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { approvalSignersOf, isApprovalTarget, ownerVotersOf, verifyChain } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_PROPOSAL_LIFETIME_MS,

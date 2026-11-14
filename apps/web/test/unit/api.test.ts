@@ -8,7 +8,7 @@
 // imports are allowed only in the test process — same standing as
 // docs/notes/session-43.md ruling BV).
 import { CSRF_HEADER_NAME } from "@maruhi/api-schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { apiDelete, apiGet, apiPost } from "../../src/dashboard/api.ts";
 

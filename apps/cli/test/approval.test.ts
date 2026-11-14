@@ -18,7 +18,7 @@
 //  4. policy: activation (pre-announce owner ≥ required, availability
 //     guidance); changes while active go through a proposal
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

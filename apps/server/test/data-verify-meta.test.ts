@@ -7,7 +7,7 @@
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_VERSIONS_PER_VARIABLE } from "../src/policy.ts";
 import { metaVersionsExceeded } from "../src/quotas.ts";

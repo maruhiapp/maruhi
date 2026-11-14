@@ -5,7 +5,7 @@
 // helpers are in support/lease-scenario.ts; for how the suite is split
 // see the top of lease.test.ts.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   appendOperation,

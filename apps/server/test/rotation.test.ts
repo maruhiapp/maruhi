@@ -46,7 +46,7 @@
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_VERSION_VALUES_PAGE_BYTES } from "../src/policy.ts";
 import { withinByteBudget } from "../src/programs/programs-history.ts";

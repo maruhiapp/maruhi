@@ -5,7 +5,7 @@
 
 import { encodeHex, wrapMasterSecret } from "@maruhi/crypto";
 import { Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { serializeStoredMasterKey } from "../src/keychain.ts";

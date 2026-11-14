@@ -2,7 +2,7 @@
 // AUTH_SPEC §14-2): a token opens exactly its own head, once, until the
 // TTL runs out.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { LeaseChainGrants } from "../src/do/lease-chain-grants.ts";
 

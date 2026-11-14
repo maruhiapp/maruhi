@@ -14,7 +14,7 @@
 //     scope (the person's scope ∩ the device's) contains E
 
 import { verifyChainWithHistory, wrapRecipientsOf } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

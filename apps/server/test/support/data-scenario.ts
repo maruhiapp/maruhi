@@ -5,7 +5,7 @@
 // then writes its describe blocks.
 
 import type { EncryptedPayload } from "@maruhi/api-schema";
-import { beforeEach, expect } from "vitest";
+import { beforeEach, expect } from "vite-plus/test";
 
 import type {
   WireEncryptedPayload,

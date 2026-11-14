@@ -9,7 +9,7 @@ import { cryptoServicesLayer } from "@maruhi/core";
 import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
 import { Effect } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   CLI_FLOW_TTL_MS,

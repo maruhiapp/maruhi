@@ -14,7 +14,7 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { bearer } from "./support/auth.ts";
 import {

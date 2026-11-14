@@ -3,7 +3,7 @@
 // all-scope owner and a listed member must get the chain-derived deletion
 // refusal, not a scope refusal (the deletion pruned the id from the listed
 // scope — §6.2).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

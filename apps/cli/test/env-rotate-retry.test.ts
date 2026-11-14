@@ -13,7 +13,7 @@
 // run 2" can be exercised end-to-end on a single fixture.
 
 import type { ChainEntry } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

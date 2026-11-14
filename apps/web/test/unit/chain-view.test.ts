@@ -3,7 +3,7 @@
 // are bound by tsc).
 import type { KeyFingerprintHex, UserId } from "@maruhi/crypto";
 import { testEnvironmentId, testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { reportedDeviceCount } from "../../src/dashboard/chain-view-reported.ts";
 import { deriveReportedView } from "../../src/dashboard/chain-view.ts";

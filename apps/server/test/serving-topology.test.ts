@@ -17,7 +17,7 @@
 // (fail-loud).
 import { maruhiApi } from "@maruhi/api-schema";
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 /** The structural slice under inspection (a structural type for the same reason as session-capability.ts's SweepableApi). */
 interface PathedApi {

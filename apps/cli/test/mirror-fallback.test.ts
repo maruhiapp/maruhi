@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 
 import { Duration, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";

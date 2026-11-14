@@ -9,7 +9,7 @@
 
 import { Effect } from "effect";
 import { McpTest } from "effect/ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { cliError } from "../src/errors.ts";
 import { PROTOCOLS, registrationsLayer } from "../src/mcp.ts";

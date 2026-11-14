@@ -8,7 +8,7 @@ import { X509Certificate } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import tls from "node:tls";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 

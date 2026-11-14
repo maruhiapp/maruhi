@@ -14,7 +14,7 @@
 //  4. `config set identityBacking` acceptance checks
 
 import { Effect, Redacted } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { checkSigningKeyBacking } from "../src/github-signing-keys.ts";

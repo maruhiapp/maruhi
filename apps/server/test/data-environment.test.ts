@@ -9,7 +9,7 @@
 // motivation see the top of support/membership-scenario.ts).
 
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   checkpointOperation,

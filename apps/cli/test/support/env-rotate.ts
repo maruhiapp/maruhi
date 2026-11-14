@@ -10,7 +10,7 @@ import {
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { afterEach, beforeAll, expect } from "vitest";
+import { afterEach, beforeAll, expect } from "vite-plus/test";
 
 import { makeFileFloorStore } from "../../src/floor-log.ts";
 import type { ProjectFloor } from "../../src/floor.ts";

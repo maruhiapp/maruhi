@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { wrapMasterSecret } from "@maruhi/crypto";
 import { Cause, Duration, Effect, Exit, Fiber, Layer, Predicate, Redacted } from "effect";
 import { TestClock } from "effect/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   AGENT_SOCKET_ENV,

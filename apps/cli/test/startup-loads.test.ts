@@ -14,7 +14,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 const CLI_ROOT = join(import.meta.dirname, "..");
 // Bun reports the importers' real paths

@@ -1,6 +1,6 @@
 import type { KeyFingerprintHex } from "@maruhi/core";
 import { Option, Schema } from "effect";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { ChainEntrySchema, ChainInvalidReasonSchema, maruhiApi } from "../src/index.ts";
 

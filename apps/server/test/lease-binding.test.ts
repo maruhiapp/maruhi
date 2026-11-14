@@ -10,7 +10,7 @@
 
 import { encodeHex } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { OIDC_CLOCK_SKEW_MS } from "../src/oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "../src/policy.ts";

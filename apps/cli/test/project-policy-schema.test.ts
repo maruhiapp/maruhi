@@ -12,7 +12,7 @@
 //   step and counts as a settled server rejection
 
 import { SchemaPolicyRejectedError } from "@maruhi/api-schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { isServerRejection, toCliError } from "../src/failure.ts";

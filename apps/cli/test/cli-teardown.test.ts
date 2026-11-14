@@ -4,7 +4,7 @@
 
 import { Exit, Runtime } from "effect";
 import { CliError as EffectCliError } from "effect/cli";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { maruhiTeardown } from "../src/cli-teardown.ts";
 import { cliError, usageError } from "../src/errors.ts";

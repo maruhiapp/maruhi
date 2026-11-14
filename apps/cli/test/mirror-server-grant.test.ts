@@ -6,7 +6,7 @@
 //     appends the grant on the server
 
 import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { acceptAppendedEntry } from "./support/chain-handler.ts";

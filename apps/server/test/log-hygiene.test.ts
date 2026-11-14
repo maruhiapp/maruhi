@@ -12,7 +12,7 @@
 // so a console spy on the test side catches the worker side's console calls
 // (same pattern as storage-guard.test.ts).
 import { SELF } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { resetAuthDb } from "./support/auth.ts";
 

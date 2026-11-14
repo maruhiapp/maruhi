@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const BIN = join(import.meta.dirname, "..", "src", "bin.ts");
 

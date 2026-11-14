@@ -3,7 +3,7 @@
 // repository configs), per-connector rules and inputs, the AWS key id
 // companion's uniqueness, and the rule lookup by companion.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { parseRotateConfig, ruleFor } from "../src/connector.package/rotate-config.ts";
 import { rotationAction } from "../src/rotation.ts";

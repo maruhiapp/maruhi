@@ -14,7 +14,7 @@
 //   row is added on CAS loss (the changes() guard)
 
 import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   INVITE_ISSUE_WINDOW_LIMIT,

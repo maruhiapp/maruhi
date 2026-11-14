@@ -3,7 +3,7 @@
 // value-decoding policy).
 
 import { Effect, Exit, Layer, Stdio } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import {

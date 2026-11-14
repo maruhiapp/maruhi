@@ -3,7 +3,7 @@
 // just-before match of delete statements, schema re-issuance and
 // reversibility, and the max age (AUTH_SPEC §12-5 / §12-11).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
 import { encryptValue, vectorKeyOf } from "./support/data-crypto.ts";

@@ -10,7 +10,7 @@
 // sign from (prev hash, metaVersion, name, manifest), so the rewind
 // reproduces exactly what a stale client would sign.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   createEnvironmentOk,

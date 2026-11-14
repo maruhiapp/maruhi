@@ -14,7 +14,7 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { DataStore, dataStoreLayer } from "../src/data/data-store.ts";
 import type { ProjectDoMigration, ProjectDoMigrationPlan } from "../src/do/do-schema.ts";

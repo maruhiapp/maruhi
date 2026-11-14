@@ -4,7 +4,7 @@
 // that no typed value reaches the output. After each test, the servers it
 // started are closed and its mocks restored.
 
-import { afterEach, expect, vi } from "vitest";
+import { afterEach, expect, vi } from "vite-plus/test";
 
 import { makeTestUser } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";

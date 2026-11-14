@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus/test/config";
 
 // Unit tests for the web dashboard (pure functions — the API
 // consumption layer and the chain-view derivation). Unlike e2e

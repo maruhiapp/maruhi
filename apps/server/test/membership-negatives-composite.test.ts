@@ -8,7 +8,7 @@
 // support/membership-scenario.ts (for the split's motivation see the
 // top of the scenario module).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
 import { resignEntryAt } from "./support/data-crypto.ts";

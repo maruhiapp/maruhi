@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import packageJson from "../package.json";
 import { SEMVER_PATTERN } from "../scripts/shared.ts";

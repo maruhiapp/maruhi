@@ -27,7 +27,7 @@
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { reportEnvironmentDiff, reportEnvironmentWarnings } from "../src/env.package/env-diff.ts";

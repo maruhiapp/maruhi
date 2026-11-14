@@ -10,7 +10,7 @@
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
 import { dataEvent } from "../src/data/data-events.ts";

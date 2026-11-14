@@ -1,7 +1,7 @@
 // Unit tests for push.package/push.ts's stdin normalization
 // (normalizeStdinValue).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { normalizeStdinValue } from "../src/push.package/push.ts";
 

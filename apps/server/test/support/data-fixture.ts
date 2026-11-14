@@ -7,7 +7,7 @@
 import type { ChainEntry, ChainOperation, EnvValuesDigestEntry } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./auth.ts";
 import type {

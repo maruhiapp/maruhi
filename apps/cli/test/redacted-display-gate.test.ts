@@ -9,7 +9,7 @@
 // redacted.test.ts (#3); this file holds section 2b.
 
 import { Effect, Exit, Layer, Redacted, Stdio } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";
 import { type DisplayableVariable, showValues } from "../src/display.ts";

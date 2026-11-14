@@ -8,7 +8,7 @@
 //   added here)
 
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
 import { testEnvironmentId } from "./support/data-crypto.ts";

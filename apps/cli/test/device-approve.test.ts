@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { HandoffApprovalSchema, HandoffLookupSchema } from "@maruhi/api-schema";
 import { fingerprintToWords } from "@maruhi/crypto";
 import { Effect, Exit, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { ownDevicesPathOf } from "../src/own-devices.ts";

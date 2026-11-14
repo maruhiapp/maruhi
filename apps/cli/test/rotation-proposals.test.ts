@@ -23,7 +23,7 @@ import {
   importEncryptionPublicKey,
   sealProposedValue,
 } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

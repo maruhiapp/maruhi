@@ -14,7 +14,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 

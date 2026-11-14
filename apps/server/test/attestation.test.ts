@@ -17,7 +17,7 @@ import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "../src/policy.ts";
 import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./support/auth.ts";

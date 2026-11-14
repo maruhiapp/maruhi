@@ -5,7 +5,7 @@
 // The snapshots are synthetic: one src file and one vector file shaped like
 // the real ones. A real-history run (e.g. the #329 range) is the CLI's job.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { analyze, canonicalSource, lpShape, sourceFacts } from "./vector-delta.mjs";
 

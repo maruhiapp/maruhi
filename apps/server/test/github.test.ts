@@ -20,7 +20,7 @@
 import { Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { makeGitHubApi } from "../src/auth.package/index.ts";
 

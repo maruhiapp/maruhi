@@ -10,7 +10,7 @@
 // - A runaway server (nextAfter never exhausts) is bounded and cut off at
 //   the page cap (exit 1)
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestUser } from "./support/crypto.ts";

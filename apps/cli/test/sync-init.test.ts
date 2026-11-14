@@ -3,7 +3,7 @@
 // strict parser (sync-config.ts) as-is (round-trip). Touches neither the
 // network nor files.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { parseSyncConfig } from "../src/sync.package/sync-config.ts";

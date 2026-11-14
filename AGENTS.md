@@ -55,7 +55,7 @@ talking with the owner directly, and in the files listed in
   as CI (`.github/workflows/ci.yml`), which runs them in parallel groups inside
   the `check` job
 - Root `bun run test` intentionally does not include the `apps/web` e2e. Run it
-  with `cd apps/web && bun run build && bunx vitest run --config vitest.config.ts`.
+  with `cd apps/web && bun run build && bunx vp test run --config vitest.config.ts`.
   A prior build is required, and the test spawns its own `cf dev`
   (port 8791)
 - The web dev server (`bun run --filter @maruhi/web dev`, port 5173) returns 404

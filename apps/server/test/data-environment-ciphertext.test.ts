@@ -6,7 +6,7 @@
 // Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
 // (real workerd environment). The fixture lives in support/data-scenario.ts.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   MAX_ENVIRONMENT_CIPHERTEXT_BYTES,

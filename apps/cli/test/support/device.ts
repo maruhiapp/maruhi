@@ -5,7 +5,7 @@ import {
   encodeHex,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { afterEach, beforeAll } from "vitest";
+import { afterEach, beforeAll } from "vite-plus/test";
 
 import { tokenEntryName } from "../../src/keychain.ts";
 import {

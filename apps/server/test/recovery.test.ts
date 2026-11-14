@@ -8,7 +8,7 @@
 // covered by the CLI tests).
 
 import { env, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { RECOVERY_FETCH_LIMIT } from "../src/db.package/index.ts";
 import {

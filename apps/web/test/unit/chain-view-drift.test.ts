@@ -94,7 +94,7 @@ import {
   vectorEntries,
   vectorExtendedChains,
 } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { deriveReportedView } from "../../src/dashboard/chain-view.ts";
 import type { ChainEntry } from "../../src/dashboard/types.ts";

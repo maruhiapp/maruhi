@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
 import { type Browser, chromium, type Page } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { writeWranglerConfig } from "../scripts/wrangler-config.ts";
 import { accent, background } from "../theme/tokens.ts";

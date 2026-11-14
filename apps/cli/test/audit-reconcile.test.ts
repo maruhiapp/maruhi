@@ -26,7 +26,7 @@
 
 import type { AuditHeadRow, ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

@@ -2,7 +2,7 @@
 // level + bare `maruhi` + `maruhi --help` against the golden file
 // (test/golden/help.txt).
 //
-// - When the wording changes, regenerate with `UPDATE_GOLDEN=1 bunx vitest
+// - When the wording changes, regenerate with `UPDATE_GOLDEN=1 bunx vp test
 //   run --project cli test/help.test.ts` and read the diff in review (this is
 //   the single place where usage lines vs. actual flags/descriptions are
 //   checked by eye)
@@ -13,7 +13,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/commands/index.ts";

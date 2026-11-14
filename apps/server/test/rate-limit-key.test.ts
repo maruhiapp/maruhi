@@ -3,7 +3,7 @@
 // standard /64 allocation produced a new key per request, per-source-IP rate
 // limit windows would never take effect.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { rateLimitKeyOf } from "../src/worker-env.ts";
 

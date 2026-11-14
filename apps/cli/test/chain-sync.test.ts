@@ -4,7 +4,7 @@
 
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import { syncProject } from "../src/chain-sync.ts";

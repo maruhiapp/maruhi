@@ -13,7 +13,7 @@
 // binds with bindRoute) and the actual serving config
 // (apps/server/wrangler.jsonc) are collated as-is to make
 // non-intersection fail-loud.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { unstable_readConfig } from "wrangler";
 
 import { SAMPLE_PROJECT_ID } from "../../src/dashboard/endpoints.ts";

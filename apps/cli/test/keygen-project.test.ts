@@ -2,7 +2,7 @@
 
 import { computeChainEntryHash, verifyChain, type ChainEntry } from "@maruhi/crypto";
 import { Redacted } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, parseStoredMasterKey, tokenEntryName } from "../src/keychain.ts";

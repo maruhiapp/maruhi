@@ -14,7 +14,7 @@ import {
   unwrapLeaseDek,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import { JSON_HEADERS } from "./auth.ts";
 import { hexBytes, wrapDekToServer } from "./data-crypto.ts";

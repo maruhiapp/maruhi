@@ -7,7 +7,7 @@ import {
   verifyChain,
 } from "@maruhi/crypto";
 import { Cause, Effect, Exit } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   ChainInvalidError,

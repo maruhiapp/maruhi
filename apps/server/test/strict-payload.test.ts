@@ -32,7 +32,7 @@
 // only) — enough to prove the 400 settles at the Schema stage.
 
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
 import { vectorKeyNamed } from "./support/data-crypto.ts";

@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
 const doc = readFileSync(join(repoRoot, "docs", "REVIEWING.md"), "utf8");

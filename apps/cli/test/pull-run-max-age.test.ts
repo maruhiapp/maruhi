@@ -2,7 +2,7 @@
 // and run (memory injection), and for the AI-agent-detection boundary
 // (value display is refused / run is allowed).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { statementFor } from "./support/crypto.ts";

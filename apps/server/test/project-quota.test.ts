@@ -9,7 +9,7 @@
 // numbers only (same shape as the other *Exceeded in quotas.ts).
 
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_ACTIVE_PROJECTS_PER_ORG } from "../src/policy.ts";
 import { projectQuotaExceeded } from "../src/quotas.ts";

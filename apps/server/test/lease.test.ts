@@ -22,7 +22,7 @@ import { LeaseResponseSchema } from "@maruhi/api-schema";
 import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Schema } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { chainStoreLayer, type StateCache } from "../src/do/chain-store.ts";
 import { leaseChainProgram } from "../src/programs/programs-lease.ts";

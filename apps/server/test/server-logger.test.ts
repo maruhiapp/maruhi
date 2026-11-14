@@ -5,7 +5,7 @@
 // no annotations, no spans, no Cause). INFO and below are dropped.
 
 import { Cause, Effect } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { CAUSE_ONLY_LINE, ServerLoggerLive } from "../src/server-logger.ts";
 

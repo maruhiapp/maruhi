@@ -18,7 +18,7 @@
 // - data-schema-locked.test.ts: schema-locked, description,
 //   unsupported layouts (the retired layout 2 included)
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { encryptValue } from "./support/data-crypto.ts";
 import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
