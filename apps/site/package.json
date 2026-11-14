@@ -8,6 +8,7 @@
     "build": "astro build && bun run scripts/postbuild.ts",
     "deploy": "bun run build && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision",
     "dev": "astro dev",
+    "sync": "astro sync",
     "e2e": "vp test run",
     "preview": "bun run build && bun run scripts/preview.ts",
     "theme:build": "bun run scripts/build-theme.ts",

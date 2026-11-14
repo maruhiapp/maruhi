@@ -30,7 +30,10 @@
   // wrangler and @cloudflare/vitest-plugin share, and the ones nested under
   // cf and @cloudflare/runtime-types) and in @scalar/json-magic; zod 4.6.5
   // (@cloudflare/config, @cloudflare/vitest-plugin) and 4.1.11
-  // (@vercel/cli-config) become 4.6.6. fallow reports them as unused because
+  // (@vercel/cli-config) become 4.6.6. fflate 0.7.3 becomes 0.7.5 in satori,
+  // which pins it exactly (GHSA-px8p-9vwx-vf98; @shuding/opentype.js's
+  // ^0.7.3 copy reaches 0.7.5 by a normal bun update, so it needs no
+  // override). fallow reports them as unused because
   // it cannot see the transitive resolution; bun.lock shows each in effect.
   // Each holds its copy at that exact version, so remove an override and its
   // entry here once a dependency update brings the dependent's own pin to
@@ -47,7 +50,8 @@
     { "package": "@cloudflare/vitest-plugin>zod", "source": "package.json" },
     { "package": "@scalar/json-magic>undici", "source": "package.json" },
     { "package": "@vercel/cli-config>zod", "source": "package.json" },
-    { "package": "miniflare>undici", "source": "package.json" }
+    { "package": "miniflare>undici", "source": "package.json" },
+    { "package": "satori>fflate", "source": "package.json" }
   ],
   // apps/web's entries are string references inside vite.config.ts
   // (funstackStatic's root/app), so fallow cannot detect them automatically —

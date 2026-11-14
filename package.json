@@ -17,7 +17,7 @@
     "fmt:check": "vp fmt --check",
     "importlint": "import-lint",
     "lint": "vp lint --deny-warnings",
-    "prepare": "effect-tsgo patch --oxlint --no-typescript",
+    "prepare": "effect-tsgo patch --oxlint --no-typescript && bun run --filter @maruhi/site sync",
     "test": "vitest run",
     "test:app-unit": "bun scripts/test-suite.mjs run app-unit",
     "test:cli": "bun scripts/test-suite.mjs run cli",
@@ -41,7 +41,8 @@
     "@scalar/json-magic>undici": "7.30.1",
     "@types/node": "26.6.6",
     "@vercel/cli-config>zod": "4.6.6",
-    "miniflare>undici": "7.30.1"
+    "miniflare>undici": "7.30.1",
+    "satori>fflate": "0.7.5"
   },
   "engines": {
     "bun": "1.4.4"
