@@ -32,6 +32,7 @@ import { join } from "node:path";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { decodeProjectId, isProjectId, type ProjectId, type EnvironmentId } from "@maruhi/core";
 import { Data, Effect, FileSystem, type PlatformError, Predicate, Schema } from "effect";
+import { Hex } from "effect/encoding";
 
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
@@ -129,7 +130,7 @@ function encodeRecord(record: FloorLogRecord): string {
 
 function randomIntentId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Hex.encode(bytes);
 }
 
 /** The commit functions' return value: the environment's floor from the folded floor (bottom if unobserved). */

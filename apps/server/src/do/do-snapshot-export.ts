@@ -6,7 +6,8 @@
 // is refused rather than silently exported as a mixed state. Run by
 // programs-export.ts's exportPageProgram.
 
-import { Option, Schema } from "effect";
+import { Option, Result, Schema } from "effect";
+import { Base64Url } from "effect/encoding";
 
 import { OPS_SNAPSHOT_ROW_PAGE } from "../ops/ops-policy.ts";
 import type {
@@ -102,28 +103,12 @@ function auditHeadHashAt(sql: SqlStorage, seq: number): string | null {
 }
 
 function base64UrlEncode(text: string): string {
-  // A cursor is well under a kilobyte, so the byte-by-byte binary string is cheap
-  const binary = Array.from(new TextEncoder().encode(text), (byte) =>
-    String.fromCharCode(byte),
-  ).join("");
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return Base64Url.encode(text);
 }
 
 function base64UrlDecode(text: string): string | null {
-  const padded = text
-    .replaceAll("-", "+")
-    .replaceAll("_", "/")
-    .padEnd(Math.ceil(text.length / 4) * 4, "=");
-  try {
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
+  const decoded = Base64Url.decode(text);
+  return Result.isSuccess(decoded) ? new TextDecoder().decode(decoded.success) : null;
 }
 
 export function encodeExportCursor(state: ExportCursorState): string {

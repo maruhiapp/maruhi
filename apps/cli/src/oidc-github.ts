@@ -25,7 +25,8 @@
 
 import { egressHttpClientLayer } from "@maruhi/core";
 import type { LeaseClaims } from "@maruhi/crypto";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Redacted, Result, Schema } from "effect";
+import { Base64Url } from "effect/encoding";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 
 import { cliError, type CliError } from "./errors.ts";
@@ -248,18 +249,8 @@ export const fetchGitHubOidcToken = Effect.fn("oidc-github.fetchGitHubOidcToken"
 
 /** base64url → bytes (null when malformed. Never put a token fragment onto an exception message). */
 function decodeBase64Url(segment: string): Uint8Array | null {
-  const base64 = segment.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-  try {
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
+  const decoded = Base64Url.decode(segment);
+  return Result.isSuccess(decoded) ? decoded.success : null;
 }
 
 const CLAIM_FAILURE_MESSAGES = {

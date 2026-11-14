@@ -24,6 +24,7 @@
 // status, and GitHub's `message` field — never an input or the token.
 
 import { type Clock, Data, Effect, Schema } from "effect";
+import { Base64Url } from "effect/encoding";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { pemBody, pkcs1ToPkcs8 } from "../der.ts";
@@ -104,11 +105,7 @@ const TokenResponse = Schema.Struct({
 type TokenResponse = typeof TokenResponse.Type;
 
 function base64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return Base64Url.encode(bytes);
 }
 
 /** The App key as a WebCrypto signing key (PKCS#1 or PKCS#8 PEM). */
