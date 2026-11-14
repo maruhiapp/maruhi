@@ -38,8 +38,8 @@
     "effect": "4.1.4",
     "playwright": "1.65.0",
     "react-doctor": "0.9.23",
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
-    "wrangler": "4.152.0"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "wrangler": "4.161.0"
   },
   "astryx": {
     "theme": "./theme/maruhi.ts"

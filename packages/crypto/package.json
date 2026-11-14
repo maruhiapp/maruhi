@@ -18,7 +18,7 @@
     "hpke": "1.1.8"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.7",
-    "@vitest/browser-playwright": "5.0.5"
+    "@cloudflare/vitest-plugin": "1.8.1",
+    "@vitest/browser-playwright": "5.1.0"
   }
 }

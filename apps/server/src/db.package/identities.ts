@@ -511,12 +511,10 @@ export function makeIdentityRepo(db: Db): IdentityRepoShape {
         if (signupInviteTokenHash === null) {
           return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
         }
-        return Effect.flatMap(
-          findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
-          (invite) =>
-            invite === null
-              ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
-              : attemptCreate({ kind: "invite", inviteId: invite.id }),
+        return Effect.flatMap(findPendingSignupInvite(db, signupInviteTokenHash, nowMs), (invite) =>
+          invite === null
+            ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
+            : attemptCreate({ kind: "invite", inviteId: invite.id }),
         );
       });
     });
