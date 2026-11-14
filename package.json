@@ -26,14 +26,14 @@
     "typecheck": "vp check --no-fmt --no-lint"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.63.0",
+    "@effect/tsgo": "0.68.1",
     "@import-lint/cli": "0.1.10",
     "@stylexjs/eslint-plugin": "0.19.1",
     "fallow": "3.35.0",
-    "oxlint-plugin-eslint": "1.89.0",
+    "oxlint-plugin-eslint": "1.93.0",
     "typescript": "7.0.2",
-    "vite-plus": "1.4.0",
-    "vitest": "5.0.5"
+    "vite-plus": "1.6.0",
+    "vitest": "5.1.0"
   },
   "overrides": {
     "@cloudflare/config>zod": "4.6.6",

@@ -77,9 +77,7 @@ function cryptoSchemaOf(statement: MetaStatementInput): MetaVariableSchema | und
  * payload-mismatch before the signature (the crypto layer would refuse it
  * too, as InvalidInput; this keeps the honest wording).
  */
-const ensureLayoutShape = (
-  statement: MetaStatementInput,
-): Effect.Effect<void, DataRejectedError> =>
+const ensureLayoutShape = (statement: MetaStatementInput): Effect.Effect<void, DataRejectedError> =>
   statementLayoutVersion(statement) !== 3 || statement.schema?.maxAgeDays !== undefined
     ? Effect.void
     : Effect.fail(rejectData({ kind: "payload-mismatch", field: "maxAgeDays" }));

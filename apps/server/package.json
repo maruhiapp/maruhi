@@ -20,11 +20,11 @@
     "effect": "4.1.4"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.7",
-    "@cloudflare/workers-types": "5.20261023.1",
+    "@cloudflare/vitest-plugin": "1.8.1",
+    "@cloudflare/workers-types": "5.20261113.1",
     "@types/bun": "1.4.4",
-    "cf": "1.0.0-beta.20",
+    "cf": "1.0.0-beta.31",
     "drizzle-kit": "1.0.0-rc.5",
-    "wrangler": "4.152.0"
+    "wrangler": "4.161.0"
   }
 }
