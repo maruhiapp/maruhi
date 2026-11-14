@@ -15,7 +15,7 @@
     "test:workerd": "vitest run --config vitest.workerd.config.ts"
   },
   "dependencies": {
-    "hpke": "1.1.7"
+    "hpke": "1.1.8"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.8.1",

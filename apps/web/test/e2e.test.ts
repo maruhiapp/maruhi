@@ -1213,8 +1213,13 @@ describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", ()
     await expect(success.textContent()).resolves.toContain('Token "ci" revoked.');
     await expect.poll(() => success.evaluate((el) => el === document.activeElement)).toBe(true);
     // While refetching, the previous list stays (not replaced) and
-    // the rows' Revoke is disabled
-    await expect(page.getByText("Loading tokens").count()).resolves.toBe(0);
+    // the rows' Revoke is disabled. Scoped to the list: Astryx's
+    // announcer (a role="status" region under <body>, 0.7.15) keeps the
+    // initial load's "Loading tokens" announcement in the DOM, so a
+    // page-wide text query would count that instead of the list's state
+    await expect(page.getByTestId("token-list").getByText("Loading tokens").count()).resolves.toBe(
+      0,
+    );
     await expect(
       page.getByTestId("token-table").getByText("ci", { exact: true }).count(),
     ).resolves.toBe(1);
@@ -1643,7 +1648,11 @@ describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", ()
     );
     await page.goto(`${BASE}/dashboard/devices`, { waitUntil: "networkidle" });
     await page.getByTestId("device-empty").waitFor();
-    await expect(page.getByText("No devices registered").count()).resolves.toBe(1);
+    // Scoped to the empty notice: Astryx's announcer (0.7.15) also
+    // speaks this title into its role="status" region under <body>
+    await expect(
+      page.getByTestId("device-empty").getByText("No devices registered").count(),
+    ).resolves.toBe(1);
     // A 404 is not folded into the empty state — transcribed in the
     // registry's nouns (K5-9)
     mode = "not-found";
