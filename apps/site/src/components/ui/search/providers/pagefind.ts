@@ -86,13 +86,16 @@ export const provider: SearchProvider = {
     const filters = filtersForPage();
     const search = await pagefind.search(query, filters ? { filters } : undefined);
     const results = await Promise.all(search.results.slice(0, 10).map((result) => result.data()));
-    return results.map((result): SearchResult => ({
-      title: result.meta?.title ?? "Untitled",
-      url: result.url,
-      snippet: result.excerpt,
-      subResults: result.sub_results
+    return results.map((result): SearchResult => {
+      const subResults = result.sub_results
         ?.filter((sub): sub is Required<PagefindSubResult> => Boolean(sub.title && sub.url))
-        .map((sub) => ({ title: sub.title, url: sub.url })),
-    }));
+        .map((sub) => ({ title: sub.title, url: sub.url }));
+      return {
+        title: result.meta?.title ?? "Untitled",
+        url: result.url,
+        ...(result.excerpt !== undefined ? { snippet: result.excerpt } : {}),
+        ...(subResults !== undefined ? { subResults } : {}),
+      };
+    });
   },
 };

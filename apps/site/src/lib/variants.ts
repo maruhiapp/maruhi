@@ -28,8 +28,8 @@ export function variants<V extends VariantMap>(config: Config<V>) {
   return (selection: Selection<V> = {}, className?: ClassValue): string => {
     const picked = { ...config.defaults, ...stripUndefined(selection) } as Record<keyof V, string>;
     const classes = Object.keys(config.variants).map((key) => {
-      const table = config.variants[key];
-      return table[picked[key]] ?? table[config.defaults[key] as string];
+      const table = config.variants[key] as Record<string, string>;
+      return table[picked[key] as string] ?? table[config.defaults[key] as string];
     });
     const compound = (config.compound ?? [])
       .filter((entry) =>

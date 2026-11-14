@@ -15,9 +15,12 @@ export const getStaticPaths = (async () =>
     props: { page },
   }))) satisfies GetStaticPaths;
 
-type Page = Awaited<ReturnType<typeof getOgImagePages>>[string];
+type Page = NonNullable<Awaited<ReturnType<typeof getOgImagePages>>[string]>;
 
-export const GET: APIRoute<{ page: Page }> = async ({ props: { page } }) =>
-  new Response(await renderPageCard({ section: await getPageSection(page), title: page.title }), {
-    headers: { "Content-Type": "image/png" },
-  });
+export const GET: APIRoute<{ page: Page }> = async ({ props: { page } }) => {
+  const section = await getPageSection(page);
+  return new Response(
+    await renderPageCard({ ...(section !== undefined ? { section } : {}), title: page.title }),
+    { headers: { "Content-Type": "image/png" } },
+  );
+};

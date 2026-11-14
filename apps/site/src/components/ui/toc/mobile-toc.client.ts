@@ -86,9 +86,14 @@ function initMobileToc(root: HTMLElement): () => void {
   function resolve() {
     if (suppress) return;
 
+    const first = headings[0];
+    const last = headings[headings.length - 1];
+    if (!first || !last) return;
+
     if (inBand.size > 0) {
       // Topmost in-band heading (smallest document-order index).
-      setActive(headings[Math.min(...inBand)].slug);
+      const topmost = headings[Math.min(...inBand)];
+      if (topmost) setActive(topmost.slug);
       return;
     }
 
@@ -96,12 +101,12 @@ function initMobileToc(root: HTMLElement): () => void {
     // the boundary headings sit relative to the band; otherwise keep the
     // current value (we're mid-section between two headings).
     const bandTop = window.innerHeight * BAND_TOP;
-    const firstTop = headings[0].el.getBoundingClientRect().top;
-    const lastTop = headings[headings.length - 1].el.getBoundingClientRect().top;
+    const firstTop = first.el.getBoundingClientRect().top;
+    const lastTop = last.el.getBoundingClientRect().top;
     if (firstTop > bandTop) {
       setActive("_top");
     } else if (lastTop < bandTop) {
-      setActive(headings[headings.length - 1].slug);
+      setActive(last.slug);
     }
   }
 

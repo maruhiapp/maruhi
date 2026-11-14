@@ -71,11 +71,13 @@ function initToc(root: HTMLElement): () => void {
 
     for (let i = 0; i < m.length; i++) {
       const cur = m[i];
+      if (!cur) continue;
 
       if (i === 0) {
         d += `M ${cur.x} ${cur.yTop} `;
       } else {
         const prev = m[i - 1];
+        if (!prev) continue;
         let connector: string;
         if (Math.abs(cur.x - prev.x) < 0.5) {
           connector = `L ${cur.x} ${cur.yTop} `;
@@ -210,7 +212,13 @@ function initToc(root: HTMLElement): () => void {
 
   function releaseStalePin() {
     if (pinnedIndex === null) return;
-    const heading = document.getElementById(slugs[pinnedIndex]);
+    const slug = slugs[pinnedIndex];
+    if (!slug) {
+      pinnedIndex = null;
+      pinnedEnteredViewport = false;
+      return;
+    }
+    const heading = document.getElementById(slug);
     if (!heading) {
       pinnedIndex = null;
       pinnedEnteredViewport = false;
@@ -268,7 +276,8 @@ function initToc(root: HTMLElement): () => void {
       const i = slugs.indexOf(link.dataset.nbSlug!);
       if (i === -1) return;
       pinnedIndex = i;
-      const heading = document.getElementById(slugs[i]);
+      const slug = slugs[i];
+      const heading = slug ? document.getElementById(slug) : null;
       const rect = heading?.getBoundingClientRect();
       pinnedEnteredViewport = !!rect && rect.bottom >= 0 && rect.top <= window.innerHeight;
       resolve();

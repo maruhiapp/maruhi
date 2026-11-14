@@ -317,8 +317,10 @@ const securityBlock = `/*
 // the docs pages, llms.txt / llms-full.txt and robots.txt get explicit
 // charset'd content types (exact paths, generated from the shipped file
 // list — no splat-pattern ambiguity), and `/` carries the Link header
-// pointing agents at llms.txt. Blume emitted equivalents of these; Nimbus
-// does not, so they are generated here.
+// pointing agents at llms.txt. Nimbus covers some of these with splat
+// patterns (/*/index.md, the llms files); the exact-path rules are
+// generated here so every shipped twin — including /fonts/OFL-*.txt,
+// which no pattern covers — has an explicit charset'd type.
 const twinBlocks = readdirSync(distDir, { recursive: true, encoding: "utf8" })
   .filter((name) => name.endsWith(".md") || name.endsWith(".txt"))
   .toSorted()
@@ -335,6 +337,20 @@ writeFileSync(
 const written = readFileSync(headersPath, "utf8");
 if (!written.includes(`Content-Security-Policy: ${csp}`))
   throw new Error("failed to write _headers");
+
+// Cloudflare's _headers allows at most 100 rules; beyond the cap the extra
+// rules stop applying with no error. The twin blocks grow by one rule per
+// shipped .md / .txt file, so the count is enforced as a build failure the
+// same way as the line limit above. A rule block starts at a path line
+// (column 0, begins with "/"); header lines are indented, comments are "#"
+const HEADERS_RULE_LIMIT = 100;
+const ruleCount = written.split("\n").filter((line) => line.startsWith("/")).length;
+if (ruleCount > HEADERS_RULE_LIMIT) {
+  throw new Error(
+    `the _headers has ${ruleCount} rules, over Cloudflare's limit of ${HEADERS_RULE_LIMIT}. ` +
+      "The shipped .md / .txt twins grew — consolidate the exact-path charset rules (e.g. back to splat patterns)",
+  );
+}
 
 console.log(
   `postbuild: ${htmlFiles.length} pages — ${styleRules.size} style attribute(s) externalized, ` +

@@ -69,7 +69,7 @@ function initTabContainer(container: HTMLElement): () => void {
     panelSelector: "[data-nb-tabs-content]",
     boundarySelector: "[data-nb-tabs]",
     indicator,
-    sync: syncKey ? { key: `ui-synced-tabs__${syncKey}` } : undefined,
+    ...(syncKey ? { sync: { key: `ui-synced-tabs__${syncKey}` } } : {}),
     // Keep the active tab within the horizontally-scrollable (scrollbar-hidden)
     // strip's visible range. Fires on every activate() — including the initial
     // paint and a synced/restored selection — so a right-edge active tab can't
