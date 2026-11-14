@@ -33,7 +33,7 @@ import {
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
 import { Effect } from "effect";
-import { beforeEach, expect } from "vitest";
+import { beforeEach, expect } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./auth.ts";
 import { hexBytes, vectorKeyOf } from "./data-crypto.ts";

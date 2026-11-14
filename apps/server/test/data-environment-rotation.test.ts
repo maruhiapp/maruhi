@@ -8,7 +8,7 @@
 // live in data-environment.test.ts (for the split's motivation see the
 // top of support/membership-scenario.ts).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
 import {

@@ -2,7 +2,7 @@
 // tests. Assumes the fixture of data-scenario.ts (registerDataScenario).
 
 import type { TokenScope } from "@maruhi/core";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import { cliToken } from "./auth.ts";
 import { createEnvironmentOk, MEMBER, READER, requestJson } from "./data-fixture.ts";

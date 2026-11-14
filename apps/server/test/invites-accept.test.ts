@@ -15,7 +15,7 @@ import {
 } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
 import { Context, Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { InviteRepo, makeDbServices } from "../src/db.package/index.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";

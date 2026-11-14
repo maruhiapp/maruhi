@@ -9,7 +9,7 @@ import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   BASE,

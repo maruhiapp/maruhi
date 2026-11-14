@@ -12,7 +12,7 @@
 // and reflects pushes into latest values) — so "crash on run 1 → resume on
 // run 2" can be exercised end-to-end on a single fixture.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

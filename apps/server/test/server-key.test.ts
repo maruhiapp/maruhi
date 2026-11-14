@@ -11,7 +11,7 @@ import {
   wrapDek,
 } from "@maruhi/crypto";
 import { Effect, Exit, Fiber, Redacted } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
 import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";

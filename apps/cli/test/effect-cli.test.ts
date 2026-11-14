@@ -19,7 +19,7 @@
 // human's interactive terminal in display.test.ts,
 // redacted-display-gate.test.ts and pull-run-pull.test.ts.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { expectNoLeak, startEnv } from "./support/argument-layer.ts";

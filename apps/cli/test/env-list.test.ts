@@ -16,7 +16,7 @@
 //     machine's device key the scope column falls back to the member scope
 //     and says so (scopeBasis "member")
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";

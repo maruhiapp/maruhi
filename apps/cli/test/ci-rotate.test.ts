@@ -29,7 +29,7 @@ import {
 } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

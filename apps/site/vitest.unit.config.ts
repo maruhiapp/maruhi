@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus/test/config";
 
 // Unit tests for the apex site (Nimbus): that the generated theme artifacts
 // (src/styles/brand.css / tokens.ts / logo-dark.svg / duplicated assets)

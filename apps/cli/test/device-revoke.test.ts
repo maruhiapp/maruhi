@@ -7,7 +7,7 @@
 //  4. `device revoke` settles by FP, and the last device cannot be revoked (last-device-protected)
 
 import { verifyChainWithHistory } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";

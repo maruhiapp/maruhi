@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { type IssuedInvitePin, issuedPinOf, makeFilePinStore } from "../src/pins.ts";
 import { testEnvironmentId } from "./support/crypto.ts";

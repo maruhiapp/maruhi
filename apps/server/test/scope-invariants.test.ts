@@ -9,7 +9,7 @@
 //     axis)
 
 import { testUserId } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { fetchEvents } from "./support/audit-read-scenario.ts";
 import { addMemberOperation } from "./support/data-crypto.ts";

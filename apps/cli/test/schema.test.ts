@@ -7,7 +7,7 @@
 // presence / soft type), push's activation, and the v3 layout's honest
 // failure mode (session-46 §8 iteration 5's test requirement).
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { findHighEntropySubstring } from "../src/entropy.ts";

@@ -31,7 +31,7 @@ import { execSync } from "node:child_process";
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const siteRoot = join(import.meta.dirname, "..", "..");
 const repoRoot = join(siteRoot, "..", "..");

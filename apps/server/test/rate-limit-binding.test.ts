@@ -11,7 +11,7 @@
 // so a console spy sees its log lines (log-hygiene.test.ts).
 import { testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import worker from "../src/index.ts";
 import { BASE, JSON_HEADERS, resetAuthDb } from "./support/auth.ts";

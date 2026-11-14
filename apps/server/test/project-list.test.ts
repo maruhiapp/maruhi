@@ -22,7 +22,7 @@
 //   server-fixed page size of 100)
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";

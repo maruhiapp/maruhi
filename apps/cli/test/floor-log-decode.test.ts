@@ -7,7 +7,7 @@
 // floor.ts types; every reject case mutates exactly one field of a valid
 // line so the case pins that field's form.
 
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import {
   decodeLogRecord,

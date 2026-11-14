@@ -9,7 +9,7 @@
 //   TERM=dumb > whether stderr is a terminal
 
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { formatNotice, logNote, logWarning, NoticeLedger, shouldUseColor } from "../src/notice.ts";
 import { makeTestEnv } from "./support/env.ts";

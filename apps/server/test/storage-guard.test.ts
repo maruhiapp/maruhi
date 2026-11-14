@@ -43,7 +43,7 @@ import { testKeyFingerprintHex, testUserId, testVariableId } from "@maruhi/crypt
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer, Redacted } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { putHeadAttestationProgram } from "../src/attestation-accept.ts";
 import {

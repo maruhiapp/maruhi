@@ -2,7 +2,7 @@
 // injects (buildInjectionEnv's checks and buildChildEnvironment).
 
 import { Effect, Exit, Layer, Stdio } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { CliIo } from "../src/io.ts";
 import { buildChildEnvironment, buildInjectionEnv, ProcessRunner, runOp } from "../src/run.ts";

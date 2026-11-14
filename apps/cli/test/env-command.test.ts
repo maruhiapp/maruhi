@@ -4,7 +4,7 @@
 // leading empty argument) and on `maruhi server` (a flag written at the
 // parent level).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { expectNoLeak, startEnv } from "./support/argument-layer.ts";

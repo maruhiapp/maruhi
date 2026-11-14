@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { ProjectId } from "@maruhi/core";
 import { signHeadAttestation } from "@maruhi/crypto";
 import { Effect, Exit, Redacted } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import {

@@ -7,7 +7,7 @@
 // and the backup sweep's rpc-failed record (ops-backup.test.ts).
 
 import { Cause, Effect, Formatter } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { RpcCallError, rpcCall } from "../src/worker-env.ts";
 

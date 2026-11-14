@@ -23,7 +23,7 @@ import { gunzipSync } from "node:zlib";
 
 import type { ProjectId } from "@maruhi/core";
 import { Cause, Effect, Exit, Fiber } from "effect";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { verifyChainSnapshot } from "../src/chain-sync.ts";

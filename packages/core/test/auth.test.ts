@@ -2,7 +2,7 @@
 // §9-2's min). The combination rules (multiple entries, wildcard
 // coexistence, empty array) pin their intent here.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { parseTokenScopes, permissionAtLeast, scopePermissionFor } from "../src/auth.ts";
 import { decodeProjectId } from "../src/project.ts";

@@ -9,7 +9,7 @@
 //   caller qualification alone) → uniform 404
 
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   BASE,

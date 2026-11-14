@@ -7,7 +7,7 @@
 // test body only runs them.
 // Workers Secrets are not in the config, so they stay hand-written only.
 import type { InferEnv } from "cf/config";
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, expectTypeOf, it } from "vite-plus/test";
 
 import type { HOSTED_WORKER, RESTORE_WORKER, SELF_HOST_WORKER } from "../cloudflare.config.ts";
 import type { Env } from "../src/do/chain-do.ts";

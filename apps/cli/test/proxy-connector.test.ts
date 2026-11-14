@@ -9,7 +9,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { Clock, Effect, Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";
 import {

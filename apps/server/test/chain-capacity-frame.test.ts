@@ -13,7 +13,7 @@
 import type { ChainOperation } from "@maruhi/crypto";
 import { canonicalChainEntryBytes } from "@maruhi/crypto";
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   MAX_CHAIN_ENTRIES,

@@ -1,7 +1,7 @@
 // Tests for the host-local guard of sandbox mode (proxy-guard.ts — §21 R-12)
 // and the authority formatting (§21 R-11).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatAuthority,

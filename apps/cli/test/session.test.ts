@@ -4,7 +4,7 @@
 // (CLI login polling rules live in login.test.ts — AUTH_SPEC §4)
 
 import { Effect, Exit, Layer } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { Keychain, masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";

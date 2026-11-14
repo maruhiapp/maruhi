@@ -11,7 +11,7 @@
 //  5. MARUHI_MIRROR_TOKEN opens the mirror's session (sent to the mirror only)
 
 import { Effect } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { FloorStore } from "../src/floor.ts";

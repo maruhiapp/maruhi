@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 
 import { Effect, Fiber, Layer } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { egressHttpClientLayer } from "../src/index.ts";
 

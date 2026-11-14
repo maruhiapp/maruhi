@@ -9,7 +9,7 @@
 //  1. A careless `toString` / `JSON.stringify` / template expansion produces a redaction
 
 import { Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { formatPulledLine } from "../src/display.ts";
 import {

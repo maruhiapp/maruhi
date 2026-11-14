@@ -3,7 +3,7 @@
 // connector inputs, and the "a consumed input is never injected" rule.
 // Error wording never echoes a typed value.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { parseHostPattern, parseProxyConfig } from "../src/proxy.package/proxy-config.ts";
 

@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
 import { isSessionAllowedEndpoint, maruhiApi, UNAUTHENTICATED_ENDPOINTS } from "@maruhi/api-schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   apiPaths,

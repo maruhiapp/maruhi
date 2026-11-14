@@ -33,7 +33,7 @@ import {
 } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   MAX_PENDING_ROTATION_PROPOSALS,

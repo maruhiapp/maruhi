@@ -39,7 +39,7 @@ import {
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_DEVICES_PER_MEMBER } from "../src/policy.ts";
 import { bearer, cliToken, JSON_HEADERS, BASE } from "./support/auth.ts";

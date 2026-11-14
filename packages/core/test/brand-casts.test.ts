@@ -10,7 +10,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const REPO_ROOT = join(import.meta.dirname, "../../..");
 const SOURCE_ROOTS = ["apps", "packages"];

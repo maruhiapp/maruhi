@@ -3,7 +3,7 @@
 // keychain removal). The maruhi server is a local HTTP mock. The CLI never
 // talks to the identity provider directly (the §4 principle), so there is no GitHub-side mock.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";

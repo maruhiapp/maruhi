@@ -18,7 +18,7 @@
 // support/membership-scenario.ts for the split's motivation).
 
 import { auditReadVariablesOf } from "@maruhi/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { isClass1Event } from "../src/audit-store-query.ts";
 import {

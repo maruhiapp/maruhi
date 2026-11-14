@@ -16,7 +16,7 @@
 
 import type { ChainState, MemberScope } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
 import {

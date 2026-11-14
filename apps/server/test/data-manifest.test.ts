@@ -13,7 +13,7 @@
 // on environment deletion.
 
 import type { ChainEntry } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { toManifestInput, toMetaStatementInput } from "../src/data/data-http.ts";
 import type { DekWrapInput } from "../src/data/data-plane.ts";

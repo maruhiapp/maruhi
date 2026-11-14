@@ -6,7 +6,7 @@
 // reach the DO (the DO reconstructs the signed target from the storage
 // coordinates, never from the wire's declared values — §12-5).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { toMetaStatementInput } from "../src/data/data-http.ts";
 

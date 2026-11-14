@@ -6,7 +6,7 @@ import { egressHttpClientLayer } from "@maruhi/core";
 import { Cause, Effect, Exit, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { CliError, cliError } from "../src/errors.ts";
 import { CliIo, type CliIoShape } from "../src/io.ts";

@@ -11,7 +11,7 @@ import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";

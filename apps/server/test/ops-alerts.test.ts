@@ -15,7 +15,7 @@ import { env } from "cloudflare:test";
 import { Context, Duration, Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { makeDbServices, OpsRepo, opsWindowStart } from "../src/db.package/index.ts";
 import type { OpsAlertPayload, OpsSignal } from "../src/ops/ops-alerts.ts";

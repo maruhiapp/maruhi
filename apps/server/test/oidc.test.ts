@@ -23,7 +23,7 @@ import { Effect, ManagedRuntime } from "effect";
 import { Digest, Signature } from "effect/crypto";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { makeJwksCache, makeOidcVerifier } from "../src/oidc.package/index.ts";
 import { makeOidcToken } from "./support/lease.ts";

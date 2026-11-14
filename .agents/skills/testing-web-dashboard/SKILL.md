@@ -25,9 +25,9 @@ description: How to run and interactively drive the maruhi web dashboard e2e/UI 
 
 ## Commands
 
-- Unit: `(cd apps/web && bun x vitest run --config vitest.unit.config.ts)`
+- Unit: `(cd apps/web && bunx vp test run --config vitest.unit.config.ts)`
 - E2E (needs build first; spawns its own `cf dev`): 
-  `(cd apps/web && bun run build && bun x vitest run --config vitest.config.ts)`
+  `(cd apps/web && bun run build && bunx vp test run --config vitest.config.ts)`
 - Serve built app for manual driving: `(cd apps/web && bun run preview)` →
   `cd ../server && bun x cf dev --port 8788` (production-like combined
   worker + assets, strict CSP). The vite dev server (5173) does not apply `_headers`/CSP.

@@ -12,7 +12,7 @@
 //   list`; a 403 is the credential guidance
 // - both: an unexpected server error is a typed error with exit 1
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestUser } from "./support/crypto.ts";

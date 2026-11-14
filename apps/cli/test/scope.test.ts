@@ -14,7 +14,7 @@
 
 import type { ProjectId } from "@maruhi/core";
 import { Effect, Exit } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";

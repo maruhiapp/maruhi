@@ -10,7 +10,7 @@
 //   and that NO var.read is recorded
 
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { AuditStore } from "../src/audit-store.ts";
 import { DataStore } from "../src/data/data-store.ts";

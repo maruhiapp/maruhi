@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus/test/config";
 
 // e2e check of the web dashboard (cf dev + Playwright).
 // Note: intentionally not added to the root vitest.config.ts projects

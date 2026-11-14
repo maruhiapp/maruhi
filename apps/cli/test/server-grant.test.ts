@@ -15,7 +15,7 @@ import {
   fingerprintToWords,
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

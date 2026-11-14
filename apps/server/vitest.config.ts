@@ -1,7 +1,8 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus/test/config";
 import { unstable_readConfig } from "wrangler";
 
+import { vitestPoolAliases } from "../../scripts/vitest-aliases.ts";
 import { fakeGitHub } from "./test/support/fake-github.ts";
 import { readDevVarsExample } from "./test/support/read-dev-vars.ts";
 import { readDrizzleMigrations } from "./test/support/read-migrations.ts";
@@ -17,6 +18,9 @@ const wranglerConfig = unstable_readConfig({
 });
 
 export default defineConfig({
+  // The Cloudflare pool's in-workerd entry, resolved through this
+  // config when a run is rooted here (see scripts/vitest-aliases.ts).
+  resolve: { alias: vitestPoolAliases },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },

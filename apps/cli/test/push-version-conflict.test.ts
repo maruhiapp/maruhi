@@ -2,7 +2,7 @@
 // (VersionConflict / EpochConflict = resync → re-encrypt → retry),
 // and the raw out-of-schema 413 branch.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {

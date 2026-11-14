@@ -13,7 +13,7 @@
 import { testUserId } from "@maruhi/crypto/test-support";
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";

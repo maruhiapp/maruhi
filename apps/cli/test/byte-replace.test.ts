@@ -4,7 +4,7 @@
 // byte transparency for non-UTF-8 output, and the shared scrub fragment
 // rule.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   type BytePattern,

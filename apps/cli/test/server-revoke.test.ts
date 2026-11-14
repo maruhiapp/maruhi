@@ -21,7 +21,7 @@
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";

@@ -1,10 +1,15 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus/test/config";
+
+import { vitestPoolAliases } from "./scripts/vitest-aliases.ts";
 
 // crypto / core / cli run in the normal environment; server uses
 // @cloudflare/vitest-plugin (a real workerd environment).
 // The web (dashboard) and site (LP + docs — Nimbus) e2e are separate
 // steps that assume a built dist.
 export default defineConfig({
+  // For root invocations the Cloudflare pool resolves its in-workerd
+  // entry through this config's vite instance (see scripts/vitest-aliases.ts).
+  resolve: { alias: vitestPoolAliases },
   test: {
     sequence: {
       // File-order shuffle that enforces order independence in the server

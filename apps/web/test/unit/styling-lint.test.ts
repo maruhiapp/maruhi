@@ -16,7 +16,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
 

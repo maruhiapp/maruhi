@@ -2,7 +2,7 @@
 // subcommands (ADR-0016 stage 3), driven through the real runCli as in
 // effect-cli.test.ts.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { startEnv } from "./support/argument-layer.ts";

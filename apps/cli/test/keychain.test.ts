@@ -2,7 +2,7 @@
 // key records and their entry names.
 
 import { Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   masterKeyEntryName,

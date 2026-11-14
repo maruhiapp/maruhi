@@ -5,7 +5,7 @@
   "license": "FSL-1.1-MIT",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "deploy": "bun run db:migrate && bun run web:build && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision",
     "web:build": "bun run --filter @maruhi/web build",
     "db:migrate": "cf d1 migrations apply $(bun scripts/d1-id.ts) --dir drizzle --pattern 'drizzle/*/migration.sql'",

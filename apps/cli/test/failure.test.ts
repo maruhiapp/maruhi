@@ -9,7 +9,7 @@ import {
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Schema } from "effect";
 import { HttpClientError, HttpClientRequest } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { toCliError } from "../src/failure.ts";
 

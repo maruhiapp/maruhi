@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { makeFileFingerprintBook } from "../src/known-fingerprints.ts";
 import { testUserId } from "./support/crypto.ts";

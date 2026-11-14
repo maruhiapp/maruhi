@@ -1,4 +1,4 @@
-import { afterEach, beforeAll } from "vitest";
+import { afterEach, beforeAll } from "vite-plus/test";
 
 import { chainHandlerOf } from "./chain-handler.ts";
 import {

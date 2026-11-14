@@ -31,7 +31,7 @@ import {
   UNAUTHENTICATED_ENDPOINTS,
 } from "@maruhi/api-schema";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import { OWNER, projectId } from "./support/data-fixture.ts";

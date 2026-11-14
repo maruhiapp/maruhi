@@ -19,7 +19,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/commands/index.ts";
 

@@ -24,7 +24,7 @@ import {
   unwrapDek,
 } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
 import { bearer, cliToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";

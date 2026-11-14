@@ -25,7 +25,7 @@
 
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, cliToken } from "./support/auth.ts";
 import {

@@ -17,7 +17,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { Context, Effect } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { makeDbServices, OpsRepo } from "../src/db.package/index.ts";
 import type { Env } from "../src/do/chain-do.ts";

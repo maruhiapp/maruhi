@@ -14,7 +14,7 @@ import { decodeOrgId } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
 import { Cause, Context, Effect, Exit } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   D1AuditRepo,

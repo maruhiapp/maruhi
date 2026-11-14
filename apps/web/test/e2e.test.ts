@@ -38,7 +38,7 @@ import {
 } from "@maruhi/api-schema";
 import { Schema } from "effect";
 import { type Browser, chromium, type Page, type Route } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   chainFixture,

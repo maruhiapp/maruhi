@@ -4,7 +4,7 @@
 // effect-cli.test.ts. The two groups share a file because several cases
 // check both.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { expectNoLeak, startEnv } from "./support/argument-layer.ts";

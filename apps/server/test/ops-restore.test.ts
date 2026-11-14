@@ -8,7 +8,7 @@
 // but derived from the snapshot's genesis.
 
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import type { OpsBackupOutcome } from "../src/do/do-ops.ts";
 import { OPS_BACKUP_MAX_BYTES } from "../src/ops/ops-policy.ts";

@@ -7,7 +7,7 @@
 
 import type { AddMemberPayload, ChainActor } from "@maruhi/crypto";
 import { Schema } from "effect";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import type { AuditActor, AuditEventRecord } from "../src/audit.ts";
 import type {

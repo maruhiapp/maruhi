@@ -9,7 +9,7 @@
 // environment) is covered by apps/server/test/strict-payload.test.ts
 
 import { Result, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   assertSecurityCriticalPayloadsStrict,

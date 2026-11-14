@@ -11,7 +11,7 @@
 // static `--project` list.
 //
 //   bun scripts/test-suite.mjs list            partition as JSON
-//   bun scripts/test-suite.mjs run <suite>     vitest run --project ...
+//   bun scripts/test-suite.mjs run <suite>     vp test run --project ...
 //                                              (extra args pass through)
 //   bun scripts/test-suite.mjs probe <path>    print the suite a config
 //                                              path maps to (rule only)
@@ -21,12 +21,16 @@
 // configs, like the web e2e vitest.config.ts, intentionally match no
 // rule and fail if added to `projects:`).
 //
-// Requires Bun. `run` spawns `vp test` (vite-plus) — except the server
-// suite, which spawns `bun x vitest`: the server suite runs on
-// @cloudflare/vitest-plugin (workerd), whose runner does not start
-// under vite-plus's bundled vitest copy (every test file fails with
-// "Vitest failed to find the runner"; verified in the vite-plus
-// migration, 2026-10-30).
+// Requires Bun. `run` spawns `vp test` (vite-plus) for every suite,
+// including the server suite on @cloudflare/vitest-plugin (workerd):
+// test files import the runner from "vite-plus/test", so the workerd
+// pool and the runner share the one vitest copy vite-plus bundles.
+// (A standalone vitest install cannot serve here: with a second copy
+// in the tree, the pool's workers and the runner end up on different
+// copies and suites fail to start — so the root carries no direct
+// vitest dependency. packages/crypto keeps a local vitest pin for
+// its browser-mode suite; see the note in
+// packages/crypto/vitest.browser.config.ts.)
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -170,20 +174,14 @@ switch (command) {
     const names = partition()[suite];
     const passthrough = extra[0] === "--" ? extra.slice(1) : extra;
     const projects = names.flatMap((n) => ["--project", n]);
-    const result =
-      suite === "server"
-        ? spawnSync("bun", ["x", "vitest", "run", ...projects, ...passthrough], {
-            cwd: ROOT,
-            stdio: "inherit",
-          })
-        : spawnSync(
-            join(ROOT, "node_modules/.bin/vp"),
-            ["test", "run", ...projects, ...passthrough],
-            {
-              cwd: ROOT,
-              stdio: "inherit",
-            },
-          );
+    const result = spawnSync(
+      join(ROOT, "node_modules/.bin/vp"),
+      ["test", "run", ...projects, ...passthrough],
+      {
+        cwd: ROOT,
+        stdio: "inherit",
+      },
+    );
     process.exit(result.status ?? 1);
     break;
   }

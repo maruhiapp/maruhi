@@ -20,7 +20,7 @@
 import type { ChainOperation } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Exit } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { checkCheckpointIntegrity } from "../src/checkpoint-integrity.ts";

@@ -11,7 +11,7 @@
 //     third-party URLs, and the HTML response carries a CSP (script-src
 //     'self' baseline)
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   parsePrfPost,

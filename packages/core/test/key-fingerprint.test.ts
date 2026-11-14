@@ -22,7 +22,7 @@ import type {
 import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { vectorKeys } from "@maruhi/crypto/test-support";
 import { Effect, Exit, Schema } from "effect";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import type { AuditEventRecord, ChainMirrorSubject } from "../src/audit.ts";
 import {

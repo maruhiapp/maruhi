@@ -1,7 +1,7 @@
 // Unit test of the display derivation of the aggregated var.read
 // shape (src/dashboard/audit-read.ts).
 import { testVariableId } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 // The canonical implementation (web carries no package dependencies,
 // so only tests reference the source by relative path)

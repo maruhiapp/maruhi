@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 import { Digest, SecureRandom } from "effect/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   createFlowToken,

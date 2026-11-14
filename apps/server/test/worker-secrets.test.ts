@@ -8,7 +8,7 @@
 
 import { env } from "cloudflare:test";
 import { Cause, Effect, Exit, Formatter, Inspectable, Redacted } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { readWorkerSecrets, WorkerSecrets } from "../src/worker-env.ts";
 

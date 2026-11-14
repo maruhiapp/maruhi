@@ -6,7 +6,7 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { chainCapacityExceeded } from "../src/do/chain-accept.ts";
 import {

@@ -9,7 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const PROBE = join(import.meta.dirname, "support", "run-probe.ts");
 const PIPE_PROBE = join(import.meta.dirname, "support", "pipe-probe.ts");

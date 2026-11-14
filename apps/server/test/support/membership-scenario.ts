@@ -29,7 +29,7 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 import { vectorEnvironmentDeks } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
-import { beforeEach, expect } from "vitest";
+import { beforeEach, expect } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS, reseedAuthDb } from "./auth.ts";
 import {

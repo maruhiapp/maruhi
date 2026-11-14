@@ -5,7 +5,7 @@
 // layout 2 included). See the top of data-schema.test.ts for how the
 // suite is split and support/schema-scenario.ts for the shared helpers.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
 import { encryptValue } from "./support/data-crypto.ts";

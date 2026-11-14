@@ -15,7 +15,7 @@
 //   open = stays pending)
 
 import { env, SELF } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   BASE,

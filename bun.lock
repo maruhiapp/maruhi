@@ -12,7 +12,6 @@
         "oxlint-plugin-eslint": "1.93.0",
         "typescript": "7.0.2",
         "vite-plus": "1.6.0",
-        "vitest": "5.1.0",
       },
     },
     "apps/cli": {
@@ -132,6 +131,7 @@
       "devDependencies": {
         "@cloudflare/vitest-plugin": "1.8.1",
         "@vitest/browser-playwright": "5.1.0",
+        "vitest": "5.1.0",
       },
     },
   },

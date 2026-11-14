@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
 import { computeUserKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device-add.ts";

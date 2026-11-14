@@ -13,7 +13,7 @@
 
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { chainMirrorEvents, indexProposals, rotationRecommendedVariablesOf } from "../src/audit.ts";
 

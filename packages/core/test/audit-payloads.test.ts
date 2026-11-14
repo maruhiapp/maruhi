@@ -14,7 +14,7 @@ import {
   toTypedEntry,
   vectorEntries,
 } from "@maruhi/crypto/test-support";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   assertProjectAuditPayload,

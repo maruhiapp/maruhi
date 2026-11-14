@@ -2,7 +2,7 @@
 // (commands/login-logout.ts, ADR-0016 stage 3), driven through the real
 // runCli as in effect-cli.test.ts.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { expectNoLeak, startEnv } from "./support/argument-layer.ts";

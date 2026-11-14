@@ -159,9 +159,12 @@ apps/
    the Effect diagnostics of the former `lint:effect` gate ride along via the
    effecttsgo preset) → 4. `vp check` typecheck → 5. ImportLint → 6. fallow (baseline) → 7. React Doctor (web only, full scan, warnings block)
    → 8. **tests** (Vitest via `vp test`: crypto/core/CLI in the normal environment,
-   server/DO via `@cloudflare/vitest-plugin` [formerly vitest-pool-workers] on
-   the standalone vitest — its runner does not start under vite-plus's
-   bundled copy)
+   server/DO via `@cloudflare/vitest-plugin` [formerly vitest-pool-workers];
+   every suite runs on vite-plus's bundled vitest — there is no standalone
+   install (the pool's `vitest/worker` / `vitest/runtime` specifiers are
+   aliased to the bundled copy via `scripts/vitest-aliases.ts`;
+   `packages/crypto` keeps the repo's only direct vitest pin, as the
+   browser-mode module anchor)
 
 - Respect ImportLint's `@public` directory encapsulation. If a direct import of
   an internal module feels necessary, that is a public-API design gap — consult

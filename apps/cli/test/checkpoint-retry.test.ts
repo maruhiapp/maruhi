@@ -6,7 +6,7 @@
 import { AuditHeadNotReadyError } from "@maruhi/api-schema";
 import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { fetchAuditHead } from "../src/checkpoint.package/checkpoint.ts";
