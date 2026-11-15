@@ -409,7 +409,7 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
     });
   });
   describe("ci.yml runs only the pinned, verified Chrome Headless Shell", () => {
-    const steps = loadWorkflow("ci.yml").workflow.jobs["check"]?.steps ?? [];
+    const steps = loadWorkflow("ci.yml").workflow.jobs["e2e"]?.steps ?? [];
     const install = steps.findIndex(
       (s) => s.name === "Install Chrome Headless Shell (pinned SHA-256, no cache)",
     );
@@ -525,23 +525,33 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       // only other PLAYWRIGHT_ variable is the verified executable path the install step exports
       expect([...PRIVILEGED, ...UNPRIVILEGED].flatMap(playwrightSettings)).toEqual([
         "ci.yml env: PLAYWRIGHT_DOWNLOAD_HOST",
-        `ci.yml check ${step?.name} run: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`,
+        `ci.yml e2e ${step?.name} run: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`,
       ]);
     });
 
     it("gates every browser step behind a wait on the background install", () => {
       // A background step's $GITHUB_ENV write (the executable path the tests
-      // launch through) is only visible after a wait that names its id
+      // launch through) is only visible after a wait that names its id, and
+      // only inside the job that ran the install — a browser step in any
+      // other job could never see the path at all, so scan every job
       const waitForInstall = steps.findIndex((s) => {
         const waits = typeof s.wait === "string" ? [s.wait] : (s.wait ?? []);
         return waits.includes(step?.id ?? "");
       });
       expect(waitForInstall, "a wait step names the install's id").toBeGreaterThan(install);
-      const browserSteps = steps.flatMap((s, i) =>
-        flattenStep(s).flatMap((m) => (/\be2e\b|test:browser/.test(m.run ?? "") ? [i] : [])),
-      );
-      expect(browserSteps.length).toBeGreaterThan(0);
-      for (const i of browserSteps) expect(i, steps[i]?.name).toBeGreaterThan(waitForInstall);
+      const { jobs } = loadWorkflow("ci.yml").workflow;
+      let browserSteps = 0;
+      for (const [name, job] of Object.entries(jobs)) {
+        const indices = (job.steps ?? []).flatMap((s, i) =>
+          flattenStep(s).flatMap((m) => (/\be2e\b|test:browser/.test(m.run ?? "") ? [i] : [])),
+        );
+        browserSteps += indices.length;
+        for (const i of indices) {
+          expect(name, "browser steps live in the install step's job").toBe("e2e");
+          expect(i, job.steps?.[i]?.name ?? name).toBeGreaterThan(waitForInstall);
+        }
+      }
+      expect(browserSteps).toBeGreaterThan(0);
     });
 
     it("has no workflow, local action or package.json script run playwright install", () => {

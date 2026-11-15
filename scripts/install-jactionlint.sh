@@ -5,8 +5,8 @@
 # jactionlint (https://jactionlint.jdx.dev) is the maintained actionlint fork
 # and the only workflow linter that parses the step-level
 # `parallel:` / `background:` / `wait:` / `cancel:` syntax this repository's
-# ci.yml uses. The `check` job lints .github/workflows/*.yml with it on every
-# run; the config is .github/jactionlint.yaml.
+# ci.yml uses. The `static` job in ci.yml lints .github/workflows/*.yml with
+# it on every run; the config is .github/jactionlint.yaml.
 #
 # The release archive is verified before anything in it runs: byte size,
 # archive SHA-256 and extracted-binary SHA-256 are all pinned below — version
