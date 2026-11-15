@@ -213,14 +213,6 @@
   // reports; a change to either copy, or a third copy, gives a new key that
   // is reported again. fallow says nothing about a key that matches no
   // clone, so a change that removes a kept clone removes its key and note:
-  // - dup:cfe4b53c:2 is apps/cli/src/values-verify.ts's
-  //   verifyVariableStatements and verifyDeclaredStatements. Each checks its
-  //   own §12-7 list, and the two refuse different things: the metadata-only
-  //   list refuses only a deleted statement, after the signature check; the
-  //   declared list refuses every status but declared (an active one is a
-  //   value omission — CRYPTO_SPEC §6.3), before the signature check, and
-  //   also an ID the active list holds. One shared loop would need a switch
-  //   for each difference, the order of the checks included.
   // - dup:a3d0632d:2, dup:54dc2654:2, dup:015e31c1:2, dup:fd94bdcb:2 are
   //   apps/server/src/do/do-mirror.ts and do-snapshot-restore.ts carrying
   //   parallel copies of the same chain bindings: the JSON field readers,
@@ -271,7 +263,6 @@
       "apps/site/src/**"
     ],
     "ignoredClones": [
-      "dup:cfe4b53c:2",
       "dup:a3d0632d:2",
       "dup:54dc2654:2",
       "dup:015e31c1:2",
