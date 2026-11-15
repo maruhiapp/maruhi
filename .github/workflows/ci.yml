@@ -82,8 +82,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # fallow audit needs to compare against the base branch, and
+          # fallow health reads the full history
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -253,8 +253,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # Full history, as in every job here: the six jobs share one
+          # checkout prefix, and the history readers (fallow in static,
+          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
+          # the floor for all of them
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -294,8 +296,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # Full history, as in every job here: the six jobs share one
+          # checkout prefix, and the history readers (fallow in static,
+          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
+          # the floor for all of them
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -322,8 +326,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # Full history, as in every job here: the six jobs share one
+          # checkout prefix, and the history readers (fallow in static,
+          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
+          # the floor for all of them
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -364,8 +370,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # 7d diffs the vectors against the merge-base with the PR's
+          # base branch, which needs the full history
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
@@ -434,8 +440,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and fallow
-          # health / Nimbus's lastUpdated read the full history
+          # Nimbus's lastUpdated (the site build, and the site e2e's
+          # page-date checks) reads the full history
           fetch-depth: 0
           # Later steps only read the checked-out local history (no
           # authenticated git operations). Don't leave a token in a job that
