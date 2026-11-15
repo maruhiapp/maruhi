@@ -9,8 +9,7 @@
     "deploy": "bun run db:migrate && bun run web:build && CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false cf deploy --no-provision",
     "web:build": "bun run --filter @maruhi/web build",
     "db:migrate": "cf d1 migrations apply $(bun scripts/d1-id.ts) --dir drizzle --pattern 'drizzle/*/migration.sql'",
-    "db:migrate:local": "cf d1 migrations apply $(bun scripts/d1-id.ts) --local --dir drizzle --pattern 'drizzle/*/migration.sql'",
-    "db:migrate:hosted": "cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --dir drizzle --pattern 'drizzle/*/migration.sql'"
+    "db:migrate:local": "cf d1 migrations apply $(bun scripts/d1-id.ts) --local --dir drizzle --pattern 'drizzle/*/migration.sql'"
   },
   "dependencies": {
     "@maruhi/api-schema": "workspace:*",

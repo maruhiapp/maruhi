@@ -540,18 +540,167 @@ expectSame(
   [...alchemySource.matchAll(/directory: "([^"]+)"/g)].map((m) => m[1]),
   [normalizeRepoPath(`apps/server/${cHosted.assets?.directory ?? ""}`), "apps/site/dist"],
 );
-// D1 / R2 are lookup-only in Alchemy; the lookup keys must name the same
-// database and bucket the cf hosted config binds
+// D1 / R2 are managed in Alchemy (ADR-0012 revision 2); the declarations
+// must name the same database and bucket the cf hosted config binds
 expectSame(
-  "alchemy: D1 lookup name",
-  alchemyLiteral("D1 lookup", /D1\.Database\.lookup\(\{\s*name: "([^"]+)"/),
+  "alchemy: D1 database name",
+  alchemyLiteral("D1 database name", /D1\.Database\("Database", \{\s*name: "([^"]+)"/),
   cHosted.d1?.name,
 );
 expectSame(
-  "alchemy: R2 lookup name",
-  alchemyLiteral("R2 lookup", /R2\.Bucket\.lookup\(\{\s*name: "([^"]+)"/),
+  "alchemy: R2 bucket name",
+  alchemyLiteral("R2 bucket name", /R2\.Bucket\("OpsBackupBucket", \{\s*name: "([^"]+)"/),
   cHosted.r2["OPS_BACKUP_BUCKET"],
 );
+if (/D1\.Database\.lookup|R2\.Bucket\.lookup/.test(alchemySource)) {
+  failures.push(
+    "alchemy.run.ts: D1 / R2 must be managed declarations, not lookups (ADR-0012 revision 2)",
+  );
+}
+// The migrations prop is what makes the deploy own the hosted migration
+// ledger; the directory is the drizzle-kit layout apps/server itself
+// applies, relative to the repository root like the program's other paths
+expectSame(
+  "alchemy: D1 migrations directory",
+  alchemyLiteral("D1 migrations", /migrations: "([^"]+)"/),
+  "apps/server/drizzle",
+);
+// The bucket's declared lifecycle rule set, pinned by value (the cf side
+// carries no lifecycle representation to compare against): the seconds
+// are the load-bearing retention numbers — the bucket's default
+// multipart abort rule is 7 days, and retain-35d expires objects at
+// 35 days and aborts multipart uploads at 1 day (ops task O2), declared
+// in the bucket's creation order (the provider's comparison is
+// order-sensitive). A rule must also carry no prefix and no storage
+// class transition: the provider syncs both verbatim, and either would
+// change what the retention rule actually covers. The provider's
+// reconcile syncs the live rules to this declaration, so a wrong value
+// here would rewrite the live retention on the adopting deploy
+const alchemyLifecycleText = alchemyLiteral(
+  "lifecycle rules",
+  /lifecycleRules: \[([\s\S]*?)\],\s*cors:/,
+);
+function alchemyAgeSeconds(chunk: string, transition: string): number | undefined {
+  const match = chunk.match(
+    new RegExp(`${transition}: \\{ condition: \\{ type: "Age", maxAge: ([\\d_]+) \\} \\}`),
+  );
+  return match?.[1] === undefined ? undefined : Number(match[1].replaceAll("_", ""));
+}
+const alchemyLifecycleRules = alchemyLifecycleText
+  .split(/\{\s*id: "/)
+  .slice(1)
+  .map((chunk) => {
+    const deleteMaxAge = alchemyAgeSeconds(chunk, "deleteObjectsTransition");
+    const abortMaxAge = alchemyAgeSeconds(chunk, "abortMultipartUploadsTransition");
+    return {
+      id: chunk.slice(0, chunk.indexOf('"')),
+      enabled: /enabled: true/.test(chunk),
+      hasPrefix: /prefix:/.test(chunk),
+      hasStorageClassTransitions: /storageClassTransitions/.test(chunk),
+      ...(deleteMaxAge === undefined ? {} : { deleteMaxAge }),
+      ...(abortMaxAge === undefined ? {} : { abortMaxAge }),
+    };
+  });
+expectSame("alchemy: R2 lifecycle rules", alchemyLifecycleRules, [
+  {
+    id: "Default Multipart Abort Rule",
+    enabled: true,
+    hasPrefix: false,
+    hasStorageClassTransitions: false,
+    abortMaxAge: 604_800,
+  },
+  {
+    id: "retain-35d",
+    enabled: true,
+    hasPrefix: false,
+    hasStorageClassTransitions: false,
+    deleteMaxAge: 3_024_000,
+    abortMaxAge: 86_400,
+  },
+]);
+// CORS / domains / public access are declared explicitly empty / off:
+// the provider reads an omitted prop as "clear" as well, but the explicit
+// declaration is what this check can pin, and it records the
+// configuration the O2 record supports (no public access, no custom
+// domain; the live bucket is verified against it at the adopting plan —
+// ADR-0012 revision 2's operator preconditions)
+if (!/cors: \[\],\s*domains: \[\],\s*publicAccess: false,/.test(alchemySource)) {
+  failures.push(
+    "alchemy.run.ts: R2 bucket must declare cors: [], domains: [], publicAccess: false explicitly",
+  );
+}
+// Both managed resources are protected: a plan that would delete or
+// replace either must fail (RemovalPolicy.protect), closing the delete
+// path a lookup never had. Each declaration is sliced out first (from
+// its constructor to the next declaration), so a protect() on the other
+// resource cannot satisfy the check
+function alchemySection(label: string, start: string, end: string): string {
+  const startIdx = alchemySource.indexOf(start);
+  const endIdx = startIdx === -1 ? -1 : alchemySource.indexOf(end, startIdx + start.length);
+  if (startIdx === -1 || endIdx === -1) {
+    failures.push(
+      `alchemy.run.ts: ${label}: declaration anchors not found (extraction fails closed)`,
+    );
+    return "";
+  }
+  return alchemySource.slice(startIdx, endIdx);
+}
+const alchemyD1Section = alchemySection(
+  "D1 declaration",
+  "Cloudflare.D1.Database(",
+  "Cloudflare.R2.Bucket(",
+);
+const alchemyR2Section = alchemySection(
+  "R2 declaration",
+  "Cloudflare.R2.Bucket(",
+  "Cloudflare.RateLimit(",
+);
+if (!alchemyD1Section.includes(".pipe(Alchemy.RemovalPolicy.protect())")) {
+  failures.push(
+    "alchemy.run.ts: D1 database must be piped through Alchemy.RemovalPolicy.protect()",
+  );
+}
+if (!alchemyR2Section.includes(".pipe(Alchemy.RemovalPolicy.protect())")) {
+  failures.push("alchemy.run.ts: R2 bucket must be piped through Alchemy.RemovalPolicy.protect()");
+}
+// The props the design deliberately omits must stay omitted. Some are
+// replace triggers (backstopped by protect() at plan time), but others —
+// the bucket's storageClass, the database's readReplication, a locks
+// declaration — take the provider's in-place update path and would be
+// applied, not refused. Each declaration is sliced tightly (constructor
+// to its own protect pipe) so prose elsewhere cannot satisfy or trip
+// the check
+function alchemyDeclaration(label: string, start: string): string {
+  const startIdx = alchemySource.indexOf(start);
+  const pipe = ".pipe(Alchemy.RemovalPolicy.protect())";
+  const endIdx = startIdx === -1 ? -1 : alchemySource.indexOf(pipe, startIdx);
+  if (startIdx === -1 || endIdx === -1) {
+    failures.push(
+      `alchemy.run.ts: ${label}: declaration anchors not found (extraction fails closed)`,
+    );
+    return "";
+  }
+  return alchemySource.slice(startIdx, endIdx + pipe.length);
+}
+const alchemyD1Declaration = alchemyDeclaration("D1 declaration", "Cloudflare.D1.Database(");
+const alchemyR2Declaration = alchemyDeclaration("R2 declaration", "Cloudflare.R2.Bucket(");
+for (const prop of ["jurisdiction", "primaryLocationHint", "readReplication"]) {
+  if (alchemyD1Declaration.includes(`${prop}:`)) {
+    failures.push(`alchemy.run.ts: D1 database must not declare ${prop} (ADR-0012 revision 2)`);
+  }
+}
+for (const prop of [
+  "locationHint",
+  "jurisdiction",
+  "storageClass",
+  "locks",
+  "localUploads",
+  "forceDestroy",
+]) {
+  if (alchemyR2Declaration.includes(`${prop}:`)) {
+    failures.push(`alchemy.run.ts: R2 bucket must not declare ${prop} (ADR-0012 revision 2)`);
+  }
+}
 // The same-worker DO: the DurableObjectLike literal must name the class the
 // cf hosted worker binds as PROJECT_CHAIN, a sqlite export of that worker
 if (!alchemySource.includes('kind: "Cloudflare.DurableObject"')) {
