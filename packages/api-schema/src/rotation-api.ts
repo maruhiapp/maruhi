@@ -162,7 +162,15 @@ export type SealedValueWrap = typeof SealedValueWrapSchema.Type;
 export const ProposedVariableSchema = Schema.Struct({
   variableId: VariableIdSchema,
   baseVersion: PositiveInt,
-  wraps: Schema.Array(SealedValueWrapSchema).check(Schema.isMinLength(1)),
+  /**
+   * One wrap per recipient device. Capped at the §12-8 DEK-wrap row cap,
+   * the same bound as the preflight recipient set (lease-api.ts) — the
+   * mint's wraps carry that set.
+   */
+  wraps: Schema.Array(SealedValueWrapSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(10_000),
+  ),
 });
 
 /**

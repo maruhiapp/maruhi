@@ -90,4 +90,11 @@ export interface InviteCompletionTarget {
   readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
   readonly inviteeSigPubHex: string;
+  /**
+   * The role granted by the fulfilling add_member (CRYPTO_SPEC §6.2).
+   * May be `owner`, which no invite grants (§15-1), so it matches no row.
+   */
+  readonly role: InviteRole | "owner";
+  readonly scopeKind: InviteScope["scopeKind"];
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
 }

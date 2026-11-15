@@ -39,9 +39,26 @@ export function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
 
-/** A NULL-or-brand column read (the mint is the stored-row decode boundary). */
-export const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | null =>
-  value === null ? null : decode(String(value));
+/**
+ * A NULL-or-brand column read (the mint is the stored-row decode boundary).
+ * A malformed value reads as null (a broken row is treated as null, as in
+ * parsePayload — a read is never made a defect). That null is a read-surface
+ * degradation only, not a legitimate NULL for derivation: a staged or
+ * restored table carrying such a value is refused by
+ * auditRowShapeViolations (audit-store.ts) before any head is derived over
+ * it or it is installed, and the live log's rows are written only from
+ * already-minted values, so deriveChunk never derives over one.
+ */
+export const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | null => {
+  if (value === null) {
+    return null;
+  }
+  try {
+    return decode(String(value));
+  } catch {
+    return null;
+  }
+};
 export const numberOrNull = (value: unknown): number | null =>
   value === null ? null : Number(value);
 

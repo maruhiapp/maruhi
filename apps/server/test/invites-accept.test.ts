@@ -22,6 +22,7 @@ import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/
 import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";
 import {
   appendOperation,
+  createEnvironmentOk,
   MEMBER,
   OWNER,
   projectId,
@@ -38,7 +39,9 @@ import {
   inviteAuditRows,
   inviteRow,
   issueInvite,
+  issueInviteRequest,
   makeInviteeKeys,
+  makeIssuePayload,
   mustRow,
   payloadOf,
   registerInviteScenario,
@@ -542,6 +545,110 @@ describe("invite list / revoke", () => {
     // chain.member_added is the evidence)
     const audits = await inviteAuditRows();
     expect(audits.filter((r) => r.event === "invite.completed")).toHaveLength(0);
+  });
+
+  it("completes only the accepted invite whose role and scope match add_member (same invitee, same keys)", async () => {
+    // Three invites for the same invitee, all accepted under the same
+    // keys: only the first matches the add_member below on both role
+    // and scope; the second differs only in role, the third only in
+    // scope
+    const matched = await issueInvite(inviteFixture, OWNER, "member");
+    const roleMismatch = await issueInvite(inviteFixture, OWNER, "reader");
+    const scopePayload = await makeIssuePayload(inviteFixture, OWNER, "member", {
+      scopeKind: "listed",
+      scopeEnvironmentIds: [testEnvironmentId("env-dev-0002")],
+    });
+    const scopeIssued = await issueInviteRequest(inviteFixture, OWNER, "member", scopePayload);
+    expect(scopeIssued.status).toBe(200);
+    const keys = await makeInviteeKeys();
+    expect((await acceptAs(inviteFixture, STRANGER, keys, matched)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, roleMismatch)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, scopePayload)).status).toBe(200);
+
+    await appendOperation(inviteFixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex: keys.encPubHex,
+        sigPubHex: keys.sigPubHex,
+        role: "member",
+        scopeKind: "all",
+        scopeEnvironmentIds: [],
+      },
+    });
+
+    // Only the invite whose granted role and scope equal the
+    // add_member's is reconciled to completed (§15-2)
+    expect((await inviteRow(matched.id))?.status).toBe("completed");
+    // The unfulfilled invites stay accepted — still listed, and so
+    // still revocable (revokeCas matches only pending | accepted)
+    expect((await inviteRow(roleMismatch.id))?.status).toBe("accepted");
+    expect((await inviteRow(scopePayload.id))?.status).toBe("accepted");
+    expect((await revoke(scopePayload.id)).status).toBe(204);
+    expect((await inviteRow(scopePayload.id))?.status).toBe("revoked");
+  });
+
+  it("completes a listed invite whose stored scope order differs from add_member (scope is a set); set-different scopes stay accepted", async () => {
+    // Scope is a set (CRYPTO_SPEC §6.2 — generation SHOULD sort,
+    // verification treats a set) and neither wire schema enforces
+    // sorted order, so completion must not depend on the stored
+    // list's order. The two environments are created first because
+    // a listed add_member may only name created environments (the
+    // consensus rule unknown-environment)
+    const envA = "env-dev-0001";
+    const envB = "env-dev-0002";
+    await createEnvironmentOk(inviteFixture, envA, "Dev A");
+    await createEnvironmentOk(inviteFixture, envB, "Dev B");
+
+    // Stored in reverse order [envB, envA] (a conforming issuance
+    // that did not sort at generation)
+    const reordered = await makeIssuePayload(inviteFixture, OWNER, "member", {
+      scopeKind: "listed",
+      scopeEnvironmentIds: [testEnvironmentId(envB), testEnvironmentId(envA)],
+    });
+    expect((await issueInviteRequest(inviteFixture, OWNER, "member", reordered)).status).toBe(200);
+    // A strict subset of the add_member scope (set-different)
+    const subset = await makeIssuePayload(inviteFixture, OWNER, "member", {
+      scopeKind: "listed",
+      scopeEnvironmentIds: [testEnvironmentId(envA)],
+    });
+    expect((await issueInviteRequest(inviteFixture, OWNER, "member", subset)).status).toBe(200);
+    // The same length with one member different (set-different; the
+    // differing id needs no existence — issuance is format-only)
+    const different = await makeIssuePayload(inviteFixture, OWNER, "member", {
+      scopeKind: "listed",
+      scopeEnvironmentIds: [testEnvironmentId(envA), testEnvironmentId("env-dev-0003")],
+    });
+    expect((await issueInviteRequest(inviteFixture, OWNER, "member", different)).status).toBe(200);
+
+    const keys = await makeInviteeKeys();
+    expect((await acceptAs(inviteFixture, STRANGER, keys, reordered)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, subset)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, different)).status).toBe(200);
+    // Pin the precondition: the stored text really is in reverse order
+    expect(JSON.parse(String(mustRow(await inviteRow(reordered.id)).scope_environments))).toEqual([
+      envB,
+      envA,
+    ]);
+
+    await appendOperation(inviteFixture, OWNER, {
+      op: "add_member",
+      payload: {
+        targetUserId: STRANGER,
+        encPubHex: keys.encPubHex,
+        sigPubHex: keys.sigPubHex,
+        role: "member",
+        scopeKind: "listed",
+        scopeEnvironmentIds: [testEnvironmentId(envA), testEnvironmentId(envB)],
+      },
+    });
+
+    // The set-equal invite completes despite the different order
+    expect((await inviteRow(reordered.id))?.status).toBe("completed");
+    // Set-different invites stay accepted (equality, not containment:
+    // the subset does not complete either)
+    expect((await inviteRow(subset.id))?.status).toBe("accepted");
+    expect((await inviteRow(different.id))?.status).toBe("accepted");
   });
 
   it("add_member still succeeds when the reconciliation write fails (catchDefect guard)", async () => {

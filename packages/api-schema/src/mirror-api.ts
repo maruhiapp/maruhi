@@ -115,7 +115,11 @@ export const MirrorPageSchema = Schema.Struct({
     Schema.isMaxLength(MAX_MIRROR_PAGE_LINES),
   ),
   /** The source's mutation counter as the export's head reported it (recorded with the replica by the page carrying the trailer). */
-  sourceMutationSeq: Schema.Number,
+  sourceMutationSeq: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+  ),
 });
 
 export type MirrorPage = typeof MirrorPageSchema.Type;

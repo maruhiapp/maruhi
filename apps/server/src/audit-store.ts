@@ -553,21 +553,25 @@ export async function deriveAuditHeads(
 }
 
 /**
- * The shape the audit canonical form requires of a row's numbers, as SQL
+ * The shape the audit canonical form requires of a row, as SQL
  * over a table with the live affinities (ruling J revision, round 11):
  * `seq` and `server_ts` safe non-negative integers (`seq` ≥ 1; round 12 —
  * a fractional `seq` passed the aggregates and died at the swap's rowid
  * instead), the nullable `client_ts`, `epoch`, `version` and `chain_seq`
- * the same when present. The one statement of the acceptance
- * the derivation applies row by row, so every row of a replica or a
- * snapshot is checked — including the rows under an uploaded head column,
- * which the derivation never touches — before anything is installed.
+ * the same when present, and the nullable `actor_key_fingerprint` /
+ * `target_key_fingerprint` either NULL or 32 lowercase hex (the stored-row
+ * decode of a malformed fingerprint throws, and its read-side degradation
+ * to null would digest as a different row than the one stored). The one
+ * statement of the acceptance the derivation applies row by row, so every
+ * row of a replica or a snapshot is checked — including the rows under an
+ * uploaded head column, which the derivation never touches — before
+ * anything is installed.
  */
 export function auditRowShapeViolations(sql: SqlStorage, table: string): number {
   return Number(
     sql
       .exec(
-        `SELECT COUNT(*) AS n FROM ${table} WHERE ${notCounting("seq")} OR seq < 1 OR ${notCounting("server_ts")} OR ${nullableNotCounting("client_ts")} OR ${nullableNotCounting("epoch")} OR ${nullableNotCounting("version")} OR ${nullableNotCounting("chain_seq")}`,
+        `SELECT COUNT(*) AS n FROM ${table} WHERE ${notCounting("seq")} OR seq < 1 OR ${notCounting("server_ts")} OR ${nullableNotCounting("client_ts")} OR ${nullableNotCounting("epoch")} OR ${nullableNotCounting("version")} OR ${nullableNotCounting("chain_seq")} OR ${notFingerprint("actor_key_fingerprint")} OR ${notFingerprint("target_key_fingerprint")}`,
       )
       .one()["n"],
   );
@@ -580,6 +584,11 @@ function notCounting(column: string): string {
 
 function nullableNotCounting(column: string): string {
   return `(${column} IS NOT NULL AND ${notCounting(column)})`;
+}
+
+/** SQL: the column is neither NULL nor a key fingerprint (32 lowercase hex — CRYPTO_SPEC §3). */
+function notFingerprint(column: string): string {
+  return `(${column} IS NOT NULL AND (typeof(${column}) <> 'text' OR length(${column}) <> 32 OR ${column} GLOB '*[^0-9a-f]*'))`;
 }
 
 export const auditStoreLayer = (sql: SqlStorage): Layer.Layer<AuditStore> =>

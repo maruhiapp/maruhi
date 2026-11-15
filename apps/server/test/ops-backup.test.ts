@@ -234,6 +234,396 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
+  it("refuses a snapshot whose audit row carries a malformed key fingerprint: nothing is promoted, the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "audit_events";
+    });
+    const columns = (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? [];
+    const second = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_events" &&
+        (parsed["values"] as unknown[])[columns.indexOf("seq")] === 2
+      );
+    });
+    expect(second).toBeGreaterThan(-1);
+    const row = JSON.parse(lines[second] ?? "{}") as { values: unknown[] };
+    const values = [...row.values];
+    // Neither NULL nor 32 lowercase hex: the shape check refuses it
+    // before any head is derived over the restored table (its stored-row
+    // decode would otherwise throw, or read as a NULL the digest never
+    // stored)
+    values[columns.indexOf("actor_key_fingerprint")] = "not-a-fingerprint";
+    const corrupt = lines.map((line, at) =>
+      at === second ? JSON.stringify({ ...row, values }) : line,
+    );
+    await bucket.put("do/test/bad-fingerprint.ndjson.gz", await gzipLines(corrupt));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/bad-fingerprint.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_head_hashes")).toEqual([
+      { n: 0 },
+    ]);
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot that emits a table twice, the trailer counting only the last segment: the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.find((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "environments";
+    });
+    expect(tableLine).toBeDefined();
+    const firstRow = lines.find((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "row" && parsed["table"] === "environments";
+    });
+    expect(firstRow).toBeDefined();
+    const row = JSON.parse(firstRow ?? "{}") as { values: unknown[] };
+    // A second environments segment holding one extra row on a disjoint
+    // primary key, with the trailer counting only that segment (1): the
+    // first segment's rows must not restore unaccounted
+    const extra = JSON.stringify({
+      kind: "row",
+      table: "environments",
+      values: [`${String(row.values[0])}-extra`, ...row.values.slice(1)],
+    });
+    const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+      rows: Record<string, number>;
+    };
+    const attacked = [
+      ...lines.slice(0, -1),
+      tableLine ?? "",
+      extra,
+      JSON.stringify({ ...trailer, rows: { ...trailer.rows, environments: 1 } }),
+    ];
+    await bucket.put("do/test/repeated-table.ndjson.gz", await gzipLines(attacked));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/repeated-table.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM environments")).toEqual([
+      { n: 0 },
+    ]);
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot whose trailer watermarks do not match the restored rows: the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+      rows: Record<string, number>;
+      chainHeadSeq: number;
+      chainHeadHashHex: string;
+      auditMaxSeq: number;
+      auditHeadHashHex: string | null;
+    };
+    const cases: { name: string; trailer: typeof trailer }[] = [
+      { name: "chain-seq", trailer: { ...trailer, chainHeadSeq: trailer.chainHeadSeq + 1 } },
+      { name: "chain-hash", trailer: { ...trailer, chainHeadHashHex: "0".repeat(64) } },
+      { name: "audit-seq", trailer: { ...trailer, auditMaxSeq: trailer.auditMaxSeq + 1 } },
+      { name: "audit-head", trailer: { ...trailer, auditHeadHashHex: "0".repeat(64) } },
+    ];
+    await resetProjectDo(projectId);
+    for (const { name, trailer: doctored } of cases) {
+      const key = `do/test/watermark-${name}.ndjson.gz`;
+      await bucket.put(key, await gzipLines([...lines.slice(0, -1), JSON.stringify(doctored)]));
+      expect(await restore(key), name).toEqual({ kind: "refused", code: "trailer-mismatch" });
+      expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries"), name).toEqual([]);
+    }
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot whose manifest declares a chain head the staged chain does not carry: the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "environment_manifests";
+    });
+    const columns = (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? [];
+    const first = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "row" && parsed["table"] === "environment_manifests";
+    });
+    expect(first).toBeGreaterThan(-1);
+    const row = JSON.parse(lines[first] ?? "{}") as { values: unknown[] };
+    const values = [...row.values];
+    values[columns.indexOf("chain_head_hash_hex")] = "0".repeat(64);
+    const attacked = lines.map((line, at) =>
+      at === first ? JSON.stringify({ ...row, values }) : line,
+    );
+    await bucket.put("do/test/foreign-manifest.ndjson.gz", await gzipLines(attacked));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/foreign-manifest.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot that omits the manifest row of a chain-live environment: the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const manifestRow = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "row" && parsed["table"] === "environment_manifests";
+    });
+    expect(manifestRow).toBeGreaterThan(-1);
+    const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+      rows: Record<string, number>;
+    };
+    // Every present row is genuine and the trailer counts the omission,
+    // but the staged chain holds the environment live and its creation
+    // composite wrote the manifest atomically — presence is required,
+    // not just the consistency of what is present
+    const attacked = [
+      ...lines.slice(0, manifestRow),
+      ...lines.slice(manifestRow + 1, -1),
+      JSON.stringify({
+        ...trailer,
+        rows: {
+          ...trailer.rows,
+          environment_manifests: (trailer.rows["environment_manifests"] ?? 1) - 1,
+        },
+      }),
+    ];
+    await bucket.put("do/test/missing-manifest.ndjson.gz", await gzipLines(attacked));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/missing-manifest.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM environments")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot whose checkpoint rows are not exactly the chain's latest tuples (omitted / added): the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "environment_checkpoints";
+    });
+    const columns = (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? [];
+    const first = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "row" && parsed["table"] === "environment_checkpoints";
+    });
+    expect(first).toBeGreaterThan(-1);
+    const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+      rows: Record<string, number>;
+    };
+    const count = trailer.rows["environment_checkpoints"] ?? 0;
+    const withCount = (rows: number) =>
+      JSON.stringify({
+        ...trailer,
+        rows: { ...trailer.rows, environment_checkpoints: rows },
+      });
+    const omitted = [...lines.slice(0, first), ...lines.slice(first + 1, -1), withCount(count - 1)];
+    // The added row copies the genuine row (its declared head still
+    // resolves to the staged chain) under an environment the chain has
+    // no checkpoint tuple for — only the tuple exactness refuses it
+    const row = JSON.parse(lines[first] ?? "{}") as { values: unknown[] };
+    const extraValues = [...row.values];
+    const idIndex = columns.indexOf("environment_id");
+    extraValues[idIndex] = `${String(row.values[idIndex])}-extra`;
+    const added = [
+      ...lines.slice(0, first + 1),
+      JSON.stringify({ ...row, values: extraValues }),
+      ...lines.slice(first + 1, -1),
+      withCount(count + 1),
+    ];
+    await resetProjectDo(projectId);
+    for (const [name, doctored] of [
+      ["omitted", omitted],
+      ["added", added],
+    ] as const) {
+      const key = `do/test/checkpoints-${name}.ndjson.gz`;
+      await bucket.put(key, await gzipLines(doctored));
+      expect(await restore(key), name).toEqual({ kind: "refused", code: "malformed" });
+      expect(
+        await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries"),
+        name,
+      ).toEqual([{ n: 0 }]);
+    }
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot whose DEK wrap names an epoch the chain has not opened: the DO stays empty", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "dek_wraps";
+    });
+    const columns = (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? [];
+    const first = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "row" && parsed["table"] === "dek_wraps";
+    });
+    expect(first).toBeGreaterThan(-1);
+    const row = JSON.parse(lines[first] ?? "{}") as { values: unknown[] };
+    const values = [...row.values];
+    // The seeded environment is at epoch 1 (created, never rotated)
+    values[columns.indexOf("epoch")] = 99;
+    const attacked = lines.map((line, at) =>
+      at === first ? JSON.stringify({ ...row, values }) : line,
+    );
+    await bucket.put("do/test/foreign-wrap.ndjson.gz", await gzipLines(attacked));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/foreign-wrap.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("restores a chain-less snapshot (header and trailer only) and still accepts the intact snapshot after it", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const schemaVersion = Number(
+      (await queryProjectDo(projectId, "SELECT version FROM schema_meta WHERE id = 1"))[0]?.[
+        "version"
+      ],
+    );
+    // The format admits a snapshot with no chain table at all (an empty
+    // project's evacuation shape): with no staged chain there is no
+    // lifecycle to anchor presence to, and the empty watermarks agree
+    await bucket.put(
+      "do/test/chain-less.ndjson.gz",
+      await gzipLines([
+        JSON.stringify({
+          kind: "header",
+          format: SNAPSHOT_FORMAT,
+          version: SNAPSHOT_FORMAT_VERSION,
+          schemaVersion,
+          takenAtMs: 1,
+          doIdHex: doIdHex(),
+        }),
+        JSON.stringify({
+          kind: "trailer",
+          rows: {},
+          chainHeadSeq: 0,
+          chainHeadHashHex: null,
+          auditMaxSeq: 0,
+          auditHeadHashHex: "",
+          databaseSizeBytes: 0,
+        }),
+      ]),
+    );
+    await resetProjectDo(projectId);
+    const restored = await restore("do/test/chain-less.ndjson.gz");
+    expect(restored.kind).toBe("restored");
+    if (restored.kind === "restored") {
+      expect(restored.chainHeadSeq).toBe(0);
+      expect(restored.chainHeadHashHex).toBeNull();
+    }
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
   it("refuses to restore into a non-empty DO (no overwrite path) and leaves it untouched", async () => {
     await seedProjectActivity();
     const outcome = await backup();
@@ -482,18 +872,27 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
   it("uses multipart for large snapshots (uniform parts) and still restores identically", async () => {
     await seedProjectActivity();
     // Seed hard-to-compress rows (random-hex ciphertexts) directly to push
-    // the compressed size past 5 MiB
+    // the compressed size past 5 MiB. The filler rows declare the chain
+    // head they were accepted against, as every real version row does:
+    // the genesis entry's (seq 1) hash — a declared head that does not
+    // resolve is refused at restore
     await runInDurableObject(stub(), (_instance, state) => {
+      const genesisHash = String(
+        state.storage.sql
+          .exec("SELECT entry_hash_hex FROM chain_entries WHERE seq = 1")
+          .toArray()[0]?.["entry_hash_hex"],
+      );
       for (let version = 2; version <= 200; version++) {
         const random = crypto.getRandomValues(new Uint8Array(32 * 1024));
         const hex = [...random].map((b) => b.toString(16).padStart(2, "0")).join("");
         state.storage.sql.exec(
           `INSERT INTO variable_versions (environment_id, variable_id, version, suite, epoch, nonce_hex, ciphertext_hex, ciphertext_bytes,
              prev_value_sig_hash_hex, chain_head_hash_hex, chain_head_seq, signature_hex, signed_bytes_hash_hex, writer_user_id, writer_key_fingerprint, created_at)
-           VALUES ('env-bulk', 'var-bulk', ?, 'maruhi/v1', 1, '00', ?, ?, '', '', 1, '', '', 'user-bulk', 'fp', ?)`,
+           VALUES ('env-bulk', 'var-bulk', ?, 'maruhi/v1', 1, '00', ?, ?, '', ?, 1, '', '', 'user-bulk', 'fp', ?)`,
           version,
           hex,
           hex.length / 2,
+          genesisHash,
           version,
         );
       }
@@ -574,6 +973,26 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     const after = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(after?.lastObjectKey).toBe(record?.lastObjectKey);
     // The end was reached, so the cursor returns to the start (empty string)
+    expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
+  });
+
+  it("restarts from the beginning on a malformed stored sweep cursor, with the static warning only", async () => {
+    await seedProjectActivity();
+    await opsRepo()
+      .setState("backup_sweep_cursor", "not-a-project-id", Date.now())
+      .pipe(Effect.runPromise);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await sweep();
+      expect(result).toMatchObject({ enabled: true, visited: 1, uploaded: 1, truncated: false });
+      expect(warn.mock.calls).toEqual([
+        ["backup sweep cursor is not a valid project id; restarting the sweep from the beginning"],
+      ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("not-a-project-id");
+    } finally {
+      warn.mockRestore();
+    }
+    // The end was reached and the save overwrote the bad row (empty string)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
   });
 

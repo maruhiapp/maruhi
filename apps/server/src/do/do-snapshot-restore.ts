@@ -2,9 +2,9 @@
 // (docs/notes/hosted-ops.md §2-E / §5-2): the lines (do-snapshot.ts's
 // format) are checked in order and batch-inserted table by table,
 // chain_entries through a staging table that is promoted only after the
-// row counts and the audit log are verified. Run by do-ops.ts's
-// restoreProgram; the mirror (do-mirror.ts) shares the line and column
-// checks.
+// row counts, the trailer's watermarks and the audit log are verified.
+// Run by do-ops.ts's restoreProgram; the mirror (do-mirror.ts) shares
+// the line and column checks.
 
 import { Data, Effect } from "effect";
 
@@ -44,6 +44,8 @@ export type RestoreFailureCode =
   | "schema-mismatch"
   | "trailer-missing"
   | "row-count-mismatch"
+  /** The trailer's chain / audit watermarks do not match the restored rows. */
+  | "trailer-mismatch"
   | "unknown-table";
 
 /**
@@ -202,6 +204,200 @@ export function acceptColumns(
   return live;
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const intField = (record: Record<string, unknown>, key: string): number | null => {
+  const value = record[key];
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+};
+
+const strField = (record: Record<string, unknown>, key: string): string | null => {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+};
+
+/** A payload field that is an array of strings (a grant's scope list), or null. */
+const strArrayField = (record: Record<string, unknown>, key: string): readonly string[] | null => {
+  const value = record[key];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? (value as string[])
+    : null;
+};
+
+/** One environment tuple of a checkpoint entry, with the entry's chain position (CRYPTO_SPEC §6.2). */
+interface ChainCheckpointTuple {
+  readonly seq: number;
+  readonly entryHashHex: string;
+  readonly epoch: number;
+  readonly manifestVersion: number;
+  readonly manifestSigHashHex: string;
+  readonly valuesDigestHex: string;
+}
+
+/**
+ * The projection state the staged chain anchors, derived from the staged
+ * entries in seq order (the same derivation as do-mirror.ts's
+ * stagedChainAnchors, read against the restore staging table): the
+ * environment lifecycle (create opens epoch 1, rotate pushes its
+ * newEpoch, delete drops the checkpoint baseline), the latest checkpoint
+ * tuple per environment, and the grants entries apply. An entry whose
+ * JSON does not parse, or whose payload fields are not of the shapes
+ * read here, is skipped: the staged chain's content is verified by
+ * import-check or at DO load (the restore deliberately holds no chain
+ * verifier), and a chain carrying such an entry fails that verification
+ * before it can ever serve, so on every chain that reaches a reader the
+ * derivation below is exact.
+ * create / rotate / delete / checkpoint are never four-eyes proposals
+ * (the policy target set is closed — CRYPTO_SPEC §6.2 — and a propose
+ * of one is `approval-not-required`), so they are read from their
+ * direct entries only; grant_server IS a target, so an approve entry
+ * also applies the grant its referenced propose carries.
+ */
+interface StagedChainAnchors {
+  /** Environments the chain created (live and deleted alike). */
+  readonly created: ReadonlySet<string>;
+  /** Created environments the chain has not deleted. */
+  readonly live: ReadonlySet<string>;
+  readonly deleted: ReadonlySet<string>;
+  /** The chain's current epoch per live environment (epochs are exactly 1..current: create is 1, rotate is always +1). */
+  readonly currentEpoch: ReadonlyMap<string, number>;
+  /** The latest checkpoint tuple per environment (a deletion drops the baseline). */
+  readonly latest: ReadonlyMap<string, ChainCheckpointTuple>;
+  /** Per seq, the scope of the grant that seq applies (a direct grant_server, or the approve that applied a proposed one). */
+  readonly grantScopes: ReadonlyMap<number, readonly string[]>;
+}
+
+// fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
+// fallow-ignore-next-line complexity -- the restore-side per-op fold over the chain's entry taxonomy in seq order; the branches are the entry kinds the anchors are read from
+function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
+  const epochStarts = new Map<string, [number, number][]>();
+  const deletedSeq = new Map<string, number>();
+  const latest = new Map<string, ChainCheckpointTuple>();
+  const grantScopes = new Map<number, readonly string[]>();
+  const proposedGrants = new Map<string, readonly string[]>();
+  const rows = sql
+    .exec(`SELECT seq, entry_json, entry_hash_hex FROM ${CHAIN_STAGING_TABLE} ORDER BY seq`)
+    .toArray();
+  for (const row of rows) {
+    const seq = row["seq"];
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq)) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(row["entry_json"]));
+    } catch {
+      continue;
+    }
+    const entry = asRecord(parsed);
+    const payload = entry === null ? null : asRecord(entry["payload"]);
+    if (entry === null || payload === null) {
+      continue;
+    }
+    const op = strField(entry, "op");
+    if (op === "create_environment" || op === "rotate_epoch" || op === "delete_environment") {
+      const environmentId = strField(payload, "environmentId");
+      if (environmentId === null) {
+        continue;
+      }
+      if (op === "create_environment") {
+        epochStarts.set(environmentId, [[seq, 1]]);
+      } else if (op === "rotate_epoch") {
+        const newEpoch = intField(payload, "newEpoch");
+        const starts = epochStarts.get(environmentId);
+        if (newEpoch !== null && starts !== undefined) {
+          starts.push([seq, newEpoch]);
+        }
+      } else if (!deletedSeq.has(environmentId)) {
+        deletedSeq.set(environmentId, seq);
+        latest.delete(environmentId);
+      }
+      continue;
+    }
+    if (op === "grant_server") {
+      const scope = strArrayField(payload, "scopeEnvironmentIds");
+      if (scope !== null) {
+        grantScopes.set(seq, scope);
+      }
+      continue;
+    }
+    if (op === "propose") {
+      const inner = asRecord(payload["inner"]);
+      const innerPayload = inner === null ? null : asRecord(inner["payload"]);
+      if (inner !== null && innerPayload !== null && strField(inner, "op") === "grant_server") {
+        const scope = strArrayField(innerPayload, "scopeEnvironmentIds");
+        const hash = row["entry_hash_hex"];
+        if (scope !== null && typeof hash === "string") {
+          proposedGrants.set(hash, scope);
+        }
+      }
+      continue;
+    }
+    if (op === "approve") {
+      const hash = strField(payload, "proposalHashHex");
+      const scope = hash === null ? undefined : proposedGrants.get(hash);
+      if (scope !== undefined) {
+        grantScopes.set(seq, scope);
+      }
+      continue;
+    }
+    if (op !== "checkpoint" || !Array.isArray(payload["environments"])) {
+      continue;
+    }
+    const entryHashHex = row["entry_hash_hex"];
+    if (typeof entryHashHex !== "string") {
+      continue;
+    }
+    for (const raw of payload["environments"]) {
+      const tuple = asRecord(raw);
+      if (tuple === null) {
+        continue;
+      }
+      const environmentId = strField(tuple, "environmentId");
+      const epoch = intField(tuple, "epoch");
+      const manifestVersion = intField(tuple, "manifestVersion");
+      const manifestSigHashHex = strField(tuple, "manifestSigHashHex");
+      const valuesDigestHex = strField(tuple, "valuesDigestHex");
+      if (
+        environmentId === null ||
+        epoch === null ||
+        manifestVersion === null ||
+        manifestSigHashHex === null ||
+        valuesDigestHex === null
+      ) {
+        continue;
+      }
+      const deletedAt = deletedSeq.get(environmentId);
+      if (deletedAt !== undefined && deletedAt < seq) {
+        continue;
+      }
+      latest.set(environmentId, {
+        seq,
+        entryHashHex,
+        epoch,
+        manifestVersion,
+        manifestSigHashHex,
+        valuesDigestHex,
+      });
+    }
+  }
+  const created = new Set(epochStarts.keys());
+  const deleted = new Set(deletedSeq.keys());
+  const live = new Set([...created].filter((environmentId) => !deleted.has(environmentId)));
+  const currentEpoch = new Map<string, number>();
+  for (const environmentId of live) {
+    const starts = epochStarts.get(environmentId) ?? [];
+    const last = starts[starts.length - 1];
+    if (last !== undefined) {
+      currentEpoch.set(environmentId, last[1]);
+    }
+  }
+  return { created, live, deleted, currentEpoch, latest, grantScopes };
+}
+
 export function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
   // A non-header line in the header's slot (the wire schema has already
   // refused a bad format/version at decode)
@@ -222,6 +418,8 @@ class RestoreReader {
   #inserter: RowInserter | null = null;
   /** The logical table name under accept; distinct from the insert target (chain_entries is routed to staging). */
   #table: string | null = null;
+  /** The tables this snapshot has already begun (a second table line for one is refused — #beginTable). */
+  readonly #begunTables = new Set<string>();
   #chainColumns: readonly string[] | null = null;
 
   constructor(
@@ -255,7 +453,7 @@ class RestoreReader {
     }
   }
 
-  /** Verifies every table's row count against the trailer, derives the audit heads, promotes the chain to the real table, and returns the result. */
+  /** Verifies every table's row count against the trailer, the trailer's watermarks, the restored rows' declared chain heads and the chain-anchored presence / binding rules against the staged chain, derives the audit heads, promotes the chain to the real table, and returns the result. */
   async verify(tables: readonly string[]): Promise<RestoreSnapshotResult> {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
@@ -267,9 +465,335 @@ class RestoreReader {
       }
     }
     this.#verifyAuditContiguity();
+    this.#verifyTrailerWatermarks(trailer);
+    this.#verifyDeclaredChainHeads();
+    this.#verifyChainAnchoredState();
     const auditHeadHashHex = await this.#deriveAuditHeads();
+    // The trailer's audit head is carried only when the source's column
+    // was current; when it is, the derivation over the restored log must
+    // land on the same head
+    if (trailer.auditHeadHashHex !== null && trailer.auditHeadHashHex !== auditHeadHashHex) {
+      throw new RestoreRefusedError({ code: "trailer-mismatch" });
+    }
     this.#promoteChainStaging();
     return { header, trailer, rows: this.rows, auditHeadHashHex };
+  }
+
+  /**
+   * The trailer's watermarks against the restored rows: the chain head
+   * (max seq and its entry hash) of the staged chain — the live table is
+   * still empty, promotion is below — and the audit log's max seq. The
+   * counts above compare the trailer against this reader's own tally of
+   * the lines it accepted; these compare it against what actually
+   * landed, so a trailer written for other rows (or other rows smuggled
+   * past the tally) cannot promote. An evacuation with no chain rows
+   * carries seq 0 / a null hash (readWatermarks' empty shape).
+   */
+  #verifyTrailerWatermarks(trailer: SnapshotTrailer): void {
+    const sql = this.storage.sql;
+    let chainHeadSeq = 0;
+    let chainHeadHashHex: string | null = null;
+    if (this.#chainColumns !== null) {
+      const head = sql
+        .exec(`SELECT seq, entry_hash_hex FROM ${CHAIN_STAGING_TABLE} ORDER BY seq DESC LIMIT 1`)
+        .toArray()[0];
+      if (head !== undefined) {
+        chainHeadSeq = Number(head["seq"]);
+        const heads = sql
+          .exec(`SELECT entry_hash_hex FROM ${CHAIN_STAGING_TABLE} WHERE seq = ?`, chainHeadSeq)
+          .toArray();
+        // The head seq names exactly one entry (a duplicate makes the
+        // head hash ambiguous — no hash can be taken as the head's)
+        if (heads.length !== 1) {
+          throw new RestoreRefusedError({ code: "trailer-mismatch" });
+        }
+        chainHeadHashHex = String(heads[0]?.["entry_hash_hex"]);
+      }
+    }
+    const auditMaxSeq = Number(
+      sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"],
+    );
+    if (
+      trailer.chainHeadSeq !== chainHeadSeq ||
+      trailer.chainHeadHashHex !== chainHeadHashHex ||
+      trailer.auditMaxSeq !== auditMaxSeq
+    ) {
+      throw new RestoreRefusedError({ code: "trailer-mismatch" });
+    }
+  }
+
+  /**
+   * Every restored row that declares a chain head binds to the staged
+   * chain: the entry at the declared seq carries the declared hash.
+   * Each of these rows was accepted only against a head the chain
+   * actually had (the §12-5 / §16-1 head checks, the checkpoint
+   * tuple's own entry), and the chain is append-only, so a declared
+   * head that does not resolve was never served by the source DO —
+   * the projections were paired with a chain they do not belong to.
+   * This binds the projections to the chain's contents, not to its
+   * signatures: recomputing the manifests' digests and verifying
+   * their signatures needs the verified chain's history index and
+   * the project id (verify-manifest.ts's machinery), which a restore
+   * deliberately does not hold (the snapshot carries neither).
+   */
+  #verifyDeclaredChainHeads(): void {
+    const sql = this.storage.sql;
+    const declared: readonly (readonly [string, string, string])[] = [
+      ["environment_meta_statements", "chain_head_seq", "chain_head_hash_hex"],
+      ["variable_meta_statements", "chain_head_seq", "chain_head_hash_hex"],
+      ["variable_versions", "chain_head_seq", "chain_head_hash_hex"],
+      ["environment_manifests", "chain_head_seq", "chain_head_hash_hex"],
+      ["head_attestations", "chain_head_seq", "chain_head_hash_hex"],
+      ["environment_checkpoints", "chain_seq", "entry_hash_hex"],
+    ];
+    for (const [table, seqColumn, hashColumn] of declared) {
+      // With no chain table in the evacuation the staged chain is
+      // empty, so any declared head is unresolvable by construction
+      const violations =
+        this.#chainColumns === null
+          ? Number(sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).one()["n"])
+          : Number(
+              sql
+                .exec(
+                  `SELECT COUNT(*) AS n FROM ${table} AS p
+                   LEFT JOIN ${CHAIN_STAGING_TABLE} AS c ON c.seq = p.${seqColumn}
+                   WHERE c.entry_hash_hex IS NULL OR c.entry_hash_hex <> p.${hashColumn}`,
+                )
+                .one()["n"],
+            );
+      if (violations !== 0) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+  }
+
+  /**
+   * The restored projections against the staged chain's lifecycle and
+   * tuples ({@link stagedChainAnchors}) — the presence half of the
+   * binding {@link #verifyDeclaredChainHeads} cannot express: that check
+   * validates only rows that are present, so a snapshot carrying a
+   * genuine chain and genuine statements but omitting a live
+   * environment's manifest (or a checkpoint row, or carrying a
+   * checkpoint row the chain never made) restored silently before this
+   * check. The mirror path applies the corresponding rules to a staged
+   * replica (do-mirror.ts's verifyChainAnchoredProjections); the
+   * restore applies the subset its pre-promotion point supports
+   * synchronously. A chain-less evacuation has no chain to anchor to
+   * and is skipped (a chain-less snapshot carrying declared heads was
+   * already refused above, against the empty staging).
+   */
+  #verifyChainAnchoredState(): void {
+    if (this.#chainColumns === null) {
+      return;
+    }
+    const anchors = stagedChainAnchors(this.storage.sql);
+    this.#verifyEnvironmentPresence(anchors);
+    this.#verifyRestoredCheckpoints(anchors);
+    this.#verifyRestoredWrapEpochs(anchors);
+    this.#verifyRestoredCheckpointValues();
+    this.#verifyRestoredSettings();
+    this.#verifyRestoredProposals(anchors);
+  }
+
+  /**
+   * Every environment the staged chain created has its restored row,
+   * tombstoned exactly when the chain deleted it (the creation
+   * composite writes the row atomically with its chain entry; the
+   * deletion composite only tombstones it — the row itself is never
+   * deleted). Every environment the chain holds live has its manifest
+   * row (the creation and rotation composites upsert it atomically with
+   * the chain entry, and a live environment with no manifest is
+   * corruption on every other surface — checkpoint-accept.ts dies on
+   * it), and no manifest row names a chain-deleted environment (the
+   * deletion composite cascade-deletes it in the same block).
+   */
+  #verifyEnvironmentPresence(anchors: StagedChainAnchors): void {
+    const sql = this.storage.sql;
+    const tombstoned = new Map<string, boolean>();
+    for (const row of sql.exec("SELECT environment_id, deleted_at FROM environments").toArray()) {
+      tombstoned.set(String(row["environment_id"]), row["deleted_at"] !== null);
+    }
+    for (const environmentId of anchors.created) {
+      if (tombstoned.get(environmentId) !== anchors.deleted.has(environmentId)) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+    const manifests = new Set(
+      sql
+        .exec("SELECT environment_id FROM environment_manifests")
+        .toArray()
+        .map((row) => String(row["environment_id"])),
+    );
+    for (const environmentId of anchors.live) {
+      if (!manifests.has(environmentId)) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+    for (const environmentId of manifests) {
+      if (anchors.deleted.has(environmentId)) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+  }
+
+  /**
+   * The restored checkpoint rows are exactly the staged chain's latest
+   * tuple per environment, in both directions (the mirror's
+   * verifyStagedCheckpoints rule): acceptance writes the row atomically
+   * with its checkpoint entry — chain seq, entry hash and every tuple
+   * field — an environment the payload does not cover keeps its earlier
+   * row, and a deletion removes both the baseline and the row.
+   */
+  // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
+  // fallow-ignore-next-line complexity -- the restored-checkpoint binding checked in both directions in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
+  #verifyRestoredCheckpoints(anchors: StagedChainAnchors): void {
+    const sql = this.storage.sql;
+    const seen = new Set<string>();
+    for (const row of sql.exec("SELECT * FROM environment_checkpoints").toArray()) {
+      const environmentId = String(row["environment_id"]);
+      seen.add(environmentId);
+      const tuple = anchors.latest.get(environmentId);
+      if (
+        tuple === undefined ||
+        Number(row["chain_seq"]) !== tuple.seq ||
+        String(row["entry_hash_hex"]) !== tuple.entryHashHex ||
+        Number(row["epoch"]) !== tuple.epoch ||
+        Number(row["manifest_version"]) !== tuple.manifestVersion ||
+        String(row["manifest_sig_hash_hex"]) !== tuple.manifestSigHashHex ||
+        String(row["values_digest_hex"]) !== tuple.valuesDigestHex
+      ) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+    for (const environmentId of anchors.latest.keys()) {
+      if (!seen.has(environmentId)) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+  }
+
+  /**
+   * No restored DEK wrap names an environment the staged chain does not
+   * hold live, or an epoch it has not opened: wraps are written only
+   * for the epoch a composite establishes or the current epoch (the
+   * §12-6 range), and a deletion cascade-deletes the environment's
+   * wraps in the same block. (The mirror checks the per-environment
+   * maximum; per row is the same writer discipline stated exactly —
+   * epochs are 1..current with no gaps.)
+   */
+  #verifyRestoredWrapEpochs(anchors: StagedChainAnchors): void {
+    const rows = this.storage.sql
+      .exec("SELECT DISTINCT environment_id, epoch FROM dek_wraps")
+      .toArray();
+    for (const row of rows) {
+      const current = anchors.currentEpoch.get(String(row["environment_id"]));
+      const epoch = row["epoch"];
+      if (
+        current === undefined ||
+        typeof epoch !== "number" ||
+        !Number.isSafeInteger(epoch) ||
+        epoch < 1 ||
+        epoch > current
+      ) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+  }
+
+  /**
+   * A checkpoint value enumeration exists only under a checkpoint row:
+   * upsertCheckpointSnapshot writes the row and its enumeration in one
+   * block and the deletion cascade removes both, so an enumeration
+   * naming an environment with no restored checkpoint row was never
+   * the source's. The enumeration's contents stay unbound — their
+   * digest is the checkpoint row's chain-bound values_digest_hex, and
+   * recomputing it is WebCrypto work (the same residual the mirror
+   * states); a variable deleted after the checkpoint legitimately
+   * leaves an enumeration entry with no variable_versions row, so no
+   * stronger relational binding exists.
+   */
+  #verifyRestoredCheckpointValues(): void {
+    const orphaned = Number(
+      this.storage.sql
+        .exec(
+          `SELECT COUNT(*) AS n FROM checkpoint_snapshot_values AS v
+           LEFT JOIN environment_checkpoints AS c ON c.environment_id = v.environment_id
+           WHERE c.environment_id IS NULL`,
+        )
+        .one()["n"],
+    );
+    if (orphaned !== 0) {
+      throw new RestoreRefusedError({ code: "malformed" });
+    }
+  }
+
+  /**
+   * The project settings row has no chain entry or trailer field to
+   * bind to (a policy change is an unsigned admin action, carried only
+   * by its audit row), so the one binding the staged data supports is
+   * the writer's closed value domain: the data plane's reader dies on
+   * any other stored value, which restored would fault every later
+   * read of the setting.
+   */
+  #verifyRestoredSettings(): void {
+    const row = this.storage.sql.exec("SELECT schema_policy FROM project_settings").toArray()[0];
+    if (
+      row !== undefined &&
+      row["schema_policy"] !== "enabled" &&
+      row["schema_policy"] !== "locked"
+    ) {
+      throw new RestoreRefusedError({ code: "malformed" });
+    }
+  }
+
+  /**
+   * Sealed rotation proposals are minted off-chain under a lease
+   * (programs-proposal.ts), so the staged chain binds only their
+   * coordinates: the environment is chain-live (authorizeWorkload
+   * required an active environment, and a deletion cascade-deletes its
+   * proposals in the same block), the grant seq is a grant the chain
+   * applied whose scope covers the environment (the mint's judged
+   * grant — its seq stays on the append-only chain across a later
+   * re-grant or revoke), and the child rows hang under a restored
+   * proposal (insertProposal writes the three tables in one block and
+   * every deletion removes them together). The proposals' contents —
+   * connector, facts, claims digest, the sealed wraps — are the
+   * resolving client's verification, as at mint.
+   */
+  #verifyRestoredProposals(anchors: StagedChainAnchors): void {
+    const sql = this.storage.sql;
+    const proposals = sql
+      .exec("SELECT environment_id, grant_chain_seq FROM rotation_proposals")
+      .toArray();
+    for (const row of proposals) {
+      const environmentId = String(row["environment_id"]);
+      const grantSeq = row["grant_chain_seq"];
+      const scope =
+        typeof grantSeq === "number" && Number.isSafeInteger(grantSeq)
+          ? anchors.grantScopes.get(grantSeq)
+          : undefined;
+      if (
+        !anchors.live.has(environmentId) ||
+        scope === undefined ||
+        !scope.includes(environmentId)
+      ) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
+    for (const table of ["rotation_proposal_variables", "rotation_proposal_wraps"] as const) {
+      const orphaned = Number(
+        sql
+          .exec(
+            `SELECT COUNT(*) AS n FROM ${table} AS child
+             LEFT JOIN rotation_proposals AS p ON p.proposal_id = child.proposal_id
+             WHERE p.proposal_id IS NULL`,
+          )
+          .one()["n"],
+      );
+      if (orphaned !== 0) {
+        throw new RestoreRefusedError({ code: "malformed" });
+      }
+    }
   }
 
   /**
@@ -346,6 +870,16 @@ class RestoreReader {
     if (!this.known.has(line.table)) {
       throw new RestoreRefusedError({ code: "unknown-table" });
     }
+    // The writer emits each table exactly once. A second table line for
+    // a table already begun would restart its row tally below while the
+    // earlier segment's rows stay committed in the live table (only the
+    // chain's staging is DROPped and recreated), so the trailer's count
+    // would be compared against the last segment alone and the earlier
+    // segment's rows would restore unaccounted — refuse it instead
+    if (this.#begunTables.has(line.table)) {
+      throw new RestoreRefusedError({ code: "malformed" });
+    }
+    this.#begunTables.add(line.table);
     this.#flush();
     // The column names come from the evacuation's line and are embedded
     // as identifiers into the INSERT / CREATE TABLE below. The schema

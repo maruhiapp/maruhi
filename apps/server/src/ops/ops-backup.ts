@@ -18,8 +18,8 @@
 // one static line per isolate.
 
 import type { ProjectId } from "@maruhi/core";
-import { decodeProjectId } from "@maruhi/core";
-import { Clock, Effect, Ref } from "effect";
+import { ProjectIdSchema } from "@maruhi/core";
+import { Clock, Effect, Ref, Schema } from "effect";
 
 import type { OpsBackupAttempt } from "../db.package/index.ts";
 import { OpsRepo } from "../db.package/index.ts";
@@ -185,6 +185,23 @@ interface SweepLimits {
   readonly maxProjects: number;
 }
 
+/** The stored sweep cursor, decoded (not cast — a malformed value restarts from the beginning). */
+function parseSweepCursor(stored: string | null): Effect.Effect<ProjectId | null> {
+  if (stored === null || stored === "") {
+    return Effect.succeed(null);
+  }
+  return Schema.decodeUnknownEffect(ProjectIdSchema)(stored).pipe(
+    Effect.catchTag("SchemaError", () =>
+      // A corrupted cursor restarts from the beginning (operational
+      // state only — not audit); the save at the end of the sweep
+      // overwrites the bad row
+      Effect.logWarning(
+        "backup sweep cursor is not a valid project id; restarting the sweep from the beginning",
+      ).pipe(Effect.as<ProjectId | null>(null)),
+    ),
+  );
+}
+
 /** Advances from the cursor to the end (or until the budget runs out), then saves the next cursor. */
 const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
   env: Env,
@@ -194,7 +211,7 @@ const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
 ): Effect.fn.Return<void, never, OpsRepo> {
   const ops = yield* OpsRepo;
   const stored = yield* ops.getState(SWEEP_CURSOR_KEY);
-  let cursor = stored === null || stored === "" ? null : decodeProjectId(stored);
+  let cursor = yield* parseSweepCursor(stored);
   for (;;) {
     const page = yield* ops.listProjectIdsAfter(cursor, OPS_SWEEP_PAGE_SIZE);
     const last = yield* sweepPage(env, page, result, limits, options);
