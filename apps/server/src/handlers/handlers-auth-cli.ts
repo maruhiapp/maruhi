@@ -163,7 +163,20 @@ function restoreFlowBinding(
   const cookie = request.cookies[CLI_STATE_COOKIE];
   const bound = cookie === undefined ? null : new URLSearchParams(cookie);
   const cookieState = bound?.get("state") ?? null;
-  if (bound === null || cookieState === null || !constantTimeEqual(cookieState, queryState)) {
+  // The state is the `cli.` prefix + a randomHex nonce (minted at the
+  // verify handler's second stage below), and constantTimeEqual compares
+  // hex — so the comparison runs on the nonce, with the prefix required
+  // on both sides.
+  const stateNonce = (state: string | null): string | null =>
+    state !== null && isCliCallbackState(state) ? state.slice(CLI_STATE_PREFIX.length) : null;
+  const cookieNonce = stateNonce(cookieState);
+  const queryNonce = stateNonce(queryState);
+  if (
+    bound === null ||
+    cookieNonce === null ||
+    queryNonce === null ||
+    !constantTimeEqual(cookieNonce, queryNonce)
+  ) {
     return Effect.succeed("state-mismatch");
   }
   const readParam = (name: string): string | undefined => bound.get(name) ?? undefined;

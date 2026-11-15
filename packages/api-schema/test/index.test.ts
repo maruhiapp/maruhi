@@ -1,5 +1,6 @@
 import type { KeyFingerprintHex } from "@maruhi/core";
-import { Option, Schema } from "effect";
+import { Context, Option, Schema } from "effect";
+import { HttpApi } from "effect/http-api";
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { ChainEntrySchema, ChainInvalidReasonSchema, maruhiApi } from "../src/index.ts";
@@ -152,5 +153,17 @@ describe("ChainInvalidReasonSchema", () => {
 describe("maruhiApi", () => {
   it("exposes the membership group", () => {
     expect(Object.keys(maruhiApi.groups)).toContain("membership");
+  });
+
+  it("declares span redaction for the credential-carrying query and header names", () => {
+    // Pins the API-level declaration (the framework combines it onto
+    // every endpoint's client-request and server span redaction). The
+    // names cover the OAuth callback's `code` / `state`, the signup
+    // entry point's `signup_code`, the CLI verify URL's `code` / `vsig`,
+    // and the credential headers.
+    expect(Context.getOrUndefined(maruhiApi.annotations, HttpApi.RedactedNames)).toEqual({
+      query: ["code", "state", "signup_code", "vsig"],
+      headers: ["authorization", "cookie", "set-cookie"],
+    });
   });
 });

@@ -18,10 +18,10 @@
 // draw. It is the same WebCrypto draw the service performs.
 
 import { decodeOrgId, decodeUserId, ulid, type OrgId, type UserId } from "@maruhi/core";
-import { encodeHex } from "@maruhi/crypto";
+import { decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { CryptoError } from "effect/crypto";
-import { Digest, SecureRandom } from "effect/crypto";
+import { Digest, Mac, SecureRandom } from "effect/crypto";
 
 // ULID is @maruhi/core's shared implementation (the same one used for the CLI's ledger id assignment)
 export { ulid } from "@maruhi/core";
@@ -86,15 +86,25 @@ export const sha256Hex = (
   );
 
 /**
- * Timing-safe string comparison (AUTH_SPEC §6). Scans the full length
- * even when lengths differ before returning (all compared values are
- * fixed-length hash hex).
+ * Timing-safe comparison of two hex strings (AUTH_SPEC §6). Both sides
+ * are decoded with @maruhi/crypto's strict decoder (lowercase hex only —
+ * odd length, non-hex or uppercase input fails the decode) and the bytes
+ * are compared with effect/crypto's `Mac.timingSafeEqual`. A malformed
+ * side makes the comparison false: the helper never throws and never
+ * falls back to a plain string comparison.
+ *
+ * Callers compare server-minted lowercase hex only: token hashes, MACs
+ * and the OAuth state nonces (randomHex). The one prefixed state — the
+ * CLI flow's, `cli.` + randomHex — is compared by its nonce at the call
+ * site (handlers-auth-cli.ts), not through this helper. The compared
+ * values are fixed-length, so the length reveal of a length mismatch
+ * discloses nothing.
  */
 export function constantTimeEqual(a: string, b: string): boolean {
-  const length = Math.max(a.length, b.length);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < length; i += 1) {
-    diff |= (a.charCodeAt(i) | 0) ^ (b.charCodeAt(i) | 0);
+  const aBytes = decodeHex(a);
+  const bBytes = decodeHex(b);
+  if (aBytes === null || bBytes === null) {
+    return false;
   }
-  return diff === 0;
+  return Mac.timingSafeEqual(aBytes, bBytes);
 }
