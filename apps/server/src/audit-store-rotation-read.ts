@@ -543,10 +543,7 @@ function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFl
     epoch: row["epoch"] === null ? null : Number(row["epoch"]),
     targetUserId:
       row["target_user_id"] === null ? null : decodeUserId(String(row["target_user_id"])),
-    targetKeyFingerprintHex:
-      row["target_key_fingerprint"] === null
-        ? null
-        : decodeKeyFingerprintHex(String(row["target_key_fingerprint"])),
+    targetKeyFingerprintHex: brandOrNull(row["target_key_fingerprint"], decodeKeyFingerprintHex),
     payload: parsePayload(row["payload"]),
   };
 }

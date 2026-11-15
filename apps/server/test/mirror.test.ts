@@ -15,6 +15,22 @@
 // - a replica that does not extend the live chain, an out-of-sequence
 //   page, and every malformed shape are refused with the static reasons,
 //   and a refusal discards the staging in progress
+// - a replica whose projections regress against the live state (an
+//   older manifest paired with the newer chain and audit segments), do
+//   not bind to its chain (a checkpoint row the chain's tuples do not
+//   carry), or rewrite a held statement row is refused the same way,
+//   and the legitimate replica still commits
+// - the same refusal covers the remaining snapshot tables: a manifest
+//   behind its staged statement set (the statement-count binding), DEK
+//   wraps dropped / rewritten / resurrected against the live rows, a
+//   head attestation dropped, forged at an equal seq, or declaring a
+//   head the chain does not carry, a schema-policy flip the staged
+//   audit log does not fold to, a rotation proposal no staged
+//   `rotation.proposed` row mints, and an extra checkpoint snapshot row
+//   at an equal values digest; the legitimate flows those bindings must
+//   not refuse — a variable deletion, an epoch rotation, an environment
+//   deletion cascade, and a bootstrap into a fully empty mirror —
+//   commit
 // - unmarking promotes the mirror (writes accepted again)
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
@@ -32,24 +48,29 @@ import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-cr
 import {
   appendOperation,
   createEnvironmentOk,
+  deleteEnvironmentRequest,
   MEMBER,
   OWNER,
   projectId,
   READER,
   requestJson,
+  rotateEnvironmentOk,
   STRANGER,
 } from "./support/data-fixture.ts";
 import {
   createVariableOk,
+  deleteVariableRequest,
   ENV,
   fixture,
   registerDataScenario,
+  setSchemaPolicyOk,
   token,
   VAR,
 } from "./support/data-scenario.ts";
 import { readyProject, requestLease, workloadKeyPair } from "./support/lease-scenario.ts";
 import { makeOidcToken } from "./support/lease.ts";
 import { evictProjectDo, queryProjectDo, resetProjectDo } from "./support/project-do.ts";
+import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
 
@@ -1183,5 +1204,343 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       await makeOidcToken({ subject: "repo:someone-else/demo:ref:refs/heads/main" }),
     );
     expect(stranger.status).toBe(404);
+  });
+
+  it("refuses a replica whose projections regress against the live state or do not bind to its chain, and still commits the legitimate one", async () => {
+    // The source's history, as in the main test: an older replica and a
+    // newer one (a second variable — a new manifest version, new
+    // statement and version rows, the same boundary checkpoint)
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const older = await exportAll();
+    await createVariableOk(dek, "var-second", "SECOND", "two");
+    const newer = await exportAll();
+    // The mirror's bootstrap is the older replica; the first replication
+    // of it commits and sets the live projection state
+    await restoreLines(older);
+    expect((await mark(OWNER)).status).toBe(200);
+    expect((await upload(older, 50)).status).toBe(200);
+
+    const columnsOf = (lines: readonly string[], table: string) =>
+      parsedLine(
+        lines[
+          lines.findIndex((line) => {
+            const parsed = parsedLine(line);
+            return parsed["kind"] === "table" && parsed["table"] === table;
+          })
+        ],
+      )["columns"] as string[];
+    const rowIndexOf = (
+      lines: readonly string[],
+      table: string,
+      pick: (values: unknown[]) => boolean,
+    ) =>
+      lines.findIndex((line) => {
+        const parsed = parsedLine(line);
+        return (
+          parsed["kind"] === "row" &&
+          parsed["table"] === table &&
+          pick(parsed["values"] as unknown[])
+        );
+      });
+    const rewriteRow = (
+      lines: readonly string[],
+      table: string,
+      pick: (values: unknown[]) => boolean,
+      patch: (values: unknown[], columns: string[]) => void,
+    ) => {
+      const columns = columnsOf(lines, table);
+      const index = rowIndexOf(lines, table, pick);
+      expect(index).toBeGreaterThan(-1);
+      return lines.map((line, at) => {
+        if (at !== index) {
+          return line;
+        }
+        const row = parsedLine(line) as { values: unknown[] };
+        const values = [...row.values];
+        patch(values, columns);
+        return JSON.stringify({ ...row, values });
+      });
+    };
+    const pulledCount = async (): Promise<number> => {
+      const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+      expect(pulled.status).toBe(200);
+      return ((await pulled.json()) as { variables: unknown[] }).variables.length;
+    };
+
+    // A manifest from the older export paired with the newer chain and
+    // audit segments. Against the live mirror state this is an equal
+    // version with an equal signed-bytes hash, so the regression check
+    // passes it, and no checkpoint tuple notarizes that version either;
+    // the refusal is the statement-count binding (verifyStagedManifests):
+    // the staged statement set (environment 1 + variables 2) counts 3
+    // manifest reissues, the spliced manifest names version 2
+    const olderManifest = parsedLine(older[rowIndexOf(older, "environment_manifests", () => true)])[
+      "values"
+    ] as unknown[];
+    const regressedManifest = rewriteRow(
+      newer,
+      "environment_manifests",
+      () => true,
+      (values) => {
+        for (let index = 0; index < values.length; index += 1) {
+          values[index] = olderManifest[index];
+        }
+      },
+    );
+    await expectRejected(await upload(regressedManifest, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(await pulledCount()).toBe(1);
+
+    // A checkpoint row the staged chain does not carry: its values
+    // digest is not the tuple the boundary checkpoint entry notarized
+    const forgedCheckpoint = rewriteRow(
+      newer,
+      "environment_checkpoints",
+      () => true,
+      (values, columns) => {
+        values[columns.indexOf("values_digest_hex")] = "ab".repeat(32);
+      },
+    );
+    await expectRejected(await upload(forgedCheckpoint, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(await pulledCount()).toBe(1);
+
+    // A statement row the mirror already holds, rewritten: the
+    // append-only rows are preserved row for row, as the audit log's are
+    const varIdColumn = columnsOf(newer, "variable_meta_statements").indexOf("variable_id");
+    const rewrittenStatement = rewriteRow(
+      newer,
+      "variable_meta_statements",
+      (values) => values[varIdColumn] === VAR,
+      (values, columns) => {
+        values[columns.indexOf("name")] = "RENAMED";
+      },
+    );
+    await expectRejected(await upload(rewrittenStatement, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+
+    // The legitimate replica still commits and is served
+    expect((await upload(newer, 50)).status).toBe(200);
+    expect(await pulledCount()).toBe(2);
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
+  it("bootstraps into a fully empty mirror and replicates a variable deletion, an epoch rotation and an environment deletion cascade", async () => {
+    // The empty bootstrap: the export before any environment exists
+    const genesisOnly = await exportAll();
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    await createVariableOk(dek, "var-second", "SECOND", "two");
+    const withVars = await exportAll();
+    expect((await deleteVariableRequest("var-second", OWNER)).status).toBe(204);
+    const afterVarDelete = await exportAll();
+    await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
+    const afterRotate = await exportAll();
+    expect((await deleteEnvironmentRequest(fixture, ENV, OWNER)).status).toBe(204);
+    const afterEnvDelete = await exportAll();
+
+    await restoreLines(genesisOnly);
+    expect((await mark(OWNER)).status).toBe(200);
+    expect(await count("SELECT COUNT(*) AS n FROM environments")).toBe(0);
+    const pulledCount = async (): Promise<number> => {
+      const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+      expect(pulled.status).toBe(200);
+      return ((await pulled.json()) as { variables: unknown[] }).variables.length;
+    };
+    // Into the empty mirror: the creation composite's wraps, manifest
+    // (version = the statement count) and checkpoint all bind
+    expect((await upload(withVars, 50)).status).toBe(200);
+    expect(await pulledCount()).toBe(2);
+    expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(3);
+    // A variable deletion: the version rows go (the tombstone excuses
+    // them), the statement rows stay, the manifest advances by the count
+    expect((await upload(afterVarDelete, 50)).status).toBe(200);
+    expect(await pulledCount()).toBe(1);
+    // A rotation: the new epoch's wrap set is admitted, the old epoch's
+    // rows are preserved, the manifest count takes the rotation
+    expect((await upload(afterRotate, 50)).status).toBe(200);
+    expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(6);
+    expect(await pulledCount()).toBe(1);
+    // The deletion cascade: every subordinate row of the environment
+    // goes, excused by the chain's delete_environment; the tombstone stays
+    expect((await upload(afterEnvDelete, 50)).status).toBe(200);
+    expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(0);
+    expect(await count("SELECT COUNT(*) AS n FROM variables")).toBe(0);
+    expect(await count("SELECT COUNT(*) AS n FROM checkpoint_snapshot_values")).toBe(0);
+    const tombstone = await queryProjectDo(
+      projectId,
+      "SELECT deleted_at FROM environments WHERE environment_id = ?",
+      ENV,
+    );
+    expect(tombstone[0]?.["deleted_at"]).not.toBeNull();
+    expect(await stagingTables()).toEqual([]);
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
+  it("refuses replicas that drop, rewrite or resurrect wraps or attestations, flip the policy, or carry unanchored proposals or snapshot rows", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // A locked policy and a head attestation on the source, so the live
+    // mirror state holds both (the attestation row is inserted directly,
+    // as the main test inserts lease bindings; its declared head is the
+    // current head, so it resolves against the staged chain)
+    await setSchemaPolicyOk("locked");
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO head_attestations (attester_user_id, attester_key_fingerprint, suite, chain_head_seq, chain_head_hash_hex, signature_hex, accepted_at) VALUES (?, ?, 'maruhi/v1', ?, ?, ?, 1234)",
+      MEMBER,
+      vectorKeyOf(MEMBER).key_fingerprint_hex,
+      fixture.head.seq,
+      fixture.head.hashHex,
+      "ab".repeat(64),
+    );
+    const older = await exportAll();
+    // Under the locked policy a creation must carry a varType (the
+    // one-time schema check at creation, §12-11): the v3 typed path
+    const secondCreate = await createVariableV3Request({
+      variableId: "var-second",
+      name: "SECOND",
+      plaintext: "two",
+      dek,
+      schema: { varType: "string" },
+    });
+    expect(secondCreate.status).toBe(200);
+    const newer = await exportAll();
+    await restoreLines(older);
+    expect((await mark(OWNER)).status).toBe(200);
+    expect((await upload(older, 50)).status).toBe(200);
+
+    const columnsOf = (lines: readonly string[], table: string) =>
+      parsedLine(
+        lines[
+          lines.findIndex((line) => {
+            const parsed = parsedLine(line);
+            return parsed["kind"] === "table" && parsed["table"] === table;
+          })
+        ],
+      )["columns"] as string[];
+    const rewriteRow = (
+      lines: readonly string[],
+      table: string,
+      patch: (values: unknown[], columns: string[]) => void,
+    ) => {
+      const columns = columnsOf(lines, table);
+      const index = lines.findIndex((line) => {
+        const parsed = parsedLine(line);
+        return parsed["kind"] === "row" && parsed["table"] === table;
+      });
+      expect(index).toBeGreaterThan(-1);
+      return lines.map((line, at) => {
+        if (at !== index) {
+          return line;
+        }
+        const row = parsedLine(line) as { values: unknown[] };
+        const values = [...row.values];
+        patch(values, columns);
+        return JSON.stringify({ ...row, values });
+      });
+    };
+    const trailerRows = (lines: readonly string[]) =>
+      parsedLine(lines[lines.length - 1])["rows"] as Record<string, number>;
+    const withoutRows = (lines: readonly string[], table: string) =>
+      withTrailer(
+        lines.filter((line) => {
+          const parsed = parsedLine(line);
+          return !(parsed["kind"] === "row" && parsed["table"] === table);
+        }),
+        { rows: { ...trailerRows(lines), [table]: 0 } },
+      );
+    const insertRow = (lines: readonly string[], table: string, values: unknown[]) => {
+      const tableIndex = lines.findIndex((line) => {
+        const parsed = parsedLine(line);
+        return parsed["kind"] === "table" && parsed["table"] === table;
+      });
+      expect(tableIndex).toBeGreaterThan(-1);
+      const rowLine = JSON.stringify({ kind: "row", table, values });
+      return withTrailer(
+        [...lines.slice(0, tableIndex + 1), rowLine, ...lines.slice(tableIndex + 1)],
+        { rows: { ...trailerRows(lines), [table]: (trailerRows(lines)[table] ?? 0) + 1 } },
+      );
+    };
+    const pulledCount = async (): Promise<number> => {
+      const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
+      expect(pulled.status).toBe(200);
+      return ((await pulled.json()) as { variables: unknown[] }).variables.length;
+    };
+
+    // Wholesale wrap deletion: staging zero wrap rows fires no epoch
+    // check, but every live wrap must be preserved — refused
+    await expectRejected(await upload(withoutRows(newer, "dek_wraps"), 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // A same-primary-key wrap rewrite (ciphertext swap): preservation is
+    // row for row, not key for key — refused
+    const rewrittenWrap = rewriteRow(newer, "dek_wraps", (values, columns) => {
+      values[columns.indexOf("ciphertext_hex")] = "ff".repeat(48);
+    });
+    await expectRejected(await upload(rewrittenWrap, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // A dropped attestation: no remove_member / revoke_device in the
+    // delta excuses it — refused
+    await expectRejected(await upload(withoutRows(newer, "head_attestations"), 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // An attestation mark forged at an equal seq (accepted_at is part of
+    // the row's identity there; the commit reads MAX(accepted_at) back)
+    const forgedMark = rewriteRow(newer, "head_attestations", (values, columns) => {
+      values[columns.indexOf("accepted_at")] = 9999999999999;
+    });
+    await expectRejected(await upload(forgedMark, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // A new attestation whose declared head the staged chain does not
+    // carry at that seq — refused by the head resolution
+    const unresolvedHead = insertRow(newer, "head_attestations", [
+      READER,
+      "cd".repeat(16),
+      "maruhi/v1",
+      fixture.head.seq,
+      "00".repeat(32),
+      "ab".repeat(64),
+      9999,
+    ]);
+    await expectRejected(await upload(unresolvedHead, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // A schema-policy flip the staged audit log does not fold to (the
+    // log's only policy row folds to locked) — refused
+    const flippedPolicy = rewriteRow(newer, "project_settings", (values, columns) => {
+      values[columns.indexOf("schema_policy")] = "enabled";
+    });
+    await expectRejected(await upload(flippedPolicy, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // A rotation proposal no staged rotation.proposed row mints (a
+    // resurrection carries its closing row in the log the same way) —
+    // refused
+    const unanchoredProposal = insertRow(newer, "rotation_proposals", [
+      "00112233445566778899aabbccddeeff",
+      ENV,
+      "exec",
+      "[]",
+      "ab".repeat(32),
+      fixture.head.seq,
+      1,
+      9999999999999,
+    ]);
+    await expectRejected(await upload(unanchoredProposal, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // An extra checkpoint snapshot row at an equal values digest: the
+    // enumeration is exact in both directions — refused
+    const extraSnapshot = insertRow(newer, "checkpoint_snapshot_values", [
+      ENV,
+      "var-extra",
+      1,
+      "ab".repeat(32),
+    ]);
+    await expectRejected(await upload(extraSnapshot, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(await pulledCount()).toBe(1);
+
+    // The legitimate replica still commits and is served
+    expect((await upload(newer, 50)).status).toBe(200);
+    expect(await pulledCount()).toBe(2);
+    expect((await unmark(OWNER)).status).toBe(200);
   });
 });

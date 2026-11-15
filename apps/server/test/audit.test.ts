@@ -7,11 +7,13 @@
 // - Identity rule (§1-2): provider info and emails must not appear in any
 //   row
 
+import { decodeKeyFingerprintHex } from "@maruhi/core";
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { brandOrNull, toAuditHeadRow } from "../src/audit-store-rows.ts";
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
 import { dataEvent } from "../src/data/data-events.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
@@ -852,5 +854,41 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
         }
       }
     }
+  });
+});
+
+describe("stored-row brand decoders (audit-store-rows.ts)", () => {
+  it("brandOrNull reads NULL and a valid fingerprint, and reads a malformed one as null instead of throwing", () => {
+    expect(brandOrNull(null, decodeKeyFingerprintHex)).toBeNull();
+    expect(brandOrNull("ab".repeat(16), decodeKeyFingerprintHex)).toBe("ab".repeat(16));
+    // A broken row is treated as null (a read is never made a defect);
+    // staged / restored rows carrying this value are refused by
+    // auditRowShapeViolations before derivation or installation
+    expect(brandOrNull("not-a-fingerprint", decodeKeyFingerprintHex)).toBeNull();
+    expect(brandOrNull("AB".repeat(16), decodeKeyFingerprintHex)).toBeNull();
+  });
+
+  it("toAuditHeadRow maps a malformed fingerprint column to null instead of throwing", () => {
+    const row = toAuditHeadRow({
+      seq: 1,
+      row_id: "cd".repeat(16),
+      server_ts: 1_700_000_000_000,
+      client_ts: null,
+      event: "var.read",
+      actor_type: "user",
+      actor_user_id: null,
+      actor_key_fingerprint: "not-a-fingerprint",
+      actor_api_token_id: null,
+      target_user_id: null,
+      target_key_fingerprint: "ab".repeat(16),
+      environment_id: null,
+      variable_id: null,
+      epoch: null,
+      version: null,
+      chain_seq: null,
+      payload: null,
+    });
+    expect(row.actorKeyFingerprintHex).toBeNull();
+    expect(row.targetKeyFingerprintHex).toBe("ab".repeat(16));
   });
 });

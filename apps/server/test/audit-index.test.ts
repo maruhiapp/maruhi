@@ -414,6 +414,33 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
     });
   });
 
+  it("rotationFlagEvents reads a resolution row with a malformed target_key_fingerprint as null instead of throwing", async () => {
+    await withSql((sql) => {
+      sql.exec("DELETE FROM audit_events");
+      const store = makeAuditStore(sql);
+      store.appendManySync([recommendedEvent("env-a", ["var-a"])]);
+      // Resolution rows (rotation.dismissed / var.version_pushed) carrying a
+      // malformed target_key_fingerprint. The write path mints this column,
+      // so they are inserted raw; the reader must read the fingerprint as
+      // null (a broken row is treated as null), never crash
+      sql.exec(
+        "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, environment_id, variable_id, target_key_fingerprint) VALUES (2, lower(hex(randomblob(16))), ?, 'rotation.dismissed', 'user', 'env-a', 'var-a', 'not-a-fingerprint')",
+        1_700_000_000_000,
+      );
+      sql.exec(
+        "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, environment_id, variable_id, epoch, version, target_key_fingerprint) VALUES (3, lower(hex(randomblob(16))), ?, 'var.version_pushed', 'user', 'env-a', 'var-a', 1, 1, 'not-a-fingerprint')",
+        1_700_000_000_000,
+      );
+      const rows = store.readRotationSync.rotationFlagEvents();
+      expect(rows.map((row) => [row.seq, row.event, row.targetKeyFingerprintHex])).toEqual([
+        [1, "rotation.recommended", null],
+        [2, "rotation.dismissed", null],
+        [3, "var.version_pushed", null],
+      ]);
+      sql.exec("DELETE FROM audit_events");
+    });
+  });
+
   it("rotationFlagEventsFor reads the given pairs only (recommended via ae_event, resolution via ae_var)", async () => {
     await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");

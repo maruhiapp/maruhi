@@ -434,6 +434,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
               inviteeUserId: target.targetUserId,
               inviteeEncPubHex: target.encPubHex,
               inviteeSigPubHex: target.sigPubHex,
+              role: target.role,
+              scopeKind: target.scopeKind,
+              scopeEnvironmentIds: target.scopeEnvironmentIds,
             })
             .pipe(Effect.catchDefect(() => Effect.void));
           // §11-5 (2): insert a row into the membership projection (a

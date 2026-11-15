@@ -122,10 +122,17 @@ interface InviteRepoShape {
    * The accepted → completed reconciliation at add_member acceptance
    * (§15-2. It updates a derived state; the source of truth is the
    * chain. §15-4: the evidence is chain.member_added — no independent
-   * event is written). The key-match conditions (both enc / sig)
-   * refine "this acceptance was fulfilled by this add_member" — an
-   * accepted invite under a different key is kept as-is and stays
-   * visible in the list.
+   * event is written). The key-match conditions (both enc / sig) and
+   * the role / scope-match conditions refine "this acceptance was
+   * fulfilled by this add_member" — an accepted invite under a
+   * different key, or granting a different role or scope than the
+   * add_member, is kept as-is and stays visible in the list (and so
+   * stays revocable). The scope is compared as a set (CRYPTO_SPEC
+   * §6.2 — generation SHOULD sort, verification treats a set):
+   * neither wire schema enforces sorted order, so the stored
+   * `scope_environments` list and the add_member's list are equal
+   * when they name the same environments in any order, and the
+   * stored JSON-array text is never compared byte-for-byte.
    */
   readonly completeAccepted: (target: InviteCompletionTarget) => Effect.Effect<void>;
 }
@@ -207,6 +214,40 @@ function scopeOf(row: InvitationRow): InviteScope {
   return row.scopeKind === "all" && ids.length === 0
     ? { scopeKind: "all", scopeEnvironmentIds: [] }
     : { scopeKind: "listed", scopeEnvironmentIds: ids };
+}
+
+/**
+ * The stored scope column → its environment ids, for the set
+ * comparison in completeAccepted. A broken column (unparseable, not
+ * an array, or holding a malformed id) yields null and so never
+ * matches: scopeOf above can fall back to an empty list because it
+ * only feeds display, but a completion decision must stay
+ * fail-closed and never let a broken row equal a legitimately empty
+ * target.
+ */
+function storedScopeIdsOf(scopeEnvironments: string): readonly string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(scopeEnvironments);
+    return Array.isArray(parsed) &&
+      parsed.every((id) => typeof id === "string" && isEnvironmentId(id))
+      ? parsed.map((id) => String(id))
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set equality of environment ids (CRYPTO_SPEC §6.2 — a scope is a
+ * set; the list order is not significant). Duplicates collapse
+ * before the comparison: they cannot occur on either side (both are
+ * duplicate-checked by their wire schemas), but the comparison
+ * stays total if a stored row ever carried one. The same shape as
+ * the CLI's `sameScope` (apps/cli/src/scope.ts).
+ */
+function sameEnvironmentSet(a: readonly string[], b: readonly string[]): boolean {
+  const aSet = new Set(a);
+  return aSet.size === new Set(b).size && b.every((id) => aSet.has(id));
 }
 
 /** Row → the domain representation. */
@@ -504,9 +545,14 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
       }).pipe(Effect.orDie),
     completeAccepted: (target) =>
       tryD1(async () => {
-        await db
-          .update(invitations)
-          .set({ status: "completed" })
+        // The SQL conditions narrow to the candidate rows (project /
+        // invitee / accepted / both keys / role / scopeKind); the
+        // scope list itself is compared as a set in memory against
+        // each candidate's parsed column, because its stored order
+        // is not significant (§6.2 — see the shape comment above)
+        const candidates = await db
+          .select({ id: invitations.id, scopeEnvironments: invitations.scopeEnvironments })
+          .from(invitations)
           .where(
             and(
               eq(invitations.projectId, target.projectId),
@@ -514,8 +560,28 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
               eq(invitations.status, "accepted"),
               eq(invitations.inviteeEncPub, target.inviteeEncPubHex),
               eq(invitations.inviteeSigPub, target.inviteeSigPubHex),
+              eq(invitations.role, target.role),
+              eq(invitations.scopeKind, target.scopeKind),
             ),
           );
+        const matchingIds = candidates.flatMap((row) => {
+          const stored = storedScopeIdsOf(row.scopeEnvironments);
+          return stored !== null && sameEnvironmentSet(stored, target.scopeEnvironmentIds)
+            ? [row.id]
+            : [];
+        });
+        if (matchingIds.length === 0) {
+          return;
+        }
+        // Only the set-equal rows are completed, addressed by id.
+        // The status condition is repeated so a row revoked between
+        // the candidate read and this update is not completed (the
+        // same CAS discipline as acceptCas / revokeCas; every other
+        // matched column is immutable once a row is accepted)
+        await db
+          .update(invitations)
+          .set({ status: "completed" })
+          .where(and(inArray(invitations.id, matchingIds), eq(invitations.status, "accepted")));
       }).pipe(Effect.orDie),
   };
 }
