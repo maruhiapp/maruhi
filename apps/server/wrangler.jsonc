@@ -169,11 +169,15 @@
   // Non-inheritable keys (durable_objects / d1_databases /
   // ratelimits / r2_buckets) must be re-declared per wrangler's
   // rules — drift from the top level is checked by
-  // scripts/check-hosted-config.ts (CI 8c). Secrets via
-  // `cf workers secrets update <NAME> --type secret_text
-  // --worker maruhi-server-hosted`
-  // (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
-  // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional).
+  // scripts/check-hosted-config.ts (CI 8c). Secrets: the four
+  // values (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
+  // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional) live
+  // in the account's Secrets Store and reach the hosted worker as
+  // Secrets Store bindings declared in cloudflare.config.ts and
+  // alchemy.run.ts (ADR-0012 revision 3). This mirror declares no
+  // store bindings: the test harness injects the dummy string
+  // values from .dev.vars instead, and src/worker-env.ts resolves
+  // both shapes.
   "env": {
     "hosted": {
       // The operator's serving domains (2026-09-03 owner ruling:

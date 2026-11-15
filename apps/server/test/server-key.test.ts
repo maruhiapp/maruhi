@@ -13,7 +13,12 @@ import {
 import { Effect, Exit, Fiber, Redacted } from "effect";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
+import {
+  makeServerKey,
+  makeServerKeyFromEnv,
+  type ServerKeyInfo,
+  type StoredServerWrap,
+} from "../src/server-key.ts";
 import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";
 
 // A dummy IKM, Redacted as worker-env.ts's readWorkerSecrets hands it over
@@ -267,5 +272,33 @@ describe("reseal's DEK hygiene", () => {
     fillSpy.mockRestore();
     expect(outcome).toBe("not-configured");
     expect(zeroizes).toBe(0);
+  });
+});
+
+describe("makeServerKeyFromEnv (the DO's env-facing construction)", () => {
+  // The raw IKM the Redacted IKM above wraps ("b0" × 32 bytes, hex)
+  const RAW_IKM_HEX = "b0".repeat(32);
+
+  it("derives the same keypair from the string shape as makeServerKey does", async () => {
+    const fromEnv = await Effect.runPromise(makeServerKeyFromEnv(RAW_IKM_HEX));
+    const direct = await Effect.runPromise(makeServerKey(IKM).info);
+    expect(await Effect.runPromise(fromEnv.info)).toEqual(direct);
+  });
+
+  it("derives the same keypair from a Secrets Store binding", async () => {
+    const store: SecretsStoreSecret = { get: () => Promise.resolve(RAW_IKM_HEX) };
+    const fromStore = await Effect.runPromise(makeServerKeyFromEnv(store));
+    const direct = await Effect.runPromise(makeServerKey(IKM).info);
+    expect(await Effect.runPromise(fromStore.info)).toEqual(direct);
+  });
+
+  it("treats a failed store read as unconfigured, like an unset ikm", async () => {
+    const failingStore: SecretsStoreSecret = {
+      get: () => Promise.reject(new Error("store read failed")),
+    };
+    const fromStore = await Effect.runPromise(makeServerKeyFromEnv(failingStore));
+    expect(await Effect.runPromise(fromStore.info)).toBeNull();
+    const unset = await Effect.runPromise(makeServerKeyFromEnv(undefined));
+    expect(await Effect.runPromise(unset.info)).toBeNull();
   });
 });

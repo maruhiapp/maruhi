@@ -33,7 +33,7 @@ import {
 } from "../src/ops/ops-policy.ts";
 import { noteOpsCounter } from "../src/ops/ops-signals.ts";
 import { ServerLoggerLive } from "../src/server-logger.ts";
-import { readWorkerSecrets } from "../src/worker-env.ts";
+import { readWorkerSecret } from "../src/worker-env.ts";
 import { cliToken, resetAuthDb, seedUser } from "./support/auth.ts";
 
 const ops = () => Context.get(makeDbServices(env.DB), OpsRepo);
@@ -229,9 +229,10 @@ describe("notification (hosted-ops.md §2-B)", () => {
     const runNotify = (notifier: OpsNotifier["Service"]): Promise<boolean> =>
       Effect.runPromise(notifier.notify(payload).pipe(Effect.provide(ServerLoggerLive)));
     // The URL arrives Redacted from the env (worker-env.ts)
-    expect(await runNotify(makeWebhookNotifier(readWorkerSecrets(env).opsAlertWebhookUrl))).toBe(
-      true,
+    const webhookUrl = await Effect.runPromise(
+      readWorkerSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
     );
+    expect(await runNotify(makeWebhookNotifier(webhookUrl))).toBe(true);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       expect(await runNotify(makeWebhookNotifier(undefined))).toBe(true);

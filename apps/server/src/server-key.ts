@@ -2,10 +2,12 @@
 // the public info, and at lease time the "unseal the wrap addressed
 // to itself → re-wrap for the workload" step (§9.1).
 //
-// From the Workers Secret `SERVER_ENC_KEY_IKM` (32-byte hex) it
-// derives an X25519 keypair via RFC 9180 DeriveKeyPair, and puts the
-// public face (enc public key + the server-key FP =
-// SHA-256(enc_pub)[:16]) on `/auth/config` (AUTH_SPEC §4).
+// From the `SERVER_ENC_KEY_IKM` secret (32-byte hex — a Workers
+// Secret on self-host, a Secrets Store binding on hosted; CRYPTO_SPEC
+// §9's provisioning note) it derives an X25519 keypair via RFC 9180
+// DeriveKeyPair, and puts the public face (enc public key + the
+// server-key FP = SHA-256(enc_pub)[:16]) on `/auth/config`
+// (AUTH_SPEC §4).
 //
 // **Neither the secret key nor an unsealed DEK leaves this module's
 // closure**. The only published operation is `reseal` (unsealing and
@@ -43,6 +45,7 @@ import {
 import { Context, Data, Effect, Redacted } from "effect";
 
 import type { WireSuite } from "./data/data-plane.ts";
+import { readWorkerSecret, type SecretBindingValue } from "./worker-env.ts";
 
 const IKM_BYTES = 32;
 
@@ -156,6 +159,23 @@ const derive: (
  */
 function zeroize(bytes: Uint8Array): void {
   bytes.fill(0);
+}
+
+/**
+ * The env-facing construction: resolves the IKM from whichever
+ * binding shape the deployment carries (worker-env.ts — a failed
+ * Secrets Store read resolves to undefined, i.e. the unconfigured
+ * treatment above) and builds the service from the resolved value.
+ * The chain DO's ServerKey layer is built through this (its layer
+ * build can run the async resolution); the worker's buildServices
+ * resolves all four secrets together through readWorkerSecrets and
+ * calls `makeServerKey` directly, and `makeServerKey` itself stays
+ * synchronous for its direct callers.
+ */
+export function makeServerKeyFromEnv(
+  raw: SecretBindingValue | undefined,
+): Effect.Effect<ServerKeyShape> {
+  return readWorkerSecret(raw, "SERVER_ENC_KEY_IKM").pipe(Effect.map(makeServerKey));
 }
 
 /**
