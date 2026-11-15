@@ -297,7 +297,22 @@ export const maruhiApi = HttpApi.make("maruhi")
   // converted: their `{_tag, reason, …}` bodies are the AUTH_SPEC
   // contract both first-party clients decode (the boundary is pinned
   // by apps/server/test/problem-details.test.ts)
-  .middleware(HttpApiMiddleware.ProblemDetails);
+  .middleware(HttpApiMiddleware.ProblemDetails)
+  // Span redaction: the client-request and server spans record URL and
+  // header attributes, and these names carry credentials. The query
+  // names are the gap — the framework's UrlParams defaults cover only
+  // AWS / GCS signature parameters: `code` and `state` on the GitHub
+  // OAuth callback (§3), `signup_code` on the signup entry point (§3),
+  // and `code` (the user code) and `vsig` (the MAC) on the signed CLI
+  // verify URL (§4-1 (3)). The header names restate the credential
+  // headers the AuthMiddleware consumes (the bearer token, the session
+  // cookie) plus the session issuance — the names this API actually
+  // carries, declared here so they are visible at the definition (the
+  // framework's header defaults cover them as well).
+  .annotate(HttpApi.RedactedNames, {
+    query: ["code", "state", "signup_code", "vsig"],
+    headers: ["authorization", "cookie", "set-cookie"],
+  });
 
 // Load-time sweep (AUTH_SPEC §12-10 (1)): checks at import time that
 // the payload of every registered security-critical endpoint refuses

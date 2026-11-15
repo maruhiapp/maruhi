@@ -9,6 +9,7 @@ import {
   verifyFlowToken,
 } from "../src/auth.package/index.ts";
 import {
+  constantTimeEqual,
   newOrgId,
   newUserId,
   randomBase62,
@@ -105,6 +106,55 @@ describe("newUserId / newOrgId", () => {
     const orgId = await runWith(newOrgId(1_700_000_000_000), (index) => index * 17);
     expect(userId).toBe("01HF7YAT000H2K4N6Q8SAVCXEZ");
     expect(orgId).toBe("01HF7YAT000H2K4N6Q8SAVCXEZ");
+  });
+});
+
+describe("constantTimeEqual (AUTH_SPEC §6 credential comparison)", () => {
+  const hashA = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+  it("accepts equal hex strings", () => {
+    expect(constantTimeEqual(hashA, hashA)).toBe(true);
+    expect(constantTimeEqual("00ff", "00ff")).toBe(true);
+    expect(constantTimeEqual("", "")).toBe(true);
+  });
+
+  it("compares the OAuth state nonces (randomHex) the state call sites pass", () => {
+    const state = "cd".repeat(16);
+    expect(constantTimeEqual(state, state)).toBe(true);
+    expect(constantTimeEqual(state, "ab".repeat(16))).toBe(false);
+    // The CLI flow's state carries a `cli.` prefix and is NOT compared
+    // through this helper — handlers-auth-cli.ts strips the prefix and
+    // compares the nonce. Pinned so the prefixed form can never be
+    // passed here by mistake and silently always mismatch.
+    expect(constantTimeEqual(`cli.${state}`, `cli.${state}`)).toBe(false);
+  });
+
+  it("rejects unequal hex strings of the same length", () => {
+    expect(constantTimeEqual(hashA, `a${hashA.slice(1)}`)).toBe(false);
+    expect(constantTimeEqual(hashA, `${hashA.slice(0, -1)}e`)).toBe(false);
+    expect(constantTimeEqual("00ff", "ff00")).toBe(false);
+  });
+
+  it("rejects different lengths without throwing", () => {
+    expect(constantTimeEqual("ab", "abcd")).toBe(false);
+    expect(constantTimeEqual("abcd", "ab")).toBe(false);
+    expect(constantTimeEqual("", "ab")).toBe(false);
+    expect(constantTimeEqual("ab", "")).toBe(false);
+  });
+
+  it("rejects malformed hex on either side without throwing", () => {
+    // Identical malformed strings are not equal: there is no fallback
+    // to a plain string comparison.
+    expect(constantTimeEqual("zz", "zz")).toBe(false);
+    expect(constantTimeEqual("a!", "a!")).toBe(false);
+    // Odd length.
+    expect(constantTimeEqual("abc", "abc")).toBe(false);
+    // Uppercase is not the canonical form the compared values use.
+    expect(constantTimeEqual("AB", "AB")).toBe(false);
+    expect(constantTimeEqual("ab", "AB")).toBe(false);
+    // One malformed side is enough.
+    expect(constantTimeEqual("ab", "zz")).toBe(false);
+    expect(constantTimeEqual("zz", "ab")).toBe(false);
   });
 });
 
