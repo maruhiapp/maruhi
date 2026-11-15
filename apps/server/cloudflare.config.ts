@@ -48,6 +48,20 @@ const RATE_LIMIT_BINDINGS = {
       period: 60,
     },
   }),
+  CLI_VERIFY_RATE_LIMIT: bindings.rateLimit({
+    namespace: "1006",
+    simple: {
+      limit: 30,
+      period: 60,
+    },
+  }),
+  CLI_APPROVE_RATE_LIMIT: bindings.rateLimit({
+    namespace: "1007",
+    simple: {
+      limit: 30,
+      period: 60,
+    },
+  }),
 };
 
 // One runtime contract for every mode. Past 2026-08-04 the date alone

@@ -58,8 +58,8 @@
   // AUTH_SPEC §4-1).
   // A per-colo memory-based limit available on every plan; bounds
   // the expensive unauthenticated surfaces (CLI login's start /
-  // poll, OAuth callback's GitHub calls, lease's DO creation) even
-  // on a default deploy.
+  // verify / approve / poll, OAuth callback's GitHub calls, lease's
+  // DO creation) even on a default deploy.
   // period may only be 10 or 60; when changing it, also align
   // IP_RATE_LIMIT_PERIOD_SECONDS in src/worker-env.ts (the 429's
   // retryAfterSeconds).
@@ -100,6 +100,24 @@
       "name": "SIGNUP_START_RATE_LIMIT",
       "namespace_id": "1005",
       "simple": { "limit": 10, "period": 60 },
+    },
+    // CLI login verify (AUTH_SPEC §4-3 — the browser leg's entry.
+    // The flow-signing key is resolved (get-or-create) before vsig
+    // verification, so an unauthenticated flood reaches D1 writes.
+    // 30/min like the callback this leg leads into)
+    {
+      "name": "CLI_VERIFY_RATE_LIMIT",
+      "namespace_id": "1006",
+      "simple": { "limit": 30, "period": 60 },
+    },
+    // CLI login approve (AUTH_SPEC §4-3 — the approval ticket is the
+    // only credential, so every well-formed unauthenticated POST
+    // runs the decision CAS against D1; the limit bounds that
+    // amplification)
+    {
+      "name": "CLI_APPROVE_RATE_LIMIT",
+      "namespace_id": "1007",
+      "simple": { "limit": 30, "period": 60 },
     },
   ],
   // The DO class declaration uses `exports` (the successor to
@@ -196,6 +214,16 @@
           "name": "SIGNUP_START_RATE_LIMIT",
           "namespace_id": "1005",
           "simple": { "limit": 10, "period": 60 },
+        },
+        {
+          "name": "CLI_VERIFY_RATE_LIMIT",
+          "namespace_id": "1006",
+          "simple": { "limit": 30, "period": 60 },
+        },
+        {
+          "name": "CLI_APPROVE_RATE_LIMIT",
+          "namespace_id": "1007",
+          "simple": { "limit": 30, "period": 60 },
         },
       ],
       "d1_databases": [

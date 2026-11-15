@@ -7,7 +7,11 @@
 // - Failures on the browser leg (cliVerify / the callback's CLI branch
 //   / cliApprove) follow §4-2's uniform-refusal discipline and return
 //   the same scriptless error page (no oracle for flow state or
-//   refusal reasons)
+//   refusal reasons). The only typed answers on these legs are the
+//   infrastructure errors — SetupIncomplete (503, a missing binding)
+//   and AuthRateLimited (429, the per-IP limit) — which depend only on
+//   deployment config / source-IP count and disclose no flow state
+//   (the githubCallback precedent)
 // - The callback's CLI branch (handleCliCallback) is called from
 //   githubCallback in handlers-auth.ts (GitHub's callback URL stays
 //   the single URL of §3 — branching happens on the state's `cli.`
@@ -20,6 +24,7 @@ import {
   DEFAULT_TOKEN_TTL_DAYS,
   maruhiApi,
   MIN_CLI_POLL_INTERVAL_SECONDS,
+  SetupIncompleteError,
   TokenLimitError,
 } from "@maruhi/api-schema";
 import type { TokenScope, UserId } from "@maruhi/core";
@@ -95,6 +100,28 @@ const flowSigningKey: Effect.Effect<
   // Malformed form (only ever written by our own generation path) is a defect
   return yield* Effect.promise(() => importFlowSigningKey(keyHex));
 });
+
+/**
+ * The per-IP rate-limit prologue of the CLI login handlers (§4-1 (1) /
+ * (5), §4-3): the endpoint's binding is consulted before any other
+ * work, and a refusal fails with the typed 429. A deployment missing
+ * the binding fails closed inside ipRateLimitAllowed (503
+ * SetupIncomplete). Both are infrastructure answers that depend only
+ * on deployment config / source-IP count, never on flow state (§4-2).
+ */
+const ensureIpRateLimit = (
+  limiter: RateLimit | undefined,
+  request: { readonly source: unknown },
+): Effect.Effect<void, SetupIncompleteError | AuthRateLimitedError> =>
+  ipRateLimitAllowed(limiter, request).pipe(
+    Effect.flatMap((allowed) =>
+      allowed
+        ? Effect.void
+        : Effect.fail(
+            new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
+          ),
+    ),
+  );
 
 /**
  * Response for scriptless HTML pages (§4-1 (4) — same delivery
@@ -358,12 +385,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // per-IP rate limiting placed first in the handler (§4-1 (1)
         // — being record-free, this protects CPU rather than the DB;
         // the same binding pattern as the old device exchange)
-        const allowed = yield* ipRateLimitAllowed(env.CLI_START_RATE_LIMIT, request);
-        if (!allowed) {
-          return yield* Effect.fail(
-            new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
-          );
-        }
+        yield* ensureIpRateLimit(env.CLI_START_RATE_LIMIT, request);
         // An unconfigured server fails closed before reaching GitHub
         // (§4-1 (1))
         const secrets = yield* WorkerSecrets;
@@ -400,6 +422,11 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
       "cliVerify",
       Effect.fn("handlers-auth-cli.cliVerify")(function* ({ request, query }) {
         const env = yield* WorkerEnv;
+        // per-IP rate limiting placed first in the handler (§4-3 —
+        // the flow-signing key is resolved before vsig verification,
+        // so an unauthenticated flood would otherwise reach D1
+        // writes unbounded; the same binding pattern as start / poll)
+        yield* ensureIpRateLimit(env.CLI_VERIFY_RATE_LIMIT, request);
         const secrets = yield* WorkerSecrets;
         // Stateless verification of vsig and expiry (§4-1 (3)).
         // Failure ends with the uniform error page before any GitHub
@@ -435,7 +462,13 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
     )
     .handle(
       "cliApprove",
-      Effect.fn("handlers-auth-cli.cliApprove")(function* ({ payload }) {
+      Effect.fn("handlers-auth-cli.cliApprove")(function* ({ payload, request }) {
+        const env = yield* WorkerEnv;
+        // per-IP rate limiting placed first in the handler (§4-3 —
+        // every well-formed unauthenticated POST reaches the decision
+        // CAS below, so the limit bounds that D1 write amplification;
+        // the same binding pattern as start / poll)
+        yield* ensureIpRateLimit(env.CLI_APPROVE_RATE_LIMIT, request);
         // The credential is the approval ticket alone (§4-1 (4) — not
         // a session). A missing or unknown decision gets the uniform
         // error page (§4-2 — not differentiated from ticket
@@ -478,12 +511,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
       "cliPoll",
       Effect.fn("handlers-auth-cli.cliPoll")(function* ({ payload, request }) {
         const env = yield* WorkerEnv;
-        const allowed = yield* ipRateLimitAllowed(env.CLI_POLL_RATE_LIMIT, request);
-        if (!allowed) {
-          return yield* Effect.fail(
-            new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
-          );
-        }
+        yield* ensureIpRateLimit(env.CLI_POLL_RATE_LIMIT, request);
         // Stateless verification (§4-1 (5)): MAC, expiry, and the
         // signed flowId matching the presented flowId as a set.
         // invalid = uniform refusal (recombination or tampering —

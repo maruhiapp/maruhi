@@ -98,8 +98,9 @@ export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteErro
 /**
  * 429: too many requests to an unauthenticated auth surface from this source
  * address (AUTH_SPEC §3 / §4). The OAuth callback involves an outbound
- * call to GitHub (the OAuth App's shared quota), and CLI login's start /
- * poll are unauthenticated CPU-consuming surfaces, so a per-source-IP
+ * call to GitHub (the OAuth App's shared quota); CLI login's start /
+ * poll are unauthenticated CPU-consuming surfaces, and its verify /
+ * approve legs reach D1 writes (§4-3), so a per-source-IP
  * best-effort limit is enforced even on the default deployment (the
  * §4-1 Workers Rate Limiting binding pattern). `retryAfterSeconds` is a
  * hint for when to try again (the fixed window's period).

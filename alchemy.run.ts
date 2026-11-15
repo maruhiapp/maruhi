@@ -132,6 +132,14 @@ export default Alchemy.Stack(
       namespaceId: 1005,
       simple: { limit: 10, period: 60 },
     });
+    const cliVerifyRateLimit = Cloudflare.RateLimit("CliVerifyRateLimit", {
+      namespaceId: 1006,
+      simple: { limit: 30, period: 60 },
+    });
+    const cliApproveRateLimit = Cloudflare.RateLimit("CliApproveRateLimit", {
+      namespaceId: 1007,
+      simple: { limit: 30, period: 60 },
+    });
 
     const hosted = yield* Cloudflare.Worker("HostedServer", {
       name: "maruhi-server-hosted",
@@ -178,6 +186,8 @@ export default Alchemy.Stack(
         OAUTH_CALLBACK_RATE_LIMIT: oauthCallbackRateLimit,
         CLI_POLL_RATE_LIMIT: cliPollRateLimit,
         SIGNUP_START_RATE_LIMIT: signupStartRateLimit,
+        CLI_VERIFY_RATE_LIMIT: cliVerifyRateLimit,
+        CLI_APPROVE_RATE_LIMIT: cliApproveRateLimit,
         // All four Workers Secrets the hosted worker carries today
         // (wrangler.jsonc's hosted comment; src/worker-env.ts). An
         // Alchemy upload rebuilds the binding list from this program,

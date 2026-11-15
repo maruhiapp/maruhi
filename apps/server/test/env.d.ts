@@ -10,6 +10,8 @@ declare namespace Cloudflare {
     /** Source-IP rate limits (AUTH_SPEC §4-1 — wrangler.jsonc ratelimits). */
     CLI_START_RATE_LIMIT: RateLimit;
     CLI_POLL_RATE_LIMIT: RateLimit;
+    CLI_VERIFY_RATE_LIMIT: RateLimit;
+    CLI_APPROVE_RATE_LIMIT: RateLimit;
     LEASE_RATE_LIMIT: RateLimit;
     OAUTH_CALLBACK_RATE_LIMIT: RateLimit;
     SIGNUP_START_RATE_LIMIT: RateLimit;

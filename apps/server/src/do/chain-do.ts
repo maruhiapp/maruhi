@@ -189,7 +189,7 @@ export interface Env {
    * through worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
    */
   readonly SERVER_ENC_KEY_IKM?: string;
-  // The five *_RATE_LIMIT bindings below are required here because both
+  // The seven *_RATE_LIMIT bindings below are required here because both
   // serving modes declare them (test/cf-env.test.ts), but a deployment
   // whose config lacks one has it undefined at runtime. They are read only
   // through worker-env.ts's ipRateLimitAllowed, which answers a missing
@@ -236,6 +236,23 @@ export interface Env {
    * server-side state and no external call).
    */
   readonly SIGNUP_START_RATE_LIMIT: RateLimit;
+  /**
+   * The source-IP rate limit of the CLI login browser leg's entry
+   * (AUTH_SPEC §4-3). Verify resolves the flow-signing key
+   * (get-or-create) before vsig verification, so an unauthenticated
+   * flood reaches D1 writes — unlike start / poll it is not covered
+   * by the statelessness premise. The cap matches the callback's
+   * (30/min): this leg is the same shared-egress browser path.
+   */
+  readonly CLI_VERIFY_RATE_LIMIT: RateLimit;
+  /**
+   * The source-IP rate limit of the CLI login approval POST
+   * (AUTH_SPEC §4-3). The approval ticket is the only credential, so
+   * every well-formed unauthenticated POST runs the decision CAS
+   * against D1; the limit bounds that write amplification (a
+   * legitimate approver submits once per page opening).
+   */
+  readonly CLI_APPROVE_RATE_LIMIT: RateLimit;
   /**
    * The destination of DO → R2 evacuations (docs/notes/hosted-ops.md
    * §2-D / §2-F). An optional binding only the hosted environment
