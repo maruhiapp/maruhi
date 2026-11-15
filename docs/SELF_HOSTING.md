@@ -877,9 +877,9 @@ carried (re-run the identities step of the import for them).
 Of maruhi's unauthenticated surface, the paths in the WAF table below are the
 ones where a third party can trigger work that costs money or drain a shared
 quota (the other unauthenticated surfaces stay lightweight: `/auth/github/start`
-without a `signup_code` and `/auth/cli/verify` are self-contained responses with
-no database access; `/auth/config` performs one indexed D1 point read for the
-`signupPolicy` advisory). All of them already have server-side defenses (input
+without a `signup_code` is a self-contained response with no database access;
+`/auth/config` performs one indexed D1 point read for the `signupPolicy`
+advisory). All of them already have server-side defenses (input
 size caps, stateless MAC verification before any lookup, a fixed window per
 project, and a TTL cache for JWKS).
 
@@ -898,6 +898,8 @@ WAF rules below remain the stronger, globally-counted option.
 | Binding | Path it guards |
 |---|---|
 | `CLI_START_RATE_LIMIT` | `POST /auth/cli/start` |
+| `CLI_VERIFY_RATE_LIMIT` | `GET /auth/cli/verify` |
+| `CLI_APPROVE_RATE_LIMIT` | `POST /auth/cli/approve` |
 | `CLI_POLL_RATE_LIMIT` | `POST /auth/cli/poll` |
 | `OAUTH_CALLBACK_RATE_LIMIT` | `GET /auth/github/callback` |
 | `SIGNUP_START_RATE_LIMIT` | `GET /auth/github/start` with a `signup_code` |
@@ -928,6 +930,8 @@ merely degrades one caller):
 | Path | Recommended limit | Why |
 |---|---|---|
 | `/auth/cli/start` | 10 requests / min / IP | Unauthenticated and recordless (nothing is stored — AUTH_SPEC §4-1), so the cost is pure CPU: each request computes two HMACs. A per-IP cap keeps a flood from turning that into a Workers bill |
+| `/auth/cli/verify` | 30 requests / min / IP | The CLI flow's browser-leg entry (AUTH_SPEC §4-3). The flow-signing key is resolved (get-or-create against D1) before vsig verification, so an unauthenticated flood reaches database writes despite the stateless design. A legitimate login arrives here only a few times (including the signup-guidance resume), so the cap matches the callback it leads into |
+| `/auth/cli/approve` | 30 requests / min / IP | The approval form POST (AUTH_SPEC §4-3). The single-use ticket is the only credential, so every well-formed unauthenticated POST runs the decision CAS against D1; the cap bounds that write amplification. A legitimate approver submits once per page opening (reopening the page replaces the ticket instead of re-posting) |
 | `/auth/cli/poll` | 30 requests / min / IP | Unauthenticated; the legitimate CLI polls at a 5-second floor (12/min), so 30/min leaves room for several concurrent flows behind one address. Fabricated credentials are rejected by a stateless MAC check before any database lookup, and the limit is enforced before even that |
 | `/auth/github/callback` | 30 requests / min / IP | Each request can trigger one GitHub code exchange (the legitimate flow is at most 3 calls including `/user` and `/user/emails` after success), and the server cannot validate the code contents so format checks cannot block it. **This is the browser login path — both web login and the CLI flow's browser leg — so loosen it relative to start to allow shared egress such as office NAT** |
 | `/auth/github/start` (requests carrying `signup_code`) | 10 requests / min / IP | Each code-bearing start performs one D1 read to pre-validate the signup invite code (AUTH_SPEC §3). The code is a 256-bit single-use value, so this is not a guessing oracle; the cap protects the database. A plain start (no `signup_code`) is the login funnel and stays unlimited |

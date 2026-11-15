@@ -10,8 +10,12 @@
 // The browser legs (cliVerify / cliApprove) are browser-navigation /
 // form-POST only; the handler returns HTML (script-free — §4-1 (4)) as an
 // HttpServerResponse directly. Failure differentiation follows the §4-2
-// uniform-refusal discipline: no typed errors are declared (no oracle of
-// flow state).
+// uniform-refusal discipline: no typed *flow* errors are declared (no
+// oracle of flow state). The only typed channels on these legs are the
+// infrastructure errors — SetupIncompleteError (503, a missing
+// rate-limit binding) and AuthRateLimitedError (429, the per-IP limit)
+// — which depend only on deployment config / source-IP count
+// (githubCallback precedent).
 //
 // No operation in this group is added to the session-capability allowlist
 // (SESSION_ALLOWED_ENDPOINTS in session-capability.ts) — the
@@ -174,12 +178,14 @@ export const authCliGroup = HttpApiGroup.make("authCli")
     HttpApiEndpoint.get("cliVerify", "/auth/cli/verify", {
       query: cliVerifyQuery,
       success: Redirect,
+      error: [SetupIncompleteError, AuthRateLimitedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("cliApprove", "/auth/cli/approve", {
       payload: CliApproveFormSchema,
       success: HtmlPage,
+      error: [SetupIncompleteError, AuthRateLimitedError],
     }),
   )
   .add(

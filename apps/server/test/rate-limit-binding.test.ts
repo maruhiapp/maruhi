@@ -21,6 +21,8 @@ type TestEnv = typeof env;
 type RateLimitBinding =
   | "CLI_START_RATE_LIMIT"
   | "CLI_POLL_RATE_LIMIT"
+  | "CLI_VERIFY_RATE_LIMIT"
+  | "CLI_APPROVE_RATE_LIMIT"
   | "OAUTH_CALLBACK_RATE_LIMIT"
   | "SIGNUP_START_RATE_LIMIT"
   | "LEASE_RATE_LIMIT";
@@ -42,6 +44,8 @@ interface LimitedRoute {
   readonly method: "GET" | "POST";
   readonly url: string;
   readonly body?: Record<string, unknown>;
+  /** A form-urlencoded body instead of JSON (the scriptless approval form's shape). */
+  readonly form?: Record<string, string>;
   /** The answer once the limiter lets the request through (the handler's next stage). */
   readonly passedStatus: number;
 }
@@ -62,6 +66,24 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     url: `${BASE}/auth/cli/poll`,
     body: { flowId: "ab".repeat(16), flowToken: "not-a-flow-token" },
     // CliFlowRejected — the stateless MAC check after the limit
+    passedStatus: 400,
+  },
+  {
+    name: "GET /auth/cli/verify",
+    binding: "CLI_VERIFY_RATE_LIMIT",
+    method: "GET",
+    url: `${BASE}/auth/cli/verify`,
+    // The uniform error page — a query with no vsig fails the stateless
+    // verification after the limit
+    passedStatus: 400,
+  },
+  {
+    name: "POST /auth/cli/approve",
+    binding: "CLI_APPROVE_RATE_LIMIT",
+    method: "POST",
+    url: `${BASE}/auth/cli/approve`,
+    form: { decision: "approve" },
+    // The uniform error page — no flowId / ticket after the limit
     passedStatus: 400,
   },
   {
@@ -135,14 +157,24 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
 
 /** Calls the worker for `route` under `routeEnv`, with or without a source address. */
 function call(route: LimitedRoute, routeEnv: TestEnv, sourceIp?: string): Promise<Response> {
-  const headers: Record<string, string> = route.body === undefined ? {} : { ...JSON_HEADERS };
+  const headers: Record<string, string> =
+    route.form !== undefined
+      ? { "content-type": "application/x-www-form-urlencoded" }
+      : route.body === undefined
+        ? {}
+        : { ...JSON_HEADERS };
   if (sourceIp !== undefined) {
     headers["cf-connecting-ip"] = sourceIp;
   }
   const request = new Request(route.url, {
     method: route.method,
     headers,
-    body: route.body === undefined ? null : JSON.stringify(route.body),
+    body:
+      route.form !== undefined
+        ? new URLSearchParams(route.form).toString()
+        : route.body === undefined
+          ? null
+          : JSON.stringify(route.body),
     redirect: "manual",
   }) as Request<unknown, IncomingRequestCfProperties>;
   return worker.fetch(request, routeEnv);
