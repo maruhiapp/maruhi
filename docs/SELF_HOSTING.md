@@ -532,7 +532,9 @@ bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must
 #    and OAuth codes — keep `observability.logs.invocationLogs: false` and
 #    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
-bun run db:migrate:hosted
+#    (run from apps/server; the operators' own hosted deployment applies
+#    migrations through Alchemy instead — ADR-0012 revision 2)
+bunx cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --dir drizzle --pattern 'drizzle/*/migration.sql'
 CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode hosted --no-provision
 bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server-hosted
 bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server-hosted

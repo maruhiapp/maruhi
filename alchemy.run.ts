@@ -1,7 +1,8 @@
 // Alchemy v2 program for the hosted deployment (ADR-0012, ops task O9).
 //
-// Scope: ONLY the hosted worker (`maruhi-server-hosted`) and the apex
-// site (`maruhi-site`) are declared here. The self-host worker and the
+// Scope: the hosted worker (`maruhi-server-hosted`), the apex
+// site (`maruhi-site`), and the hosted database and ops backup
+// bucket as managed resources (ADR-0012 revision 2). The self-host worker and the
 // restore worker stay on the plain `cf` CLI (apps/server/cloudflare
 // .config.ts): the self-hosting path must remain Alchemy-free
 // (docs/SELF_HOSTING.md), and the restore worker is ops-only and
@@ -14,10 +15,16 @@
 // this file (the restore worker binds its DO namespace cross-worker,
 // and the apex domain points at the site worker).
 //
-// D1 and R2 are bound by lookup only: Alchemy never creates, migrates,
-// updates or deletes them. D1 migrations stay with the cf flow
-// (`db:migrate:hosted` in apps/server/package.json), and the backup /
-// restore machinery keeps owning the bucket's lifecycle.
+// D1 and R2 are managed resources (ADR-0012 revision 2, reversing
+// revision 1's lookup-only ruling): the database's migrations are
+// declared here and applied by the deploy, and the bucket's full
+// recorded configuration — the `retain-35d` lifecycle rule, the
+// default multipart abort rule, no CORS, no custom domains, no public
+// access — is declared in full, because the provider's reconcile
+// syncs those sub-resources to the declared props (an omitted prop
+// reads as "clear"). Both resources carry RemovalPolicy.protect():
+// a plan that would delete or replace either fails before anything
+// is applied.
 //
 // Deploy with an explicit stage so physical naming is stable:
 //   bun run alchemy:deploy
@@ -44,14 +51,66 @@ export default Alchemy.Stack(
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
-    // Lookup by name, not id: the id already lives in
+    // Managed by name, not id: the id already lives in
     // apps/server/cloudflare.config.ts (scripts/d1-id.ts reads it
-    // there), name matches the wrangler runbooks, and a recreated
-    // database that reuses the name survives the swap.
-    const db = Cloudflare.D1.Database.lookup({ name: "maruhi" });
-    const opsBackupBucket = Cloudflare.R2.Bucket.lookup({
+    // there), name matches the wrangler runbooks, and pinning the name
+    // is what makes the first deploy adopt the existing database
+    // instead of replacing it (a name change plans as a replace —
+    // and protect() below refuses even that). No jurisdiction /
+    // primaryLocationHint: both are replace triggers.
+    //
+    // The `migrations` prop is what moves hosted migration ownership
+    // from `cf d1 migrations apply` to the deploy: the existing
+    // drizzle-kit files under apps/server/drizzle drive it as-is
+    // (the path is relative to the repository root, like `main` and
+    // the assets directories below). The first deploy converts the
+    // wrangler-written `d1_migrations` history into Alchemy's
+    // `__alchemy_migrations` ledger — one-way and fail-closed (a
+    // history row with no matching local file stops the deploy) —
+    // and leaves the old table frozen.
+    const db = yield* Cloudflare.D1.Database("Database", {
+      name: "maruhi",
+      migrations: "apps/server/drizzle",
+    }).pipe(Alchemy.RemovalPolicy.protect());
+
+    // Managed, with the bucket's full recorded configuration declared
+    // in full (ops task O2; the recipe in docs/SELF_HOSTING.md —
+    // recorded, not yet live-dumped: ADR-0012 revision 2 lists the
+    // operator preconditions that verify it against the live bucket
+    // before the adopting deploy): the provider's reconcile syncs
+    // lifecycle rules / CORS / domains / public access to the declared
+    // props — omitting one reads as "clear it" — but it diffs the
+    // declaration against the live bucket and writes only on a
+    // mismatch, so the deletion risk is neutralized. The comparison
+    // is order-sensitive, so the rules are declared in the bucket's
+    // creation order (default rule first); a residual mismatch would
+    // be a content-identical re-PUT, never a deletion. Ages are
+    // seconds. The first rule is the default every bucket is created
+    // with (recorded in the hosted-ops notes as the "Default
+    // Multipart Abort Rule", 7 days); its exact live id is verified
+    // at the adopting plan (ADR-0012 revision 2 lists the stop
+    // conditions). No locationHint / jurisdiction (replace triggers)
+    // and no storageClass (the live bucket is Standard, the
+    // provider's default).
+    const opsBackupBucket = yield* Cloudflare.R2.Bucket("OpsBackupBucket", {
       name: "maruhi-ops-backup",
-    });
+      lifecycleRules: [
+        {
+          id: "Default Multipart Abort Rule",
+          enabled: true,
+          abortMultipartUploadsTransition: { condition: { type: "Age", maxAge: 604_800 } },
+        },
+        {
+          id: "retain-35d",
+          enabled: true,
+          deleteObjectsTransition: { condition: { type: "Age", maxAge: 3_024_000 } },
+          abortMultipartUploadsTransition: { condition: { type: "Age", maxAge: 86_400 } },
+        },
+      ],
+      cors: [],
+      domains: [],
+      publicAccess: false,
+    }).pipe(Alchemy.RemovalPolicy.protect());
 
     const cliStartRateLimit = Cloudflare.RateLimit("CliStartRateLimit", {
       namespaceId: 1001,
