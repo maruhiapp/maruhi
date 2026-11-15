@@ -13,7 +13,7 @@
 # adds only what its steps need):
 #   static: workflow lint + 0. English, then the static gates as one
 #     `parallel:` group (audit + steps 1–6 + 10)
-#   server: step 7h as three matrix jobs sharded by file; cli: step 7g
+#   server: step 7h as four matrix jobs sharded by file; cli: step 7g
 #     as two matrix jobs sharded by file
 #   unit: apt zsh (the docs recipe checks assert it in CI), then steps
 #     7e + 7f as a `parallel:` group
@@ -238,7 +238,7 @@ jobs:
             run: bun run --filter @maruhi/web doctor:astryx
 
   server:
-    name: Test — server (Vitest, workerd), shard ${{ matrix.shard }}/3
+    name: Test — server (Vitest, workerd), shard ${{ matrix.shard }}/4
     runs-on: ubuntu-26.04
     # An explicit cap because this also gates releases via workflow_call
     # (the calling release.yml can't put a timeout on a `uses:` job. The
@@ -249,7 +249,7 @@ jobs:
       # share of the suite behind the other shards' results
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -268,13 +268,15 @@ jobs:
         run: bun install --frozen-lockfile
 
       # The workerd pool (@cloudflare/vitest-plugin): the suite that
-      # dominated the old single test step. Sharded across three jobs:
+      # dominated the old single test step. Sharded across four jobs:
       # scripts/test-suite.mjs passes the flag through to `vp test run`,
-      # and vitest splits the suite's files by path hash (two shards
-      # measured 0m35s vs 2m14s of test time — the hash ranges are not
-      # duration-balanced, so the third shard cuts the slow range)
-      - name: 7h. Test — server (Vitest, workerd) — shard ${{ matrix.shard }}/3
-        run: bun scripts/test-suite.mjs run server --shard=${{ matrix.shard }}/3
+      # and vitest splits the suite's files by path hash. The hash
+      # ranges are not duration-balanced (measured shard test times:
+      # 2-way 0m35s / 2m14s, 3-way 0m33s / 0m40s / 2m00s — the slow
+      # files cluster in the last hash range, so each added shard
+      # cuts that range again)
+      - name: 7h. Test — server (Vitest, workerd) — shard ${{ matrix.shard }}/4
+        run: bun scripts/test-suite.mjs run server --shard=${{ matrix.shard }}/4
 
   cli:
     name: Test — cli (Vitest), shard ${{ matrix.shard }}/2
