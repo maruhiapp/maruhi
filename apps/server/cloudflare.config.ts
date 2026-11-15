@@ -126,16 +126,14 @@ export const SELF_HOST_WORKER = defineWorker({
 // the values through SecretsStoreSecret.get() (src/worker-env.ts).
 // The cf binding form requires the store's literal id. The id is an
 // account identifier, not a secret, but it is recorded nowhere else
-// in this repository — and the value below is a PLACEHOLDER (32
-// zeros): replace it with the account's real default store id
-// (Cloudflare dashboard → Secrets Store, or the store list API)
-// before deploying the hosted worker through `cf deploy --mode
-// hosted`. The Alchemy deploy path (alchemy.run.ts) finds the store
-// by name lookup and never uses this literal.
+// in this repository; the value below is the account's real default
+// store id (Cloudflare dashboard → Secrets Store). The Alchemy
+// deploy path (alchemy.run.ts) finds the store by name lookup and
+// never uses this literal.
 // scripts/check-hosted-config.ts pins the four secret names and that
 // all four bindings share this one store id; it cannot pin the id
 // itself.
-const SECRETS_STORE_ID = "00000000000000000000000000000000";
+const SECRETS_STORE_ID = "93c7bc6956634cd59d4432b299a9cb34";
 
 const HOSTED_SECRET_BINDINGS = {
   GITHUB_CLIENT_ID: bindings.secretsStoreSecret({
