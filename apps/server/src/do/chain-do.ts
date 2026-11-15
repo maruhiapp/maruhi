@@ -156,11 +156,10 @@ import {
   renameVariableProgram,
 } from "../programs/programs-variable.ts";
 import type { EffectiveRotationFlag } from "../rotation-detect.ts";
-import { makeServerKey, ServerKey } from "../server-key.ts";
+import { makeServerKeyFromEnv, ServerKey } from "../server-key.ts";
 import { ServerLoggerLive } from "../server-logger.ts";
 import type { StorageMeter } from "../storage-guard.ts";
 import { storageGuardDecision, storageMeterLayer } from "../storage-guard.ts";
-import { readWorkerSecrets } from "../worker-env.ts";
 import type { ChainStore, StateCache } from "./chain-store.ts";
 import { chainStoreLayer } from "./chain-store.ts";
 import { readMirrorState } from "./do-mirror.ts";
@@ -172,23 +171,32 @@ import { LeaseChainGrants } from "./lease-chain-grants.ts";
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
   readonly DB: D1Database;
-  /** The GitHub OAuth App's client_id (Workers Secret / .dev.vars. Public information, but the provisioning path is uniformly secret — AUTH_SPEC §3-2). */
-  readonly GITHUB_CLIENT_ID: string;
   /**
-   * The GitHub OAuth App's client_secret (Workers Secret / .dev.vars. Only
-   * dummy values may be committed). Read only through worker-env.ts's
-   * readWorkerSecrets, which wraps it in Redacted.
+   * The GitHub OAuth App's client_id. Public information, but the
+   * provisioning path is uniformly secret-shaped (AUTH_SPEC §3-2):
+   * a plain string on self-host (Workers Secret / .dev.vars), a
+   * Secrets Store binding object on hosted (ADR-0012 revision 3).
+   * The union type covers both; the value is resolved once per env
+   * through worker-env.ts's readWorkerSecrets.
    */
-  readonly GITHUB_CLIENT_SECRET: string;
+  readonly GITHUB_CLIENT_ID: string | SecretsStoreSecret;
   /**
-   * The deployment keypair's input key material (Workers Secret /
-   * .dev.vars. 32 bytes hex — CRYPTO_SPEC §9). The keypair is derived at
-   * startup via RFC 9180 DeriveKeyPair (server-key.ts). Unset = a pure
-   * E2EE deployment with no selective disclosure (the default). On a
-   * deployment lacking the secret it is undefined at runtime. Read only
-   * through worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
+   * The GitHub OAuth App's client_secret (same two shapes as
+   * GITHUB_CLIENT_ID above; only dummy values may be committed).
+   * Read only through worker-env.ts's readWorkerSecrets, which
+   * resolves it and wraps it in Redacted.
    */
-  readonly SERVER_ENC_KEY_IKM?: string;
+  readonly GITHUB_CLIENT_SECRET: string | SecretsStoreSecret;
+  /**
+   * The deployment keypair's input key material (same two shapes as
+   * GITHUB_CLIENT_ID above. 32 bytes hex — CRYPTO_SPEC §9). The
+   * keypair is derived at startup via RFC 9180 DeriveKeyPair
+   * (server-key.ts). Unset = a pure E2EE deployment with no
+   * selective disclosure (the default). On a deployment lacking the
+   * secret it is undefined at runtime. Read only through
+   * worker-env.ts's readWorkerSecret, which wraps it in Redacted.
+   */
+  readonly SERVER_ENC_KEY_IKM?: string | SecretsStoreSecret;
   // The seven *_RATE_LIMIT bindings below are required here because both
   // serving modes declare them (test/cf-env.test.ts), but a deployment
   // whose config lacks one has it undefined at runtime. They are read only
@@ -262,12 +270,13 @@ export interface Env {
    */
   readonly OPS_BACKUP_BUCKET?: R2Bucket;
   /**
-   * The tripwire-notification webhook (Workers Secret — hosted-ops.md
-   * §2-B). Unset = never sends (disabled by default). The body is only
-   * static signal names + aggregate values. Read only through
-   * worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
+   * The tripwire-notification webhook (hosted-ops.md §2-B; same two
+   * shapes as GITHUB_CLIENT_ID above). Unset = never sends (disabled
+   * by default). The body is only static signal names + aggregate
+   * values. Read only through worker-env.ts's readWorkerSecret,
+   * which wraps it in Redacted.
    */
-  readonly OPS_ALERT_WEBHOOK_URL?: string;
+  readonly OPS_ALERT_WEBHOOK_URL?: string | SecretsStoreSecret;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,9 +343,11 @@ export class ProjectChainDO extends DurableObject<Env> {
         // Lease unsealing + re-wrapping happen inside the DO (the head
         // of programs-lease.ts: audit atomicity). A separate instance
         // from the worker-side ServerKey, but derives the same keypair
-        // from the same Workers Secret. The DO's env-reading boundary
-        // for it: the IKM is Redacted from here on (worker-env.ts)
-        Layer.sync(ServerKey, () => makeServerKey(readWorkerSecrets(env).serverEncKeyIkm)),
+        // from the same secret. The DO's env-reading boundary for it:
+        // the layer's build resolves the IKM from whichever binding
+        // shape the deployment carries (a hosted Secrets Store read
+        // is async — worker-env.ts) and it is Redacted from there on
+        Layer.effect(ServerKey, makeServerKeyFromEnv(env.SERVER_ENC_KEY_IKM)),
         // Effect logs from DO programs go to console.warn / console.error
         // with the message text only (server-logger.ts)
         ServerLoggerLive,

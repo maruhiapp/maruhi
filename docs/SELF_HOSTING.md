@@ -521,10 +521,13 @@ bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must
 
 # 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see `case "hosted"` in
-#    cloudflare.config.ts; put your D1 database ID there and register the same
-#    secrets on the hosted Worker with --worker maruhi-server-hosted, after
-#    the deploy: the secrets API writes to an existing Worker, and until the
-#    secrets are in place the new Worker answers 503 SetupIncomplete).
+#    cloudflare.config.ts; put your D1 database ID there. The hosted mode
+#    binds its secrets from your account's Secrets Store (ADR-0012
+#    revision 3): put your default store's ID in the SECRETS_STORE_ID
+#    constant in cloudflare.config.ts and deposit the same values in that
+#    store under the same names (dashboard → Secrets Store, or the Secrets
+#    Store API), before or after the deploy — until they are deposited the
+#    new Worker answers 503 SetupIncomplete).
 #    Note: the hosted mode publishes a separate Worker, `maruhi-server-hosted`
 #    (named explicitly in cloudflare.config.ts) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
@@ -536,9 +539,11 @@ bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must
 #    migrations through Alchemy instead — ADR-0012 revision 2)
 bunx cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --dir drizzle --pattern 'drizzle/*/migration.sql'
 CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode hosted --no-provision
-bunx cf workers secrets update GITHUB_CLIENT_ID --type secret_text --worker maruhi-server-hosted
-bunx cf workers secrets update GITHUB_CLIENT_SECRET --type secret_text --worker maruhi-server-hosted
-bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --type secret_text --worker maruhi-server-hosted   # optional
+# Deposit GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and (optionally)
+# OPS_ALERT_WEBHOOK_URL and SERVER_ENC_KEY_IKM (the last only if this
+# deployment uses the server-key features — CRYPTO_SPEC §9) in the
+# Secrets Store named by SECRETS_STORE_ID, under exactly those names
+# (see step 2's comment above)
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,

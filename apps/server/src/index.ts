@@ -54,7 +54,7 @@ import { countingGitHubApi } from "./ops/ops-signals.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 import { ServerLoggerLive } from "./server-logger.ts";
-import { readWorkerSecrets, WorkerEnv, WorkerSecrets } from "./worker-env.ts";
+import { readWorkerSecret, readWorkerSecrets, WorkerEnv, WorkerSecrets } from "./worker-env.ts";
 
 export { ProjectChainDO } from "./do/chain-do.ts";
 export type { Env } from "./do/chain-do.ts";
@@ -94,20 +94,29 @@ const cryptoServicesContext: Context.Context<
   SecureRandom.SecureRandom | Digest.Digest | Signature.Signature
 > = Effect.runSync(Layer.buildWithScope(cryptoServicesLayer, Scope.makeUnsafe()));
 
-function buildServices(env: Env): Context.Context<RequestServices> {
+async function buildServices(env: Env): Promise<Context.Context<RequestServices>> {
   const dbServices = makeDbServices(env.DB);
   // The worker's env-reading boundary for secrets: from here on they
-  // travel only as Redacted (worker-env.ts)
-  const secrets = readWorkerSecrets(env);
+  // travel only as Redacted (worker-env.ts). Resolution is async
+  // because the hosted deployment's Secrets Store bindings read
+  // through `.get()` (ADR-0012 revision 3); it happens once per env,
+  // here at service construction
+  const secrets = await Effect.runPromise(readWorkerSecrets(env));
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
     Context.add(WorkerSecrets, secrets),
     // In-house counting of GitHub token requests (ops-signals.ts —
-    // the acceptance surface's behavior is unchanged)
+    // the acceptance surface's behavior is unchanged). An
+    // unconfigured deployment closes over an empty client_id here —
+    // the same stand-in the previous shape produced at runtime (an
+    // unregistered secret arriving as undefined under a string
+    // type): the start / config handlers refuse with 503 before
+    // reaching it, and on the callback paths GitHub rejects the
+    // exchange (AuthFlow 400), as it did before
     Context.add(
       GitHubApi,
       countingGitHubApi(
-        makeGitHubApi(env.GITHUB_CLIENT_ID, secrets.githubClientSecret),
+        makeGitHubApi(secrets.githubClientId ?? "", secrets.githubClientSecret),
         Context.get(dbServices, OpsRepo),
       ),
     ),
@@ -129,15 +138,33 @@ interface EnvHandler {
 // Keep HttpApi Layer construction to once per env (stable per
 // isolate). The middleware's requires (SessionService / TokenService)
 // must be satisfied statically by a Layer, so webHandler is built per
-// env
-const handlerCache = new WeakMap<Env, EnvHandler>();
+// env. Construction is async (buildServices resolves the Secrets
+// Store bindings), so the cache holds the construction promise:
+// concurrent first requests share the one build — and the one secret
+// resolution — per env
+const handlerCache = new WeakMap<Env, Promise<EnvHandler>>();
 
-function handlerFor(env: Env): EnvHandler {
+function handlerFor(env: Env): Promise<EnvHandler> {
   const cached = handlerCache.get(env);
   if (cached !== undefined) {
     return cached;
   }
-  const services = buildServices(env);
+  const built = buildHandler(env);
+  handlerCache.set(env, built);
+  // A failed build must not poison the cache for the isolate's
+  // lifetime (the synchronous predecessor cached only after a
+  // successful build): evict on rejection so the next request
+  // retries the construction
+  built.catch(() => {
+    if (handlerCache.get(env) === built) {
+      handlerCache.delete(env);
+    }
+  });
+  return built;
+}
+
+async function buildHandler(env: Env): Promise<EnvHandler> {
+  const services = await buildServices(env);
   const apiLive = HttpApiBuilder.layer(maruhiApi).pipe(
     Layer.provide(membershipLive),
     Layer.provide(authLive),
@@ -181,11 +208,9 @@ function handlerFor(env: Env): EnvHandler {
   const webHandler = HttpRouter.toWebHandler(apiLive.pipe(Layer.provideMerge(ServerLoggerLive)), {
     disableLogger: true,
   });
-  const built: EnvHandler = {
+  return {
     handler: (request) => webHandler.handler(request, services),
   };
-  handlerCache.set(env, built);
-  return built;
 }
 
 /** Concatenates a chunk list into one byte string. */
@@ -337,7 +362,9 @@ export default {
     if (cappedRequest === null) {
       return withSecurityHeaders(new Response(null, { status: 413 }));
     }
-    const response = await withRetryAfterHeader(await handlerFor(env).handler(cappedRequest));
+    const response = await withRetryAfterHeader(
+      await (await handlerFor(env)).handler(cappedRequest),
+    );
     // Since disableLogger (handlerFor) also stops the Effect logger's
     // failure branch (with cause), unhandled failures / defects would
     // leave nothing in Workers Logs. Instead a single static line
@@ -362,8 +389,14 @@ export default {
   async scheduled(controller, env, _ctx): Promise<void> {
     const dbServices = makeDbServices(env.DB);
     if (controller.cron === OPS_HOURLY_CRON) {
+      // Only the webhook URL is read on this path (worker-env.ts's
+      // single-field reader; a failed store read disables the alerts,
+      // the same as an unset value)
+      const opsAlertWebhookUrl = await Effect.runPromise(
+        readWorkerSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
+      );
       const services = dbServices.pipe(
-        Context.add(OpsNotifier, makeWebhookNotifier(readWorkerSecrets(env).opsAlertWebhookUrl)),
+        Context.add(OpsNotifier, makeWebhookNotifier(opsAlertWebhookUrl)),
       );
       await Effect.runPromise(
         Clock.currentTimeMillis.pipe(

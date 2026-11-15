@@ -389,7 +389,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // An unconfigured server fails closed before reaching GitHub
         // (§4-1 (1))
         const secrets = yield* WorkerSecrets;
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
+        yield* ensureGitHubOAuthConfigured(secrets.githubClientId, secrets.githubClientSecret);
         const key = yield* flowSigningKey;
         const nowMs = yield* Clock.currentTimeMillis;
         const flowId = yield* randomHex(16);
@@ -435,7 +435,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // gets the same page (start has already failed with 503, so
         // reaching here means a forged URL or lost configuration)
         const configured = yield* ensureGitHubOAuthConfigured(
-          env.GITHUB_CLIENT_ID,
+          secrets.githubClientId,
           secrets.githubClientSecret,
         ).pipe(Effect.option);
         if (Option.isNone(configured)) {
@@ -454,7 +454,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         const state = `${CLI_STATE_PREFIX}${yield* randomHex(16)}`;
         const bound = verificationQuery(params, query.vsig);
         bound.set("state", state);
-        return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+        return yield* redirectToGitHubAuthorize(request, configured.value, state, {
           name: CLI_STATE_COOKIE,
           value: bound.toString(),
         });

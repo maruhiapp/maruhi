@@ -104,22 +104,24 @@ export function redirectToGitHubAuthorize(
 /**
  * Detects missing self-hosted configuration (AUTH_SPEC §3): either
  * client_id or client_secret unregistered (a missed `cf workers secrets update`)
- * or empty (the Env type is string, but a deploy lacking the secret can
- * become undefined at runtime). Letting it pass through would land on a
+ * or empty (worker-env.ts's resolution maps a missing or unreadable
+ * binding to undefined, whatever shape the deployment carries). Letting it pass through would land on a
  * GitHub error page or an opaque token-exchange failure (AuthFlow 400) with
  * no traceable cause, so it redirects to the setup guide
  * (docs/SELF_HOSTING.md) with a 503. The secret's emptiness is settled
  * before it is wrapped (worker-env.ts's readWorkerSecrets maps unset and
- * empty to undefined), so this check never unwraps it.
+ * empty to undefined), so this check never unwraps it. On success it
+ * returns the validated client_id, so callers build the authorize URL
+ * and the /auth/config response from the narrowed string.
  */
 export function ensureGitHubOAuthConfigured(
   clientId: string | undefined,
   clientSecret: Redacted.Redacted<string> | undefined,
-): Effect.Effect<void, SetupIncompleteError> {
+): Effect.Effect<string, SetupIncompleteError> {
   const clientIdMissing = clientId === undefined || clientId === "";
   return clientIdMissing || clientSecret === undefined
     ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))
-    : Effect.void;
+    : Effect.succeed(clientId);
 }
 
 /** Maps a GitHub authentication-dance failure to the API's typed error (for web login). */

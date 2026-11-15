@@ -7,8 +7,23 @@ import { Context, Data, Effect, Redacted } from "effect";
 
 import type { Env, ProjectChainDO } from "./do/chain-do.ts";
 
-/** The Env fields that are secret configuration values (read only through `readWorkerSecrets`). */
-type SecretName = "GITHUB_CLIENT_SECRET" | "SERVER_ENC_KEY_IKM" | "OPS_ALERT_WEBHOOK_URL";
+/** The Env fields that are secret configuration values (read only through `readWorkerSecrets` / `readWorkerSecret`). */
+type SecretName =
+  | "GITHUB_CLIENT_ID"
+  | "GITHUB_CLIENT_SECRET"
+  | "SERVER_ENC_KEY_IKM"
+  | "OPS_ALERT_WEBHOOK_URL";
+
+/**
+ * One secret field as it arrives in the env, in either of the two
+ * shapes a deployment can carry:
+ * - a plain string — a Workers Secret (the self-host path,
+ *   AUTH_SPEC §3-2), a `.dev.vars` value, or a test binding
+ * - a `SecretsStoreSecret` object — the hosted deployment binds the
+ *   four values from the account's Secrets Store (ADR-0012
+ *   revision 3); the value is read asynchronously through `.get()`
+ */
+export type SecretBindingValue = string | SecretsStoreSecret;
 
 /**
  * The Env as handlers see it: the bindings and the non-secret
@@ -20,17 +35,25 @@ type WorkerBindings = Omit<Env, SecretName>;
 export class WorkerEnv extends Context.Service<WorkerEnv, WorkerBindings>()("WorkerEnv") {}
 
 /**
- * The worker's secret configuration values, each wrapped in `Redacted`
- * at the moment it is read from the env: string, JSON, and inspection
- * output (logs, error messages, Cause renderings) show only
- * `<redacted:NAME>`. `undefined` = unset or empty — a deployment
- * lacking the secret leaves it undefined at runtime, and all
- * consumers already treated an empty value the same as an unset one.
- * `Redacted.value` is called only where a value is used: the
- * token-exchange body (auth.package/github.ts), the HKDF input
- * (server-key.ts), and the webhook request's URL (ops/ops-alerts.ts).
+ * The worker's secret configuration values, resolved once per env
+ * from whichever binding shape the deployment carries (see
+ * `SecretBindingValue`). The three secret-worthy values are wrapped
+ * in `Redacted` at the moment they are read from the env: string,
+ * JSON, and inspection output (logs, error messages, Cause
+ * renderings) show only `<redacted:NAME>`. `githubClientId` is the
+ * exception: it is public information (AUTH_SPEC §4 publishes it), so
+ * it travels as a plain string — it shares this service because it
+ * shares the provisioning channel (on hosted it too arrives as a
+ * Secrets Store binding, so it can no longer ride WorkerEnv).
+ * `undefined` = unset or empty — a deployment lacking the secret
+ * leaves it undefined at runtime, and all consumers already treated
+ * an empty value the same as an unset one. `Redacted.value` is
+ * called only where a value is used: the token-exchange body
+ * (auth.package/github.ts), the HKDF input (server-key.ts), and the
+ * webhook request's URL (ops/ops-alerts.ts).
  */
 interface WorkerSecretsShape {
+  readonly githubClientId: string | undefined;
   readonly githubClientSecret: Redacted.Redacted<string> | undefined;
   readonly serverEncKeyIkm: Redacted.Redacted<string> | undefined;
   readonly opsAlertWebhookUrl: Redacted.Redacted<string> | undefined;
@@ -40,7 +63,7 @@ export class WorkerSecrets extends Context.Service<WorkerSecrets, WorkerSecretsS
   "WorkerSecrets",
 ) {}
 
-/** Wraps one secret as read from the env, labeled with its name (unset or empty → undefined). */
+/** Wraps one resolved secret value, labeled with its name (unset or empty → undefined). */
 function redactSecret(
   raw: string | undefined,
   label: SecretName,
@@ -49,22 +72,74 @@ function redactSecret(
 }
 
 /**
+ * Resolves one secret field to its string value (unset or empty →
+ * undefined). A string binding resolves as-is. A Secrets Store
+ * binding is read through `.get()`; a read that fails (the secret
+ * was deleted from the store, a transient store fault) resolves to
+ * undefined — deliberately indistinguishable from unset, because
+ * every consumer's absence semantics already cover it and none of
+ * them may harden or soften here: the OAuth pair fails closed with
+ * 503 SetupIncomplete (auth-shared.ts), an unreadable IKM is an
+ * unconfigured server key (server-key.ts), an unreadable webhook
+ * URL disables the alerts (ops/ops-alerts.ts).
+ */
+function resolveSecretString(
+  raw: SecretBindingValue | undefined,
+): Effect.Effect<string | undefined> {
+  if (raw === undefined || typeof raw === "string") {
+    return Effect.succeed(raw === "" ? undefined : raw);
+  }
+  return Effect.tryPromise(() => raw.get()).pipe(
+    // The platform contract is Promise<string>; a non-string
+    // resolution is treated as unset rather than let through, so a
+    // platform-side surprise degrades to the absence semantics above
+    // instead of flowing into the authorize URL or a response body
+    Effect.map((value) => (typeof value === "string" && value !== "" ? value : undefined)),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+}
+
+/**
+ * Resolves one secret field to its labeled `Redacted` value — the
+ * single-field form of `readWorkerSecrets`, for the entry points
+ * that need only one value (index.ts's scheduled() reads the
+ * webhook URL; the chain DO reads the IKM, through server-key.ts).
+ */
+export function readWorkerSecret(
+  raw: SecretBindingValue | undefined,
+  label: SecretName,
+): Effect.Effect<Redacted.Redacted<string> | undefined> {
+  return resolveSecretString(raw).pipe(Effect.map((value) => redactSecret(value, label)));
+}
+
+/**
  * The env-reading boundary for secrets: one call per entry point that
- * receives the Workers env (index.ts's buildServices and scheduled(),
- * and the chain DO's constructor). The parameter names only the secret
- * fields, all optional: a deployment lacking a secret has it undefined
- * at runtime whatever Env declares.
+ * receives the Workers env (index.ts's buildServices; the single-field
+ * readers above serve scheduled() and the chain DO). The parameter
+ * names only the secret fields, all optional: a deployment lacking a
+ * secret has it undefined at runtime whatever Env declares.
+ * Resolution happens once per env, at service construction — the
+ * same lifetime the plain-string env read had.
  */
 export function readWorkerSecrets(env: {
-  readonly GITHUB_CLIENT_SECRET?: string;
-  readonly SERVER_ENC_KEY_IKM?: string;
-  readonly OPS_ALERT_WEBHOOK_URL?: string;
-}): WorkerSecretsShape {
-  return {
-    githubClientSecret: redactSecret(env.GITHUB_CLIENT_SECRET, "GITHUB_CLIENT_SECRET"),
-    serverEncKeyIkm: redactSecret(env.SERVER_ENC_KEY_IKM, "SERVER_ENC_KEY_IKM"),
-    opsAlertWebhookUrl: redactSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
-  };
+  readonly GITHUB_CLIENT_ID?: SecretBindingValue;
+  readonly GITHUB_CLIENT_SECRET?: SecretBindingValue;
+  readonly SERVER_ENC_KEY_IKM?: SecretBindingValue;
+  readonly OPS_ALERT_WEBHOOK_URL?: SecretBindingValue;
+}): Effect.Effect<WorkerSecretsShape> {
+  return Effect.gen(function* () {
+    const githubClientId = yield* resolveSecretString(env.GITHUB_CLIENT_ID);
+    const githubClientSecret = yield* readWorkerSecret(
+      env.GITHUB_CLIENT_SECRET,
+      "GITHUB_CLIENT_SECRET",
+    );
+    const serverEncKeyIkm = yield* readWorkerSecret(env.SERVER_ENC_KEY_IKM, "SERVER_ENC_KEY_IKM");
+    const opsAlertWebhookUrl = yield* readWorkerSecret(
+      env.OPS_ALERT_WEBHOOK_URL,
+      "OPS_ALERT_WEBHOOK_URL",
+    );
+    return { githubClientId, githubClientSecret, serverEncKeyIkm, opsAlertWebhookUrl };
+  });
 }
 
 /** Resolves the project DO's stub (DO name = project ID). */

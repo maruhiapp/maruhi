@@ -120,14 +120,16 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle(
       "authConfig",
       Effect.fn("handlers-auth.authConfig")(function* () {
-        const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
         // Public config (AUTH_SPEC §4): only public information — client_id
         // already appears in plaintext on the authorize URL. Do not add
         // client_secret etc. to this response (it is part of the check — a
         // 200 works as confirmation that "client_id / secret are both
         // registered")
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
+        const clientId = yield* ensureGitHubOAuthConfigured(
+          secrets.githubClientId,
+          secrets.githubClientSecret,
+        );
         // If the deployment keypair (CRYPTO_SPEC §9) is configured, add its
         // public face (AUTH_SPEC §4 — serverKeyFingerprintHex is the
         // verification target when running grant_server; serverEncPubHex is
@@ -143,7 +145,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const identities = yield* IdentityRepo;
         const signupPolicy = yield* identities.signupPolicy;
         return {
-          githubClientId: env.GITHUB_CLIENT_ID,
+          githubClientId: clientId,
           signupPolicy,
           ...(serverKeyInfo === null
             ? {}
@@ -159,12 +161,15 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
       Effect.fn("handlers-auth.githubStart")(function* ({ request, query }) {
         const env = yield* WorkerEnv;
         const secrets = yield* WorkerSecrets;
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
+        const clientId = yield* ensureGitHubOAuthConfigured(
+          secrets.githubClientId,
+          secrets.githubClientSecret,
+        );
         const state = yield* randomHex(16);
         const signupCode = query.signup_code;
         if (signupCode === undefined) {
           // A plain start (login, or signup under open) behaves as before
-          return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+          return yield* redirectToGitHubAuthorize(request, clientId, state, {
             name: STATE_COOKIE,
             value: state,
           });
@@ -200,7 +205,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // the account creation — it is not consumed here). The value is
         // bound to this start's state (signupCookieValue — a carry-over is
         // not a credential for another flow)
-        const response = yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
+        const response = yield* redirectToGitHubAuthorize(request, clientId, state, {
           name: STATE_COOKIE,
           value: state,
         });

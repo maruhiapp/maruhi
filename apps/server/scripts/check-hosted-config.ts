@@ -86,6 +86,8 @@ interface Norm {
   readonly doBindings: Record<string, { className: string; scriptName?: string | undefined }>;
   /** binding -> { namespace, limit, period } */
   readonly rateLimits: Record<string, { namespace: string; limit: number; period: number }>;
+  /** binding -> { storeId, secretName } (Secrets Store bindings — hosted cf mode only) */
+  readonly storeSecrets: Record<string, { storeId: string; secretName: string }>;
   readonly d1?: NormBinding | undefined;
   /** binding -> bucket name */
   readonly r2: Record<string, string>;
@@ -133,6 +135,11 @@ interface WranglerLike {
     name: string;
     namespace_id: string;
     simple: { limit: number; period: number };
+  }>;
+  secrets_store_secrets?: ReadonlyArray<{
+    binding: string;
+    store_id: string;
+    secret_name: string;
   }>;
   d1_databases?: ReadonlyArray<{
     binding: string;
@@ -194,6 +201,10 @@ function normWrangler(config: WranglerLike): Norm {
   for (const bucket of config.r2_buckets ?? []) {
     r2[bucket.binding] = bucket.bucket_name;
   }
+  const storeSecrets: Norm["storeSecrets"] = {};
+  for (const secret of config.secrets_store_secrets ?? []) {
+    storeSecrets[secret.binding] = { storeId: secret.store_id, secretName: secret.secret_name };
+  }
   const db = config.d1_databases?.[0];
   // Legacy `migrations` (restore) and new-style `exports` both declare sqlite
   // DO classes; normalize to the class-name list either way
@@ -214,6 +225,7 @@ function normWrangler(config: WranglerLike): Norm {
     cpuMs: config.limits?.cpu_ms,
     doBindings,
     rateLimits,
+    storeSecrets,
     d1:
       db === undefined
         ? undefined
@@ -241,6 +253,7 @@ function normWrangler(config: WranglerLike): Norm {
 function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
   const doBindings: Norm["doBindings"] = {};
   const rateLimits: Norm["rateLimits"] = {};
+  const storeSecrets: Norm["storeSecrets"] = {};
   const r2: Norm["r2"] = {};
   let d1: NormBinding | undefined;
   for (const [binding, value] of Object.entries(worker.env ?? {})) {
@@ -259,6 +272,9 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
           limit: value.simple.limit,
           period: value.simple.period,
         };
+        break;
+      case "secrets-store-secret":
+        storeSecrets[binding] = { storeId: value.storeId, secretName: value.secretName };
         break;
       case "d1":
         d1 = { binding, name: value.name ?? "", id: value.id };
@@ -282,6 +298,7 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
     cpuMs: worker.limits?.cpuMs,
     doBindings,
     rateLimits,
+    storeSecrets,
     d1,
     r2,
     crons: (worker.triggers ?? [])
@@ -324,8 +341,65 @@ const cSelf = normCf(cfSelf, bundlerSelf);
 const cHosted = normCf(cfHosted, bundlerHosted);
 const cRestore = normCf(cfRestore, bundlerRestore);
 
-expectSame("self-host worker (wrangler.jsonc vs cloudflare.config.ts)", wBase, cSelf);
-expectSame("hosted worker (env.hosted vs --mode hosted)", wHosted, cHosted);
+// The Secrets Store bindings are excluded from the two parity
+// comparisons: the wrangler mirror deliberately declares none (the
+// test harness injects the secret values as .dev.vars strings, and
+// src/worker-env.ts resolves both shapes), so they are asserted
+// separately below instead of by mirror equality. (expectSame
+// compares through JSON.stringify, which drops undefined values.)
+expectSame(
+  "self-host worker (wrangler.jsonc vs cloudflare.config.ts)",
+  { ...wBase, storeSecrets: undefined },
+  { ...cSelf, storeSecrets: undefined },
+);
+expectSame(
+  "hosted worker (env.hosted vs --mode hosted)",
+  { ...wHosted, storeSecrets: undefined },
+  { ...cHosted, storeSecrets: undefined },
+);
+
+// The hosted worker's four secret values are bound from the account's
+// Secrets Store (ADR-0012 revision 3): exactly the four names, each
+// bound under its own env name as the secret name, all in the one
+// store the SECRETS_STORE_ID constant in cloudflare.config.ts names.
+// The id itself cannot be pinned here (it is recorded nowhere else in
+// the repository — the constant's comment carries the operator duty),
+// but its shape can: one non-empty id shared by all four bindings.
+// No other mode and no wrangler mirror entry may declare a store
+// binding: on self-host the four are plain Workers Secrets, and the
+// restore worker carries no secrets at all.
+const HOSTED_SECRET_NAMES = [
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "SERVER_ENC_KEY_IKM",
+  "OPS_ALERT_WEBHOOK_URL",
+];
+expectSame(
+  "cf hosted: secrets store bindings (names)",
+  Object.keys(cHosted.storeSecrets).toSorted(),
+  [...HOSTED_SECRET_NAMES].toSorted(),
+);
+for (const name of HOSTED_SECRET_NAMES) {
+  expectSame(
+    `cf hosted: secrets store binding ${name} (secret name)`,
+    cHosted.storeSecrets[name]?.secretName,
+    name,
+  );
+}
+const hostedStoreIds = new Set(Object.values(cHosted.storeSecrets).map((s) => s.storeId));
+if (hostedStoreIds.size !== 1 || hostedStoreIds.has("")) {
+  failures.push(
+    `cf hosted: secrets store bindings must share exactly one non-empty store id (got ${[...hostedStoreIds].join(", ")})`,
+  );
+}
+for (const [label, norm] of [
+  ["wrangler self-host", wBase],
+  ["wrangler hosted", wHosted],
+  ["cf self-host", cSelf],
+  ["cf restore", cRestore],
+] as const) {
+  expectSame(`${label}: no secrets store bindings`, norm.storeSecrets, {});
+}
 
 // The invariants below are checked on the wrangler mirror as before; the
 // parity assertions above carry them to the cf config transitively.
@@ -821,22 +895,66 @@ expectSame(
   [...alchemySource.matchAll(/workersDev: (true|false)/g)].map((m) => m[1]),
   ["false", "false"],
 );
-// Every Workers Secret the hosted worker carries must be declared as a
-// Redacted config: an Alchemy upload rebuilds the binding list from the
-// program, so an undeclared secret binding would be dropped on deploy.
-// The list is the one in wrangler.jsonc's hosted comment (GITHUB_CLIENT_ID
-// is registered as a secret too, by the unified-registration ruling).
-for (const secret of [
-  "GITHUB_CLIENT_ID",
-  "GITHUB_CLIENT_SECRET",
-  "SERVER_ENC_KEY_IKM",
-  "OPS_ALERT_WEBHOOK_URL",
-]) {
-  // Anchored to the env entry itself: the secret must be bound under its
-  // own env name, not merely named somewhere in the file
-  if (!new RegExp(`${secret}: yield\\* Config\\.Redacted\\("${secret}"\\)`).test(alchemySource)) {
+// The hosted worker's four secret values are bound from the account's
+// default Secrets Store by lookup (ADR-0012 revision 3): an Alchemy
+// upload rebuilds the binding list from the program, so a secret left
+// unbound here would be dropped on deploy, and a managed (declared)
+// secret would put a value back in the deploy path. The store is
+// found by name; each secret is looked up in it and bound under its
+// own env name; the set must agree with the cf hosted config's store
+// bindings asserted above (HOSTED_SECRET_NAMES / cHosted.storeSecrets).
+expectSame(
+  "alchemy: secrets store lookup (store name)",
+  alchemyLiteral("secrets store lookup", /SecretsStore\.Store\.lookup\(\{\s*name: "([^"]+)"/),
+  "default_secrets_store",
+);
+if (/Config\.Redacted/.test(alchemySource)) {
+  failures.push(
+    "alchemy.run.ts: no Config.Redacted entries may remain — hosted secrets are Secrets Store lookups (ADR-0012 revision 3)",
+  );
+}
+if (/SecretsStore\.(?:Store|Secret)\("/.test(alchemySource)) {
+  failures.push(
+    "alchemy.run.ts: the Secrets Store and its secrets must be looked up, not declared as managed resources (ADR-0012 revision 3)",
+  );
+}
+const alchemySecretLookups = new Map<string, string>();
+for (const m of alchemySource.matchAll(
+  /const (\w+) = Cloudflare\.SecretsStore\.Secret\.lookup\(\{\s*storeId: secretsStore\.storeId,\s*name: "([^"]+)"/g,
+)) {
+  alchemySecretLookups.set(m[2] ?? "", m[1] ?? "");
+}
+expectSame(
+  "alchemy: secrets store lookups (secret names)",
+  [...alchemySecretLookups.keys()].toSorted(),
+  [...HOSTED_SECRET_NAMES].toSorted(),
+);
+expectSame(
+  "alchemy <-> cf hosted: store-bound secret names agree",
+  [...alchemySecretLookups.keys()].toSorted(),
+  Object.keys(cHosted.storeSecrets).toSorted(),
+);
+// Scoped to the HostedServer declaration's env block (the declaration
+// is sliced out the same way as the D1 / R2 declarations above, then
+// its env block within it): the binding must sit in that worker's
+// env — the same text in a comment or in the Site worker's env would
+// leave the hosted worker without the secret on deploy
+const alchemyHostedSection = alchemySection(
+  "hosted worker declaration",
+  'Cloudflare.Worker("HostedServer"',
+  'Cloudflare.Worker("Site"',
+);
+const alchemyHostedEnv = alchemyHostedSection.match(/env: \{([\s\S]*?)\n      \}/)?.[1] ?? "";
+if (alchemyHostedEnv === "") {
+  failures.push("alchemy.run.ts: hosted worker env block not found (extraction fails closed)");
+}
+for (const [secretName, variable] of alchemySecretLookups) {
+  // Anchored to the env entry itself: the looked-up secret must be
+  // bound under its own env name, not merely named somewhere in the
+  // file
+  if (!new RegExp(`${secretName}: ${variable},`).test(alchemyHostedEnv)) {
     failures.push(
-      `alchemy.run.ts: hosted secret ${secret} must be declared as ${secret}: yield* Config.Redacted("${secret}")`,
+      `alchemy.run.ts: hosted secret ${secretName} must be bound in the hosted worker env as ${secretName}: ${variable}`,
     );
   }
 }

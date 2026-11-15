@@ -607,6 +607,7 @@ A response-scope mechanism that "re-seals a share to the requester's ephemeral p
 ## 9. Selective disclosure (the server key)
 
 - The server (deployment) holds its own X25519 keypair. The private key is stored in Workers Secret (self-hosted: inside the user's own account)
+- **Provisioning note (2026-11-15, ADR-0012 revision 3)**: the IKM's home differs by deployment channel only. Self-hosted, it is a Workers Secret inside the user's own account, as above. On the operator's hosted deployment it is held in the account's Secrets Store and reaches the worker as a Secrets Store binding (the deploy itself carries no secret values). The derivation, the fingerprint definition below, and the grant semantics of this section are unchanged — only the provisioning channel differs
 - **The server-key fingerprint (decided 2026-08-02)**: the first 16 bytes of `SHA-256(the server's enc public key (32B))`. Since the server holds only an enc key, §3's user FP definition (enc ‖ sig) doesn't apply. Chain verification checks this FP against the in-payload public key
 - By default, no project's DEK is wrapped to the server (= pure E2EE)
 - When a project owner enables a server-driven feature (e.g. GitHub Actions sync), the client records `grant_server` on the chain and wraps the required epoch DEKs — per the grant scope (which may include a subset of environments) — to the server public key

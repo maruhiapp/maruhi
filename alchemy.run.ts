@@ -32,7 +32,6 @@
 //   bun run alchemy:plan
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Alchemy from "alchemy";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 // One runtime contract with the cf config (apps/server/cloudflare
@@ -141,6 +140,39 @@ export default Alchemy.Stack(
       simple: { limit: 30, period: 60 },
     });
 
+    // The hosted worker's four secret values live in the account's
+    // default Secrets Store (ADR-0012 revision 3), deposited there
+    // once by the operator under their env names. The store and the
+    // secrets are looked up, never declared: a lookup is metadata
+    // only and Unowned — the stack never creates, updates or deletes
+    // them, and no plan or deploy carries a secret value. A secret
+    // missing from the store makes the lookup yield undefined and
+    // the plan fail closed, so the deposit must precede the first
+    // deploy under this shape (the operator sequence is in
+    // docs/notes/hosted-ops.md O9). The worker receives each value
+    // as a SecretsStoreSecret binding and reads it through .get()
+    // (apps/server/src/worker-env.ts resolves both shapes). The
+    // self-host worker keeps plain Workers Secrets (SELF_HOSTING.md).
+    const secretsStore = Cloudflare.SecretsStore.Store.lookup({
+      name: "default_secrets_store",
+    });
+    const githubClientIdSecret = Cloudflare.SecretsStore.Secret.lookup({
+      storeId: secretsStore.storeId,
+      name: "GITHUB_CLIENT_ID",
+    });
+    const githubClientSecretSecret = Cloudflare.SecretsStore.Secret.lookup({
+      storeId: secretsStore.storeId,
+      name: "GITHUB_CLIENT_SECRET",
+    });
+    const serverEncKeyIkmSecret = Cloudflare.SecretsStore.Secret.lookup({
+      storeId: secretsStore.storeId,
+      name: "SERVER_ENC_KEY_IKM",
+    });
+    const opsAlertWebhookUrlSecret = Cloudflare.SecretsStore.Secret.lookup({
+      storeId: secretsStore.storeId,
+      name: "OPS_ALERT_WEBHOOK_URL",
+    });
+
     const hosted = yield* Cloudflare.Worker("HostedServer", {
       name: "maruhi-server-hosted",
       main: "apps/server/src/index.ts",
@@ -188,18 +220,16 @@ export default Alchemy.Stack(
         SIGNUP_START_RATE_LIMIT: signupStartRateLimit,
         CLI_VERIFY_RATE_LIMIT: cliVerifyRateLimit,
         CLI_APPROVE_RATE_LIMIT: cliApproveRateLimit,
-        // All four Workers Secrets the hosted worker carries today
-        // (wrangler.jsonc's hosted comment; src/worker-env.ts). An
+        // The four Secrets Store bindings (the lookups above). An
         // Alchemy upload rebuilds the binding list from this program,
-        // so a secret left undeclared here would be dropped by the
-        // adopting deploy — declaring them is what keeps them. Values
-        // come from the deploy environment (Config.Redacted) and are
-        // uploaded as secret_text on every deploy; they never live in
-        // this file. The deploying operator must hold all four values.
-        GITHUB_CLIENT_ID: yield* Config.Redacted("GITHUB_CLIENT_ID"),
-        GITHUB_CLIENT_SECRET: yield* Config.Redacted("GITHUB_CLIENT_SECRET"),
-        SERVER_ENC_KEY_IKM: yield* Config.Redacted("SERVER_ENC_KEY_IKM"),
-        OPS_ALERT_WEBHOOK_URL: yield* Config.Redacted("OPS_ALERT_WEBHOOK_URL"),
+        // so a secret left unbound here would be dropped by the
+        // deploy — binding all four is what keeps them. The values
+        // themselves never pass through this program or the deploy
+        // environment; they stay in the store.
+        GITHUB_CLIENT_ID: githubClientIdSecret,
+        GITHUB_CLIENT_SECRET: githubClientSecretSecret,
+        SERVER_ENC_KEY_IKM: serverEncKeyIkmSecret,
+        OPS_ALERT_WEBHOOK_URL: opsAlertWebhookUrlSecret,
       },
     });
 
