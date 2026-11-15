@@ -1,5 +1,5 @@
 // Test-suite resolver for the per-suite vitest invocations (the root
-// package.json `test:*` scripts and the CI check-job members).
+// package.json `test:*` scripts and the CI jobs' test steps).
 //
 // The root `vitest.config.ts` `projects:` list is the single source of
 // truth for which projects exist. This script expands that list itself

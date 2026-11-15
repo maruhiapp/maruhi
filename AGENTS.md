@@ -52,8 +52,8 @@ talking with the owner directly, and in the files listed in
   `chromium.launch({ channel: "chrome", headless: false })` instead of
   `executablePath`
 - The quality gate is `bun run check` (see root `package.json`), the same gates
-  as CI (`.github/workflows/ci.yml`), which runs them in parallel groups inside
-  the `check` job
+  as CI (`.github/workflows/ci.yml`), which runs them as parallel jobs (the two
+  big suites sharded) with `parallel:` groups inside some jobs
 - Root `bun run test` intentionally does not include the `apps/web` e2e. Run it
   with `cd apps/web && bun run build && bunx vp test run --config vitest.config.ts`.
   A prior build is required, and the test spawns its own `cf dev`

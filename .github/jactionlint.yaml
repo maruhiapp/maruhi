@@ -1,5 +1,5 @@
 # jactionlint configuration (https://jactionlint.jdx.dev — the maintained
-# actionlint fork). The `check` job in ci.yml runs the pinned binary on every
+# actionlint fork). The `static` job in ci.yml runs the pinned binary on every
 # change via scripts/install-jactionlint.sh (verify-then-unpack, same shape
 # as install-bun / install-headless-shell). Profile is the default
 # (`default`).

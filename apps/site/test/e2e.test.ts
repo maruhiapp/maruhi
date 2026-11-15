@@ -567,7 +567,7 @@ describe("site e2e: docs last-modified dates (git author date)", () => {
   it("shows the page's last git commit date in the page actions and the sitemap", async () => {
     // The author date of the newest commit touching the page, as Nimbus's
     // getLastUpdated reads it (%aI — Blume used the committer date).
-    // Needs full history (CI's check job uses fetch-depth: 0); a shallow
+    // Needs full history (CI's jobs use fetch-depth: 0); a shallow
     // clone would date every page at the boundary commit
     const committed = execFileSync(
       "git",
