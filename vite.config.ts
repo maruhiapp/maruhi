@@ -10,9 +10,10 @@ import { defineConfig } from "vite-plus";
 // The Effect diagnostics gate lives here too. Its rules are the
 // effecttsgo correctness preset shipped by @effect/tsgo (the package is
 // a dependency only as the supplier of this preset and of the patched
-// tsgolint / oxlint artifacts — the root package.json `prepare` script
-// re-applies `effect-tsgo patch --oxlint` on every install; it is not
-// used as an editor language server). Severities match the standalone
+// tsrs its CLI runs the lint gate through — the root `lint` script is
+// `effect-tsgo --tsrs-lint=<version> vp lint`, which runs oxlint's
+// type-aware rules, the Effect ones included, on the Effect-patched
+// tsrs; it is not used as an editor language server). Severities match the standalone
 // gate this replaces (scripts/effect-diagnostics.mjs): every correctness
 // rule at error, except unstableApiUsage (off: effect v4's http modules
 // are marked unstable and the repo pins effect exactly),
@@ -53,17 +54,22 @@ export default defineConfig({
   },
   lint: {
     jsPlugins: [{ name: "eslint-js", specifier: "oxlint-plugin-eslint" }],
-    plugins: ["effecttsgo"],
+    // "effecttsgo" is supplied at runtime by the effect-tsgo wrapper
+    // above, not by vite-plus itself: vite-plus's lint schema type does
+    // not list it (hence the cast), and a bare `vp lint` fails to parse
+    // this config — loudly, rather than linting without the Effect
+    // rules.
+    plugins: ["effecttsgo" as never],
     categories: {
       correctness: "error",
       suspicious: "error",
     },
-    // Type-aware rules (oxlint-tsgolint). The categories above already
+    // Type-aware rules (tsrs). The categories above already
     // pull in the type-aware correctness / suspicious rules; the ones
     // listed "off" below had findings when type-aware linting was
     // introduced and are enabled one by one as their findings are fixed
     // (consistent-return and the two type-assertion rules flag Effect
-    // idioms / tsgolint is not deterministic on
+    // idioms / tsrs is not deterministic on
     // no-unnecessary-type-assertion). The "error" list names rules
     // outside those categories that the tree already satisfies.
     // Effect values are not thenables, so dropped Effects are guarded
