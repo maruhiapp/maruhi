@@ -12,7 +12,8 @@
   // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
   // via @astryxdesign/build / the oxlint config in vite.config.ts;
   // @effect/tsgo supplies the effecttsgo oxlint preset that vite.config.ts
-  // imports and the patched tsgolint the root `prepare` script applies).
+  // imports and the patched tsrs its CLI runs the root `lint` and
+  // `typecheck` scripts through).
   // pagefind (apps/site) is the same class: the Nimbus integration runs
   // the pagefind binary after the build to index the site; it is never
   // imported from site code

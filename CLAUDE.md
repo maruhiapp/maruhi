@@ -122,7 +122,7 @@ leaks every secret. Therefore:
 | CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
 | IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
 | LP / docs | Nimbus on Astro (ADR-0008 revision 2). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
-| Lint/Format | vite-plus (`vp`: oxfmt + oxlint (type-aware via oxlint-tsgolint) + built-in typecheck; Effect diagnostics via @effect/tsgo's effecttsgo preset) + ImportLint + fallow + React Doctor |
+| Lint/Format | vite-plus (`vp`: oxfmt + oxlint (type-aware via tsrs) + built-in typecheck; Effect diagnostics via @effect/tsgo's effecttsgo preset, run through the `effect-tsgo --tsrs-lint` wrapper in the `lint` / `typecheck` scripts) + ImportLint + fallow + React Doctor |
 
 ## Monorepo layout
 
