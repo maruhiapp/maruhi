@@ -10,8 +10,9 @@ import { defineConfig } from "vite-plus";
 // The Effect diagnostics gate lives here too. Its rules are the
 // effecttsgo correctness preset shipped by @effect/tsgo (the package is
 // a dependency only as the supplier of this preset and of the patched
-// tsrs its CLI runs the lint gate through — the root `lint` script is
-// `effect-tsgo --tsrs-lint=<version> vp lint`, which runs oxlint's
+// tsrs its CLI runs the lint gate through — the root `lint` and
+// `typecheck` scripts run `vp` through
+// `effect-tsgo --tsrs-lint=<version>`, which runs oxlint's
 // type-aware rules, the Effect ones included, on the Effect-patched
 // tsrs; it is not used as an editor language server). Severities match the standalone
 // gate this replaces (scripts/effect-diagnostics.mjs): every correctness
@@ -69,8 +70,8 @@ export default defineConfig({
     // listed "off" below had findings when type-aware linting was
     // introduced and are enabled one by one as their findings are fixed
     // (consistent-return and the two type-assertion rules flag Effect
-    // idioms / tsrs is not deterministic on
-    // no-unnecessary-type-assertion). The "error" list names rules
+    // idioms; no-unnecessary-type-assertion was not deterministic
+    // under the previous tsgolint backend). The "error" list names rules
     // outside those categories that the tree already satisfies.
     // Effect values are not thenables, so dropped Effects are guarded
     // by the effecttsgo rules above, not by no-floating-promises.

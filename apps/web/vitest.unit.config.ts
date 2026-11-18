@@ -6,7 +6,8 @@ import { defineConfig } from "vite-plus/test/config";
 // with no build, so they are listed in the root vitest.config.ts
 // projects (the quality-gate 7 path). No DOM, browser, or network is
 // used (fetch is stubbed inside the tests). styling-lint.test.ts also
-// runs `vp lint` on probe files in a temporary tree, to check that the
+// runs the root lint (through the effect-tsgo wrapper) on probe files
+// in a temporary tree, to check that the
 // styling bans of the root vite.config.ts reach the web's files.
 export default defineConfig({
   test: {

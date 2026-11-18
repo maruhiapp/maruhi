@@ -9,7 +9,10 @@
 // apps/web. The bans now live in the single root lint block with
 // repository-root globs, and this test copies that config, unchanged,
 // into a temporary tree, writes probe files that break the bans, and
-// runs `vp lint` on them from the tree's root, as `bun run lint` does.
+// runs the lint on them from the tree's root through the effect-tsgo
+// wrapper, as `bun run lint` does (the config's effecttsgo plugin
+// exists only inside that wrapper, so a bare `vp lint` cannot parse
+// the config).
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -19,6 +22,10 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
+
+/** The tsrs pin of the root lint; must match the --tsrs-lint version in
+ * the root package.json `lint` / `typecheck` scripts. */
+const TSRS_LINT_FLAG = "--tsrs-lint=0.25.0-ts7.1.0-beta";
 
 /** The start of each ban's message (the root vite.config.ts lint block). */
 const CLASS_NAME = "className is forbidden.";
@@ -92,8 +99,15 @@ beforeAll(() => {
   // The probes are named explicitly, by their repository-root-relative
   // paths: the lint block's globs are written from the repository root
   const result = spawnSync(
-    join(tree, "node_modules", ".bin", "vp"),
-    ["lint", "--format", "json", ...PROBES.map((probe) => join("apps", "web", probe.path))],
+    join(tree, "node_modules", ".bin", "effect-tsgo"),
+    [
+      TSRS_LINT_FLAG,
+      "vp",
+      "lint",
+      "--format",
+      "json",
+      ...PROBES.map((probe) => join("apps", "web", probe.path)),
+    ],
     { cwd: tree, encoding: "utf8", timeout: 60_000 },
   );
   // Exit 1 = diagnostics reported; anything else is a failed run
