@@ -13,6 +13,10 @@ minimal form). The steps were verified with a real deploy on 2026-08-10
 1.0.0-beta (2026-09-30) without a fresh real deploy — see the PR for the
 verification level of each command. On 2026-10-23 every `cf` command here was
 checked against the help of cf 1.0.0-beta.20, again without a real deploy.
+On 2026-11-18 every `cf` command here was checked against the help of cf
+1.0.0-rc.1 and the deploy dry-runs (default / hosted / restore) were run,
+again without a real deploy; the two commands that the release renamed are
+updated below.
 
 ## What comes up
 
@@ -31,7 +35,7 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
 - Bun 1.4.4 (pinned in the repository `engines`. `cf` is a dependency)
 - Node.js 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x
-  (the range cf 1.0.0-beta.20 supports). `bunx cf` runs cf on the `node` it
+  (the range cf 1.0.0-rc.1 supports). `bunx cf` runs cf on the `node` it
   finds on `PATH`. With Bun alone, `cf deploy` stops with "cloudflare.config.ts
   loading is not supported on Bun"
 
@@ -45,6 +49,12 @@ bun install
 cd apps/server
 bunx cf auth login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)
 ```
+
+cf does not save your account choice between runs: if your login spans
+several accounts it asks on every run. To deploy non-interactively — and
+to rule out picking the wrong account — set `CLOUDFLARE_ACCOUNT_ID` in
+the environment, or `accountId` in `cloudflare.config.ts` (the hosted
+and restore modes below pin theirs that way).
 
 If you do not want cf to send telemetry, set `CF_SEND_TELEMETRY=false`
 in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing").
@@ -515,13 +525,14 @@ To enable both on your deployment:
 ```sh
 # 1. Create the bucket (requires R2 to be enabled on the account) and a retention rule
 #    (the bucket also comes with a default 7-day "abort incomplete multipart" rule)
-bunx cf r2 buckets create-by-name maruhi-ops-backup
+bunx cf r2 buckets create --name maruhi-ops-backup
 bunx cf r2 buckets lifecycle update maruhi-ops-backup --rules '[{"id":"retain-35d","enabled":true,"expire_objects":{"days":35},"abort_multipart_uploads":{"days":1}}]' -f
-bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must say public access is disabled
+bunx cf r2 buckets domains managed get maruhi-ops-backup   # must say public access is disabled
 
 # 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
 #    higher CPU limit for large snapshots (see `case "hosted"` in
-#    cloudflare.config.ts; put your D1 database ID there. The hosted mode
+#    cloudflare.config.ts; put your D1 database ID and your account ID
+#    (the ACCOUNT_ID constant the hosted and restore modes pin) there. The hosted mode
 #    binds its secrets from your account's Secrets Store (ADR-0012
 #    revision 3): put your default store's ID in the SECRETS_STORE_ID
 #    constant in cloudflare.config.ts and deposit the same values in that
@@ -537,7 +548,7 @@ bunx cf r2 buckets domains managed list --bucket-name maruhi-ops-backup   # must
 #    URL that does reach logs or traces)
 #    (run from apps/server; the operators' own hosted deployment applies
 #    migrations through Alchemy instead — ADR-0012 revision 2)
-bunx cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --dir drizzle --pattern 'drizzle/*/migration.sql'
+bunx cf d1 migrations apply $(bun scripts/d1-id.ts hosted) --mode hosted --dir drizzle --pattern 'drizzle/*/migration.sql'
 CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode hosted --no-provision
 # Deposit GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and (optionally)
 # OPS_ALERT_WEBHOOK_URL and SERVER_ENC_KEY_IKM (the last only if this
@@ -563,18 +574,18 @@ live project.
 CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode restore --no-provision
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
-bunx cf r2 objects put restore/jobs/job-1.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
+bunx cf r2 objects put restore/jobs/job-1.json --mode restore --bucket-name maruhi-ops-backup --file job.json --content-type application/json
 # Within a minute the job is claimed (moved to restore/running/) and the result appears;
 # compare it with the snapshot's trailer line. A job left under restore/running/ with no
 # result means the worker died mid-restore: check the target DO before resubmitting
-bunx cf r2 objects get restore/results/job-1.json --bucket-name maruhi-ops-backup --text
+bunx cf r2 objects get restore/results/job-1.json --mode restore --bucket-name maruhi-ops-backup --text
 # Remove the restore worker again
-bunx cf workers delete maruhi-restore --force
+bunx cf workers delete maruhi-restore --mode restore --force
 ```
 
 The result reports the restored chain head, the audit head hash and per-table
 row counts; the snapshot's last line (its trailer) carries the same values for
-comparison (`bunx cf r2 objects get <objectKey> --bucket-name maruhi-ops-backup | gunzip | tail -1`).
+comparison (`bunx cf r2 objects get <objectKey> --mode restore --bucket-name maruhi-ops-backup | gunzip | tail -1`).
 The trailer's `auditHeadHashHex` is `null` when the snapshot was taken before
 the audit-head column had been materialized; in that case compare the restored
 value with the live project's `GET /projects/:id/audit-head` (or recompute it
@@ -629,13 +640,13 @@ chain id is really that person.
 **2. You import** with the restore worker, adding `identitiesKey` to the job:
 
 ```sh
-bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
-bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
+bunx cf r2 objects put import/acme.ndjson.gz --mode restore --bucket-name maruhi-ops-backup --file acme.ndjson.gz
+bunx cf r2 objects put import/acme.identities.json --mode restore --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
 CLOUDFLARE_DEPENDENCIES_INSTRUMENTATION=false bunx cf deploy --mode restore --no-provision
 echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
-bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
-bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
-bunx cf workers delete maruhi-restore --force
+bunx cf r2 objects put restore/jobs/import-acme.json --mode restore --bucket-name maruhi-ops-backup --file job.json --content-type application/json
+bunx cf r2 objects get restore/results/import-acme.json --mode restore --bucket-name maruhi-ops-backup --text
+bunx cf workers delete maruhi-restore --mode restore --force
 ```
 
 The job restores the Durable Object exactly like a snapshot restore (only

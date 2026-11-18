@@ -39,7 +39,7 @@
     "playwright": "1.65.0",
     "react-doctor": "0.9.23",
     "vite": "npm:@voidzero-dev/vite-plus-core@8.3.8000",
-    "wrangler": "4.161.0"
+    "wrangler": "4.164.0"
   },
   "astryx": {
     "theme": "./theme/maruhi.ts"

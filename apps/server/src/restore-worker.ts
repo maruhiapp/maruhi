@@ -3,7 +3,7 @@
 //
 // Deployed only during a restore operation via
 // `cf deploy --mode restore`, and deleted afterward
-// via `cf workers delete maruhi-restore`. It has no HTTP
+// via `cf workers delete maruhi-restore --mode restore`. It has no HTTP
 // handler: it is driven by an every-minute cron, and its only work is
 // enumerating `restore/jobs/<name>.json` in the evacuation bucket,
 // executing them, and writing results (static code + verified values)
