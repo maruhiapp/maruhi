@@ -135,6 +135,16 @@ export const SELF_HOST_WORKER = defineWorker({
 // itself.
 const SECRETS_STORE_ID = "93c7bc6956634cd59d4432b299a9cb34";
 
+// cf does not save the account choice between runs: without an account
+// id it prompts on every run, and on a login that spans several accounts
+// the prompt is a wrong-account risk. The hosted and restore modes are
+// bound to this account in substance (the hosted D1 id and
+// SECRETS_STORE_ID are its resources), so both modes pin it; the
+// self-host default stays unpinned — it is the template self-hosters
+// deploy into their own account (SELF_HOSTING tells them to replace the
+// hosted ids, this one included).
+const ACCOUNT_ID = "66174a06aae84ed383e75d0c0d35566e";
+
 const HOSTED_SECRET_BINDINGS = {
   GITHUB_CLIENT_ID: bindings.secretsStoreSecret({
     storeId: SECRETS_STORE_ID,
@@ -198,7 +208,7 @@ export const HOSTED_WORKER = defineWorker({
 // Restore worker (operations-only, non-HTTP, not permanently deployed —
 // docs/notes/hosted-ops.md §2-E / §5-2). Deploy it only during restore
 // work with `cf deploy --mode restore`, then remove it with
-// `cf workers delete maruhi-restore`. It has no HTTP handler
+// `cf workers delete maruhi-restore --mode restore`. It has no HTTP handler
 // (workers.dev is also disabled); its only job is a per-minute cron
 // that reads restore/jobs/ in the evacuation bucket.
 export const RESTORE_WORKER = defineWorker({
@@ -257,7 +267,7 @@ export const RESTORE_WORKER = defineWorker({
  *   cf deploy --mode hosted   -> hosted worker "maruhi-server-hosted"
  *   cf deploy --mode restore  -> ops-only restore worker "maruhi-restore"
  *      (what wrangler.restore.jsonc used to describe; deploy it only during
- *      restore work, then remove it with `cf workers delete maruhi-restore`)
+ *      restore work, then remove it with `cf workers delete maruhi-restore --mode restore`)
  *
  * Any other --mode fails fast, matching wrangler's behaviour for an unknown
  * --env name.
@@ -274,10 +284,10 @@ export const RESTORE_WORKER = defineWorker({
 export default defineConfig((ctx) => {
   switch (ctx.mode) {
     case "hosted": {
-      return { worker: HOSTED_WORKER };
+      return { accountId: ACCOUNT_ID, worker: HOSTED_WORKER };
     }
     case "restore": {
-      return { worker: RESTORE_WORKER };
+      return { accountId: ACCOUNT_ID, worker: RESTORE_WORKER };
     }
     case undefined: {
       return { worker: SELF_HOST_WORKER };

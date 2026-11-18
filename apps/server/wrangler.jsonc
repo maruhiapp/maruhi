@@ -243,7 +243,7 @@
       ],
       // The DO → R2 evacuation destination (hosted-ops.md §2-D).
       // The bucket is created by the operator (`cf r2 buckets
-      // create-by-name maruhi-ops-backup` + a lifecycle rule —
+      // create --name maruhi-ops-backup` + a lifecycle rule —
       // hosted-ops.md §7 O2). The worker only uses put / get
       "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
       // Workers Logs (retention of static log lines —
