@@ -524,7 +524,10 @@ To enable both on your deployment:
 
 ```sh
 # 1. Create the bucket (requires R2 to be enabled on the account) and a retention rule
-#    (the bucket also comes with a default 7-day "abort incomplete multipart" rule)
+#    (the bucket also comes with a default 7-day "abort incomplete multipart" rule).
+#    These three run without --mode on purpose: the hosted mode's ACCOUNT_ID pin
+#    only becomes your account at step 2, so cf prompts for the account here —
+#    or set CLOUDFLARE_ACCOUNT_ID to yours to skip the prompt.
 bunx cf r2 buckets create --name maruhi-ops-backup
 bunx cf r2 buckets lifecycle update maruhi-ops-backup --rules '[{"id":"retain-35d","enabled":true,"expire_objects":{"days":35},"abort_multipart_uploads":{"days":1}}]' -f
 bunx cf r2 buckets domains managed get maruhi-ops-backup   # must say public access is disabled
