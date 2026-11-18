@@ -15,7 +15,15 @@
 // the config).
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -23,9 +31,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
 
-/** The tsrs pin of the root lint; must match the --tsrs-lint version in
- * the root package.json `lint` / `typecheck` scripts. */
-const TSRS_LINT_FLAG = "--tsrs-lint=0.25.0-ts7.1.0-beta";
+/** The tsrs pin of the root lint, read from the root package.json `lint`
+ * script so the test always runs the same wrapper version as the gate. */
+const TSRS_LINT_FLAG = (
+  JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { scripts: { lint: string } }
+).scripts.lint.match(/--tsrs-lint=\S+/)![0];
 
 /** The start of each ban's message (the root vite.config.ts lint block). */
 const CLASS_NAME = "className is forbidden.";
