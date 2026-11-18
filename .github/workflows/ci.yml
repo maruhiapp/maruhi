@@ -134,6 +134,14 @@ jobs:
           #     the fix (minimatch@11) is out of range for every parent and the
           #     latest eslint still pins ^10 — lint/build-time pattern matching
           #     over the repository's own file paths only
+          #   GHSA-fc5q-39xc-vjpf: picomatch (ReDoS through single-branch
+          #     repeated extglobs) — every copy in the tree (2.3.2 / 4.0.5 /
+          #     4.0.7, via alchemy, astro, vitest, vite and friends) is in the
+          #     vulnerable range <= 4.0.7 and upstream has published no patched
+          #     release (advisory of 2026-10-19, first_patched_version null;
+          #     the latest releases are still 2.3.2 / 4.0.7) — build/test-time
+          #     glob matching over the repository's own paths only. Remove
+          #     this ignore when a patched picomatch ships.
           # Removed as stale (2026-11-14): the path-to-regexp@6.1.0 ignore
           # (GHSA-9wv6-86v2-598j — the tree's only copy is 6.3.0 since the
           # Blume → Nimbus replacement, ADR-0008 revision 2), the katex ignore
@@ -159,6 +167,7 @@ jobs:
             run: >-
               bun audit
               --ignore GHSA-g3hv-75wg-m249
+              --ignore GHSA-fc5q-39xc-vjpf
 
           - name: 1. Format (vp fmt)
             run: bun run fmt:check
