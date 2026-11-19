@@ -16,12 +16,14 @@ import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { dataEvent } from "../data/data-events.ts";
-import { requireEnvironmentAccess, requireMemberState } from "../data/data-guards.ts";
-import type { DataActor, PulledVariableValue } from "../data/data-plane.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import type { StoredVersionMeta } from "../data/data-store.ts";
-import { DataStore } from "../data/data-store.ts";
+import type { DataActor, PulledVariableValue, StoredVersionMeta } from "../data.package/index.ts";
+import {
+  dataEvent,
+  DataStore,
+  rejectData,
+  requireEnvironmentAccess,
+  requireMemberState,
+} from "../data.package/index.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { MAX_VERSION_VALUES_PAGE_BYTES } from "../policy.ts";
 import { requireActiveEnvironment, requireActiveVariable } from "../quotas.ts";

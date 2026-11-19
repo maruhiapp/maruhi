@@ -10,21 +10,22 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { dataEvent, dekRecipientTarget } from "../data/data-events.ts";
-import {
-  currentEpochOf,
-  ensureDevicePermission,
-  requireEnvironmentAccess,
-  roleAtLeast,
-} from "../data/data-guards.ts";
 import type {
   DataActor,
   DekRecipientPosition,
   DekWrapInput,
   DekWrapRefInput,
-} from "../data/data-plane.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import { DataStore } from "../data/data-store.ts";
+} from "../data.package/index.ts";
+import {
+  currentEpochOf,
+  dataEvent,
+  DataStore,
+  dekRecipientTarget,
+  ensureDevicePermission,
+  rejectData,
+  requireEnvironmentAccess,
+  roleAtLeast,
+} from "../data.package/index.ts";
 import {
   allRecipientsAreOwnDevices,
   checkWrapRequestCount,

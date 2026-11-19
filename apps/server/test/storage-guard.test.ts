@@ -52,16 +52,14 @@ import {
   deriveAuditHeads,
   makeAuditStore,
 } from "../src/audit-store.ts";
+import type { DataActor, DataRejection, DataStore } from "../src/data.package/index.ts";
 import {
+  dataStoreLayer,
   toManifestInput,
   toMetaStatementInput,
   toValueInput,
   unwrapDataOutcome,
-} from "../src/data/data-http.ts";
-import type { DataActor } from "../src/data/data-plane.ts";
-import type { DataRejection } from "../src/data/data-rejection.ts";
-import type { DataStore } from "../src/data/data-store.ts";
-import { dataStoreLayer } from "../src/data/data-store.ts";
+} from "../src/data.package/index.ts";
 import type { ChainStore, StateCache } from "../src/do/chain-store.ts";
 import { chainStoreLayer } from "../src/do/chain-store.ts";
 import { restoreProgram } from "../src/do/do-ops.ts";

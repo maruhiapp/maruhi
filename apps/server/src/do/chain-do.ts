@@ -50,9 +50,11 @@ import { Clock, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 import type { HeadAttestationSubmissionInput } from "../attestation-accept.ts";
 import { putHeadAttestationProgram } from "../attestation-accept.ts";
 import { AuditStore, auditStoreLayer } from "../audit-store.ts";
-import { requireMemberState } from "../data/data-guards.ts";
 import type {
   DataActor,
+  DataOutcome,
+  DataRejectedError,
+  DataStore,
   DekWrapInput,
   DekWrapRefInput,
   EnvironmentListValue,
@@ -64,11 +66,8 @@ import type {
   SchemaPolicy,
   ValueInput,
   VariableVersionValue,
-} from "../data/data-plane.ts";
-import type { DataOutcome, DataRejectedError } from "../data/data-rejection.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import type { DataStore } from "../data/data-store.ts";
-import { dataStoreLayer } from "../data/data-store.ts";
+} from "../data.package/index.ts";
+import { dataStoreLayer, rejectData, requireMemberState } from "../data.package/index.ts";
 import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
 import {
   createEnvironmentCompositeProgram,

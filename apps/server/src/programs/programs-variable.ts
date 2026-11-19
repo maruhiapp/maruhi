@@ -11,38 +11,38 @@ import { Clock, Effect } from "effect";
 
 import type { AuditEventInput } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
-import { dataEvent } from "../data/data-events.ts";
-import type { MemberWithDevice } from "../data/data-guards.ts";
-import {
-  currentEpochOf,
-  ensureDevicePermission,
-  requireEnvironmentAccess,
-  withSigningDevice,
-} from "../data/data-guards.ts";
 import type {
   DataActor,
+  DataRejection,
+  DataWriteOps,
   EnvManifestInput,
+  MemberWithDevice,
+  MetaOperation,
   MetaStatementInput,
   SchemaPolicy,
   ValueInput,
+  VariableRow,
   VariableVersionValue,
-} from "../data/data-plane.ts";
-import type { DataRejection } from "../data/data-rejection.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import type { DataWriteOps, VariableRow } from "../data/data-store.ts";
-import { DataStore } from "../data/data-store.ts";
-import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
-import type { MetaOperation } from "../data/verify-meta.ts";
+} from "../data.package/index.ts";
 import {
+  acceptManifestForMetaOp,
   acceptMetaStatement,
+  currentEpochOf,
+  dataEvent,
+  DataStore,
   ensureDescriptionPolicy,
+  ensureDevicePermission,
   ensureMetaCas,
   ensureMetaStatementSignature,
   ensureNfcName,
   ensureSupportedLayout,
+  ensureValueCas,
+  ensureValueSignature,
+  rejectData,
+  requireEnvironmentAccess,
   statementLayoutVersion,
-} from "../data/verify-meta.ts";
-import { ensureValueCas, ensureValueSignature } from "../data/verify-value.ts";
+  withSigningDevice,
+} from "../data.package/index.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
 import {

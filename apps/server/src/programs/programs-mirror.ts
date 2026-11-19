@@ -30,10 +30,8 @@ import {
 import { Clock, Effect, Schema } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { requireMemberState, roleAtLeast } from "../data/data-guards.ts";
-import type { DataActor } from "../data/data-plane.ts";
-import type { DataRejectedError } from "../data/data-rejection.ts";
-import { rejectData } from "../data/data-rejection.ts";
+import type { DataActor, DataRejectedError } from "../data.package/index.ts";
+import { rejectData, requireMemberState, roleAtLeast } from "../data.package/index.ts";
 import type { ChainStore, StateCache } from "../do/chain-store.ts";
 import {
   commitMirrorReplica,

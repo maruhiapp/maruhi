@@ -72,7 +72,7 @@
 import { Data, Effect } from "effect";
 
 import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
-import type { MirrorSyncRejectReason } from "../data/data-rejection.ts";
+import type { MirrorSyncRejectReason } from "../data.package/index.ts";
 import { OPS_RESTORE_BATCH_ROWS } from "../ops/ops-policy.ts";
 import {
   acceptColumns,

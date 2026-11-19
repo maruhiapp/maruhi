@@ -13,10 +13,8 @@
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { dataEvent } from "../data/data-events.ts";
-import { requireMemberState } from "../data/data-guards.ts";
-import type { DataActor, SchemaPolicy } from "../data/data-plane.ts";
-import { DataStore } from "../data/data-store.ts";
+import type { DataActor, SchemaPolicy } from "../data.package/index.ts";
+import { dataEvent, DataStore, requireMemberState } from "../data.package/index.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 

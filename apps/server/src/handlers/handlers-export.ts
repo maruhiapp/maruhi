@@ -14,7 +14,7 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData } from "../data/data-http.ts";
+import { callProjectData } from "../data.package/index.ts";
 import { IdentityRepo } from "../db.package/index.ts";
 import type { ExportMembersValue } from "../programs/programs-export.ts";
 import type { ExportPageValue } from "../programs/programs-export.ts";

@@ -12,8 +12,8 @@ import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData, noContent } from "../data/data-http.ts";
-import type { RecipientDekValue } from "../data/data-plane.ts";
+import type { RecipientDekValue } from "../data.package/index.ts";
+import { callProjectData, noContent } from "../data.package/index.ts";
 
 export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
   handlers

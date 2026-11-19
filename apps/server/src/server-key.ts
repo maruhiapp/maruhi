@@ -44,7 +44,7 @@ import {
 } from "@maruhi/crypto";
 import { Context, Data, Effect, Redacted } from "effect";
 
-import type { WireSuite } from "./data/data-plane.ts";
+import type { WireSuite } from "./data.package/index.ts";
 import { readWorkerSecret, type SecretBindingValue } from "./worker-env.ts";
 
 const IKM_BYTES = 32;

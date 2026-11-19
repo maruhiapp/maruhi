@@ -16,7 +16,7 @@ import { decodeHex } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { DataStore } from "../data/data-store.ts";
+import { DataStore } from "../data.package/index.ts";
 import type { AppliedProposal } from "./chain-accept.ts";
 import { insertAcceptedEntrySync, proposalIndexOf } from "./chain-accept.ts";
 import type { StoredChain, VerifiedChainView } from "./chain-store.ts";

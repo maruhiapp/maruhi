@@ -17,7 +17,7 @@ import { decodeEnvironmentId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData, noContent } from "../data/data-http.ts";
+import { callProjectData, noContent } from "../data.package/index.ts";
 import type { MemberProposalValue } from "../programs/programs-proposal.ts";
 import type { EffectiveRotationFlag } from "../rotation-detect.ts";
 

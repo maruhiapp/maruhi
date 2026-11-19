@@ -36,16 +36,16 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
+import type { CheckpointValueEntryRow } from "./data.package/index.ts";
 import {
+  DataStore,
   deviceOf,
   ensureDevicePermission,
   loadInitializedChain,
+  rejectData,
   requireRole,
   requireRoleInScope,
-} from "./data/data-guards.ts";
-import { rejectData } from "./data/data-rejection.ts";
-import type { CheckpointValueEntryRow } from "./data/data-store.ts";
-import { DataStore } from "./data/data-store.ts";
+} from "./data.package/index.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "./do/chain-accept.ts";
 import { commitAcceptedEntry } from "./do/chain-commit.ts";
 import type { StateCache } from "./do/chain-store.ts";
