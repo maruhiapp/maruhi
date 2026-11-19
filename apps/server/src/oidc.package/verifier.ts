@@ -321,7 +321,7 @@ export function makeOidcVerifier(
         // A fetch failure is fail-closed (§14-1) but 503, not 401:
         // telling a transient issuer / network outage as "bad
         // credentials" would make the CI job treat it as a
-        // non-retryable failure (errors/lease.ts)
+        // non-retryable failure (errors.package/lease.ts)
         Effect.mapError(() => new LeaseUnavailableError({ reason: "oidc-jwks-unavailable" })),
       );
       if (resolved === null) {

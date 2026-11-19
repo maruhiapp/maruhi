@@ -329,7 +329,7 @@ export {
   VariableConflictError,
   VariableNotFoundError,
   VersionConflictError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 export {
   ChainHeadSchema,
   ChainSnapshotSchema,

@@ -34,7 +34,7 @@ import {
   ProjectNotFoundError,
   RotationProposalRejectedError,
   SetupIncompleteError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { RotationProposalInputSchema, RotationProposalReceiptSchema } from "./rotation-api.ts";
 import { strictPayload } from "./strict.ts";
@@ -137,10 +137,10 @@ export const LeaseResponseSchema = Schema.Struct({
  * binding (same token + a different key is 401 `token-replayed` —
  * §14-1) → environment existence (404) → rate limit (429) → server
  * wraps exist (503). The rate limit sits behind authorization for
- * §11-2 existence concealment (errors/lease.ts). `token-replayed` is
+ * §11-2 existence concealment (errors.package/lease.ts). `token-replayed` is
  * the only 401 reachable after authorization passes, and is compatible
  * with existence concealment (LeaseUnauthorizedReasonSchema in
- * errors/lease.ts).
+ * errors.package/lease.ts).
  */
 /**
  * The sealed-proposal mint (AUTH_SPEC §14-5 = CRYPTO_SPEC §5.3): the

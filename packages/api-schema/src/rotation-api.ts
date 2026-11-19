@@ -33,7 +33,7 @@ import {
   RotationFlagNotFoundError,
   RotationProposalNotFoundError,
   RotationProposalRejectedError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import {
   EncPubHex,
   hexString,

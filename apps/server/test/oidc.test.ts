@@ -486,7 +486,7 @@ describe("OIDC verifier(§14-1)", () => {
     expect(result.ok).toBe(false);
     // A transient outage must not be reported as "bad credentials
     // (401)" — a CI job would treat it as a non-retryable failure
-    // (errors/lease.ts)
+    // (errors.package/lease.ts)
     expect(result.ok === false && result.error).toMatchObject({
       _tag: "LeaseUnavailable",
       reason: "oidc-jwks-unavailable",

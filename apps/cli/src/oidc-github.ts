@@ -326,7 +326,7 @@ function claimsOfPayload(payload: unknown | null): LeaseClaims | ClaimsFailure {
  *
  * A token with multiple `aud` is refused: claims_digest is not
  * uniquely determined, and the server refuses it for the same
- * reason as `ambiguous-audience` (errors/lease.ts). The client
+ * reason as `ambiguous-audience` (errors.package/lease.ts). The client
  * issues the same judgment before making the round trip.
  */
 export function readLeaseClaims(

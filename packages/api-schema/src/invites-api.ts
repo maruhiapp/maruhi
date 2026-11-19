@@ -40,7 +40,7 @@ import {
   InviteRateLimitedError,
   InviteSignatureInvalidError,
   ProjectNotFoundError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import {
   EncPubHex,
   InviteAcceptSignatureHex,

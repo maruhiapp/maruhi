@@ -26,7 +26,7 @@
 //
 // Reject only when no key is available at all, and answer 503
 // `oidc-jwks-unavailable` rather than 401 (see the reason code in
-// errors/lease.ts — a transient failure must not be reported as "bad
+// errors.package/lease.ts — a transient failure must not be reported as "bad
 // credentials").
 //
 // The cache is in-isolate memory. It lives in neither DO storage nor D1: a

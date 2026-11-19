@@ -27,7 +27,7 @@ import {
   KeyWrapNotFoundError,
   KeyWrapPolicyError,
   KeyWrapRateLimitedError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { EncPubHex, hexString, HpkeEncHex, KeyFingerprintHex, Sha256Hex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
