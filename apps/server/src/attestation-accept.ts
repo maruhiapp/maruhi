@@ -38,10 +38,13 @@ import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { catchCryptoErrors } from "./crypto-catch.ts";
-import { requireMemberState, withSigningDevice } from "./data/data-guards.ts";
-import type { AttestationRejectReason, DataRejectedError } from "./data/data-rejection.ts";
-import { rejectData } from "./data/data-rejection.ts";
-import { DataStore } from "./data/data-store.ts";
+import type { AttestationRejectReason, DataRejectedError } from "./data.package/index.ts";
+import {
+  DataStore,
+  rejectData,
+  requireMemberState,
+  withSigningDevice,
+} from "./data.package/index.ts";
 import type { ChainStore, StateCache } from "./do/chain-store.ts";
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "./policy.ts";
 

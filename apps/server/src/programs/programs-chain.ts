@@ -13,11 +13,13 @@ import { Clock, Data, Effect } from "effect";
 
 import type { AuditStore } from "../audit-store.ts";
 import { standaloneCheckpointProgram } from "../checkpoint-accept.ts";
-import { requireMemberState } from "../data/data-guards.ts";
-import type { DataOutcome, DataRejectedError, DataRejection } from "../data/data-rejection.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import type { StoredHeadAttestation } from "../data/data-store.ts";
-import { DataStore } from "../data/data-store.ts";
+import type {
+  DataOutcome,
+  DataRejectedError,
+  DataRejection,
+  StoredHeadAttestation,
+} from "../data.package/index.ts";
+import { DataStore, rejectData, requireMemberState } from "../data.package/index.ts";
 import type { AppliedProposal } from "../do/chain-accept.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "../do/chain-accept.ts";
 import { commitAcceptedEntry } from "../do/chain-commit.ts";

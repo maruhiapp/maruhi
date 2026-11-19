@@ -16,14 +16,6 @@ import type { ChainHistoryIndex, ChainMember } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
-import { dataEvent } from "../data/data-events.ts";
-import {
-  currentEpochOf,
-  ensureDevicePermission,
-  requireEnvironmentAccess,
-  requireMemberState,
-  withSigningDevice,
-} from "../data/data-guards.ts";
 import type {
   DataActor,
   EnvironmentListValue,
@@ -32,12 +24,21 @@ import type {
   EnvironmentSummaryValue,
   EnvManifestInput,
   MetaStatementInput,
-} from "../data/data-plane.ts";
-import { optionalCheckpointSnapshot } from "../data/data-plane.ts";
-import { rejectData } from "../data/data-rejection.ts";
-import { DataStore } from "../data/data-store.ts";
-import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
-import { acceptMetaStatement, ensureNfcName } from "../data/verify-meta.ts";
+} from "../data.package/index.ts";
+import {
+  acceptManifestForMetaOp,
+  acceptMetaStatement,
+  currentEpochOf,
+  dataEvent,
+  DataStore,
+  ensureDevicePermission,
+  ensureNfcName,
+  optionalCheckpointSnapshot,
+  rejectData,
+  requireEnvironmentAccess,
+  requireMemberState,
+  withSigningDevice,
+} from "../data.package/index.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import { requireActiveEnvironment } from "../quotas.ts";
 import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";

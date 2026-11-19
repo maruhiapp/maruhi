@@ -31,7 +31,7 @@ import { Clock, Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { toWireVariable } from "../data/data-http.ts";
+import { toWireVariable } from "../data.package/index.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "../oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "../policy.ts";
 import type { LeaseOutcome, LeaseRejection, LeaseTokenFacts } from "../programs/programs-lease.ts";

@@ -13,7 +13,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AuditStore } from "../src/audit-store.ts";
-import { DataStore } from "../src/data/data-store.ts";
+import { DataStore } from "../src/data.package/index.ts";
 import { ChainStore } from "../src/do/chain-store.ts";
 import { MAX_LEASES_PER_WINDOW } from "../src/policy.ts";
 import { leaseProgram } from "../src/programs/programs-lease.ts";

@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { brandOrNull, toAuditHeadRow } from "../src/audit-store-rows.ts";
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
-import { dataEvent } from "../src/data/data-events.ts";
+import { dataEvent } from "../src/data.package/index.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
 import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
 import {

@@ -15,8 +15,8 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
-import { toManifestInput, toMetaStatementInput } from "../src/data/data-http.ts";
-import type { DekWrapInput } from "../src/data/data-plane.ts";
+import type { DekWrapInput } from "../src/data.package/index.ts";
+import { toManifestInput, toMetaStatementInput } from "../src/data.package/index.ts";
 import {
   commitmentOf,
   digestOf,

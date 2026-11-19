@@ -312,6 +312,23 @@
       "files": ["apps/site/src/components.ts", "apps/site/src/components/Render.astro"],
       "rules": { "circular-dependencies": "warn" }
     },
+    // The data plane's barrel cycle: data.package/index.ts re-exports
+    // verify-meta.ts, verify-meta.ts calls quotas.ts's
+    // metaVersionsExceeded, and quotas.ts consumes the package's
+    // DataStore / rejectData through the index. The mutual dependency
+    // predates the package (quotas.ts already imported the data modules
+    // directly); the barrel only makes it a file-level cycle. Every
+    // cross-reference resolves at call time — the index has no top-level
+    // side effects and neither side evaluates the other at module init —
+    // so it warns instead of failing
+    {
+      "files": [
+        "apps/server/src/data.package/index.ts",
+        "apps/server/src/data.package/verify-meta.ts",
+        "apps/server/src/quotas.ts"
+      ],
+      "rules": { "circular-dependencies": "warn" }
+    },
     // Header's entryId prop is the scaffold's documented forward-compat
     // hook for the version switcher (see the comment in Header.astro);
     // BaseLayout and DocsLayout pass it through. Kept so the owned

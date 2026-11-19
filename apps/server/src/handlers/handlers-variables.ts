@@ -25,6 +25,12 @@ import type { HttpApiEndpoint } from "effect/http-api";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { statefulGetCsrfViolated } from "../auth.package/index.ts";
+import type {
+  EnvironmentMetadataPullValue,
+  EnvironmentPullValue,
+  VariableVersionValue,
+  WireMetaStatement,
+} from "../data.package/index.ts";
 import {
   callProjectData,
   checkAadCoordinates,
@@ -37,13 +43,7 @@ import {
   toValueInput,
   toWireValue,
   toWireVariable,
-} from "../data/data-http.ts";
-import type {
-  EnvironmentMetadataPullValue,
-  EnvironmentPullValue,
-  VariableVersionValue,
-  WireMetaStatement,
-} from "../data/data-plane.ts";
+} from "../data.package/index.ts";
 import type {
   VariableVersionHistoryValue,
   VariableVersionValuesValue,

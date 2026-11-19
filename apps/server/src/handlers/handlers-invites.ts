@@ -55,7 +55,7 @@ import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ensureKeyMaterialAccess } from "../authz.ts";
-import { requireProjectChainAdmin } from "../data/data-http.ts";
+import { requireProjectChainAdmin } from "../data.package/index.ts";
 import { INVITE_TTL_MS, InviteRepo } from "../db.package/index.ts";
 import type { InvitationRecord, InviteIssuance } from "../invite-domain.ts";
 

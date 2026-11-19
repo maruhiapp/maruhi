@@ -21,8 +21,8 @@ import { Cause, Effect, Exit } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it } from "vite-plus/test";
 
-import { dataRejectionError, unwrapDataOutcome } from "../src/data/data-http.ts";
-import type { DataRejection } from "../src/data/data-rejection.ts";
+import type { DataRejection } from "../src/data.package/index.ts";
+import { dataRejectionError, unwrapDataOutcome } from "../src/data.package/index.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,

@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { toMetaStatementInput } from "../src/data/data-http.ts";
+import { toMetaStatementInput } from "../src/data.package/index.ts";
 
 const wireBase = {
   suite: "maruhi/v1" as const,

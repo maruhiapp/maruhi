@@ -34,8 +34,8 @@ import {
   scopedProjectIdsFor,
   tokenScopeAllowsForProject,
 } from "../authz.ts";
-import { callProjectData, noContent, unwrapDataOutcome } from "../data/data-http.ts";
-import type { DataOutcome } from "../data/data-rejection.ts";
+import type { DataOutcome } from "../data.package/index.ts";
+import { callProjectData, noContent, unwrapDataOutcome } from "../data.package/index.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "../db.package/index.ts";
 import {
   MAX_ACTIVE_PROJECTS_PER_ORG,

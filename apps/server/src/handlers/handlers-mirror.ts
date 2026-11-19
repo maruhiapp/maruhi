@@ -8,7 +8,7 @@
 import { maruhiApi } from "@maruhi/api-schema";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData } from "../data/data-http.ts";
+import { callProjectData } from "../data.package/index.ts";
 import type { MirrorPageValue, MirrorStatusValue } from "../programs/programs-mirror.ts";
 
 export const mirrorLive = HttpApiBuilder.group(maruhiApi, "mirror", (handlers) =>

@@ -12,9 +12,8 @@ import type { EnvironmentId, VariableId } from "@maruhi/core";
 import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MetaStatementStatusInput } from "./data/data-plane.ts";
-import { rejectData } from "./data/data-rejection.ts";
-import { DataStore } from "./data/data-store.ts";
+import type { MetaStatementStatusInput } from "./data.package/index.ts";
+import { DataStore, rejectData } from "./data.package/index.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_PROJECTS_PER_ORG,

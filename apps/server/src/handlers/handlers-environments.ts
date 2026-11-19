@@ -14,6 +14,7 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ensureActorMatches } from "../authz.ts";
+import type { EnvironmentListValue } from "../data.package/index.ts";
 import {
   callProjectData,
   checkManifestCoordinates,
@@ -21,8 +22,7 @@ import {
   noContent,
   toManifestInput,
   toMetaStatementInput,
-} from "../data/data-http.ts";
-import type { EnvironmentListValue } from "../data/data-plane.ts";
+} from "../data.package/index.ts";
 import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
 
 /**
