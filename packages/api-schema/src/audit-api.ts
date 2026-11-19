@@ -30,7 +30,7 @@ import {
   DataLimitExceededError,
   ForbiddenError,
   ProjectNotFoundError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { hexPattern, hexString, KeyFingerprintHex, PositiveInt } from "./hex.ts";
 
 /** Max page size (AUDIT_SPEC §7: limit ≤ 200; excess is a Schema 400). */

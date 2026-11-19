@@ -10,7 +10,7 @@ import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import type { Digest } from "effect/crypto";
 import { HttpApiMiddleware } from "effect/http-api";
 
-import { ForbiddenError, UnauthorizedError } from "./errors/index.ts";
+import { ForbiddenError, UnauthorizedError } from "./errors.package/index.ts";
 
 /**
  * Custom header name for CSRF defense (AUTH_SPEC §11-4: `x-maruhi-csrf:

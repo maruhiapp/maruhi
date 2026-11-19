@@ -33,7 +33,7 @@ import {
   CliFlowRejectedError,
   SetupIncompleteError,
   TokenLimitError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { hexString } from "./hex.ts";
 
 /**

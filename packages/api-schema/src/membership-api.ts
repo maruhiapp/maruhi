@@ -41,7 +41,7 @@ import {
   ProjectLimitError,
   ProjectNotFoundError,
   ProposalLimitError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { exportGroup } from "./export-api.ts";
 import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";

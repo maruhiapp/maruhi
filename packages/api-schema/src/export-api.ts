@@ -29,7 +29,7 @@ import {
   ExportRateLimitedError,
   ForbiddenError,
   ProjectNotFoundError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 
 /** The opaque page cursor (base64url — the server's encoding; the client never interprets it). */

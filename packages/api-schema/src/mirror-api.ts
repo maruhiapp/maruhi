@@ -28,7 +28,7 @@ import {
   MirrorStateError,
   MirrorSyncRejectedError,
   ProjectNotFoundError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 

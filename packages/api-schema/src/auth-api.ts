@@ -32,7 +32,7 @@ import {
   RecoveryWrapNotFoundError,
   SetupIncompleteError,
   TokenNotFoundError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { EncPubHex, hexString } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 

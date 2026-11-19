@@ -31,7 +31,7 @@
 //      the rate window
 //   2. Environment existence (a deleted one is 404 — same treatment as §12-4)
 //   3. Rate limit (429) — after authorization (the rationale in
-//      errors/lease.ts)
+//      errors.package/lease.ts)
 //   4. Existence of wraps addressed to the server (missing = 503
 //      server-wraps-missing)
 //   5. Unwrap → re-wrap → audit → response (the first-come-binding record is
@@ -308,7 +308,7 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
   const store = yield* DataStore;
 
   // 3. The rate limit **check** (after authorization — for existence
-  // concealment; errors/lease.ts). Consumption happens only "when a lease is
+  // concealment; errors.package/lease.ts). Consumption happens only "when a lease is
   // actually issued" (step 6 below). Consuming here would make a project
   // that 503s on missing server wraps (4) or unwrap failure (5) burn its
   // window on every CI retry, and from the 300th retry onward the 503 — a

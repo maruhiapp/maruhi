@@ -32,7 +32,7 @@ import {
   DeviceRegistryConflictError,
   DeviceRegistryLimitError,
   ForbiddenError,
-} from "./errors/index.ts";
+} from "./errors.package/index.ts";
 import { EncPubHex, PublicKeyHex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
