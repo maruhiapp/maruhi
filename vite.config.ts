@@ -21,7 +21,14 @@ import { defineConfig } from "vite-plus";
 // schemaClassMissingBrand (off: CLAUDE.md brands a type only where it
 // carries an invariant), and anyUnknownInErrorContext (excluded: it
 // flags deliberate `unknown` error channels — test helpers, the CLI's
-// API client seam).
+// API client seam). preferSchemaOverJson is off too (deprecated,
+// superseded by globalJson and globalJsonInEffect); it appears in no
+// preset, so it is pinned by name below — the pin set must cover the
+// package's whole rule registry, or a rule a future @effect/tsgo
+// release ships outside the presets would switch on by category with
+// no config diff. The coverage is pinned by
+// packages/core/test/effect-tsgo-rules.test.ts, which derives the
+// registry from the installed package's oxlint schema.
 // Enabling the effecttsgo plugin also switches some of its rules on by
 // category, so every rule the package ships is pinned explicitly: the
 // correctness set at error, everything else off.
@@ -35,6 +42,7 @@ for (const rule of Object.keys(correctness.rules ?? {})) {
   effectTsgoRules[rule] = "error";
 }
 effectTsgoRules["effecttsgo/any-unknown-in-error-context"] = "off";
+effectTsgoRules["effecttsgo/prefer-schema-over-json"] = "off";
 effectTsgoRules["effecttsgo/schema-class-missing-brand"] = "off";
 effectTsgoRules["effecttsgo/unstable-api-usage"] = "off";
 
