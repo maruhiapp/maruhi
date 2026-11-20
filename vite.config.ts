@@ -79,8 +79,17 @@ export default defineConfig({
     // introduced and are enabled one by one as their findings are fixed
     // (consistent-return and the two type-assertion rules flag Effect
     // idioms; no-unnecessary-type-assertion was not deterministic
-    // under the previous tsgolint backend). The "error" list names rules
-    // outside those categories that the tree already satisfies.
+    // under the previous tsgolint backend).
+    // The ten typescript-eslint ports heading the list below
+    // (await-thenable through restrict-plus-operands) are wanted at
+    // error, but the tsrs backend the gate runs on
+    // (--tsrs-lint=0.25.0-ts7.1.0-beta) does not execute the
+    // typescript-eslint type-aware ports at all — probe-verified
+    // 2026-11-20: planted violations fired nothing, while plain TS
+    // and effecttsgo diagnostics fired in the same runs. They are
+    // pinned off so the config states what the gate actually does.
+    // When the --tsrs-lint pin is bumped, flip them back to error
+    // and re-probe before trusting them.
     // Effect values are not thenables, so dropped Effects are guarded
     // by the effecttsgo rules above, not by no-floating-promises.
     // typeCheck makes `vp check` run the full typecheck as well.
@@ -96,16 +105,16 @@ export default defineConfig({
     // recorded where it was introduced).
     options: { typeAware: true, typeCheck: true, denyWarnings: true },
     rules: {
-      "typescript/await-thenable": "error",
-      "typescript/no-array-delete": "error",
-      "typescript/no-floating-promises": "error",
-      "typescript/no-for-in-array": "error",
-      "typescript/no-implied-eval": "error",
-      "typescript/no-meaningless-void-operator": "error",
-      "typescript/no-misused-promises": "error",
-      "typescript/no-unsafe-enum-comparison": "error",
-      "typescript/no-unsafe-unary-minus": "error",
-      "typescript/restrict-plus-operands": "error",
+      "typescript/await-thenable": "off",
+      "typescript/no-array-delete": "off",
+      "typescript/no-floating-promises": "off",
+      "typescript/no-for-in-array": "off",
+      "typescript/no-implied-eval": "off",
+      "typescript/no-meaningless-void-operator": "off",
+      "typescript/no-misused-promises": "off",
+      "typescript/no-unsafe-enum-comparison": "off",
+      "typescript/no-unsafe-unary-minus": "off",
+      "typescript/restrict-plus-operands": "off",
       "typescript/consistent-return": "off",
       "typescript/no-base-to-string": "off",
       "typescript/no-duplicate-type-constituents": "off",
