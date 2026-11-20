@@ -21,7 +21,14 @@ import { defineConfig } from "vite-plus";
 // schemaClassMissingBrand (off: CLAUDE.md brands a type only where it
 // carries an invariant), and anyUnknownInErrorContext (excluded: it
 // flags deliberate `unknown` error channels — test helpers, the CLI's
-// API client seam).
+// API client seam). preferSchemaOverJson is off too (deprecated,
+// superseded by globalJson and globalJsonInEffect); it appears in no
+// preset, so it is pinned by name below — the pin set must cover the
+// package's whole rule registry, or a rule a future @effect/tsgo
+// release ships outside the presets would switch on by category with
+// no config diff. The coverage is pinned by
+// packages/core/test/effect-tsgo-rules.test.ts, which derives the
+// registry from the installed package's oxlint schema.
 // Enabling the effecttsgo plugin also switches some of its rules on by
 // category, so every rule the package ships is pinned explicitly: the
 // correctness set at error, everything else off.
@@ -35,6 +42,7 @@ for (const rule of Object.keys(correctness.rules ?? {})) {
   effectTsgoRules[rule] = "error";
 }
 effectTsgoRules["effecttsgo/any-unknown-in-error-context"] = "off";
+effectTsgoRules["effecttsgo/prefer-schema-over-json"] = "off";
 effectTsgoRules["effecttsgo/schema-class-missing-brand"] = "off";
 effectTsgoRules["effecttsgo/unstable-api-usage"] = "off";
 
@@ -65,14 +73,25 @@ export default defineConfig({
       correctness: "error",
       suspicious: "error",
     },
-    // Type-aware rules (tsrs). The categories above already
-    // pull in the type-aware correctness / suspicious rules; the ones
-    // listed "off" below had findings when type-aware linting was
-    // introduced and are enabled one by one as their findings are fixed
+    // Type-aware rules (tsrs). The categories above would
+    // pull in the type-aware correctness / suspicious rules, but
+    // the typescript-eslint ports among them are inert under tsrs
+    // (see the next paragraph); the ones listed "off" below had
+    // findings when type-aware linting was introduced and are
+    // enabled one by one as their findings are fixed
     // (consistent-return and the two type-assertion rules flag Effect
     // idioms; no-unnecessary-type-assertion was not deterministic
-    // under the previous tsgolint backend). The "error" list names rules
-    // outside those categories that the tree already satisfies.
+    // under the previous tsgolint backend).
+    // The ten typescript-eslint ports heading the list below
+    // (await-thenable through restrict-plus-operands) are wanted at
+    // error, but the tsrs backend the gate runs on
+    // (--tsrs-lint=0.25.0-ts7.1.0-beta) does not execute the
+    // typescript-eslint type-aware ports at all — probe-verified
+    // 2026-11-20: planted violations fired nothing, while plain TS
+    // and effecttsgo diagnostics fired in the same runs. They are
+    // pinned off so the config states what the gate actually does.
+    // When the --tsrs-lint pin is bumped, flip them back to error
+    // and re-probe before trusting them.
     // Effect values are not thenables, so dropped Effects are guarded
     // by the effecttsgo rules above, not by no-floating-promises.
     // typeCheck makes `vp check` run the full typecheck as well.
@@ -88,16 +107,16 @@ export default defineConfig({
     // recorded where it was introduced).
     options: { typeAware: true, typeCheck: true, denyWarnings: true },
     rules: {
-      "typescript/await-thenable": "error",
-      "typescript/no-array-delete": "error",
-      "typescript/no-floating-promises": "error",
-      "typescript/no-for-in-array": "error",
-      "typescript/no-implied-eval": "error",
-      "typescript/no-meaningless-void-operator": "error",
-      "typescript/no-misused-promises": "error",
-      "typescript/no-unsafe-enum-comparison": "error",
-      "typescript/no-unsafe-unary-minus": "error",
-      "typescript/restrict-plus-operands": "error",
+      "typescript/await-thenable": "off",
+      "typescript/no-array-delete": "off",
+      "typescript/no-floating-promises": "off",
+      "typescript/no-for-in-array": "off",
+      "typescript/no-implied-eval": "off",
+      "typescript/no-meaningless-void-operator": "off",
+      "typescript/no-misused-promises": "off",
+      "typescript/no-unsafe-enum-comparison": "off",
+      "typescript/no-unsafe-unary-minus": "off",
+      "typescript/restrict-plus-operands": "off",
       "typescript/consistent-return": "off",
       "typescript/no-base-to-string": "off",
       "typescript/no-duplicate-type-constituents": "off",
