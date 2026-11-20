@@ -73,10 +73,12 @@ export default defineConfig({
       correctness: "error",
       suspicious: "error",
     },
-    // Type-aware rules (tsrs). The categories above already
-    // pull in the type-aware correctness / suspicious rules; the ones
-    // listed "off" below had findings when type-aware linting was
-    // introduced and are enabled one by one as their findings are fixed
+    // Type-aware rules (tsrs). The categories above would
+    // pull in the type-aware correctness / suspicious rules, but
+    // the typescript-eslint ports among them are inert under tsrs
+    // (see the next paragraph); the ones listed "off" below had
+    // findings when type-aware linting was introduced and are
+    // enabled one by one as their findings are fixed
     // (consistent-return and the two type-assertion rules flag Effect
     // idioms; no-unnecessary-type-assertion was not deterministic
     // under the previous tsgolint backend).

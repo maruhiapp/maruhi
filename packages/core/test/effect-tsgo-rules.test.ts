@@ -20,6 +20,18 @@ import { describe, expect, it } from "vite-plus/test";
 
 const REPO_ROOT = join(import.meta.dirname, "../../..");
 
+/** Adds the `effecttsgo/*` keys of one `properties` map to the set. */
+function addPropertyRuleNames(properties: unknown, into: Set<string>): void {
+  if (typeof properties !== "object" || properties === null) {
+    return;
+  }
+  for (const name of Object.keys(properties)) {
+    if (name.startsWith("effecttsgo/")) {
+      into.add(name);
+    }
+  }
+}
+
 /** Collects the `effecttsgo/*` keys of every `properties` map in a parsed JSON document. */
 function collectRuleNames(node: unknown, into: Set<string>): void {
   if (Array.isArray(node)) {
@@ -32,12 +44,8 @@ function collectRuleNames(node: unknown, into: Set<string>): void {
     return;
   }
   for (const [key, value] of Object.entries(node)) {
-    if (key === "properties" && typeof value === "object" && value !== null) {
-      for (const name of Object.keys(value)) {
-        if (name.startsWith("effecttsgo/")) {
-          into.add(name);
-        }
-      }
+    if (key === "properties") {
+      addPropertyRuleNames(value, into);
     }
     collectRuleNames(value, into);
   }
