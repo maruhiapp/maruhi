@@ -1,6 +1,6 @@
 # maruhi Architecture Decision Records
 
-Status: 0001–0015 are Accepted (0001–0013 approved by 2026-08-01; 0014 proposed 2026-08-07, approved on merge of PR #37; 0015 proposed 2026-08-14, approved on merge of the release-infrastructure PR). 0016 / 0017 proposed 2026-08-16, each approved on merge of its migration PR / the PR adding the ADR. 0018 proposed 2026-08-18 (owner agreement in a design session — session-29), approved on merge of PR #82. 0018 revision 1 (UI contract settled ahead, ceremony TTY-pinning, shell selection deferred — session-30) approved on merge of the PR containing the revision. 0014 revision 1 (pulling the hosted cloud version forward — H0, session-47) and the re-judgment record of 0009 (continuing the direct GitHub implementation — same session) are approved on merge of the PR containing them. 0008 revision 1 (landing page also on Blume — LP + docs on apex `maruhi.app`, synced to the 2026-09-03 owner ruling in web-design-pass.md §1-4) is approved on merge of the DP2 PR. 0019 proposed 2026-09-26, approved on merge of the PR adding this ADR. 0008 revision 2 (LP + docs moved from Blume to Nimbus, same apex shape — 2026-11-13 owner direction) is approved on merge of the PR containing the revision.
+Status: 0001–0015 are Accepted (0001–0013 approved by 2026-08-01; 0014 proposed 2026-08-07, approved on merge of PR #37; 0015 proposed 2026-08-14, approved on merge of the release-infrastructure PR). 0016 / 0017 proposed 2026-08-16, each approved on merge of its migration PR / the PR adding the ADR. 0018 proposed 2026-08-18 (owner agreement in a design session — session-29), approved on merge of PR #82. 0018 revision 1 (UI contract settled ahead, ceremony TTY-pinning, shell selection deferred — session-30) approved on merge of the PR containing the revision. 0014 revision 1 (pulling the hosted cloud version forward — H0, session-47) and the re-judgment record of 0009 (continuing the direct GitHub implementation — same session) are approved on merge of the PR containing them. 0008 revision 1 (landing page also on Blume — LP + docs on apex `maruhi.app`, synced to the 2026-09-03 owner ruling in web-design-pass.md §1-4) is approved on merge of the DP2 PR. 0019 proposed 2026-09-26, approved on merge of the PR adding this ADR. 0008 revision 2 (LP + docs moved from Blume to Nimbus, same apex shape — 2026-11-13 owner direction) is approved on merge of the PR containing the revision. 0020–0030 proposed 2026-11-21 (the comment audit: 0020 bans prose code comments under a ratchet; 0021–0030 hold the decision records relocated from code comments), each approved on merge of the PR containing it.
 
 Agents are forbidden from implementing anything that overturns these decisions. Propose changes to a human as an ADR revision.
 
@@ -25,3 +25,14 @@ Agents are forbidden from implementing anything that overturns these decisions. 
 - [ADR-0017: User-facing text is English only (no i18n mechanism)](./0017-english-only-user-facing.md)
 - [ADR-0018: Web trust boundary — hosted Web does not ship a decryptor (values and keys stay on each person's machine; screens roll out in stages)](./0018-web-trust-boundary.md)
 - [ADR-0019: All repository text is English (supersedes ADR-0017 decision 3)](./0019-english-only-repository-text.md)
+- [ADR-0020: Prose code comments are banned; decision records live in ADRs](./0020-comment-policy.md)
+- [ADR-0021: Test-suite decision records relocated from code comments](./0021-testing-records.md)
+- [ADR-0022: Cryptographic protocol decision records relocated from code comments](./0022-crypto-protocol-records.md)
+- [ADR-0023: CLI behavior decision records relocated from code comments](./0023-cli-behavior-records.md)
+- [ADR-0024: Server data-plane and Durable Object decision records relocated from code comments](./0024-server-data-do-records.md)
+- [ADR-0025: Authentication and authorization decision records relocated from code comments](./0025-server-auth-records.md)
+- [ADR-0026: Platform and operations decision records relocated from code comments](./0026-platform-ops-records.md)
+- [ADR-0027: API contract decision records relocated from code comments](./0027-api-contract-records.md)
+- [ADR-0028: Quality-gate configuration decision records relocated from code comments](./0028-gate-config-records.md)
+- [ADR-0029: Web trust-boundary decision records relocated from code comments](./0029-web-trust-records.md)
+- [ADR-0030: Miscellaneous decision records relocated from code comments](./0030-miscellaneous-records.md)
