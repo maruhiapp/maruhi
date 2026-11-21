@@ -357,15 +357,22 @@ const DIRECTIVE_PATTERNS = [
   "oxlint-disable",
   "eslint-disable",
   "shellcheck disable=",
-  "actionlint ignore=",
+  "jactionlint ignore=",
   "@vite-ignore",
 ];
 
-function hasDirectivePattern(normalized: string): boolean {
+function lineLeadsWithDirective(line: string): boolean {
   for (const p of DIRECTIVE_PATTERNS) {
-    if (normalized.includes(p)) return true;
+    if (!line.startsWith(p)) continue;
+    const next = line.charAt(p.length);
+    if (next === "" || next === " " || next === ":" || next === "-") return true;
+    if (p.endsWith("=")) return true;
   }
   return false;
+}
+
+function hasDirectivePattern(normalized: string): boolean {
+  return normalized.split("\n").some((ln) => lineLeadsWithDirective(ln));
 }
 
 const IMPORT_LINT_TAGS = ["@public", "@package", "@private", "@access"];
