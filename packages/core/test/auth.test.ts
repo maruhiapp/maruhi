@@ -1,7 +1,3 @@
-// Unit tests of token-scope judgement (the scope half of AUTH_SPEC §6 /
-// §9-2's min). The combination rules (multiple entries, wildcard
-// coexistence, empty array) pin their intent here.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { parseTokenScopes, permissionAtLeast, scopePermissionFor } from "../src/auth.ts";
@@ -34,9 +30,6 @@ describe("scopePermissionFor (scope set → permission level on a project)", () 
   });
 
   it("takes the strongest matching entry (an individual entry cannot narrow a wildcard)", () => {
-    // Intent being pinned: entries are additive (strongest match). As
-    // long as * × admin exists, adding an individual read entry leaves
-    // the project's permission at admin
     const scopes = [
       { project: "*", permission: "admin" },
       { project: PROJECT, permission: "read" },
@@ -73,8 +66,6 @@ describe("parseTokenScopes (restoring a stored JSON)", () => {
   });
 
   it("rejects a scope whose project is not a ProjectId (owner-approved tightening)", () => {
-    // The hand-written guard accepted any string for `project`;
-    // TokenScopeSchema requires a ProjectId (64 lowercase hex) or "*"
     expect(parseTokenScopes('[{"project":"not-a-project-id","permission":"read"}]')).toBeNull();
     expect(parseTokenScopes(`[{"project":"${"AB".repeat(32)}","permission":"read"}]`)).toBeNull();
   });

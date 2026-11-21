@@ -1,23 +1,3 @@
-// Layout v3 (the schema layout) — integration tests of the valueless
-// schema's server-side acceptance surface.
-//
-// Scope: all items of AUTH_SPEC §12-5 "acceptance of layout v3,
-// declared, and activation" + §12-8 (the description acceptance check)
-// + §12-11 (schemaPolicy) + §12-7 (declared distribution, advisory
-// bundling), plus the boundary of §12-5's 422 error names
-// (activation-required / layout-regression / schema-required).
-//
-// How the suite is split (shared helpers in
-// support/schema-scenario.ts; for the split's motivation see the
-// top of support/membership-scenario.ts):
-// - this file: the schemaPolicy setting, default v3 acceptance, declared
-//   creation and activation
-// - data-schema-transitions.test.ts: transitions and layout
-//   monotonicity, deletions' just-before match, schema re-issuance and
-//   reversibility, max age
-// - data-schema-locked.test.ts: schema-locked, description,
-//   unsupported layouts (the retired layout 2 included)
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { encryptValue } from "./support/data-crypto.ts";
@@ -52,7 +32,6 @@ import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
 
-/** Audit-row count (event name × variable_id). */
 async function auditCount(event: string, variableId?: string): Promise<number> {
   const rows =
     variableId === undefined
@@ -88,8 +67,6 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
       "SELECT actor_type, actor_user_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'project.schema_policy_changed'",
     );
     expect(rows).toHaveLength(1);
-    // actor = the changer themself (type=user). No FP since this
-    // config operation carries no signature (AUDIT_SPEC §3.3)
     expect(rows[0]).toMatchObject({
       actor_type: "user",
       actor_user_id: OWNER,
@@ -102,7 +79,6 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
   });
 
   it('a same-value PUT stays 204 and adds no audit row (does not record an unchanged transition as a "change")', async () => {
-    // The default is enabled: PUT enabled on a fresh project is unchanged
     await setSchemaPolicyOk("enabled", OWNER);
     expect(await auditCount("project.schema_policy_changed")).toBe(0);
     await setSchemaPolicyOk("locked", OWNER);
@@ -119,7 +95,6 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
       schemaPolicy: "locked",
     });
     expect(asStranger.status).toBe(404);
-    // The rejection does not change the policy
     const read = await requestJson("GET", "/schema-policy", token(OWNER));
     await expect(read.json()).resolves.toEqual({ schemaPolicy: "enabled" });
   });
@@ -136,12 +111,8 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
       projectId,
       "INSERT INTO project_settings (id, schema_policy) VALUES (1, 'disabled')",
     );
-    // The rejected DO RPC makes workerd log an "uncaught exception" line
-    // even though the worker catches it — expected
     const response = await requestJson("GET", "/schema-policy", token(READER));
     expect(response.status).toBe(500);
-    // Any defect would answer the same 500; the direct call on the
-    // instance pins which one fires
     await expect(
       callProjectDo(projectId, (instance) => instance.schemaPolicyFor({ userId: READER })),
     ).rejects.toThrow("unexpected schema_policy in stored project settings row");
@@ -206,14 +177,7 @@ describe("declared creation and activation (§12-5)", () => {
       ENV,
       VAR,
     );
-    // Stored version stays 0 on an active row (§12-5 — declared is the
-    // only legitimate version-0 state. Also counts toward the
-    // active-variable cap)
     expect(rows).toEqual([{ latest_version: 0, latest_meta_version: 1, deleted_at: null }]);
-    // The interval's start = acceptance of metaVersion 1 (AUDIT_SPEC
-    // §3.3 — declared creation is also var.created. With no value
-    // signature, the FP is the author key FP of the statement
-    // signature)
     const audits = await queryProjectDo(
       projectId,
       "SELECT actor_user_id, actor_key_fingerprint FROM audit_events WHERE event = 'var.created' AND variable_id = ?",
@@ -238,12 +202,8 @@ describe("declared creation and activation (§12-5)", () => {
       variables: readonly unknown[];
       declaredVariables?: readonly Record<string, unknown>[];
     };
-    // It does not appear in the values array (the supply side of the
-    // status-active value-distribution requirement — CRYPTO_SPEC §6.3 —
-    // "declared is the only legitimate valueless state")
     expect(pulled.variables).toEqual([]);
     expect(pulled.declaredVariables).toHaveLength(1);
-    // The v3 carrier fields (§12-2) are carried aligned with the statement
     expect(pulled.declaredVariables?.[0]).toMatchObject({
       variableId: VAR,
       status: "declared",
@@ -260,7 +220,6 @@ describe("declared creation and activation (§12-5)", () => {
     };
     expect(metadataBody.variables).toHaveLength(1);
     expect(metadataBody.variables[0]).toMatchObject({ variableId: VAR, status: "declared" });
-    // Distributing a declared does not record a var.read (no value was distributed — AUDIT_SPEC §3.3)
     expect(await auditCount("var.read", VAR)).toBe(0);
   });
 
@@ -305,7 +264,6 @@ describe("declared creation and activation (§12-5)", () => {
     await expect(response.json()).resolves.toEqual({ variableId: VAR, version: 1, epoch: 1 });
     expect(await auditCount("var.version_pushed", VAR)).toBe(1);
     expect(await auditCount("var.created", VAR)).toBe(1);
-    // A pull after activation distributes the value and declaredVariables becomes empty
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     const pulled = (await pull.json()) as {
       variables: readonly Record<string, unknown>[];
@@ -313,7 +271,6 @@ describe("declared creation and activation (§12-5)", () => {
     };
     expect(pulled.variables).toHaveLength(1);
     expect(pulled.declaredVariables).toBeUndefined();
-    // After activation, normal pushes are accepted (the declared gate is lifted)
     const next = await encryptValue(
       dek,
       {
@@ -347,12 +304,6 @@ describe("declared creation and activation (§12-5)", () => {
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
-    // Version 1 is a view in which the variable is still unactivated (a
-    // stale view — the value CAS answers 409); latest + 1 passes both
-    // CASes, so the target judgment against the predecessor (an active
-    // variable is not an activation target) answers 422 — the explicit
-    // guard, independent of the value CAS (with a version-1-only helper,
-    // "cannot target an active variable" could not be verified)
     const stale = await activateVariableRequest({
       variableId: VAR,
       actorUserId: MEMBER,
@@ -379,9 +330,6 @@ describe("declared creation and activation (§12-5)", () => {
   });
 
   it("an active v1 variable cannot be promoted to v3 via the activation path (the activation target is only a declared)", async () => {
-    // The status guard keeps a value push to an active variable from
-    // riding the activation composite (a version latest+1 passes the
-    // value CAS, so the CAS alone cannot reject it)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await activateVariableRequest({
@@ -397,7 +345,6 @@ describe("declared creation and activation (§12-5)", () => {
       _tag: "PayloadMismatch",
       field: "status",
     });
-    // The rejection writes nothing: the latest statement stays layout 1 and version is unchanged
     const rows = await queryProjectDo(
       projectId,
       `SELECT ms.layout_version, v.latest_version, v.latest_meta_version
@@ -428,9 +375,6 @@ describe("declared creation and activation (§12-5)", () => {
       _tag: "PayloadMismatch",
       field: "name",
     });
-    // Renaming can still reach the same result via the rename path
-    // (declared → declared — audited as var.renamed); the capability is
-    // not lost
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "API_TOKEN",
@@ -459,7 +403,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("the creation composite cannot create a deleted (a wire-shape 400 — §12-5's acceptance surface is authoritative)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A zero signature valid only in form (a Schema 400 never reaches signature verification)
     const statement = {
       suite: "maruhi/v1",
       environmentId: ENV,
@@ -486,7 +429,6 @@ describe("declared creation and activation (§12-5)", () => {
   });
 });
 
-/** The value signed-bytes hash of a stored version (prev material for the next version). */
 async function storedValueSigHash(variableId: string, version: number): Promise<string> {
   const rows = await queryProjectDo(
     projectId,

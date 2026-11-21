@@ -25,9 +25,7 @@ import {
   UserIdSchema,
 } from "../src/identity.ts";
 
-/** GitHub's numeric id, as the provider dance returns it (AUTH_SPEC §3-2). */
 const providerSubject: ProviderUserId = decodeProviderUserId("583231");
-/** The display login: a plain string (AUTH_SPEC §2 — a snapshot, never an identifier). */
 const providerLogin = "octocat";
 const internalUserId: UserId = decodeUserId("01J9Z3K4M5N6P7Q8R9S0T1V2W3");
 const FP = decodeKeyFingerprintHex("ab".repeat(16));

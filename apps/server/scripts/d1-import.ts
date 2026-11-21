@@ -1,20 +1,3 @@
-// Imports a local SQL file into a remote D1 database — the file path of the
-// retired `wrangler d1 execute <db> --remote --file <path>` (the dump import
-// step of "Restoring a D1 export" in docs/SELF_HOSTING.md).
-//
-// The import endpoint takes raw actions (init / ingest / poll). This script
-// owns the orchestration wrangler hid: md5-etag the file, `init` for a signed
-// upload URL, PUT the bytes, `ingest`, then `poll` the bookmark to
-// completion. The requests go through d1-api.ts (cf no longer ships a
-// `d1 import` command).
-//
-// Usage (from apps/server):
-//   bun scripts/d1-import.ts <database-id> --file <path.sql>
-// Requires CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID. Remote-only — nothing
-// is written to local state. Note: if the import fails partway, D1 rolls back
-// to the pre-import bookmark, so a retry is safe (same guarantee wrangler's
-// file import made).
-
 import { readFileSync } from "node:fs";
 
 import { redactUrls } from "./cf-config.ts";

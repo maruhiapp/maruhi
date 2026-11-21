@@ -1,32 +1,3 @@
-// Fake GitHub plugged into miniflare's outboundService (runs on the Node side).
-//
-// It intercepts outbound fetches from the worker (destined for real GitHub).
-// Production code (src/) has no stub branch — tests go through the
-// implementation's real path. Nothing ever reaches the real network
-// (unexpected destinations are killed with a 500 so they are detected).
-//
-// Fidelity to real GitHub behavior (so the fake does not hide implementation
-// regressions):
-// - api.github.com requires a User-Agent (403 without one)
-// - The token exchange returns a form-encoded string unless
-//   Accept: application/json is present
-// - check-token (POST /applications/{client_id}/token) requires Basic auth +
-//   only tokens issued by the same App return 200 (everything else 404)
-//
-// Deterministic correspondence: code-<n> → gho_test<n> → GitHub user
-// { id: n, login: user<n> } (same `gho_` prefix shape as real GitHub OAuth
-// tokens).
-// Email responses branch by ID band (to make the §3-3 verified/primary
-// filter distinguishable):
-//   normal      → [{ primary: true, verified: true }]
-//   666         → verified: false only
-//   667         → primary: false only
-//   668         → /user/emails returns 404 (equivalent to no user:email scope)
-// Non-own-App tokens: gho_otherapp<n> (valid on /user, 404 on check-token).
-//
-// The GitHub Actions OIDC issuer (the lease path of AUTH_SPEC §14-1) is also
-// served by the same outboundService — discovery / JWKS is support/oidc-issuer.ts.
-
 import { fakeOidcIssuer } from "./oidc-issuer.ts";
 
 interface OutboundRequest {
@@ -43,7 +14,6 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Real GitHub: unless Accept is JSON it returns a form-encoded string. */
 function formEncodedFallback(request: OutboundRequest): Response | null {
   if ((request.headers.get("accept") ?? "").includes("application/json")) {
     return null;
@@ -53,7 +23,6 @@ function formEncodedFallback(request: OutboundRequest): Response | null {
   });
 }
 
-/** RFC 6749 §4.1.3: the body is form-urlencoded (an implementation regression that sends JSON breaks here). */
 function wrongContentType(request: OutboundRequest): Response | null {
   const contentType = request.headers.get("content-type") ?? "";
   return contentType.includes("application/x-www-form-urlencoded")
@@ -63,7 +32,6 @@ function wrongContentType(request: OutboundRequest): Response | null {
 
 function exchangeCodeResponse(params: URLSearchParams): Response {
   const match = /^code-(\d+)$/.exec(params.get("code") ?? "");
-  // GitHub returns 200 + an error body even for an invalid code (match the real behavior)
   return match === null
     ? json({ error: "bad_verification_code" })
     : json({ access_token: `gho_test${match[1]}` });
@@ -77,7 +45,6 @@ async function exchangeCode(request: OutboundRequest): Promise<Response> {
   return exchangeCodeResponse(new URLSearchParams(await request.text()));
 }
 
-/** Pull the GitHub user ID from the Bearer token (other-app tokens are also valid on /user). */
 function githubUserId(request: OutboundRequest): number | null {
   const auth = request.headers.get("authorization") ?? "";
   const match = /^Bearer gho_(?:test|otherapp)(\d+)$/.exec(auth);
@@ -106,14 +73,6 @@ function emailEntries(userId: number): { body: unknown; status: number } {
   };
 }
 
-/**
- * Verify Basic auth: the path's {client_id} must match the Basic-side
- * client_id and the secret must be non-empty (checking the implementation's
- * wiring = "it queried with its own client_id/secret". It does not depend on
- * the env's actual values — the injection source for tests is the miniflare
- * bindings in vitest.config.ts, and wrangler dev differs per environment via
- * .dev.vars, so pinning the values themselves would break per environment).
- */
 function decodeBasicPair(auth: string): readonly [string, string] | null {
   if (!auth.startsWith("Basic ")) {
     return null;
@@ -128,7 +87,6 @@ function basicAuthMatches(request: OutboundRequest, clientIdFromPath: string): b
   return pair !== null && pair[0] === clientIdFromPath && pair[1] !== "";
 }
 
-/** The §4-4 audience check: only tokens issued by the same App (not other-app) get 200 + user. */
 function checkAppToken(
   request: OutboundRequest,
   clientIdFromPath: string,
@@ -139,7 +97,6 @@ function checkAppToken(
   }
   const match = /^gho_test(\d+)$/.exec(body.access_token ?? "");
   if (match === null) {
-    // Other-App-issued and invalid tokens alike get 404 (real GitHub behavior)
     return json({ message: "Not Found" }, 404);
   }
   const id = Number(match[1]);
@@ -175,7 +132,6 @@ function bearerApiResponse(request: OutboundRequest, url: URL): Response {
   );
 }
 
-/** Real GitHub: api.github.com requires a User-Agent. */
 function missingUserAgent(request: OutboundRequest): Response | null {
   if ((request.headers.get("user-agent") ?? "") !== "") {
     return null;
@@ -206,11 +162,6 @@ async function handleApi(request: OutboundRequest, url: URL): Promise<Response |
   return (await routeCheckToken(request, url)) ?? bearerApiResponse(request, url);
 }
 
-/**
- * The ops-infrastructure tripwire notification webhook (OPS_ALERT_WEBHOOK_URL
- * in vitest.config.ts). The receiver just returns 204 (the body is checked
- * via the OpsNotifier substitution — ops-alerts.test.ts).
- */
 function fakeOpsWebhook(url: URL): Response | null {
   return url.hostname === "ops-webhook.test" ? new Response(null, { status: 204 }) : null;
 }

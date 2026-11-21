@@ -1,10 +1,3 @@
-// `maruhi audit list`, which bare `maruhi audit` also runs (AUDIT_SPEC §6 /
-// §7): the project DO's audit events (newest-first, seq cursor). The
-// visibility classes (§6) are server-enforced; this side only renders. Each
-// chain.* row is reconciled against the verified chain (audit-mirror.ts),
-// and a variable's name comes from verified statements only
-// (audit-page.ts).
-
 import {
   type AuditReadVariable,
   decodeEnvironmentId,
@@ -38,7 +31,6 @@ import {
   variableLabel,
 } from "./audit-page.ts";
 
-/** list's filters (AUDIT_SPEC §7 vocabulary). */
 export interface AuditListFilters {
   readonly event: string | null;
   readonly actorUserId: UserId | null;
@@ -47,13 +39,7 @@ export interface AuditListFilters {
   readonly variableId: VariableId | null;
 }
 
-/** list's display options. */
 interface AuditListOptions {
-  /**
-   * Expand the aggregated `var.read` form (AUDIT_SPEC §3.3 — one row per
-   * environment per value pull) into one line per variable. The default is a
-   * count-only summary.
-   */
   readonly expandReads: boolean;
 }
 
@@ -81,11 +67,6 @@ function fetchProjectEvents(
     );
 }
 
-/**
- * The set of environment IDs subject to name resolution (the environment of
- * rows carrying a variableId; when expanding, also an aggregated var.read's
- * environment — the expanded lines draw names).
- */
 function environmentIdsForNames(
   events: readonly WireAuditEvent[],
   options: AuditListOptions,
@@ -97,9 +78,6 @@ function environmentIdsForNames(
     if (event.environmentId === undefined) {
       continue;
     }
-    // A wire env id out of §12-1's form cannot mint — skip it from name
-    // resolution (degrades to identifier display, never a defect — the
-    // same SHOULD-level treatment as a failed metadata pull)
     if (
       (event.variableId !== undefined ||
         (resolveListed &&
@@ -112,7 +90,6 @@ function environmentIdsForNames(
   return [...ids].toSorted();
 }
 
-/** The display form of one flagged variable of an aggregated rotation.recommended row (shared by --var's match display). */
 function recommendedVariableLabel(
   variable: RotationRecommendedVariable,
   names: NameIndex | undefined,
@@ -120,16 +97,10 @@ function recommendedVariableLabel(
   return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tbasis=${variable.basis}`;
 }
 
-/** The display form of one variable of an aggregated row (shared by the expanded lines and --var's match display). */
 function listedVariableLabel(variable: AuditReadVariable, names: NameIndex | undefined): string {
   return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
 }
 
-/**
- * The expanded lines of an aggregated var.read (one line per variable —
- * `--expand-reads`). Display names come only from verified statements
- * (the same TCB discipline as the var= label).
- */
 function expandedReadLines(
   listed: readonly AuditReadVariable[],
   names: NameIndex | undefined,
@@ -137,7 +108,6 @@ function expandedReadLines(
   return listed.map((variable) => `\t- ${listedVariableLabel(variable, names)}`);
 }
 
-/** One row's render result (body + expanded lines + mirror-mismatch warnings). Pure — holds no Effect. */
 function renderListEvent(
   event: WireAuditEvent,
   names: ReadonlyMap<string, NameIndex>,
@@ -155,9 +125,6 @@ function renderListEvent(
   const warnings = mirrorWarnings(event, trust);
   const listed = aggregatedReadOf(event);
   const flagged = aggregatedRecommendedOf(event);
-  // With --var: the item of the variable the aggregated row matched on (the
-  // server returns rows whose enumeration contains that variable — var.read or
-  // rotation.recommended; a row is one kind, so at most one matches)
   const readHit = listed?.find((variable) => variable.variableId === matchVariableId);
   const flagHit = flagged?.find((variable) => variable.variableId === matchVariableId);
   const matched =
@@ -177,17 +144,10 @@ function renderListEvent(
   };
 }
 
-/** Verified-chain seq → entry index. */
 function entryIndexOf(entries: readonly ChainEntry[]): ReadonlyMap<number, ChainEntry> {
   return new Map(entries.map((entry) => [entry.seq, entry]));
 }
 
-/**
- * `maruhi audit` (list): displaying audit events. chain.* rows are
- * reconciled against the verified chain; any mismatch (= evidence of
- * tampering) makes exit code 1 (the same discipline as invite list's
- * integrity check — being readable and being sound are not conflated).
- */
 export const auditListOp = Effect.fn("audit-list.auditListOp")(function* (
   context: ProjectContextBase,
   page: AuditPageOptions,
@@ -229,7 +189,6 @@ export const auditListOp = Effect.fn("audit-list.auditListOp")(function* (
   return integrityFailures > 0 ? 1 : 0;
 });
 
-/** Prints each row's body and expanded lines to stdout, the mirror warnings to stderr, and returns the warning count. */
 const logListEvents = Effect.fn("audit-list.logListEvents")(function* (
   events: readonly WireAuditEvent[],
   render: (event: WireAuditEvent) => ReturnType<typeof renderListEvent>,

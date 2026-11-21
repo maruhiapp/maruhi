@@ -1,14 +1,3 @@
-// Shared helpers for the invite API (AUTH_SPEC §15 — IV revision)
-// integration tests.
-//
-// The issuance statement (issue signature) and the acceptance joint
-// signature (accept signature + link signature — CRYPTO_SPEC §6.5) are real
-// signatures produced via the @maruhi/crypto implementation. The inviter's
-// signing key is the fixed vector key (data-crypto.ts vectorKeyOf); the link
-// key is derived from a seed. The fixture provides data-fixture's
-// setupDataProject (base-chain replay included) in register form (the same
-// live-binding pattern as data-scenario.ts).
-
 import { cryptoServicesLayer, ulid } from "@maruhi/core";
 import type {
   InviteAcceptSignatureContext,
@@ -41,13 +30,6 @@ import { testProjectId, testUserId } from "./data-crypto.ts";
 import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 
-/**
- * A user's signing key pair (the signer of issue signatures). Users with a
- * fixed vector key get that key; users without one (STRANGER etc. —
- * principals on paths that fail at authorization) get a disposable generated
- * key (the server does not verify issue signatures, so well-formed is
- * enough).
- */
 export async function signingKeyPairOf(userId: string) {
   let vector: ReturnType<typeof vectorKeyOf> | null;
   try {
@@ -74,8 +56,6 @@ export async function signingKeyPairOf(userId: string) {
   return { pair: pair.value, encPubHex: vector.enc_pub_hex, sigPubHex: vector.sig_pub_hex };
 }
 
-/** The invitee's test key pair (simulates fresh generation by an
- * unregistered user). */
 export async function makeInviteeKeys() {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -95,12 +75,9 @@ export async function makeInviteeKeys() {
 
 export type InviteeKeys = Awaited<ReturnType<typeof makeInviteeKeys>>;
 
-/** The issue request body (§15-2) plus client-side material (the link key
- * pair). */
 export interface IssuePayload {
   readonly id: string;
   readonly role: "reader" | "member" | "admin";
-  /** Scope to be granted (AUTH_SPEC §15-2 — 2026-09-14 ES). */
   readonly scopeKind: "all" | "listed";
   readonly scopeEnvironmentIds: readonly string[];
   readonly linkPubHex: string;
@@ -114,8 +91,6 @@ export interface IssuedInvite extends IssuePayload {
   readonly expiresAtMs: number;
 }
 
-/** Assigns the invite id, generates the link key, and produces the issue
- * signature (inviter = the actor's vector key). */
 export async function makeIssuePayload(
   fixture: DataFixture,
   actorUserId: string,
@@ -160,7 +135,6 @@ export async function makeIssuePayload(
   };
 }
 
-/** Only the wire part of an issue body (drops the link key pair). */
 export function wirePayloadOf(payload: IssuePayload): Record<string, unknown> {
   return {
     id: payload.id,
@@ -211,8 +185,6 @@ export function acceptRequest(
   });
 }
 
-/** Produces the acceptance joint signature (CRYPTO_SPEC §6.5). Overrides on
- * context simulate link tampering etc. */
 export async function signAcceptance(
   keys: InviteeKeys,
   issued: { readonly linkPubHex: string; readonly linkKey: InviteLinkKeyPair },
@@ -260,8 +232,6 @@ export interface InviteRow {
   readonly head_seq: number;
   readonly issue_signature: string;
   readonly role: string;
-  /** Scope to be granted (AUTH_SPEC §15-1 — 2026-09-14 ES).
-   * scope_environments is a JSON array. */
   readonly scope_kind: string;
   readonly scope_environments: string;
   readonly status: string;
@@ -302,13 +272,6 @@ export function payloadOf(row: AuditRow): Record<string, unknown> {
   return row.payload === null ? {} : (JSON.parse(row.payload) as Record<string, unknown>);
 }
 
-/**
- * Directly seeds an invitation row for tests (builds the precondition state
- * for admission-policy / state-transition tests). The issuance statement is
- * a shape-only dummy (link_pub is derived deterministically from the id =
- * satisfies UNIQUE; the issue signature is a fixed value because the server
- * does not verify it).
- */
 export async function seedInvitation(input: {
   readonly id: string;
   readonly status?: string;
@@ -338,8 +301,6 @@ export async function errorTag(response: Response): Promise<string> {
   return body["_tag"] ?? "";
 }
 
-/** Non-null-ifies a row whose existence was verified (lets later field
- * checks use plain references). */
 export function mustRow(row: InviteRow | null): InviteRow {
   if (row === null) {
     throw new Error("invitation row missing");
@@ -357,8 +318,6 @@ export function firstAudit(rows: readonly AuditRow[], event: string): AuditRow {
 
 export let inviteFixture: DataFixture;
 
-/** Called once at the top of each test file: registers the fixture's
- * beforeEach. */
 export function registerInviteScenario(): void {
   beforeEach(async () => {
     inviteFixture = await setupDataProject();

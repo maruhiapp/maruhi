@@ -1,29 +1,3 @@
-// Tests for the partial indexing of audit_events' target / key-FP indexes
-// (src/do/do-schema.ts — audit-log growth-density countermeasure ①).
-//
-// Pinned on workerd's real SqlStorage:
-// (a) the post-migration schema has `WHERE <column> IS NOT NULL` partial
-//     indexes
-// (b) the existing readers (Q1 / Q6 for rotation-needed detection and the
-//     §7 target_user_id filter) choose the new indexes in EXPLAIN QUERY
-//     PLAN — SQLite only uses a partial index when the WHERE clause
-//     implies the index predicate, so we empirically pin that "an equality
-//     condition implies IS NOT NULL" (a rewrite that stops implying it is
-//     not fail-open, just a full scan — but the audit table can reach 10
-//     GB, so we want to catch it as a performance regression)
-// (c) the measured effect: the databaseSize difference between a plain
-//     index and a partial index over 10,000 var.read rows (whose target
-//     and key FP are all NULL)
-// (d) Q5's flag read takes the aggregate rotation.recommended rows (§3.3
-//     Sc-5) through ae_event, expands them to per-pair flags, and reads each
-//     flagged pair's resolution rows (rotation.dismissed / var.version_pushed)
-//     through ae_var — never every var.version_pushed in the project
-//
-// This file uses its own DO name and shares no storage with other tests'
-// project DOs. The audit-store query text is captured by thinly wrapping
-// SqlStorage, and the same text is fed to EXPLAIN (avoiding verifier drift
-// from duplicating the statements).
-
 import { auditReadPayload } from "@maruhi/core";
 import { testEnvironmentId, testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -34,11 +8,6 @@ import { makeAuditStore } from "../src/audit-store.ts";
 import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { deriveEffectiveFlags } from "../src/rotation-detect.ts";
 
-/**
- * Run body on the storage of this file's dedicated DO. The tables are
- * materialized first (a DO is normally materialized at genesis acceptance —
- * Sc-7 / A-4; this unit-style test seeds storage directly instead).
- */
 async function withSql<T>(body: (sql: SqlStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("audit-partial-index-test"));
   return await runInDurableObject(stub, (_instance, state) => {
@@ -53,7 +22,6 @@ const PARTIAL_INDEXES = {
   ae_actor_fp: "actor_key_fingerprint",
 } as const;
 
-/** Index definitions in sqlite_master (name → CREATE statement). */
 function indexDefinitions(sql: SqlStorage): ReadonlyMap<string, string> {
   return new Map(
     sql
@@ -70,11 +38,6 @@ interface CapturedQuery {
   readonly bindings: readonly unknown[];
 }
 
-/**
- * A SqlStorage wrapper that captures the SQL executed. Everything but
- * exec is delegated to the real object (native getters like databaseSize
- * are called with the real object as receiver).
- */
 function capturing(sql: SqlStorage): {
   readonly sql: SqlStorage;
   readonly captured: CapturedQuery[];
@@ -94,7 +57,6 @@ function capturing(sql: SqlStorage): {
   return { sql: proxy, captured };
 }
 
-/** Fold the EXPLAIN QUERY PLAN detail column into a single string. */
 function planOf(sql: SqlStorage, captured: CapturedQuery): string {
   return sql
     .exec(`EXPLAIN QUERY PLAN ${captured.query}`, ...(captured.bindings as (string | number)[]))
@@ -103,7 +65,6 @@ function planOf(sql: SqlStorage, captured: CapturedQuery): string {
     .join("\n");
 }
 
-/** One aggregated-form var.read row (target / key FP all NULL — the dominant row shape. §3.3). */
 function readEvent(index: number): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000 + index,
@@ -121,7 +82,6 @@ function readEvent(index: number): AuditEventInput {
   };
 }
 
-/** A var.version_pushed row whose epoch equals its version. */
 function pushEvent(environmentId: string, variableId: string, version: number): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000 + version,
@@ -135,7 +95,6 @@ function pushEvent(environmentId: string, variableId: string, version: number): 
   };
 }
 
-/** An aggregate rotation.recommended row (one per environment — §3.3 Sc-5) with exposure bound epoch 1 (§4.1-5). */
 function recommendedEvent(environmentId: string, variableIds: readonly string[]): AuditEventInput {
   return {
     serverTs: 1_700_000_000_000,
@@ -162,7 +121,6 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
         expect(definition, name).toContain(`(${column}, seq)`);
         expect(definition, name).toContain(`WHERE ${column} IS NOT NULL`);
       }
-      // The indexes var.read uses stay plain (no predicate)
       for (const name of ["ae_var", "ae_actor", "ae_event"]) {
         expect(definitions.get(name), name).not.toContain("WHERE");
       }
@@ -253,7 +211,6 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
       sql.exec("DELETE FROM audit_events");
       const { sql: wrapped, captured } = capturing(sql);
       const store = makeAuditStore(wrapped);
-      // var.read at seq 1..10 (all the same actor)
       store.appendManySync(Array.from({ length: 10 }, (_row, index) => readEvent(index)));
       captured.length = 0;
       const bounded = store.readRotationSync.variableReadsBy(testUserId("user-reader-0001"), {
@@ -263,11 +220,9 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
       expect(bounded.map((row) => row.seq)).toEqual([4, 5, 6]);
       const query = captured.at(-1);
       if (query === undefined) throw new Error("no query captured");
-      // The range is cut on the index's seq component (not reading all of the actor's rows then discarding)
       expect(planOf(sql, query)).toMatch(
         /USING INDEX ae_actor \(actor_user_id=\? AND seq>\? AND seq<\?\)/,
       );
-      // Omitted / non-finite ends are unbounded (the traditional all-seq)
       expect(store.readRotationSync.variableReadsBy(testUserId("user-reader-0001")).length).toBe(
         10,
       );
@@ -290,15 +245,11 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
       const store = makeAuditStore(sql);
       store.appendManySync(Array.from({ length: ROWS }, (_row, index) => readEvent(index)));
       const partial = sql.databaseSize;
-      // Rebuild as plain indexes (no predicate) — index entries accumulate for NULL rows too
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
         sql.exec(`DROP INDEX ${name}`);
         sql.exec(`CREATE INDEX ${name} ON audit_events (${column}, seq)`);
       }
       const full = sql.databaseSize;
-      // Restore the real schema (partial indexes) = the same DROP → CREATE
-      // as the migration step. The elapsed time is proportional to the row
-      // count (the source of the estimate for applying it to an existing DO)
       const startedAt = Date.now();
       for (const [name, column] of Object.entries(PARTIAL_INDEXES)) {
         sql.exec(`DROP INDEX ${name}`);
@@ -307,36 +258,22 @@ describe("audit_events partial indexes (do-schema.ts — growth-density counterm
         );
       }
       const rebuildMs = Date.now() - startedAt;
-      // The measurement after the direction an existing DO actually takes
-      // (plain index → partial index). Pins whether the freed pages return
-      // to databaseSize (the metric the capacity guard reads)
       const rebuilt = sql.databaseSize;
       sql.exec("DELETE FROM audit_events");
       return { partial, full, rebuildMs, rebuilt };
     });
-    // The partial indexes hold no NULL rows, so they are smaller by 3 indexes × 10,000 entries
     expect(measured.full).toBeGreaterThan(measured.partial);
     const perRow = (measured.full - measured.partial) / ROWS;
     console.log(
       `audit_events partial index: ${ROWS} var.read rows — full ${measured.full} B / partial ${measured.partial} B / delta ${measured.full - measured.partial} B (${perRow.toFixed(1)} B per row, ${(measured.partial / ROWS).toFixed(1)} B per row remaining); partial-index rebuild of ${ROWS} rows took ${measured.rebuildMs} ms and left databaseSize at ${measured.rebuilt} B`,
     );
-    // The usage also returns in the migrate-in-place direction (DROP the
-    // plain indexes → rebuild as partial): if the freed pages stayed on the
-    // freelist it would equal full; if returned, it equals partial
     expect(measured.rebuilt).toBeLessThan(measured.full);
     expect(measured.rebuilt).toBeLessThanOrEqual(measured.partial);
-    // The 3 indexes × (NULL key + seq) entries are at least tens of bytes per row
     expect(perRow).toBeGreaterThan(10);
   });
 });
 
 describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
-  /**
-   * Seeds the flag-read fixture (seqs 1..12 via the store, then a corrupt
-   * aggregate row at seq 13 inserted raw). Aggregate recommended rows (§3.3
-   * Sc-5): env-a's var-a is flagged twice (seqs 4, 10) and env-b's var-a once
-   * (seq 7); var-b in env-a is pushed, never flagged.
-   */
   function seedFlagRows(store: ReturnType<typeof makeAuditStore>, sql: SqlStorage): void {
     store.appendManySync([
       { ...pushEvent("env-a", "var-a", 1), event: "var.created", payload: { name: "A" } },
@@ -359,9 +296,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
       pushEvent("env-a", "var-b", 2),
       pushEvent("env-a", "var-a", 2),
     ]);
-    // A corrupt aggregate row (variables is not an array). The payload schema
-    // runs on the write path, so it is inserted raw; the reader must drop it
-    // (expand to no pair), never crash
     sql.exec(
       "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, epoch, payload) VALUES (13, lower(hex(randomblob(16))), ?, 'rotation.recommended', 'system', 1, ?)",
       1_700_000_000_000,
@@ -377,9 +311,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
       seedFlagRows(store, sql);
       captured.length = 0;
       const rows = store.readRotationSync.rotationFlagEvents();
-      // Each aggregate recommended row expanded to its pair, each flagged
-      // pair's resolution rows once, no unflagged pair (env-a/var-b), and the
-      // corrupt row dropped
       expect(rows.map((row) => [row.seq, row.event, row.environmentId, row.variableId])).toEqual([
         [2, "var.version_pushed", "env-a", "var-a"],
         [4, "rotation.recommended", "env-a", "var-a"],
@@ -389,15 +320,11 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
         [10, "rotation.recommended", "env-a", "var-a"],
         [12, "var.version_pushed", "env-a", "var-a"],
       ]);
-      // Version 2 (epoch 2 > bound 1) resolves both env-a flags; the env-b
-      // flag is dismissed; the corrupt row contributed no flag
       expect(deriveEffectiveFlags(rows)).toEqual([]);
       expect(deriveEffectiveFlags(rows.filter((row) => row.seq !== 12))).toMatchObject([
         { environmentId: "env-a", variableId: "var-a" },
         { environmentId: "env-a", variableId: "var-a" },
       ]);
-      // Two queries: the aggregate recommended rows via ae_event, then the
-      // flagged pairs' resolution rows via ae_var
       expect(captured).toHaveLength(2);
       const recommendedQuery = captured[0];
       const resolutionQuery = captured[1];
@@ -419,10 +346,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
       sql.exec("DELETE FROM audit_events");
       const store = makeAuditStore(sql);
       store.appendManySync([recommendedEvent("env-a", ["var-a"])]);
-      // Resolution rows (rotation.dismissed / var.version_pushed) carrying a
-      // malformed target_key_fingerprint. The write path mints this column,
-      // so they are inserted raw; the reader must read the fingerprint as
-      // null (a broken row is treated as null), never crash
       sql.exec(
         "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type, environment_id, variable_id, target_key_fingerprint) VALUES (2, lower(hex(randomblob(16))), ?, 'rotation.dismissed', 'user', 'env-a', 'var-a', 'not-a-fingerprint')",
         1_700_000_000_000,
@@ -486,7 +409,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
     await withSql((sql) => {
       sql.exec("DELETE FROM audit_events");
       const store = makeAuditStore(sql);
-      // One aggregate row lists both var-a and var-b (§3.3 Sc-5)
       store.appendManySync([
         recommendedEvent("env-a", ["var-a", "var-b"]),
         pushEvent("env-a", "var-a", 1),
@@ -495,8 +417,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
       const rows = store.readRotationSync.rotationFlagEventsFor([
         { environmentId: testEnvironmentId("env-a"), variableId: testVariableId("var-b") },
       ]);
-      // The recommended row is expanded to var-b only (not var-a); only var-b's
-      // resolution row is read. Without the restrict, var-a's flag would leak in
       expect(rows.map((row) => [row.seq, row.event, row.variableId])).toEqual([
         [1, "rotation.recommended", "var-b"],
         [3, "var.version_pushed", "var-b"],
@@ -514,7 +434,6 @@ describe("rotation flag reads (Q5 — audit-store-rotation-read.ts)", () => {
       store.appendManySync([
         { ...pushEvent("env-a", "var-a", 1), event: "var.created", payload: { name: "A" } },
         recommendedEvent("env-a", ["var-a"]),
-        // A var.read row shares variable_id IS NULL, so an ae_var plan would scan it
         readEvent(0),
       ]);
       captured.length = 0;

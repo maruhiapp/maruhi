@@ -1,16 +1,5 @@
-// "Honest" in-memory mocks of the vendor APIs (the targets of `maruhi sync`'s
-// http driver): accepted upserts / deletions advance the state and are
-// reflected in the next list / next write. Responses are not hand-assembled —
-// they come back in the real wire shapes (verified against wrangler 4.128.0 /
-// Vercel CLI 59.11.7 / the public REST docs).
-//
-// For assertions, the accepted requests (headers + body) and the stored values
-// are exposed — evidence for tests to state that "the value only appears at
-// fixed positions in the body, never in URLs, headers, or logs".
-
 import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
 
-/** An injected response (undefined = accept normally). Switched by call count. */
 export type VendorOverride = (
   call: number,
   request: MockRequest,
@@ -18,24 +7,20 @@ export type VendorOverride = (
   | { readonly status: number; readonly json?: unknown; readonly headers?: Record<string, string> }
   | undefined;
 
-/** The fake Cloudflare Workers API (`PATCH …/secrets-bulk`). */
 export interface FakeCloudflare {
   readonly handlers: readonly MockHandler[];
-  /** account → script → secret name → value. */
   readonly secrets: Map<string, Map<string, string>>;
   readonly requests: MockRequest[];
 }
 
 const CF_BULK = /^\/client\/v4\/accounts\/([^/]+)\/workers\/scripts\/([^/]+)\/secrets-bulk$/;
 
-/** Cloudflare's envelope. */
 function envelope(success: boolean, result: unknown, errors: { code: number; message: string }[]) {
   return { success, errors, messages: [], result };
 }
 
 export function makeFakeCloudflare(input: {
   readonly token: string;
-  /** Existing Workers (account/script). Writes to a missing script get 10007. */
   readonly scripts: readonly string[];
   readonly override?: VendorOverride;
 }): FakeCloudflare {
@@ -72,7 +57,6 @@ export function makeFakeCloudflare(input: {
   return { handlers, secrets, requests };
 }
 
-/** Preliminaries: injected response, auth, Content-Type (null = pass). */
 function cloudflarePreflight(
   request: MockRequest,
   token: string,
@@ -97,7 +81,6 @@ function cloudflarePreflight(
   return null;
 }
 
-/** Applies a merge-patch's `secrets` to the stored state (null = delete). The result is name → meta. */
 function applyMergePatch(store: Map<string, string>, body: unknown): Record<string, unknown> {
   const patch = body as { secrets?: Record<string, { text?: string } | null> };
   const result: Record<string, unknown> = {};
@@ -112,7 +95,6 @@ function applyMergePatch(store: Map<string, string>, body: unknown): Record<stri
   return result;
 }
 
-/** One Vercel variable (the sync destination's stored shape). */
 export interface FakeVercelEnv {
   readonly id: string;
   readonly key: string;
@@ -122,7 +104,6 @@ export interface FakeVercelEnv {
   readonly gitBranch?: string;
 }
 
-/** The fake Vercel API (`POST /v10/projects/{id}/env?upsert=true`, list, delete). */
 export interface FakeVercel {
   readonly handlers: readonly MockHandler[];
   readonly envs: FakeVercelEnv[];
@@ -144,7 +125,6 @@ interface VercelFailure {
   readonly error: { readonly code: string; readonly message: string; readonly key: string };
 }
 
-/** Preliminaries: injected response, auth (null = pass). */
 function vercelPreflight(
   authorized: boolean,
   forced: ReturnType<VendorOverride>,
@@ -161,7 +141,6 @@ function vercelPreflight(
     : { status: 403, json: { error: { code: "forbidden", message: "Not authorized" } } };
 }
 
-/** List (filtered by target / gitBranch). Returns values (except sensitive) — evidence that the driver does not read values. */
 function listEnvs(
   envs: readonly FakeVercelEnv[],
   query: Readonly<Record<string, string>>,
@@ -174,7 +153,6 @@ function listEnvs(
     .map((env) => ({ ...env, value: env.type === "sensitive" ? undefined : env.value }));
 }
 
-/** One request's worth of upserts (array / single item). */
 function upsertAll(
   envs: FakeVercelEnv[],
   items: readonly VercelEnvItem[],
@@ -194,7 +172,6 @@ function upsertAll(
   return { created, failed };
 }
 
-/** A single upsert (update if it exists, create otherwise; rejected names go to failed). */
 function upsertEnv(
   envs: FakeVercelEnv[],
   item: VercelEnvItem,
@@ -253,9 +230,7 @@ export function makeFakeVercel(input: {
   readonly teamId?: string;
   readonly initial?: readonly FakeVercelEnv[];
   readonly override?: VendorOverride;
-  /** Names to fail within one request (reproduces partial success). */
   readonly rejectKeys?: readonly string[];
-  /** Claims the list has a continuation (`pagination.next` — reproduces the fail-closed path). */
   readonly paginated?: boolean;
 }): FakeVercel {
   const envs: FakeVercelEnv[] = [...(input.initial ?? [])];
@@ -265,7 +240,6 @@ export function makeFakeVercel(input: {
   const authorized = (request: MockRequest) =>
     request.headers["authorization"] === `Bearer ${input.token}` &&
     (input.teamId === undefined || request.query["teamId"] === input.teamId);
-  /** Whether it targets `/v10/projects/{id}/env` (includes the recording / injection / auth preliminaries; null = pass). */
   const envCollection = (request: MockRequest, method: string): MockResponse | null | "skip" => {
     const match = request.path.match(VERCEL_ENV);
     if (request.method !== method || match === null || match[1] !== input.projectId) {
@@ -307,7 +281,6 @@ export function makeFakeVercel(input: {
           return `env_${nextId - 1}`;
         },
       );
-      // created echoes the value (same as the real API) — evidence that the driver does not display it
       return { status: 201, json: { created: batch ? created : created[0], failed } };
     },
     (request) => {
@@ -330,7 +303,6 @@ export function makeFakeVercel(input: {
   return { handlers, envs, requests };
 }
 
-/** One context's value of one Netlify variable (the sync destination's stored shape). */
 export interface FakeNetlifyValue {
   readonly id: string;
   readonly value: string;
@@ -338,7 +310,6 @@ export interface FakeNetlifyValue {
   readonly context_parameter?: string;
 }
 
-/** One Netlify variable (`envVar` — key / scopes / values / is_secret). */
 export interface FakeNetlifyVar {
   readonly key: string;
   readonly scopes: readonly string[];
@@ -346,21 +317,8 @@ export interface FakeNetlifyVar {
   readonly is_secret: boolean;
 }
 
-/**
- * The fake Netlify API (shapes verified against swagger 2.57.1 and
- * netlify-cli):
- * `GET /api/v1/accounts/{account_id}/env?site_id=` (array), `POST …/env?site_id=`
- * (creates from an array. **An existing key is a 422** — the wording is the
- * real response reported in Netlify Support Forums #88738; not in swagger),
- * `PATCH …/env/{key}?site_id=` (creates / updates one context's value of an
- * existing key; missing key is 404),
- * `DELETE …/env/{key}?site_id=` (whole key), `DELETE …/env/{key}/value/{id}?site_id=`.
- * List / create / update responses echo values (secret is empty — the real API
- * "does not return" it).
- */
 export interface FakeNetlify {
   readonly handlers: readonly MockHandler[];
-  /** key → variable (belonging to this site). */
   readonly vars: Map<string, FakeNetlifyVar>;
   readonly requests: MockRequest[];
 }
@@ -373,7 +331,6 @@ function netlifyError(status: number, message: string): MockResponse {
   return { status, json: { code: status, message } };
 }
 
-/** The list / response shape (secret values are masked — the real API doesn't return them). */
 function netlifyView(variable: FakeNetlifyVar): Record<string, unknown> {
   return {
     ...variable,
@@ -390,9 +347,7 @@ export function makeFakeNetlify(input: {
   readonly siteId: string;
   readonly initial?: readonly FakeNetlifyVar[];
   readonly override?: VendorOverride;
-  /** Names for which creation (POST) fails (reproduces partial success). */
   readonly rejectKeys?: readonly string[];
-  /** Returns 503 **after** storing the first accepted create (POST) (reproduces a lost response). */
   readonly loseFirstCreateResponse?: boolean;
 }): FakeNetlify {
   const vars = new Map<string, FakeNetlifyVar>();
@@ -407,7 +362,6 @@ export function makeFakeNetlify(input: {
     nextId += 1;
     return `val_${nextId - 1}`;
   };
-  /** Preliminaries: recording, injection, auth, site_id (null = pass). */
   const preflight = (request: MockRequest, accountId: string): MockResponse | null => {
     requests.push(request);
     calls += 1;
@@ -499,14 +453,12 @@ interface NetlifyCreateItem {
   readonly is_secret?: boolean;
 }
 
-/** Reasons to refuse creation (existing key, rejected name). null = pass. */
 function rejectCreate(
   vars: ReadonlyMap<string, FakeNetlifyVar>,
   item: NetlifyCreateItem,
   rejectKeys: readonly string[],
 ): MockResponse | null {
   if (vars.has(item.key)) {
-    // The real wording (the response reported in Netlify Support Forums #88738; not in swagger)
     return netlifyError(
       422,
       "Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
@@ -518,7 +470,6 @@ function rejectCreate(
   return null;
 }
 
-/** `POST …/env`: creates from an array (existing key = 422 [the reported real response], rejected name = 422; rejects the whole request). */
 function createVars(
   vars: Map<string, FakeNetlifyVar>,
   body: unknown,
@@ -539,7 +490,6 @@ function createVars(
   for (const item of items) {
     const variable: FakeNetlifyVar = {
       key: item.key,
-      // Omitted scopes = Netlify's default (all scopes; the real spelling is post_processing)
       scopes: item.scopes ?? ["builds", "functions", "runtime", "post_processing"],
       values: item.values.map((value) => ({ ...value, id: newId() })),
       is_secret: item.is_secret ?? false,
@@ -550,7 +500,6 @@ function createVars(
   return { status: 201, json: created.map(netlifyView) };
 }
 
-/** `PATCH …/env/{key}`: creates / replaces one context's value (the response echoes the whole variable). */
 function setValue(variable: FakeNetlifyVar, body: unknown, newId: () => string): MockResponse {
   const patch = body as { context?: string; context_parameter?: string; value?: string };
   if (typeof patch.context !== "string" || typeof patch.value !== "string") {

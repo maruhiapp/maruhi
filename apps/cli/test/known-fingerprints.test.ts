@@ -1,19 +1,3 @@
-// Unit tests for the verified-fingerprint book's (KF —
-// known-fingerprints.ts) persistence layer.
-//
-// Properties pinned down:
-//  1. record → lookup hits, and never mixes with another origin / another
-//     user_id
-//  2. A record on the same key overwrites (reflecting a legitimate key
-//     update); other entries are kept
-//  3. A corrupt file reads as corrupt (distinct from miss), and record does
-//     not overwrite corruption
-//  4. record rejects malformed keys/fingerprints before writing (prevents
-//     next-load whole-file corruption)
-//  5. Read failures other than ENOENT fail rather than folding into a miss
-//     (prevents overwriting with an empty book / silently swallowing
-//     change warnings)
-
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,9 +43,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
 
   it("a user_id of 'constructor' (a legal book key, an inherited Object property) records and hits via own-property lookup", async () => {
     const { book } = await makeBook();
-    // floor.ts's floorRecordGet discipline: `users["constructor"]` would
-    // resolve Object.prototype.constructor (a function), so lookups must
-    // be own-property checks
     await Effect.runPromise(book.record(ORIGIN, testUserId("constructor"), FP_A));
 
     const hit = await Effect.runPromise(book.lookup(ORIGIN, testUserId("constructor")));
@@ -73,8 +54,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     const { book, path } = await makeBook();
     await Effect.runPromise(book.record(ORIGIN, testUserId(USER_A), FP_A));
     await Effect.runPromise(book.record(ORIGIN, testUserId(USER_B), FP_B));
-    // USER_A's second device (the ceremony succeeding again) adds to the
-    // set (doesn't erase the first)
     await Effect.runPromise(book.record(ORIGIN, testUserId(USER_A), FP_B));
 
     const a = await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)));
@@ -84,8 +63,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       [FP_A, FP_B].toSorted(),
     );
     expect(b.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_B]);
-    // The file is readable JSON (the path for users to delete an entry and
-    // force a fresh ceremony). v2 = a set
     const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
     expect(stored.v).toBe(2);
   });
@@ -126,7 +103,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       ),
     );
     expect(failed).toContain("Cannot write the verified-fingerprint book");
-    // The corrupt content stays as-is (never silently rebuilt)
     expect(await readFile(path, "utf8")).toBe("{ not json");
   });
 
@@ -143,7 +119,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       "corrupt",
     );
 
-    // A version other than v2 is not read, even if its contents have the v2 shape
     await writeFile(
       path,
       JSON.stringify({
@@ -155,9 +130,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       "corrupt",
     );
 
-    // The `__proto__` key (JSON.parse creates it as an own property) is
-    // rejected as whole-file corruption by the leading-`_` ban (structural
-    // exclusion of prototype pollution)
     await writeFile(
       path,
       `{"v":2,"known":{"${ORIGIN}":{"__proto__":{"fingerprints":{"${FP_A}":{"verifiedAtMs":1}}}}}}`,
@@ -182,7 +154,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
       );
       expect(failed).toContain("Cannot write the verified-fingerprint book");
     }
-    // A rejected write creates no file = subsequent loads stay healthy
     expect((await Effect.runPromise(book.lookup(ORIGIN, testUserId(USER_A)))).state).toBe("miss");
   });
 });

@@ -1,12 +1,3 @@
-// Wiring tests for the local floor (CRYPTO_SPEC §6.3 rules (a)(b)(c)).
-// Swap mock servers against the same TestEnv (= the same floor file) and
-// check the persistent detection — across sessions (process runs) — of
-// rollback, omission, and forward injection.
-//
-// Phase 1 always establishes the floor with honest responses; phase 2 onward
-// feeds tampered distributions. Every tamper carries a valid signature from a
-// legitimate key (signature verification passes) — pinning that this is an attack surface only the floor can detect.
-
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -47,11 +38,8 @@ const ENV_ID = "prod";
 let owner: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** chain1 = [genesis, create_environment] (epoch 1). */
 let chain1: BuiltChain;
-/** chain2 = chain1 + rotate_epoch(2) (a strict extension of chain1 via deterministic builds). */
 let chain2: BuiltChain;
-/** chainB = same genesis, but a different chain branched at seq 2. */
 let chainB: BuiltChain;
 let wrap1: WireRecipientDek;
 let wrap2: WireRecipientDek;
@@ -74,7 +62,6 @@ beforeAll(async () => {
     ...steps,
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
   ]);
-  // Branches from the same genesis at seq 2 (the create's DEK commitment differs)
   chainB = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dekB) },
@@ -106,7 +93,6 @@ function genesisHead(): { seq: number; hashHex: string } {
   return { seq: 1, hashHex: projectId };
 }
 
-/** The variable value (the correct declared head per epoch: epoch1 = create, epoch2 = rotate). */
 async function valueOf(input: {
   readonly variableId: string;
   readonly version: number;
@@ -162,13 +148,7 @@ interface PullPayload {
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly deks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
-  /** The bundled manifest's manifestVersion (advance it when the meta set changes between phases). */
   readonly manifestVersion?: number;
-  /**
-   * prev for manifestVersion > 1 (the previous manifest's signed-bytes hash).
-   * Fixtures where the floor has recorded the previous version pass the
-   * correct chain satisfying the adjacent prev check (the prevOfPhase helper). Unspecified = the fixture's dummy.
-   */
   readonly prevManifestSigHashHex?: string;
 }
 
@@ -181,7 +161,6 @@ interface ManifestPayload {
   readonly prevManifestSigHashHex?: string;
 }
 
-/** The manifest computed from the distributed set itself (§12-7). Ed25519 is deterministic = recomputation is byte-exact. */
 async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   const epoch = payload.currentEpoch ?? 1;
   return manifestFor({
@@ -199,7 +178,6 @@ async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   });
 }
 
-/** The previous phase's manifest signed-bytes hash (chaining material for the next version's prev). */
 async function prevOfPhase(payload: ManifestPayload): Promise<string> {
   return manifestHashOf(
     projectId,
@@ -208,7 +186,6 @@ async function prevOfPhase(payload: ManifestPayload): Promise<string> {
 }
 
 function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
-  // Advances on each call (the bounded resync for a future head reveals the next chain)
   let call = 0;
   return onRequest("GET", `/projects/${projectId}/chain`, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
@@ -252,7 +229,6 @@ function deksHandlerFor(deks: readonly WireRecipientDek[]): MockHandler {
   }));
 }
 
-/** The response of a metadata-only pull (§12-7 — push's name-resolution path). */
 function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
   return onRequest(
     "GET",
@@ -272,7 +248,6 @@ function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
   );
 }
 
-/** Starts a new server phase against the same TestEnv (= the same floor). */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<MockServer> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -285,7 +260,6 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
   return server;
 }
 
-/** Reads the floor (the fold of the observation log). The log is append-only JSONL (floor-log.ts). */
 async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(testProjectId(projectId)),
@@ -295,12 +269,10 @@ async function readFloorFile(env: TestEnv): Promise<ProjectFloor> {
   return loaded.floor as ProjectFloor;
 }
 
-/** The floor log's raw bytes (for checking non-confidentiality / evidence preservation). */
 async function readFloorRaw(env: TestEnv): Promise<string> {
   return readFile(join(env.floorDir, `${projectId}.jsonl`), "utf8");
 }
 
-/** Establishes the floor in phase 1 (an honest distribution) and verifies pull succeeds. */
 async function establishFloor(env: TestEnv, payload: PullPayload, chain = chain1): Promise<void> {
   await startPhase(env, [chainHandlerFor([chain]), pullHandlerFor(payload)]);
   expect(await runCli(["pull"], env.layer)).toBe(0);
@@ -326,7 +298,6 @@ describe("floor establishment and fail-open (§6.3 / no floor · corruption)", (
     const record = floor.environments[ENV_ID];
     expect(record?.pullEpoch).toBe(1);
     expect(record?.variables["vb"]).toMatchObject({ status: "active", version: 1, epoch: 1 });
-    // Never writes plaintext values / variable names to the floor log (the diskless invariant)
     const raw = await readFloorRaw(env);
     expect(raw).not.toContain("beta-value");
     expect(raw).not.toContain("BETA");
@@ -341,8 +312,6 @@ describe("floor establishment and fail-open (§6.3 / no floor · corruption)", (
       value: beta,
     };
     await establishFloor(env, { variables: [entry], deks: [wrap1] });
-    // Whole-file corruption where not a single parseable record remains (a
-    // partially torn line is not corruption but a self-recovery target — floor.test.ts)
     await writeFile(join(env.floorDir, `${projectId}.jsonl`), "{broken-json");
     env.errors.length = 0;
     await startPhase(env, [
@@ -382,21 +351,15 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("value-version rollback");
-    // Fork evidence: the floor-side and distributed-side signed-bytes hashes, declared head, coordinates
     expect(errors).toContain(await valueHashOf(v2, owner.userId));
     expect(errors).toContain(await valueHashOf(v1, owner.userId));
     expect(errors).toContain(`variable=vb`);
     expect(errors).toContain(`declared head: seq=2`);
-    // The plaintext value is not in the evidence
     expect(errors).not.toContain("old");
     expect(errors).not.toContain("new");
   });
 
   it("floor establishment and rollback detection work even for variableId `constructor` (a legitimate ID)", async () => {
-    // A §12-1-conforming ID that collides with an inherited Object.prototype
-    // property name. With a bare bracket lookup, "an ID absent from the floor"
-    // would resolve to Function and the floor would self-corrupt / misdetect —
-    // pin that own-property lookup works correctly
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "constructor", name: "CTOR_VAR" });
     const v1 = await valueOf({ variableId: "constructor", version: 1, epoch: 1, plaintext: "a" });
@@ -499,7 +462,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       deks: [wrap1],
     });
 
-    // An environment statement at the same metaVersion 1 differing only in name (valid signature)
     const swapped = await environmentStatementFor({
       projectId,
       environmentId: ENV_ID,
@@ -518,7 +480,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("signed bytes served for the same metaVersion");
-    // The environment meta's evidence coordinates stop at the environment (no variable=)
     expect(errors).toContain(`coordinates: project=${projectId} environment=${ENV_ID}\n`);
   });
 
@@ -536,7 +497,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       chain2,
     );
 
-    // version 4 > floor 3 but epoch 1 < floor's epoch 2 (§4.1 monotonicity violation)
     const v4e1 = await valueOf({ variableId: "va", version: 4, epoch: 1, plaintext: "regressed" });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -564,7 +524,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       chain2,
     );
 
-    // Still chain1 after the resync (the second chain fetch) = a true shortening
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [{ variableId: "vb", statement, value }], deks: [wrap1] }),
@@ -580,7 +539,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
-    // The floor is already established through chain2 (seq 3)
     await establishFloor(
       env,
       {
@@ -591,9 +549,6 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       chain2,
     );
 
-    // The first sync grabs the old view (chain1) — the race shape where a
-    // sibling advanced the floor between sync and floor load → do not treat
-    // the shortening as immediate evidence; resolve via a single resync
     await startPhase(env, [
       chainHandlerFor([chain1, chain2]),
       pullHandlerFor({
@@ -621,9 +576,6 @@ describe("persistent detection of omission (§6.3 rule (a))", () => {
       value: beta,
     };
     await establishFloor(env, { variables: [alphaEntry, betaEntry], deks: [wrap1] });
-    // Phase 2: drop BETA from the distribution (selective response trimming).
-    // Drop it likewise on the metadata-only pull (push's resolution path) —
-    // the floor's meta-level check is the target
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [alphaEntry], deks: [wrap1] }),
@@ -693,16 +645,11 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "v1" });
-    // Phase 1: pull on the epoch-1 chain (criterion = 1)
     await establishFloor(env, {
       variables: [{ variableId: "vb", statement, value: v1 }],
       deks: [wrap1],
     });
 
-    // Phase 2: the chain has rotated (current epoch 2), but v2 (epoch 1),
-    // legitimately pushed before the rotate, is still latest = the legitimate
-    // state before re-encryption completes. The criterion is the previous
-    // pull's 1, so no false refusal (rule (c)'s no-false-refusal edge)
     const v2 = await valueOf({
       variableId: "vb",
       version: 2,
@@ -710,8 +657,6 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
       plaintext: "v2",
       prevValueSigHashHex: await valueHashOf(v1, owner.userId),
     });
-    // The adjacent version's (v2, right after the floor's v1) prev is strictly
-    // verified against the floor's manifest hash, so assemble a legitimate chain
     const prevHash = await prevOfPhase({ variables: [statement] });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -719,19 +664,15 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // The shape where the rotate composite has already re-issued the manifest (§12-4)
         manifestVersion: 2,
         prevManifestSigHashHex: prevHash,
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    // After verification succeeds, the criterion has advanced to 2 atomically with the variable floor
     const floor = await readFloorFile(env);
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(2);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 1 });
 
-    // Phase 3: under criterion 2, a v3 newer than the floor's version still at
-    // epoch 1 = the shape of a forward injection by the old-epoch key (rule (c)'s detection edge)
     const v3 = await valueOf({
       variableId: "vb",
       version: 3,
@@ -745,7 +686,6 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
         variables: [{ variableId: "vb", statement, value: v3 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // The meta set is identical to phase 2 = distribute the same v2 manifest (byte-exact)
         manifestVersion: 2,
         prevManifestSigHashHex: prevHash,
       }),
@@ -760,7 +700,6 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
     const env = await makeTestEnv();
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const beta = await valueOf({ variableId: "vb", version: 1, epoch: 2, plaintext: "b" });
-    // Establish a criterion-2 floor (the post-rotate chain)
     await establishFloor(
       env,
       {
@@ -771,9 +710,6 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
       chain2,
     );
 
-    // A new variable "created" after the previous pull is at epoch 1 = below
-    // the criterion (a legitimate creation can only happen at the current
-    // epoch of its creation time ≥ the criterion)
     const injected = await valueOf({ variableId: "vc", version: 1, epoch: 1, plaintext: "x" });
     const injectedEntry = {
       variableId: "vc",
@@ -787,8 +723,6 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
         variables: [betaEntry, injectedEntry],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // "vc was created" = the shape where the manifest has also advanced
-        // (an adjacent version, so prev chains correctly — pinning a check independent of prev verification)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement], currentEpoch: 2 }),
       }),
@@ -816,7 +750,6 @@ describe("evidencing differing signed bytes at the same coordinates (§6.3 rule 
       deks: [wrap1],
     });
 
-    // Different content under the same version 1 (fresh nonce · different plaintext) — the signature is valid under the legitimate key
     const replaced = await valueOf({
       variableId: "vb",
       version: 1,
@@ -879,9 +812,6 @@ describe("the floor semantics of deletion (§6.3 rule (a) — deleted is a termi
         variables: [],
         deletedVariables: [await tombstoneOf()],
         deks: [wrap1],
-        // The shape where the deletion meta operation has already re-issued
-        // the manifest (§12-4). The adjacent version's prev is strictly
-        // verified against the floor's v1 manifest hash
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -908,8 +838,6 @@ describe("the floor semantics of deletion (§6.3 rule (a) — deleted is a termi
         deks: [wrap1],
       });
 
-      // A deleted variableId distributed as active (refused regardless of the
-      // metaVersion value — deleted is a terminal state and no legitimate re-activation exists)
       const revived = await statementOf({ variableId: "vb", name: "BETA", metaVersion });
       const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
       await startPhase(env, [
@@ -957,7 +885,6 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // chainB shares genesis, branches at seq 2, and is longer than the floor (3) = a branch, not a shortening
     await startPhase(env, [chainHandlerFor([chainB]), pullHandlerFor({ variables: [], deks: [] })]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
@@ -975,8 +902,6 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // The value's declared head is seq 3 (post-rotate) = beyond our view
-    // (chain1) → the resync reveals chain2 (an extension of chain1) and it is accepted normally
     const v2 = await valueOf({
       variableId: "vb",
       version: 2,
@@ -990,8 +915,6 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
         variables: [{ variableId: "vb", statement, value: v2 }],
         deks: [wrap1, wrap2],
         currentEpoch: 2,
-        // The shape where the rotate composite has already re-issued the
-        // manifest (§12-4) (an adjacent version — satisfies the prev chain)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -999,12 +922,6 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 3, hashHex: chain2.hashes[2] });
-    // The rule (c) criterion is derived from the view **before** the response
-    // was fetched (chain1 = epoch 1): if the epoch 2 learned via the resync
-    // (chain sync) were promoted into the criterion, a rotate landing between
-    // response generation and resync would make the next pull falsely refuse
-    // the legitimate "post-rotation, pre-re-encryption" old-epoch latest value
-    // (applying §6.3's norm "a chain sync alone never advances the criterion" to the resync path)
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 2 });
   });
@@ -1018,8 +935,6 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    // Declared head seq 3 is beyond chain1, but the chain stays chain1 even
-    // after resync = bound to a nonexistent head (chain divergence or forgery)
     const forged = await encryptValueFor({
       dek: dek1,
       projectId,
@@ -1049,7 +964,6 @@ describe("floor advancement after push acceptance (§6.3 — detecting rollback 
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     const v1 = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const entry = { variableId: "vb", statement, value: v1 };
-    // Phase 1: push (metadata resolution → v1 verified by a value-bearing pull → v2 accepted)
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullMetadataHandlerFor({ variables: [statement] }),
@@ -1065,10 +979,8 @@ describe("floor advancement after push acceptance (§6.3 — detecting rollback 
     expect(await runCli(["push", "BETA"], env.layer)).toBe(0);
     const floor = await readFloorFile(env);
     expect(floor.environments[ENV_ID]?.variables["vb"]).toMatchObject({ version: 2, epoch: 1 });
-    // The rule (c) criterion does not move on push (stays at pull time)
     expect(floor.environments[ENV_ID]?.pullEpoch).toBe(1);
 
-    // Phase 2: the server distributes the pre-push v1 (a rollback of your own write)
     await startPhase(env, [
       chainHandlerFor([chain1]),
       pullHandlerFor({ variables: [entry], deks: [wrap1] }),
@@ -1080,11 +992,6 @@ describe("floor advancement after push acceptance (§6.3 — detecting rollback 
 
 describe("meta forward injection is not detected even by the floor (§14.3-5 — stating the non-guarantee)", () => {
   it("an advancing-metaVersion injection (a name swap) is accepted even with a floor (the known residue)", async () => {
-    // A meta statement carries no epoch anchor (§4.2), so the equivalent of
-    // the value-side rule (c) detection structurally does not exist. The
-    // floor's guarantee is rollback detection only, and this test pins the
-    // non-guarantee so it is never mistaken as "detected". Closure is the
-    // responsibility of the environment manifest / checkpoints
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const original = await statementOf({ variableId: "vb", name: "BETA" });
@@ -1093,9 +1000,6 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
       deks: [wrap1],
     });
 
-    // Forge a metaVersion 2 as the next of the actual latest (metaVersion 1)
-    // — a valid signature from a legitimate key (the shape of a key within its
-    // membership interval + server collusion). With no rollback or omission, the floor does not fire
     const injected = await statementOf({
       variableId: "vb",
       name: "BETA_INJECTED",
@@ -1106,11 +1010,6 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
       pullHandlerFor({
         variables: [{ variableId: "vb", statement: injected, value }],
         deks: [wrap1],
-        // A server-colluding forward injection can also advance the manifest
-        // with it (the attacking key holds issuer credentials — the §14.3-5
-        // non-guarantee holds up to and including this shape). The adjacent
-        // prev can also be chained correctly, since the colluding server knows
-        // the real manifest's hash — the non-guarantee is unchanged even after this check's introduction
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [original] }),
       }),
@@ -1120,9 +1019,6 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
   });
 
   it("environment-meta forward injection is also undetected by the floor (§14.3-5 — holds for any variable's / environment's meta)", async () => {
-    // §14.3-5: forward injection holds for the meta of any variable /
-    // environment where the attacking key held author credentials during its
-    // membership interval. Pin non-detection on the environment side too, same as the variable side
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
@@ -1145,8 +1041,6 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
         statement: injectedEnvMeta,
         variables: [{ variableId: "vb", statement, value }],
         deks: [wrap1],
-        // The same shape as the variable side: the manifest advances with it
-        // (§14.3-5 — the colluding server can chain prev correctly too)
         manifestVersion: 2,
         prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
       }),
@@ -1157,23 +1051,12 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
 
 describe("startup reconciliation of unresolved intents (settled by entry identity at the declared-head position)", () => {
   it("a leftover intent is classified as accepted / rejected / pending by the declared-head position (never promotes an old attempt sharing the same commitment)", async () => {
-    // A CAS retry re-signs the declared head and manifest with the same DEK
-    // (= the same commitment). Misjudging a refused old attempt's intent (a
-    // failed resolution append, a crash) as "accepted" on commitment match
-    // alone and promoting it would put the floor into a permanent refusal via
-    // a typed conflict with the accepted attempt's manifest (same version,
-    // different hash). Conversely, crushing an intent whose slot is merely
-    // empty down to not-accepted would leave nobody to collect a composite
-    // that lands in transit later — pending stays unresolved
     const env = await makeTestEnv();
     const store = makeFileFloorStore(env.floorDir);
     const rotateEntry = chain2.entries[2];
     if (rotateEntry?.op !== "rotate_epoch") throw new Error("rotate entry missing");
     const commitment = rotateEntry.payload.dekCommitmentHex;
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
-    // Give the accepted intent the same hash as the v2 manifest the pull
-    // distributes (the re-issued form of the rotate composite) — in practice
-    // they are bundled in the same composite, so of course they match
     const servedManifest = {
       variables: [statement],
       currentEpoch: 2,
@@ -1181,8 +1064,6 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
       prevManifestSigHashHex: await prevOfPhase({ variables: [statement] }),
     };
     const acceptedManifestHash = await prevOfPhase(servedManifest);
-    // (a) The accepted attempt: declared head = seq 2 (right after create) →
-    // slot seq 3 holds this intent's rotate entry
     await Effect.runPromise(
       store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
@@ -1195,9 +1076,6 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
         declaredHead: { seq: 2, hashHex: chain1.hashes[1] as string },
       }),
     );
-    // (b) The refused old attempt: the same commitment, but the declared head
-    // is old (seq 1) and its slot (seq 2) is occupied by a different entry
-    // (create) = this attempt can never land now (settled refusal). The manifest's signed bytes also differ
     await Effect.runPromise(
       store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
@@ -1210,8 +1088,6 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
         declaredHead: { seq: 1, hashHex: projectId },
       }),
     );
-    // (c) The intent awaiting landing: declared head = the current head
-    // (seq 3) → slot seq 4 is empty = it could be in transit. Never settle it (leave it unresolved)
     await Effect.runPromise(
       store.appendIntent(testProjectId(projectId), {
         op: "rotate_epoch",
@@ -1242,15 +1118,12 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
     expect(errors).toContain("it was not accepted");
     expect(errors).toContain("still awaiting confirmation");
     const floor = await readFloorFile(env);
-    // Only the accepted attempt's manifest is in the floor (identical to the
-    // pull's verified observation); the old attempt's hash is not promoted = no typed conflict occurs
     expect(floor.conflicts).toEqual([]);
     expect(floor.environments[ENV_ID]?.manifest).toEqual({
       manifestVersion: 2,
       epoch: 2,
       manifestSigHashHex: acceptedManifestHash,
     });
-    // Only the pending intent remains as needing reconciliation
     expect(floor.intents).toHaveLength(1);
     expect(floor.intents[0]).toMatchObject({ epoch: 3 });
   });
@@ -1259,14 +1132,12 @@ describe("startup reconciliation of unresolved intents (settled by entry identit
 describe("interplay with a commitHead-only floor (project verify first)", () => {
   it("a later pull can establish the environment floor from a head-only floor created by verify", async () => {
     const env = await makeTestEnv();
-    // Phase 1: project verify (chain floor check + head advance only; no environment floor)
     await startPhase(env, [chainHandlerFor([chain1])]);
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     let floor = await readFloorFile(env);
     expect(floor.chainHead).toEqual({ seq: 2, hashHex: chain1.hashes[1] });
     expect(floor.environments[ENV_ID]).toBeUndefined();
 
-    // Phase 2: pull establishes the environment floor (including the rule (c) criterion)
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
     await startPhase(env, [

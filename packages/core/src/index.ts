@@ -1,7 +1,3 @@
-// @maruhi/core — domain types, Effect Schema, shared logic.
-// The bridge between crypto (Effect-free) and the upper layers
-// (Effect-based) happens here.
-
 export {
   ChainInvalidError,
   CryptoContractViolationError,

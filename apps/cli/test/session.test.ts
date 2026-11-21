@@ -1,8 +1,3 @@
-// Unit tests for session.ts: server URL resolution, saving the master key
-// with overwrite detection, the crypto backend check, and the MARUHI_TOKEN
-// env-var path.
-// (CLI login polling rules live in login.test.ts — AUTH_SPEC §4)
-
 import { Effect, Exit, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -57,11 +52,6 @@ describe("resolveServerOrigin", () => {
 describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
   const ENTRY = masterKeyEntryName("https://maruhi.test", testUserId("user-1"));
 
-  /**
-   * A Keychain simulating concurrent runs: `onSet` injects "another process
-   * wrote before/after my write" situations. Since the OS keychain has no
-   * conditional write, all that can be pinned is "detect last-writer-wins and fail"
-   */
   const fakeKeychain = (input: {
     readonly initial?: string;
     readonly onSet?: (store: Map<string, string>) => void;
@@ -95,8 +85,6 @@ describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
   });
 
   it("does not overwrite a record that appeared between the check and the write", async () => {
-    // The shape where another process wrote after ensureNoStoredMasterKey. A
-    // plain set would silently erase the other's key as last-writer-wins
     const keychain = fakeKeychain({ initial: "record-other" });
     const exit = await Effect.runPromiseExit(
       storeMasterKeyGuarded(ENTRY, "record-mine").pipe(Effect.provide(keychain.layer)),
@@ -107,8 +95,6 @@ describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
   });
 
   it("fails when overwritten right after writing (does not proceed to recovery issuance)", async () => {
-    // The shape where another process wrote right after my write. Detecting that
-    // the read-back is not my record prevents registering a recovery blob for the discarded key
     const keychain = fakeKeychain({
       onSet: (store) => store.set(ENTRY, "record-other"),
     });
@@ -122,18 +108,12 @@ describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
 
 describe("cryptoBackendUsable", () => {
   it("is true in a working environment (never blames corruption on the environment)", async () => {
-    // This check splits "the key is unreadable" into key vs. environment causes.
-    // Returning false on a working environment turns even a genuinely broken
-    // record's diagnosis into "environment unsupported — do not delete", making the only recovery step (deleting by hand) unreachable
     expect(await Effect.runPromise(cryptoBackendUsable())).toBe(true);
   });
 
   it("environment-caused shared wording does not contain 'what is intact' (it differs per path)", () => {
-    // Only the keychain path can point to a stored key. recover / generate have
-    // not stored anything yet, so shared wording written that far would point at something that does not exist
     expect(unsupportedCryptoCause).not.toContain("do not delete");
     expect(unsupportedCryptoCause).not.toContain("stored");
-    // Only the keychain path's wording carries "do not delete it"
     expect(unsupportedCryptoMessage).toContain("do not delete it");
   });
 });
@@ -152,8 +132,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
-    // key show requires session resolution + the device key. It errors for lack of
-    // a device key, but verifies that session resolution (/auth/me) itself goes through
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("No device key on this machine");
   });
@@ -217,7 +195,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     const nearErrors = nearEnv.errors.join("\n");
     expect(nearErrors).toContain("Warning: the API token expires on");
     expect(nearErrors).toContain("Sign in again with `maruhi login`");
-    // The warning needs no communication to decide (not a single request goes out)
     expect(server.requests).toHaveLength(0);
   });
 
@@ -260,9 +237,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Authentication with MARUHI_TOKEN failed");
-    // The most likely cause of this 401 in an unattended environment is expiry
-    // (W3a ruling CJ). The guidance goes as far as naming the fix — swapping the
-    // env var (never regress to the `maruhi login`-alone keychain guidance)
     expect(errors).toContain("expired or revoked");
     expect(errors).toContain("update the MARUHI_TOKEN value");
   });
@@ -278,9 +252,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     servers.push(server);
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
-    // If the decision were not made on the trimmed value, we would send
-    // `Bearer ` (empty) and land on a 401 with guidance for a different cause —
-    // "may be expired or revoked" (session.ts's auth-failure wording)
     env.setEnvVar("MARUHI_TOKEN", " \n");
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", server.origin);
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
@@ -314,13 +285,10 @@ describe("the MARUHI_TOKEN env-var path", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: server.origin });
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_env");
-    // An env-var value is not a command-line typo, so it is not usage (2) —
-    // name the fix target (the env var) and exit with 1
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "notaurl");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const text = env.errors.join("\n");
     expect(text).toContain("fix the MARUHI_TOKEN_ORIGIN env var");
-    // The value itself is never echoed (a URL with embedded credentials is possible)
     expect(text).not.toContain("notaurl");
     expect(hit).toBe(false);
   });
@@ -340,7 +308,6 @@ describe("the MARUHI_TOKEN env-var path", () => {
     env.setEnvVar("MARUHI_TOKEN_ORIGIN", "https://other.example");
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not match the connection target");
-    // The token is never sent to the connection target
     expect(hit).toBe(false);
   });
 });

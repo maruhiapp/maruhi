@@ -1,13 +1,3 @@
-// Integration tests for the token-management API + the default TTL
-// (AUTH_SPEC §6 — W3a).
-//
-// - the TTL is fixed at issuance (§6: deliberately asymmetric to the
-//   session §5 sliding window)
-// - the list returns only one's own metadata (raw values / token_hash
-//   are never returned — not even the fields)
-// - targeted-revocation judgment order (ruling CG): 401 → 403 (from
-//   caller qualification alone) → uniform 404
-
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -26,7 +16,6 @@ import { testProjectId } from "./support/data-crypto.ts";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "__Host-maruhi_session";
 
-/** The full issuance response via the CLI handoff (the real path) — an alias of support's cliIssue. */
 const exchange = cliIssue;
 
 interface TokenRow {
@@ -76,7 +65,6 @@ describe("the default TTL (AUTH_SPEC §6)", () => {
       });
       expect(response.status, `expiresInDays=${expiresInDays}`).toBe(400);
     }
-    // A malformed value never reaches flow start = never reaches token issuance
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
@@ -84,11 +72,6 @@ describe("the default TTL (AUTH_SPEC §6)", () => {
   });
 
   it("self-discloses the presented token's expiry on /auth/me (ruling CI — a self-credential attribute)", async () => {
-    // The path by which unattended use (a PAT on a lease-less
-    // environment — ruling CF) observes its own expiry. Even a
-    // scope-limited token can see just its own expiry (without
-    // opening the list — ruling CH's `*` × admin condition). The
-    // session principal is absent (it presented no token)
     const issued = await exchange(806);
     const viaToken = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
     expect(viaToken.status).toBe(200);
@@ -119,7 +102,6 @@ describe("GET /auth/tokens (listing — AUTH_SPEC §6)", () => {
   it("returns the caller's own token metadata for a session principal, without raw values or hashes", async () => {
     const session = await loginSession(811);
     const issued = await exchange(811, { tokenName: "inventory" });
-    // Another user's token does not appear
     await exchange(812, { tokenName: "someone-else" });
 
     const response = await SELF.fetch(`${BASE}/auth/tokens`, {
@@ -135,7 +117,6 @@ describe("GET /auth/tokens (listing — AUTH_SPEC §6)", () => {
     expect(entry["scopes"]).toEqual([{ project: "*", permission: "admin" }]);
     expect(typeof entry["createdAtMs"]).toBe("number");
     expect(entry["expiresAtMs"]).toBe(issued.expiresAtMs);
-    // Raw values / hashes do not exist even as fields (§6: not returned)
     expect(Object.keys(entry).toSorted()).toEqual([
       "createdAtMs",
       "expiresAtMs",
@@ -187,11 +168,8 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
       headers: sessionHeaders(session),
     });
     expect(response.status).toBe(204);
-    // The revocation takes effect: the target token is 401 thereafter
     const denied = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(issued.token) });
     expect(denied.status).toBe(401);
-    // Audit (AUDIT_SPEC §3.1): actor = the acting principal (a
-    // session — no token id); payload.tokenId = the revoked target
     const audit = await env.DB.prepare(
       "SELECT actor_user_id, actor_api_token_id, payload FROM user_audit_events WHERE event = 'auth.token_revoked'",
     ).first<{ actor_user_id: string; actor_api_token_id: string | null; payload: string }>();
@@ -229,10 +207,7 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
     });
     expect(foreignResponse.status).toBe(404);
     expect(missingResponse.status).toBe(404);
-    // Even the response body is uniform (cannot distinguish whether the id exists)
     expect(await foreignResponse.json()).toEqual(await missingResponse.json());
-    // The other user's token is not deleted and no audit is recorded
-    // (the discipline of not letting it silently succeed)
     const row = await env.DB.prepare("SELECT id FROM api_tokens WHERE id = ?")
       .bind(foreign.tokenId)
       .first();
@@ -252,7 +227,6 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
       "scoped",
     );
 
-    // A scope-limited token is 403 regardless of the target's existence (computed from caller qualification alone)
     const deniedExisting = await SELF.fetch(`${BASE}/auth/tokens/${sibling.tokenId}`, {
       method: "DELETE",
       headers: bearer(scoped),
@@ -270,7 +244,6 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
       headers: bearer(wildcard),
     });
     expect(revoked.status).toBe(204);
-    // The audit actor is the wildcard token (the acting principal); the target is payload.tokenId
     const audit = await env.DB.prepare(
       "SELECT actor_api_token_id, payload FROM user_audit_events WHERE event = 'auth.token_revoked'",
     ).first<{ actor_api_token_id: string | null; payload: string }>();
@@ -280,9 +253,6 @@ describe("DELETE /auth/tokens/:tokenId (targeted revocation — AUTH_SPEC §6)",
   });
 });
 
-// Make explicit that beforeEach's resetAuthDb has applied the
-// migrations (the response's precondition is not left implicit —
-// applyD1Migrations is idempotent)
 it("keeps migrations idempotent for this suite", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });

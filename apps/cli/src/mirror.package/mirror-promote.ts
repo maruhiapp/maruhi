@@ -1,10 +1,3 @@
-// `maruhi mirror promote` (AUTH_SPEC §11-7 — ruling C revision): the owner
-// unmarks the project on the mirror deployment (--server), which accepts
-// writes again. The guard first reads what the source holds (sourceState)
-// and, unless --force, refuses a promotion that may leave two writable
-// copies or would bury the frozen source's last writes or a fork. The
-// message then names the server keys to check (keyFollowUps).
-
 import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/http";
@@ -28,13 +21,6 @@ import { PROMOTE_PROBE_TIMEOUT, sameDeployment } from "./mirror-deployment.ts";
 import { headOnChain } from "./mirror-heads.ts";
 import type { Refusal } from "./mirror-mark.ts";
 
-/**
- * `maruhi mirror promote --server <mirror>`: the owner unmarks the mirror;
- * it accepts writes again. The source is probed first (its public
- * `/auth/config`): a source that still answers means two writable copies
- * after the promotion, so it is refused unless `--force` (ruling C
- * revision — a split brain is an owner's explicit decision).
- */
 export const mirrorPromoteOp = Effect.fn("mirror-promote.mirrorPromoteOp")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -63,13 +49,6 @@ export const mirrorPromoteOp = Effect.fn("mirror-promote.mirrorPromoteOp")(funct
   }
 });
 
-/**
- * The promotion's guard on what the source holds: fails with the refusal,
- * else says what stays on a frozen source and hands on the mirror's chain
- * when the guard fetched it (a frozen source behind this mirror is judged
- * on it — a strict prefix holds nothing the mirror lacks, anything else is
- * a fork; ruling C revision, round 8).
- */
 const promotionGuard = Effect.fn("mirror-promote.promotionGuard")(function* (
   context: SessionContext,
   projectId: ProjectId,
@@ -93,8 +72,6 @@ const promotionGuard = Effect.fn("mirror-promote.promotionGuard")(function* (
       : null;
   const refusal = promotionRefusal(source, sourceOrigin, status.head, context.origin, mirrorChain);
   if (refusal !== null) {
-    // --force promotes anyway, but says what it abandons (round 9),
-    // without the refusal's own escape clause (round 10)
     if (!forced) {
       return yield* Effect.fail(cliError(`${refusal.body}${refusal.escape}`));
     }
@@ -106,14 +83,6 @@ const promotionGuard = Effect.fn("mirror-promote.promotionGuard")(function* (
   };
 });
 
-/**
- * What stays on the frozen source after the promotion (ruling C revision,
- * rounds 8 and 9): its audit rows past the mirror's last replication —
- * counted only when the frozen head is the mirror's and a replication is
- * recorded (positions of one log; a re-point clears the record), else
- * said to be uncountable from here. null = nothing to say (none, or the
- * source's marks are not shown to this session).
- */
 function rowsLeftBehind(
   frozenAt: SourceHead,
   sourceOrigin: string,
@@ -126,9 +95,6 @@ function rowsLeftBehind(
     return null;
   }
   const keep = `a promoted copy takes no page, so they can never be brought over — keep them with \`maruhi project export --server ${sourceOrigin}\``;
-  // A source that synced back from this mirror holds this mirror's log
-  // followed by its own rows: its own record counts them exactly (round
-  // 10); otherwise the mirror's record counts, at the same head only
   const counted =
     frozenAt.lastSync !== undefined
       ? frozenAt.auditMaxSeq - frozenAt.lastSync.auditMaxSeq
@@ -143,12 +109,6 @@ function rowsLeftBehind(
     : null;
 }
 
-/**
- * Why a promotion is refused for what the source holds (null = it goes
- * through): a writable source and an unread mark are split brains, a
- * frozen source whose head the mirror lacks loses its last writes (round
- * 7), a source frozen for another origin moved; `--force` skips all four.
- */
 function promotionRefusal(
   source: SourceState,
   sourceOrigin: string,
@@ -189,15 +149,6 @@ function promotionRefusal(
       };
 }
 
-/**
- * Why a promotion over a frozen source is refused (null = it goes through):
- * the planned order's last sync did not happen — the source holds chain
- * entries this mirror lacks, which a promotion makes unreachable forever
- * (ruling C revision, round 7); or the source, behind the mirror (restored
- * from an older backup, then frozen), is not on the mirror's chain — a
- * fork, which no sync repairs (round 8). A source behind the mirror on its
- * chain holds nothing the mirror lacks.
- */
 function frozenRefusal(
   frozenAt: SourceHead,
   sourceOrigin: string,
@@ -209,9 +160,6 @@ function frozenRefusal(
     return null;
   }
   if (frozenAt.chainHeadSeq <= mirrorHead.chainHeadSeq) {
-    // At the mirror's height with another hash, or behind it and not on
-    // its chain: a fork (round 10 — the same height was sent to a sync
-    // the mirror refuses)
     return frozenAt.chainHeadSeq < mirrorHead.chainHeadSeq &&
       mirrorChain !== null &&
       headOnChain(frozenAt, mirrorChain)
@@ -228,16 +176,13 @@ function frozenRefusal(
   };
 }
 
-/** The frozen source's head as its status reports it (the audit seq to admins and owners only). */
 interface SourceHead {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly auditMaxSeq?: number | undefined;
-  /** The source's own last replication (from this mirror, after a sync back — shown to admins and owners). */
   readonly lastSync?: { readonly auditMaxSeq: number } | undefined;
 }
 
-/** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
 type SourceState =
   | { readonly frozenAt: SourceHead }
   | "writable"
@@ -245,17 +190,6 @@ type SourceState =
   | "gone"
   | { readonly movedTo: string; readonly sameKey: boolean };
 
-/**
- * What the source holds (ruling C revision, round 3): `frozen` = it is
- * already a mirror of **this** deployment — by server key fingerprint, so
- * a deployment under another hostname is still this one (round 5) — the
- * honest path, promoted without a probe; `movedTo` = it is a mirror of
- * another deployment (the primary moved there; promoting this copy is a
- * split brain — round 4); `writable` = its mark says it holds the project
- * as a primary; `answers` = its mark could not be read (no session for it
- * here, or a refusal) but its public `/auth/config` answers (any HTTP
- * answer counts); `gone` = nothing answers.
- */
 const sourceState = Effect.fn("mirror-promote.sourceState")(function* (
   config: MaruhiCliConfig,
   sourceOrigin: string,
@@ -281,9 +215,6 @@ const sourceState = Effect.fn("mirror-promote.sourceState")(function* (
               },
             });
           }
-          // A fingerprint match never lifts the guard (it is self-reported
-          // and shared by deployments cloned from one secrets set — round
-          // 6); it only names the honest way out
           return Effect.map(sameDeployment(movedTo, thisOrigin), (same) => ({
             movedTo,
             sameKey: same,
@@ -299,13 +230,6 @@ const sourceState = Effect.fn("mirror-promote.sourceState")(function* (
   return (yield* sourceAnswers(sourceOrigin)) ? "answers" : "gone";
 });
 
-/**
- * After a promotion: the other server keys the chain grants (each with
- * the environments its grant covers — the one to revoke and rotate if that
- * deployment was compromised), and whether this deployment's own key is
- * granted (CI leases need it). From the verified chain and this server's
- * public key; never a guess at a fingerprint (ruling F revision, round 3).
- */
 const keyFollowUps = Effect.fn("mirror-promote.keyFollowUps")(function* (
   client: MaruhiClient,
   origin: string,
@@ -336,14 +260,12 @@ const keyFollowUps = Effect.fn("mirror-promote.keyFollowUps")(function* (
   return lines;
 });
 
-/** Whether the source deployment answers its public auth config within the probe's bound (an error of any kind = it does not). */
 const sourceAnswers = Effect.fn("mirror-promote.sourceAnswers")(function* (
   sourceOrigin: string,
 ): Effect.fn.Return<boolean, never, HttpClient.HttpClient> {
   const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
   return yield* client.auth.authConfig({}).pipe(
     Effect.map(() => true),
-    // Any HTTP answer counts, even an error; only no answer at all does not
     Effect.catch((error) => Effect.succeed(!isNoAnswer(error))),
   );
 });

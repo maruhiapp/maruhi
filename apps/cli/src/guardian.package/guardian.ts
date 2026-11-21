@@ -1,35 +1,3 @@
-// Guardian groups (CRYPTO_SPEC §8.3 / §8.4 / AUTH_SPEC §13-7 — KL3,
-// 2026-09-19 DK).
-//
-// `maruhi guardian add`: picks guardians from the chain-derived
-// members of the shared project and registers to the ledger a segment
-// sealed to the enc public key of each of their **currently valid
-// device keys** (on-chain keys — §8.3's device expansion). The wrapped
-// target B is the **reserve key**'s record (§8.1 — the caller obtains
-// it by opening the ledger. ledger-open.ts / design record §9 K4-2).
-// Key confirmation follows the §6.5 fulfilment form (the 12-word
-// reading ceremony / a verified fingerprint-book hit + yes) — no
-// global public-key directory is built. `all` splits by random XOR
-// and needs everyone. `any` needs any one person.
-//
-// `maruhi guardian approve <code>` (formerly `key approve` — renamed
-// when the old-device path was removed. K4-15): restores E.pub and
-// the request_id from the code and queries the request. Opens the
-// my-addressed segment with **this device's device key** (selects the
-// row of my FP from `deviceShares` — K3-10) and re-seals it to E.pub
-// on the spot. The server does not relay E.pub (a human carries the
-// code).
-//
-// `list` / `remove` / `wards`: viewing the ledger, deleting, and
-// listing the wards I am a guardian of. With `list --project`, the
-// ledger's segment rows (per device) are collated against the
-// chain-derived current device set, warning about rows that can no
-// longer be opened (a revoked device) and segments that became
-// unopenable because every device was revoked (under `all`, one
-// person's mismatch makes the whole group unrestorable).
-//
-// Plaintext KEK, segments, and B exist only in local variables.
-
 import {
   cryptoEffect,
   fromCryptoResult,
@@ -87,17 +55,8 @@ import { logNote, logWarning } from "../notice.ts";
 import type { ReserveKeys } from "../reserve.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 
-/** The same cap as the acceptance policy (AUTH_SPEC §13-8) (guidance ahead of the server's 422). */
 const MAX_GUARDIANS = 5;
 
-/**
- * The naming ceremony takes the same gate as the handoff request /
- * approve (ADR-0016 decision 7): only on a human's interactive
- * terminal; agent environments are refused. Naming a guardian has no
- * flag route (never let a non-interactive caller decide where key
- * material is sealed), so the form that fills the ceremony prompt
- * via piped stdin is dropped here too.
- */
 function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
   return ensureSensitiveTerminalAllowed({
     agent: io.agentProfile(),
@@ -109,13 +68,6 @@ function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliE
   });
 }
 
-/**
- * Explicit confirmation of guardian keys (the §6.5 fulfilment form
- * applied to guardian naming): a fingerprint-book hit excuses the
- * re-reading, but a per-naming yes confirmation remains. What is
- * confirmed is the FP of **each device** of the guardian (the
- * segment is sealed to that device).
- */
 const confirmGuardianFingerprint = Effect.fn("guardian.confirmGuardianFingerprint")(
   function* (input: {
     readonly origin: string;
@@ -163,7 +115,6 @@ const confirmGuardianFingerprint = Effect.fn("guardian.confirmGuardianFingerprin
   },
 );
 
-/** Preconditions of naming (the same rules as the server's 422, stated here first). */
 function guardianInputRejection(input: {
   readonly selfUserId: UserId;
   readonly mode: GuardianMode;
@@ -184,13 +135,11 @@ function guardianInputRejection(input: {
   return null;
 }
 
-/** A chain-derived current member (a guardian candidate) and their current device set. */
 interface GuardianMember {
   readonly userId: UserId;
   readonly devices: readonly ChainDevice[];
 }
 
-/** The registration form of a segment (wire — AUTH_SPEC §13-9 GuardianShare. One element per device). */
 interface SealedShare {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
@@ -200,7 +149,6 @@ interface SealedShare {
   readonly ciphertextHex: string;
 }
 
-/** Resolves guardian candidates from the chain's current members (§8.3 — no public-key directory is built). */
 function resolveGuardians(input: {
   readonly projectId: ProjectId;
   readonly members: ReadonlyMap<string, ChainMember>;
@@ -215,12 +163,10 @@ function resolveGuardians(input: {
         ),
       );
     }
-    // A guardian's keys = all of the person's currently valid device keys (§8.3 — the same segment is sealed once per device)
     return Effect.succeed({ userId: member.userId, devices: devicesOf(member) });
   });
 }
 
-/** Seals one device's worth of a segment to the guardian's chain key. */
 const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
   readonly wardUserId: UserId;
   readonly groupId: string;
@@ -267,7 +213,6 @@ const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
   };
 });
 
-/** Wraps B (the reserve key) with a random KEK and splits the KEK into segments sealed to each guardian's each device (§8.3). */
 const prepareGroup = Effect.fn("guardian.prepareGroup")(function* (input: {
   readonly wardUserId: UserId;
   readonly reserve: ReserveKeys;
@@ -326,13 +271,6 @@ const prepareGroup = Effect.fn("guardian.prepareGroup")(function* (input: {
   };
 });
 
-/**
- * `maruhi guardian add --project <p> --mode any|all <user>...`: register a
- * guardian group whose members can approve restoring your reserve key.
- * `openReserve` opens the ledger (ledger-open.ts — the
- * qualification for changing the ledger. K4-2); run it exactly
- * once, after input checks and the ceremony, just before sealing.
- */
 export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (input: {
   readonly flags: CommonFlags;
   readonly mode: GuardianMode;
@@ -367,7 +305,6 @@ export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (inpu
       });
     }
   }
-  // Changing the ledger requires opening the reserve key (CRYPTO_SPEC §8 revision (4))
   const reserve = yield* input.openReserve(context.session, context.client);
   const groupId = yield* newLedgerId();
   const prepared = yield* prepareGroup({
@@ -405,14 +342,12 @@ export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (inpu
   );
 });
 
-/** One guardian row of the ledger (the distribution form of a status — per device). */
 interface GuardianRow {
   readonly shareIndex: number;
   readonly guardianUserId: UserId;
   readonly guardianKeyFingerprintHex: string;
 }
 
-/** Collation result against the chain's current device set (null = not collated / matches). */
 type Staleness = "left" | "device-gone" | null;
 
 function stalenessOf(
@@ -426,7 +361,6 @@ function stalenessOf(
   if (current === undefined) {
     return "left";
   }
-  // Whether the key the segment was sealed to is still a valid device of that person (2026-09-19 DK — per device)
   return current.devices.has(guardian.guardianKeyFingerprintHex) ? null : "device-gone";
 }
 
@@ -453,7 +387,6 @@ const reportGroup = Effect.fn("guardian.reportGroup")(function* (
   }
 });
 
-/** Display of one logical segment (one guardian, per-device rows) and the notes for unopenable / partially revoked. */
 const reportShare = Effect.fn("guardian.reportShare")(function* (
   mode: GuardianMode,
   shareIndex: number,
@@ -463,7 +396,6 @@ const reportShare = Effect.fn("guardian.reportShare")(function* (
   const io = yield* CliIo;
   const first = rows[0];
   if (first === undefined) {
-    // shareIndexes come from the rows themselves — a segment always has ≥1 row
     return;
   }
   const userId = first.guardianUserId;
@@ -477,7 +409,6 @@ const reportShare = Effect.fn("guardian.reportShare")(function* (
     const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
     yield* logWarning(staleShareWarning(userId, left, mode));
   } else if (chainMembers !== null && gone.length > 0) {
-    // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
     yield* logNote(partiallyRevokedNote(userId, gone, live.length));
   }
 });
@@ -503,7 +434,6 @@ function partiallyRevokedNote(
   return `${displayText(userId)}: ${countNoun(gone.length, "sealed device")} (${fingerprintsOf(gone)}) ${gone.length === 1 ? "is" : "are"} no longer active on the chain; the share still opens on the remaining ${liveCount === 1 ? "device" : "devices"}. Consider re-creating the group (\`maruhi guardian remove\` + \`add\`) so the revoked device's copy of the share is retired`;
 }
 
-/** `maruhi guardian list [--project <p>]`: list your guardian groups. */
 export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (input: {
   readonly flags: CommonFlags;
 }): Effect.fn.Return<void, CliError, CliServices> {
@@ -514,7 +444,6 @@ export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (in
     yield* io.log("No guardian groups. Add one with `maruhi guardian add`");
     return;
   }
-  // With --project, collate the ledger's guardian-key FPs against the chain-derived current device set
   const chainMembers =
     input.flags.project === undefined
       ? null
@@ -533,7 +462,6 @@ export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (in
   }
 });
 
-/** `maruhi guardian remove <group-id>`: delete a guardian group. */
 export const guardianRemoveOp = Effect.fn("guardian.guardianRemoveOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -551,7 +479,6 @@ export const guardianRemoveOp = Effect.fn("guardian.guardianRemoveOp")(function*
   yield* io.log(`Removed guardian group ${displayText(input.groupId)}`);
 });
 
-/** `maruhi guardian wards`: list the people who made you a guardian. */
 export const guardianWardsOp = Effect.fn("guardian.guardianWardsOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -576,10 +503,6 @@ export const guardianWardsOp = Effect.fn("guardian.guardianWardsOp")(function* (
   );
 });
 
-// ---------------------------------------------------------------------------
-// guardian approve (§8.4 — guardian approval. The old-device path was removed in 2026-09-19 DK)
-// ---------------------------------------------------------------------------
-
 function ensureApproveCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
   return ensureSensitiveTerminalAllowed({
     agent: io.agentProfile(),
@@ -591,7 +514,6 @@ function ensureApproveCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliEr
   });
 }
 
-/** The request as seen by the approver (the code's decryption result + the server's query). */
 interface ApprovalTarget {
   readonly requestId: string;
   readonly ephemeralPublicKey: EncryptionKey;
@@ -604,7 +526,6 @@ interface ApprovalTarget {
   }[];
 }
 
-/** Decrypts the code and queries the request. */
 const resolveApprovalTarget = Effect.fn("guardian.resolveApprovalTarget")(function* (
   client: MaruhiClient,
   code: string,
@@ -644,7 +565,6 @@ const resolveApprovalTarget = Effect.fn("guardian.resolveApprovalTarget")(functi
   };
 });
 
-/** Description of the request and a yes confirmation (nothing is sent for anything but yes). */
 const confirmApproval = Effect.fn("guardian.confirmApproval")(function* (
   io: CliIoShape,
   target: ApprovalTarget,
@@ -665,7 +585,6 @@ const confirmApproval = Effect.fn("guardian.confirmApproval")(function* (
   }
 });
 
-/** Sends the approval (the sealed segment). */
 function sendApproval(input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
@@ -700,7 +619,6 @@ function sendApproval(input: {
     );
 }
 
-/** Among the my-addressed segment rows, selects the row sealed to this device's key (K3-10 — `deviceShares`). */
 function ownDeviceShare(
   share: {
     readonly deviceShares: readonly {
@@ -717,7 +635,6 @@ function ownDeviceShare(
   return mine === undefined ? null : { encHex: mine.encHex, ciphertextHex: mine.ciphertextHex };
 }
 
-/** Approving as a guardian: opens the my-addressed segment with this device's key and re-seals it to E.pub on the spot (§8.4). */
 const approveAsGuardian = Effect.fn("guardian.approveAsGuardian")(function* (input: {
   readonly client: MaruhiClient;
   readonly target: ApprovalTarget;
@@ -776,10 +693,6 @@ const approveAsGuardian = Effect.fn("guardian.approveAsGuardian")(function* (inp
   );
 });
 
-/**
- * `maruhi guardian approve <code>`: approve a reserve-key handoff request as one
- * of the requester's guardians (formerly `key approve` — K4-15).
- */
 export const guardianApproveOp = Effect.fn("guardian.guardianApproveOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -789,7 +702,6 @@ export const guardianApproveOp = Effect.fn("guardian.guardianApproveOp")(functio
   yield* ensureApproveCeremonyAllowed(io);
   const target = yield* resolveApprovalTarget(input.client, input.code);
   if (target.wardUserId === input.session.userId) {
-    // The server never shows the request to the ward themself (§13-7), but do not trust the response — refuse locally too
     return yield* Effect.fail(
       cliError(
         "This handoff request is your own. Only your guardians can approve it (device migration no longer goes through a handoff — register a new device with `maruhi device add` / `maruhi device approve`)",

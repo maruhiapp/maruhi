@@ -18,14 +18,6 @@ import {
   sha256Hex,
 } from "../src/ids.ts";
 
-// Format-invariance tests for the SecureRandom / Digest migration
-// (Effect 4.1): the expected strings below were produced by the
-// pre-migration implementations (ambient WebCrypto draws + the same
-// encoding code) fed with the same byte streams, so equality here
-// proves the service-based versions changed neither byte lengths nor
-// encodings (AUTH_SPEC §5 / §6).
-
-/** A SecureRandom whose draws are a fixed byte pattern. */
 const fixedRandom = (byteAt: (index: number) => number) =>
   Layer.mock(SecureRandom.SecureRandom, {
     randomBytes: (size: number) =>
@@ -122,10 +114,6 @@ describe("constantTimeEqual (AUTH_SPEC §6 credential comparison)", () => {
     const state = "cd".repeat(16);
     expect(constantTimeEqual(state, state)).toBe(true);
     expect(constantTimeEqual(state, "ab".repeat(16))).toBe(false);
-    // The CLI flow's state carries a `cli.` prefix and is NOT compared
-    // through this helper — handlers-auth-cli.ts strips the prefix and
-    // compares the nonce. Pinned so the prefixed form can never be
-    // passed here by mistake and silently always mismatch.
     expect(constantTimeEqual(`cli.${state}`, `cli.${state}`)).toBe(false);
   });
 
@@ -143,16 +131,11 @@ describe("constantTimeEqual (AUTH_SPEC §6 credential comparison)", () => {
   });
 
   it("rejects malformed hex on either side without throwing", () => {
-    // Identical malformed strings are not equal: there is no fallback
-    // to a plain string comparison.
     expect(constantTimeEqual("zz", "zz")).toBe(false);
     expect(constantTimeEqual("a!", "a!")).toBe(false);
-    // Odd length.
     expect(constantTimeEqual("abc", "abc")).toBe(false);
-    // Uppercase is not the canonical form the compared values use.
     expect(constantTimeEqual("AB", "AB")).toBe(false);
     expect(constantTimeEqual("ab", "AB")).toBe(false);
-    // One malformed side is enough.
     expect(constantTimeEqual("ab", "zz")).toBe(false);
     expect(constantTimeEqual("zz", "ab")).toBe(false);
   });

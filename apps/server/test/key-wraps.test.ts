@@ -1,15 +1,3 @@
-// Integration tests for the master-key wrap ledger API (AUTH_SPEC
-// §13-6–13-10 — KL3; the server side of CRYPTO_SPEC §8's classes S /
-// G / H). Verifies the real path via SELF on
-// @cloudflare/vitest-plugin (real workerd environment).
-//
-// Wraps, shares, and approvals are opaque ciphertext to the server,
-// so hex fixtures that merely have the right format suffice
-// (decryptability is covered by packages/crypto's vectors and the
-// CLI-side tests). What is pinned here is authorization, the
-// acceptance policy, the fixed windows, existence hiding, and the
-// 1:1 with audit.
-
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -40,7 +28,6 @@ const HPKE_ENC = "33".repeat(32);
 const SHARE_CT = "44".repeat(48);
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/** A client-assigned ledger id (ULID shape — 26 characters). */
 const ledgerId = () =>
   Array.from(
     crypto.getRandomValues(new Uint8Array(26)),
@@ -57,7 +44,6 @@ const passkeyBody = (label?: string) =>
     ...(label === undefined ? {} : { label }),
   });
 
-/** The group-creation body (groupId is client-assigned). */
 const guardianBody = (mode: "any" | "all", shares: readonly unknown[], groupId = ledgerId()) => ({
   groupId,
   mode,
@@ -104,7 +90,6 @@ async function auditCount(event: string): Promise<number> {
 
 const requestIdOf = (seed: number) => seed.toString(16).padStart(2, "0").repeat(32);
 
-/** Create a ward (A) and guardians (B, C), and register one `all` group for A. */
 async function guardianFixture() {
   const a = await cliToken(701);
   const b = await cliToken(702);
@@ -114,7 +99,6 @@ async function guardianFixture() {
   const created = await post("/auth/key-wraps/guardians", a, body);
   expect(created.status).toBe(200);
   const { groupId } = await json<{ groupId: string }>(created);
-  // The server uses the client-assigned id as-is
   expect(groupId).toBe(body.groupId);
   return { a, b, c, aId, bId, cId, groupId };
 }
@@ -172,8 +156,6 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
         wrapId,
         label: "MacBook Touch ID",
         credentialIdHex: "55".repeat(16),
-        // Public parameters (the §13-7 2026-09-13 revision): the
-        // restoring client reads them before the ceremony
         prfSaltHex: "66".repeat(32),
       }),
     ]);
@@ -204,15 +186,10 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
     });
     expect(registered.status).toBe(200);
     const { wrapId } = await json<{ wrapId: string }>(registered);
-    // A row the v1 write path cannot produce (passkeyRegister always
-    // writes a complete Schema shape — this is DB corruption / an
-    // implementation bug). It is not silently redistributed in another
-    // shape: the decode failure is a defect (500)
     await env.DB.prepare("UPDATE master_key_wraps SET params = ? WHERE id = ?")
       .bind('{"credentialIdHex":"55"}', wrapId)
       .run();
     expect((await get(`/auth/key-wraps/passkey/${wrapId}`, token)).status).toBe(500);
-    // The status listing shares the same decode — it dies identically
     expect((await get("/auth/key-wraps", token)).status).toBe(500);
   });
 
@@ -267,8 +244,6 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
     const again = await register();
     expect(again.status).toBe(422);
     expect((await json(again))["reason"]).toBe("duplicate-id");
-    // The refused insert writes nothing, though the existing row matches its
-    // wrapId (what was not accepted is not recorded)
     expect(await auditCount("auth.key_wrap_registered")).toBe(1);
   });
 
@@ -289,7 +264,6 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
       body: passkeyBody(),
     });
     const { wrapId } = await json<{ wrapId: string }>(registered);
-    // recovery ×2 + passkey ×3 = the limit of 5. The 6th is 429 on either path
     expect((await get("/auth/recovery", token)).status).toBe(200);
     expect((await get("/auth/recovery", token)).status).toBe(200);
     for (let i = 2; i < KEY_BLOB_FETCH_LIMIT; i += 1) {
@@ -301,7 +275,6 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
     expect(body["_tag"]).toBe("KeyWrapRateLimited");
     expect(body["window"]).toBe("blob-fetch");
     expect((await get("/auth/recovery", token)).status).toBe(429);
-    // Audit is 1:1 with permitted fetches
     expect(await auditCount("auth.recovery_blob_fetched")).toBe(2);
     expect(await auditCount("auth.key_wrap_fetched")).toBe(3);
   });
@@ -342,13 +315,11 @@ describe("guardian groups (class G — §13-7)", () => {
         deviceShares: [expect.objectContaining({ encHex: HPKE_ENC, ciphertextHex: SHARE_CT })],
       }),
     );
-    // The share is 404 to anyone but that guardian (the ward included)
     expect((await get(`/auth/guardian/shares/${groupId}`, a)).status).toBe(404);
 
     const blob = await get(`/auth/key-wraps/guardians/${groupId}`, a);
     expect(blob.status).toBe(200);
     expect((await json(blob))["wrap"]).toEqual(WRAP);
-    // The group's blob is 404 to anyone but the ward (guardians included)
     expect((await get(`/auth/key-wraps/guardians/${groupId}`, b)).status).toBe(404);
 
     expect(await auditCount("auth.key_wrap_registered")).toBe(1);
@@ -385,7 +356,6 @@ describe("guardian groups (class G — §13-7)", () => {
       expect(response.status, reason).toBe(422);
       expect((await json(response))["reason"]).toBe(reason);
     }
-    // Rejections write no audit
     expect(await auditCount("auth.key_wrap_registered")).toBe(0);
     expect(await auditCount("auth.guardian_designated")).toBe(0);
   });
@@ -396,14 +366,9 @@ describe("guardian groups (class G — §13-7)", () => {
     const bId = await userIdOf(b);
     const first = guardianBody("any", [share(1, bId)]);
     expect((await post("/auth/key-wraps/guardians", a, first)).status).toBe(200);
-    // Re-registering the same id is 422 duplicate-id (judged before the limit)
     const duplicate = await post("/auth/key-wraps/guardians", a, first);
     expect(duplicate.status).toBe(422);
     expect((await json(duplicate))["reason"]).toBe("duplicate-id");
-    // Rejections that reach the DB (collisions) also write no audit:
-    // the audit rows are conditioned on a chain of `changes() = 1`
-    // checks at the batch's end (only the one accepted registration
-    // remains)
     expect(await auditCount("auth.key_wrap_registered")).toBe(1);
     expect(await auditCount("auth.guardian_designated")).toBe(1);
     for (let i = 1; i < 5; i += 1) {
@@ -413,8 +378,6 @@ describe("guardian groups (class G — §13-7)", () => {
     const sixth = await post("/auth/key-wraps/guardians", a, guardianBody("any", [share(1, bId)]));
     expect(sixth.status).toBe(422);
     expect((await json(sixth))["reason"]).toBe("too-many-groups");
-    // Same for the limit rejection: only the 5 accepted groups' worth
-    // (1 + share count = one row each) remains
     expect(await auditCount("auth.key_wrap_registered")).toBe(5);
     expect(await auditCount("auth.guardian_designated")).toBe(5);
   });
@@ -444,8 +407,6 @@ describe("handoff (class H — §13-7)", () => {
     expect(duplicate.status).toBe(409);
     expect((await json(duplicate))["reason"]).toBe("request-exists");
 
-    // Lookup: the ward = no roles (but can look up), a guardian =
-    // their own share, a stranger = uniform 404
     const byWard = await json<{ roles: unknown[]; wardUserId: string; wardLogin: string }>(
       await get(`/auth/handoff/${requestId}`, a),
     );
@@ -457,8 +418,6 @@ describe("handoff (class H — §13-7)", () => {
     expect((await get(`/auth/handoff/${requestId}`, stranger)).status).toBe(404);
     expect((await get(`/auth/handoff/${requestIdOf(0xa2)}`, a)).status).toBe(404);
 
-    // A guardian's approval (only their own share). A different
-    // share_index or another's group id is 422
     const guardianApproval = {
       source: groupId,
       shareIndex: 1,
@@ -478,19 +437,14 @@ describe("handoff (class H — §13-7)", () => {
     });
     expect(wrongIndex.status).toBe(422);
     expect((await json(wrongIndex))["reason"]).toBe("source-mismatch");
-    // A stranger's approval is a uniform 404
     expect(
       (await post(`/auth/handoff/${requestId}/approvals`, stranger, guardianApproval)).status,
     ).toBe(404);
 
-    // The ward themself cannot approve their own request: 422 even with
-    // their own group id
     const byWardApproval = await post(`/auth/handoff/${requestId}/approvals`, a, guardianApproval);
     expect(byWardApproval.status).toBe(422);
     expect((await json(byWardApproval))["reason"]).toBe("source-mismatch");
 
-    // Only the ward fetches. One approval from the guardian arrives
-    // (no blob column) and collected is recorded exactly once
     expect((await get(`/auth/handoff/${requestId}/approvals`, b)).status).toBe(404);
     const first = await json<{ approvals: Record<string, unknown>[] }>(
       await get(`/auth/handoff/${requestId}/approvals`, a),
@@ -506,7 +460,6 @@ describe("handoff (class H — §13-7)", () => {
     ).all<{ target_user_id: string }>();
     expect(approvedTargets.results.every((r) => r.target_user_id === aId)).toBe(true);
 
-    // After cancellation (ward only) everything is a uniform 404
     expect((await del(`/auth/handoff/${requestId}`, b)).status).toBe(404);
     expect((await del(`/auth/handoff/${requestId}`, a)).status).toBe(204);
     expect((await get(`/auth/handoff/${requestId}`, a)).status).toBe(404);

@@ -1,12 +1,3 @@
-// The operations repository — docs/notes/hosted-ops.md §2-A / §2-B /
-// §4-2 / §6.
-//
-// Operator-only mutable state that is not the audit log (ops_counters /
-// ops_backups / ops_state), plus windowed aggregation over the existing
-// audit rows (auth.* in user_audit_events — AUDIT_SPEC §3.1 prescribes
-// that "operations tripwires count these rows"). Drizzle types never
-// leave this boundary.
-
 import type { ProjectId } from "@maruhi/core";
 import { and, asc, count, eq, gt, gte, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -23,19 +14,10 @@ import { opsBackups, opsCounters, opsState, projects, userAuditEvents } from "./
 
 type Db = ReturnType<typeof drizzle>;
 
-// D1 access goes through the shared tryD1 adapter (errors.ts —
-// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
-// public repository types keep an empty error channel because the
-// handlers turning D1FailureError into typed errors belong to other
-// lanes. An unexpected D1 failure stays a defect = a 500, as before
-
-/** Operations counter metric names (hosted-ops §2-A). */
 export type OpsCounterMetric = "github_token_requests" | "cli_flow_capacity";
 
-/** Census values of the DO storage-total guard (same vocabulary as storage-guard.ts's checks). */
 export type OpsStorageLevel = "admit" | "warn" | "reject";
 
-/** Evacuation failure codes (static — safe to put in logs and results). */
 export type OpsBackupFailureCode = "oversize" | "rpc-failed" | "upload-failed";
 
 export interface OpsBackupRecord {
@@ -64,16 +46,10 @@ export type OpsBackupAttempt =
       readonly storageLevel: OpsStorageLevel;
     }
   | {
-      /** Evacuation omitted because content is unchanged (not counted as success — last_success kept as-is). */
       readonly kind: "skipped";
       readonly storageLevel: OpsStorageLevel;
     }
   | {
-      /**
-       * Not evacuated due to the size cap (hosted-ops §4-2). Not a
-       * failure — the consecutive-failure counter is untouched; only
-       * `backup_oversize_projects` is lit.
-       */
       readonly kind: "oversize";
       readonly storageLevel: OpsStorageLevel;
     }
@@ -83,7 +59,6 @@ export type OpsBackupAttempt =
       readonly storageLevel: OpsStorageLevel | null;
     };
 
-/** Aggregates for hosted-ops §3 row 2 / row 7 (contains no identifiers). */
 export interface OpsBackupSummary {
   readonly trackedProjects: number;
   readonly storageWarnProjects: number;
@@ -94,18 +69,13 @@ export interface OpsBackupSummary {
 }
 
 export interface OpsRepoShape {
-  /** +1 on the fixed-window counter (a single UPSERT). */
   readonly incrementCounter: (metric: OpsCounterMetric, nowMs: number) => Effect.Effect<void>;
-  /** Counts of windows starting at or after `sinceMs` (ascending by window start). */
   readonly counterWindows: (
     metric: OpsCounterMetric,
     sinceMs: number,
   ) => Effect.Effect<readonly { readonly windowStart: number; readonly count: number }[]>;
-  /** Deletes windows past the retention period (bounding). */
   readonly pruneCounters: (nowMs: number) => Effect.Effect<void>;
-  /** Count of user_audit_events since `sinceMs` (by event name). */
   readonly auditEventCountSince: (event: string, sinceMs: number) => Effect.Effect<number>;
-  /** Sweep enumeration (`projects` in id order, exclusive cursor). */
   readonly listProjectIdsAfter: (
     afterProjectId: ProjectId | null,
     limit: number,
@@ -124,16 +94,13 @@ export interface OpsRepoShape {
 
 export class OpsRepo extends Context.Service<OpsRepo, OpsRepoShape>()("OpsRepo") {}
 
-/** Fixed-window start time (1-hour boundary). */
 export function opsWindowStart(nowMs: number): number {
   return Math.floor(nowMs / OPS_COUNTER_WINDOW_MS) * OPS_COUNTER_WINDOW_MS;
 }
 
-/** Number of rows satisfying a condition (conditional sum). */
 const flag = (condition: SQL): SQL<number> =>
   sql<number>`coalesce(sum(case when ${condition} then 1 else 0 end), 0)`;
 
-/** A D1 aggregate value (number / string / missing) → non-negative integer. */
 function toCount(value: unknown): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -147,7 +114,6 @@ function toFailureCode(value: string | null): OpsBackupFailureCode | null {
   return value === "oversize" || value === "rpc-failed" || value === "upload-failed" ? value : null;
 }
 
-/** An evacuation attempt → ops_backups columns (at insert / at update of an existing row). */
 function backupAttemptColumns(
   attempt: OpsBackupAttempt,
   nowMs: number,
@@ -168,9 +134,6 @@ function backupAttemptColumns(
       return { insert: columns, update: columns };
     }
     case "oversize": {
-      // The consecutive-failure counter resets to 0 (while oversize no
-      // success can occur, so the rpc-failed / upload-failed already
-      // accumulated must not keep backup_failing_projects lit forever)
       const columns = {
         storageLevel: attempt.storageLevel,
         consecutiveFailures: 0,
@@ -187,7 +150,6 @@ function backupAttemptColumns(
       return { insert: columns, update: columns };
     }
     case "failure": {
-      // census is updated only when measured (kept as-is on RPC failure)
       const level = attempt.storageLevel === null ? {} : { storageLevel: attempt.storageLevel };
       return {
         insert: { ...level, consecutiveFailures: 1, lastFailureCode: attempt.code },
@@ -287,7 +249,6 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
     backupSummary: (nowMs) =>
       tryD1(async () => {
         const staleBefore = nowMs - OPS_BACKUP_STALE_MS;
-        // Aggregates in a single query (conditional sum — row count is at most the project count)
         const row = await db
           .select({
             tracked: count(),

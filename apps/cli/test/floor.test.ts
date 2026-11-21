@@ -1,16 +1,3 @@
-// Tests for the local floor (CRYPTO_SPEC §6.3 — append-only observation log
-// + fold).
-//
-// First half: the floor store (floor-log.ts) in isolation — append + fold's
-// monotone join, typed conflicts (both pieces of evidence for same-coordinate
-// differing-hash observations are preserved), self-recovery from a torn tail
-// record, snapshot-record compaction, intents / resolutions, and migration
-// from the legacy storage form. Concurrent appends are pinned as: "two store
-// instances appending concurrently leave both observations in the log, a
-// same-version differing-hash pair becomes a both-evidence typed conflict,
-// and concurrent commits of different variables union". The second half
-// (wiring tests) lives in floor-detection.test.ts.
-
 import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,9 +77,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     );
     await appendFile(logPath(), "\n{torn-line-without-newline");
     expect((await load()).droppedRecords).toBe(1);
-    // Once enough snapshots accumulate past the threshold, the torn line
-    // enters the folded prefix and is no longer counted (only records past
-    // the fold point are warned about)
     for (let index = 0; index < 4; index += 1) {
       await Effect.runPromise(
         compacting.commitHead(testProjectId(PROJECT_ID), { seq: 2 + index, hashHex: HASH_B }),
@@ -131,8 +115,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     );
     const result = await load();
     expect(result.floor?.chainHead).toEqual({ seq: 4, hashHex: HASH_B });
-    // The other environment's floor is preserved (the join is per-
-    // environment)
     expect(Object.keys(result.floor?.environments ?? {}).toSorted()).toEqual(["dev", "prod"]);
     expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
   });
@@ -164,7 +146,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     const environment = result.floor?.environments["prod"];
     expect(environment?.pullEpoch).toBe(2);
     expect(environment?.variables["va"]).toMatchObject({ version: 4, epoch: 3 });
-    // Other variable floors are preserved
     expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
   });
 
@@ -180,8 +161,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     const result = await load();
     const environment = result.floor?.environments["prod"];
     expect(result.floor?.chainHead?.seq).toBe(2);
-    // Each coordinate is an independent semilattice: the pull baseline and
-    // environment meta stay bottom while only the variable floor stands
     expect(environment?.pullEpoch).toBe(0);
     expect(environment?.metaVersion).toBe(0);
     expect(environment?.variables["va"]).toMatchObject({ status: "deleted" });
@@ -233,20 +212,13 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     const result = await load();
     const environment = result.floor?.environments["prod"];
     expect(environment?.manifest).toMatchObject({ manifestVersion: 2, epoch: 3 });
-    // The manifest's epoch also joins into coordinate (ii)
-    // (observedEpoch)
     expect(environment?.observedEpoch).toBe(3);
-    // Rule (c)'s pull baseline does not move (a chain sync or acceptance
-    // check alone never advances it)
     expect(environment?.pullEpoch).toBe(2);
-    // The variable floor is unchanged
     expect(environment?.variables["va"]).toMatchObject({ version: 3 });
   });
 
   describe("concurrent appends from 2 store instances (= 2 processes)", () => {
     it("concurrent commits of different variables union and neither observation is lost", async () => {
-      // The shape where 2 processes depart from the same old floor and
-      // commit independently
       const storeA = makeFileFloorStore(dir);
       const storeB = makeFileFloorStore(dir);
       await Effect.runPromise(
@@ -306,9 +278,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           variable: variable(HASH_C),
         }),
       );
-      // A later-landing same-version differing-hash does not "win last" — it
-      // fails as a typed conflict (overwriting evidence is not expressible
-      // in the storage form — append only)
       await expect(
         Effect.runPromise(
           storeB.commitPush(testProjectId(PROJECT_ID), {
@@ -319,12 +288,9 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           }),
         ),
       ).rejects.toThrow("contradict each other");
-      // Both observations remain in the log (append-only — the earlier
-      // evidence doesn't disappear)
       const raw = await readFile(logPath(), "utf8");
       expect(raw).toContain(HASH_C);
       expect(raw).toContain(HASH_D);
-      // fold surfaces the both-evidence typed conflict
       const result = await load();
       expect(result.floor?.conflicts).toHaveLength(1);
       const conflict = result.floor?.conflicts[0];
@@ -392,8 +358,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           }),
         ),
       ).rejects.toThrow("undeletion");
-      // The representative stays deleted (the terminal state isn't
-      // overwritten by active)
       const result = await load();
       expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({
         status: "deleted",
@@ -401,8 +365,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
     });
 
     it("a delayed landing of an older pull merely loses the monotone join — no evidence is lost", async () => {
-      // Process B has already committed a newer generation (pullEpoch 3,
-      // va v5)
       await Effect.runPromise(
         store.commitPull(testProjectId(PROJECT_ID), {
           chainHead: { seq: 5, hashHex: HASH_B },
@@ -424,8 +386,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           }),
         }),
       );
-      // Process A's older pull (pullEpoch 2, va v3, with vb's tombstone)
-      // lands later
       await Effect.runPromise(
         store.commitPull(testProjectId(PROJECT_ID), {
           chainHead: { seq: 3, hashHex: HASH_A },
@@ -439,7 +399,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       expect(environment?.pullEpoch).toBe(3);
       expect(environment?.metaVersion).toBe(2);
       expect(environment?.variables["va"]).toMatchObject({ version: 5, epoch: 3 });
-      // A variable present on only one side (vb) is kept by the union
       expect(environment?.variables["vb"]).toMatchObject({ status: "deleted" });
       expect(result.floor?.conflicts).toEqual([]);
     });
@@ -454,14 +413,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           environment: envFloor(),
         }),
       );
-      // The shape of a concurrent process crashing mid-write (a partial
-      // line with no trailing newline)
       await appendFile(logPath(), '{"r":"pull","head":{"seq":9');
       const afterTear = await load();
       expect(afterTear.state).toBe("loaded");
       expect(afterTear.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
-      // The next append prepends a newline to isolate the torn line — the
-      // new observation lands correctly
       await Effect.runPromise(
         store.commitPush(testProjectId(PROJECT_ID), {
           chainHead: { seq: 4, hashHex: HASH_B },
@@ -524,8 +479,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   describe("compaction (appending snapshot records — never rewriting)", () => {
     it("past the threshold a snapshot is appended; the fold result is unchanged and folded conflict evidence isn't lost", async () => {
       const compacting = makeFileFloorStore(dir, { compactionThreshold: 4 });
-      // Create one conflict (pins that the evidence survives across the
-      // snapshot)
       await Effect.runPromise(
         compacting.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_A }),
       );
@@ -534,9 +487,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
           compacting.commitHead(testProjectId(PROJECT_ID), { seq: 5, hashHex: HASH_B }),
         ),
       ).rejects.toThrow("fork");
-      // Stack observations past the threshold (4 records) — commits onto a
-      // conflicted floor keep failing, but the appends themselves still
-      // happen (evidence only ever grows)
       for (let index = 0; index < 5; index += 1) {
         await Effect.runPromise(
           Effect.ignore(
@@ -546,13 +496,8 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       }
       const raw = await readFile(logPath(), "utf8");
       expect(raw).toContain('"r":"snapshot"');
-      // After the snapshot lands, fold's semantics are unchanged (the
-      // conflict doesn't disappear)
       const result = await load();
       expect(result.floor?.conflicts.some((conflict) => conflict.kind === "chain-head")).toBe(true);
-      // No physical collection happens (append-only): as a stand-in check
-      // that no torn rewrite occurred, verify all records still remain in
-      // the log after the snapshot
       expect(raw).toContain(HASH_B);
     });
 
@@ -582,12 +527,10 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
   });
 
   it("missing means ENOENT only: other read errors are not conflated with first-run", async () => {
-    // Place a directory at the floor log's path (readFile → EISDIR)
     await mkdir(logPath(), { recursive: true });
     await expect(Effect.runPromise(store.load(testProjectId(PROJECT_ID)))).rejects.toThrow(
       "Cannot read the local floor log",
     );
-    // The write path also aborts (don't create a silently dead floor)
     await expect(
       Effect.runPromise(store.commitHead(testProjectId(PROJECT_ID), { seq: 1, hashHex: HASH_A })),
     ).rejects.toThrow("Cannot write the local floor log");
@@ -608,8 +551,6 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
   });
 
   it("syncs to the folded floor on every commit (never misses a concurrent process's detection material)", async () => {
-    // The sibling process has already established vb's tombstone (after this
-    // process's openProject)
     await Effect.runPromise(
       store.commitPull(testProjectId(PROJECT_ID), {
         chainHead: { seq: 3, hashHex: HASH_A },
@@ -617,7 +558,6 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
         environment: envFloor({ pullEpoch: 3, observedEpoch: 3 }),
       }),
     );
-    // This process's handle starts from the stale snapshot (no floor)
     const handle = makeFloorHandle({
       store,
       projectId: testProjectId(PROJECT_ID),
@@ -643,10 +583,6 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
         { seq: 3, hashHex: HASH_A },
       ),
     );
-    // The folded floor — not the sent snapshot (va v1, pullEpoch 2) — is
-    // adopted: the sibling's tombstone (vb), the newer va (v3), and the
-    // higher baseline (pullEpoch 3) carry over to later checks in the same
-    // command
     const current = handle.current();
     expect(current?.pullEpoch).toBe(3);
     expect(current?.variables["vb"]).toMatchObject({ status: "deleted" });
@@ -673,7 +609,6 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
       ),
     ).rejects.toThrow();
     expect(handle.current()?.manifest).toMatchObject({ manifestVersion: 2 });
-    // Coordinate (ii) advances under the same join too
     expect(handle.current()?.observedEpoch).toBe(2);
   });
 
@@ -699,7 +634,6 @@ describe("FloorHandle (in-process cache and the intent front door)", () => {
     expect(handle.unresolvedIntents()).toHaveLength(1);
     await Effect.runPromise(handle.resolveIntent(id, "accepted"));
     expect(handle.unresolvedIntents()).toEqual([]);
-    // A double resolution is a no-op (no extra resolution is logged)
     await Effect.runPromise(handle.resolveIntent(id, "accepted"));
     const loaded = await Effect.runPromise(store.load(testProjectId(PROJECT_ID)));
     expect(loaded.floor?.intents).toEqual([]);
@@ -718,11 +652,8 @@ describe("the floor log's non-sensitivity (the diskless invariant)", () => {
       }),
     );
     const raw = await readFile(join(dir, `${PROJECT_ID}.jsonl`), "utf8");
-    // An append prepends an isolating newline — the first non-empty line is
-    // the record
     const line = raw.split("\n").find((candidate) => candidate.trim() !== "") as string;
     const record: unknown = JSON.parse(line);
-    // Only hashes, counters, and op kinds are stored (§6.3)
     expect(JSON.stringify(record)).not.toContain("name");
   });
 });

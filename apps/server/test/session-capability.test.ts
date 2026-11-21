@@ -1,29 +1,3 @@
-// Pinned tests for the session principal's capability restriction
-// (AUTH_SPEC §5).
-//
-// The allow / deny matrix of every endpoint × the session principal
-// is **mechanically derived** from api-schema's endpoint
-// enumeration (maruhiApi.groups — method, path, whether
-// AuthMiddleware is present) and verified over the real workerd
-// path — no hand-written endpoint list (structurally detects an
-// undeclared surface, a stale baked-in allow decision, or a newly
-// added surface slipping past the gate; the same "test the denial's
-// behavior, not the presence of annotations/declarations"
-// discipline as the §12-10 (1) strict pin).
-//
-// - authenticated surfaces outside the allowed enumeration
-//   (SESSION_ALLOWED_ENDPOINTS): a uniform 403
-//   `session-not-allowed`, even with the CSRF header
-// - surfaces inside the allowed enumeration: no session-not-allowed
-//   is returned (endpoint-specific semantics — 404 / 400 etc. — are
-//   covered by each existing suite)
-// - token principals: no surface ever returns session-not-allowed
-//   (the CLI unaffected regression)
-// - classification consistency with the unauthenticated surfaces
-//   (UNAUTHENTICATED_ENDPOINTS) is already checked by api-schema's
-//   load-time sweep at import (this file's very import is that
-//   execution)
-
 import {
   AuthMiddleware,
   maruhiApi,
@@ -47,7 +21,6 @@ interface EndpointInfo {
   readonly authenticated: boolean;
 }
 
-/** Mechanical enumeration of every endpoint registered in api-schema (walks groups via the structural type). */
 function listEndpoints(): EndpointInfo[] {
   const api = maruhiApi as unknown as {
     readonly groups: {
@@ -77,19 +50,6 @@ function listEndpoints(): EndpointInfo[] {
   return endpoints;
 }
 
-/**
- * Concretizing path parameters. Uses the real project (the fixture
- * — OWNER is the chain owner) so that verifying an allowed surface
- * reaches the endpoint body rather than stopping at the scope check
- * (404). An unknown parameter name is fail-loud (a newly added
- * surface is forced to append here).
- */
-/**
- * The path-parameter substitution table. Ones that need not exist
- * are fine at 404 = not session-not-allowed (tokenId / wrapId /
- * groupId = ULID shape; requestId = handoff-request id [SHA-256 hex
- * — AUTH_SPEC §13-7]; fp = device-key fingerprint [§13-11]).
- */
 const PATH_PARAM_SUBSTITUTIONS: Readonly<Record<string, () => string>> = {
   projectId: () => projectId,
   environmentId: () => ENV,
@@ -100,7 +60,6 @@ const PATH_PARAM_SUBSTITUTIONS: Readonly<Record<string, () => string>> = {
   groupId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   requestId: () => "ab".repeat(32),
   fp: () => "ab".repeat(16),
-  // A sealed value proposal id (AUTH_SPEC §14-5 — 16 random bytes as hex)
   proposalId: () => "00112233445566778899aabbccddeeff",
 };
 
@@ -119,11 +78,6 @@ function requestInit(method: string, headers: Record<string, string>): RequestIn
   if (method === "GET" || method === "HEAD") {
     return { method, headers };
   }
-  // A dummy body suffices: the capability judgment (middleware)
-  // runs before payload decode, so a denied surface does not depend
-  // on the body's content. For allowed / token surfaces, a 400 or
-  // other non-session-not-allowed response is enough (the happy
-  // paths are covered by existing suites)
   return { method, headers: { ...JSON_HEADERS, ...headers }, body: "{}" };
 }
 
@@ -141,35 +95,29 @@ async function isSessionDenied(response: Response): Promise<boolean> {
 const allowedKeys = new Set(SESSION_ALLOWED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
 const unauthenticatedKeys = new Set(UNAUTHENTICATED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
 
-/**
- * The implemented surfaces §5 enumerates as explicit denials (a pin
- * against the spec text). Independent of the derived matrix, this
- * pins at text level any regression where these slip into the
- * allowed enumeration.
- */
 const SPEC_EXPLICIT_DENIALS: ReadonlyArray<readonly [string, string]> = [
-  ["variables", "pull"], // the bulk pull carrying values (§12-7)
-  ["deks", "register"], // DEK registration (§12-6)
-  ["deks", "listMine"], // DEK fetching (§12-6)
-  ["deks", "remove"], // DEK deletion (§12-6 — the only destructive op with no signature)
-  ["membership", "init"], // chain init (§11)
-  ["membership", "append"], // chain append (§11)
+  ["variables", "pull"],
+  ["deks", "register"],
+  ["deks", "listMine"],
+  ["deks", "remove"],
+  ["membership", "init"],
+  ["membership", "append"],
   ["environments", "create"],
   ["environments", "rotate"],
   ["environments", "rename"],
   ["environments", "remove"],
   ["variables", "create"],
   ["variables", "push"],
-  ["variables", "activate"], // the activation composite (§12-5 — a variable mutation class)
+  ["variables", "activate"],
   ["variables", "rename"],
   ["variables", "remove"],
-  ["invites", "issue"], // invite issuance (§15-2)
-  ["invites", "accept"], // invite acceptance (§15-2)
-  ["rotation", "dismiss"], // rotation dismiss (AUDIT_SPEC §7)
-  ["auth", "recoveryPut"], // recovery-blob registration (§13-2)
-  ["auth", "recoveryGet"], // recovery-blob fetch (§13-2)
-  ["schemaPolicy", "set"], // schemaPolicy change (§12-11 — session principals are stated to be denied)
-  ["devices", "register"], // device-registry registration (§13-11 — sessions may only list)
+  ["invites", "issue"],
+  ["invites", "accept"],
+  ["rotation", "dismiss"],
+  ["auth", "recoveryPut"],
+  ["auth", "recoveryGet"],
+  ["schemaPolicy", "set"],
+  ["devices", "register"],
   ["devices", "remove"],
   ["devices", "requestCreate"],
   ["devices", "requestList"],
@@ -203,11 +151,7 @@ describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanica
       (endpoint) =>
         endpoint.authenticated && !allowedKeys.has(`${endpoint.group}.${endpoint.name}`),
     );
-    // The fail-closed target set is not empty (detects the shape
-    // where the derivation broke and collapsed to allow-all)
     expect(denied.length).toBeGreaterThanOrEqual(SPEC_EXPLICIT_DENIALS.length);
-    // Reuse one session, since denied surfaces cannot revoke it
-    // (every surface is denied)
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
     for (const endpoint of denied) {
@@ -228,11 +172,6 @@ describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanica
     const allowed = listEndpoints().filter((endpoint) =>
       allowedKeys.has(`${endpoint.group}.${endpoint.name}`),
     );
-    // The load-time sweep already reconciled the allowed
-    // enumeration's declaration (api-schema) against the registered
-    // surfaces. Here the behavioral side: the gate must not deny an
-    // allowed surface by mistake. A fresh session per surface, since
-    // logout revokes the session
     expect(allowed.length).toBe(SESSION_ALLOWED_ENDPOINTS.length);
     for (const endpoint of allowed) {
       const session = await loginSession(9001);
@@ -245,18 +184,12 @@ describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanica
         await isSessionDenied(response),
         `${key} must not be rejected by the §5 capability gate`,
       ).toBe(false);
-      // A coarse sanity check that allowed surfaces are not all
-      // failing for other reasons (a 401 would mean session
-      // resolution regressed)
       expect(response.status, `${key} must authenticate the session`).not.toBe(401);
     }
   });
 
   it("a token principal never gets session-not-allowed on any surface (the CLI unaffected regression)", async () => {
     const authenticated = listEndpoints().filter((endpoint) => endpoint.authenticated);
-    // auth.revokeToken revokes the presented token itself, so it
-    // goes last and the other surfaces are verified with a live
-    // token
     const endpoints = [
       ...authenticated.filter((endpoint) => !isRevokeToken(endpoint)),
       ...authenticated.filter(isRevokeToken),
@@ -278,16 +211,12 @@ describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanica
   it("the capability judgment precedes the CSRF check (a denied surface is session-not-allowed even without the header)", async () => {
     const session = await loginSession(9001);
     const cookieOnly = { cookie: sessionHeaders(session)["cookie"] ?? "" };
-    // A denied surface (a write): a uniform session-not-allowed even
-    // without the CSRF header
     const deniedWrite = await SELF.fetch(
       concreteUrl("/projects/:projectId/rotation/dismissals"),
       requestInit("POST", cookieOnly),
     );
     expect(deniedWrite.status).toBe(403);
     expect(((await deniedWrite.json()) as { reason?: string }).reason).toBe("session-not-allowed");
-    // On an allowed surface (a write = logout) the CSRF check is
-    // alive (not removed)
     const allowedWrite = await SELF.fetch(`${BASE}/auth/logout`, {
       method: "POST",
       headers: cookieOnly,
@@ -301,24 +230,18 @@ describe("the session principal's capability matrix (AUTH_SPEC §5 — mechanica
   it("representative allowed surfaces (reads) actually succeed under a session (positive control)", async () => {
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
-    // Chain fetch (§11) — the fixture's OWNER is a chain-derived member
     const chain = await SELF.fetch(concreteUrl("/projects/:projectId/chain"), { headers });
     expect(chain.status).toBe(200);
-    // Project list (§11-5)
     const projectList = await SELF.fetch(`${BASE}/projects`, { headers });
     expect(projectList.status).toBe(200);
-    // Environment list (§12-4)
     const environments = await SELF.fetch(concreteUrl("/projects/:projectId/environments"), {
       headers,
     });
     expect(environments.status).toBe(200);
-    // Rotation-needed flags (AUDIT_SPEC §4.1)
     const flags = await SELF.fetch(concreteUrl("/projects/:projectId/rotation/flags"), {
       headers,
     });
     expect(flags.status).toBe(200);
-    // fixture.head is readable (a session read takes the same shape
-    // as a token's)
     const body = (await chain.json()) as { headSeq: number };
     expect(body.headSeq).toBe(fixture.head.seq);
   });

@@ -1,21 +1,3 @@
-// e2e for the apex site (LP + docs — Nimbus on Astro). The built dist (+
-// scripts/postbuild.ts's _headers) is served under **the same serving
-// semantics as production** (apps/site/cloudflare.config.ts — Workers
-// Static Assets only — rendered to a wrangler config by
-// scripts/wrangler-config.ts; `cf dev` itself delegates to `astro dev`
-// on an Astro project and would serve the source tree instead), and
-// Playwright (Chromium) pins the following (the
-// verification items of docs/notes/web-design-pass.md §4):
-//   1. all requests same-origin (zero outbound traffic — "say nothing")
-//   2. zero CSP violations; `script-src 'self'` / `style-src 'self'`
-//      baseline with no 'unsafe-inline'
-//   3. fonts are self-hosted (Archivo / Martian Mono actually apply, and
-//      the full OFL texts are readable from /fonts/)
-//   4. the vermilion accent matches DP1's theme values in light / dark
-//      (system-following)
-//   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
-//      as cloudflare.config.ts configures
-// Requires `bun run build` beforehand.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -58,16 +40,12 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
     try {
       const res = await fetch(url);
       if (res.ok) return;
-    } catch {
-      // not up yet
-    }
+    } catch {}
     if (Date.now() > deadline) throw new Error(`server at ${url} did not start`);
     await new Promise((r) => setTimeout(r, 500));
   }
 }
 
-// Same shutdown procedure as apps/web/test/e2e.test.ts (SIGTERM → SIGKILL
-// after 10s; pipes are closed unconditionally)
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   if (proc === undefined) return;
   try {
@@ -116,10 +94,6 @@ beforeAll(async () => {
       },
     );
   }
-  // CI and Cursor Cloud (the SHA-256-verified headless shell from
-  // scripts/install-headless-shell.sh) and Claude Code on the web (its
-  // preinstalled build) pass the browser's path via
-  // PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
   const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
   browser = await chromium.launch(executablePath ? { executablePath } : {});
 });
@@ -129,7 +103,6 @@ afterAll(async () => {
   await stopWrangler(wranglerProcess);
 });
 
-/** Collects the URLs of every request a page makes and its CSP violations. */
 function observe(page: Page): { requests: string[]; violations: string[] } {
   const requests: string[] = [];
   const violations: string[] = [];
@@ -140,7 +113,6 @@ function observe(page: Page): { requests: string[]; violations: string[] } {
   return { requests, violations };
 }
 
-/** Style attributes in shipped HTML, ignoring script / style bodies. */
 const styleAttributesIn = (html: string): number =>
   html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>|<style\b[^>]*>[\s\S]*?<\/style>/g, "")
@@ -163,16 +135,12 @@ describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.conf
     expect(csp).toContain("style-src 'self'");
     expect(csp).not.toContain("unsafe-inline");
     expect(csp).not.toContain("'unsafe-eval'");
-    // Pagefind's search index is a WebAssembly module; compiling it is
-    // gated on this allowance, which permits no JavaScript eval
     expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("strict-transport-security")).toContain("max-age=");
-    // The build stack is not advertised
     expect(res.headers.get("x-powered-by")).toBeNull();
-    // The top Link header (Nimbus's agent-discovery block in _headers)
     expect(res.headers.get("link")).toContain("llms.txt");
   });
 
@@ -221,20 +189,12 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Not even us");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
-    // The self-hosted woff2 fonts are actually fetched
     expect(requests.some((u) => u.endsWith(".woff2"))).toBe(true);
-    // No style attributes in the shipped HTML (postbuild.ts externalizes
-    // them at build time; the live DOM is not the measure — the chrome's
-    // client code legitimately sets style properties at runtime, e.g. the
-    // theme script's color-scheme on <html>)
     expect(styleAttributesIn(await (await fetch(BASE)).text())).toBe(0);
     await page.close();
   });
 
   it("leaves the terminal samples as plain preformatted text (no aria-label on a generic role)", async () => {
-    // <pre> has the generic role, and assistive tech may or may not read an
-    // aria-label. Keep every terminal example treated the same (let the body
-    // be read as-is)
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });
     const terminals = page.locator("pre.terminal");
@@ -251,9 +211,6 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
   ] as const)(
     "shows each step's text before its figure, matching the DOM order (%s)",
     async (_layout, width) => {
-      // A screen reader reads the DOM (text, then figure); a sighted reader
-      // must meet the same order: the figure sits right of the text or below
-      // it, never left of or above it
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       await page.goto(BASE, { waitUntil: "networkidle" });
       const steps = await page.locator("ol.chain > li.step").evaluateAll((items) =>
@@ -282,15 +239,8 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
   );
 
   it("keeps every figure label clear of the shapes and labels around it", async () => {
-    // A label sits wholly inside or wholly outside each rect (frames and
-    // masks), no other outline (paths, lines, circles) passes through it, it
-    // overlaps no other label, and it stays in the viewBox. Widths: the
-    // narrowest phone, the stacked and two-column layouts, and the narrowest
-    // two-column figure (just above the 46rem breakpoint)
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });
-    // The layouts are measured in Martian Mono; a fallback face is narrower
-    // and would pass unnoticed
     const martianLoaded = await page.evaluate(async () => {
       await document.fonts.ready;
       return [...document.fonts].some(
@@ -323,7 +273,6 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
             const half = Number.parseFloat(getComputedStyle(rect).strokeWidth) / 2;
             return { inner: boxOf(rect, -half), outer: boxOf(rect, half) };
           });
-          // Each outline sampled once per unit of length, padded by its stroke
           const outlines = [...svg.querySelectorAll<SVGGeometryElement>("path, line, circle")].map(
             (shape) => {
               const half = Number.parseFloat(getComputedStyle(shape).strokeWidth) / 2;
@@ -370,18 +319,11 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
   });
 
   it("keeps the space between text and the inline elements that follow a line break", async () => {
-    // Astro 7's `compressHTML: "jsx"` drops a line break between text and an
-    // element, so the source writes `{" "}` there (src/pages/index.astro). A
-    // missing one renders glued words such as "Docs ·License"
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });
     const footer = await page.locator("footer.footer").innerText();
     expect(footer).toContain("GitHub · Docs · License (FSL-1.1-MIT");
     expect(footer).toContain("Type set in Archivo and Martian Mono (SIL");
-    // Every rendered inline element outside the terminal samples is
-    // separated from the neighboring text or inline element (`</a><a>` counts
-    // as glued). Block and grid children are exempt on either side — the
-    // layout separates them
     const neighbors = await page.evaluate(() => {
       const isInline = (el: Element): boolean => getComputedStyle(el).display === "inline";
       const textOf = (node: Node | null): string =>
@@ -415,7 +357,6 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
       .first()
       .evaluate((el) => getComputedStyle(el).fontFamily);
     expect(codeFont).toContain("Martian Mono");
-    // Loaded family names (brand.css @font-face uses the literal names)
     const loaded = await page.evaluate(() =>
       [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family),
     );
@@ -441,22 +382,15 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
           background: style.getPropertyValue("--nb-background").trim(),
         };
       });
-      // The theme script sets data-mode="dark", and removes it for light
       expect(tokens.mode).toBe(scheme === "dark" ? "dark" : undefined);
       expect(tokens.accent.toLowerCase()).toBe(expectedAccent.toLowerCase());
       expect(tokens.background.toLowerCase()).toBe(expectedBackground.toLowerCase());
-      // The generated brand.css (a mapping of apps/web/theme/maruhi.css)
-      // carries the same value
       expect(brandCss.toLowerCase()).toContain(expectedAccent.toLowerCase());
-      // CTA button background = accent (accent is used sparingly — one kind
-      // of button)
       const cta = await page
         .locator(".button")
         .first()
         .evaluate((el) => getComputedStyle(el).backgroundColor);
       expect(cta).toBe(hexToRgb(expectedAccent));
-      // The header logo shows the mode-appropriate SVG (light = the
-      // original, dark = the generated one)
       const visibleLogo = await page
         .locator(`img[src="/logo${scheme === "dark" ? "-dark" : ""}.svg"]`)
         .first()
@@ -471,12 +405,10 @@ describe("site e2e: landing page (custom page under strict CSP)", () => {
     const page = await browser.newPage({ colorScheme: "dark" });
     const { requests, violations } = observe(page);
     await page.goto(BASE, { waitUntil: "networkidle" });
-    // Nimbus's theme toggle (data-mode flips dark → light)
     await page.locator("[data-nb-theme-toggle]").first().click();
     await expect(page.evaluate(() => document.documentElement.dataset["mode"])).resolves.toBe(
       undefined,
     );
-    // Search (Pagefind — local index under /pagefind/)
     await page.locator("[data-search-trigger]").first().click();
     const input = page.locator("[data-search-input]").first();
     await input.fill("self-hosting");
@@ -496,8 +428,6 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    // The docs index cards (MDX <Card href> in the article body) resolve
-    // to real routes under /docs
     for (const target of [
       "/docs/getting-started",
       "/docs/deploy-targets",
@@ -508,9 +438,7 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
         page.locator(`article a[href='${target}']`).count(),
       ).resolves.toBeGreaterThanOrEqual(1);
     }
-    // No link points at the LP's access section through /docs
     await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
-    // The banner's link to the LP's access section is absolute
     await expect(page.locator("[data-slot='banner'] a").first().getAttribute("href")).resolves.toBe(
       "https://maruhi.app/#access",
     );
@@ -519,10 +447,6 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
-    // No style attributes in the shipped HTML (postbuild.ts externalizes
-    // them at build time — the precondition for not using 'unsafe-inline'
-    // in style-src-attr), and Nimbus's Shiki tokens carry nb-shiki-*
-    // classes. Code blocks stay colored
     expect(styleAttributesIn(await (await fetch(`${BASE}/docs/getting-started`)).text())).toBe(0);
     const tokenColor = await page
       .locator("pre code span[class*='nb-shiki-']")
@@ -530,7 +454,6 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
       .evaluate((el) => getComputedStyle(el).color);
     const bodyColor = await page.locator("body").evaluate((el) => getComputedStyle(el).color);
     expect(tokenColor).not.toBe(bodyColor);
-    // No "Open in chat" to third-party AI
     await expect(
       page.locator("a[href^='https://chatgpt.com'], a[href^='https://claude.ai']").count(),
     ).resolves.toBe(0);
@@ -538,8 +461,6 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
   });
 
   it("emits llms.txt and the sitemap with the apex origin, and no analytics", async () => {
-    // The apex llms.txt points at the docs section document, which lists
-    // every page with its raw-Markdown URL
     const llms = await (await fetch(`${BASE}/llms.txt`)).text();
     expect(llms).toContain("https://maruhi.app/docs/llms.txt");
     const docsLlms = await (await fetch(`${BASE}/docs/llms.txt`)).text();
@@ -565,10 +486,6 @@ describe("site e2e: docs (/docs — Nimbus chrome)", () => {
 
 describe("site e2e: docs last-modified dates (git author date)", () => {
   it("shows the page's last git commit date in the page actions and the sitemap", async () => {
-    // The author date of the newest commit touching the page, as Nimbus's
-    // getLastUpdated reads it (%aI — Blume used the committer date).
-    // Needs full history (CI's jobs use fetch-depth: 0); a shallow
-    // clone would date every page at the boundary commit
     const committed = execFileSync(
       "git",
       ["log", "-1", "--format=%aI", "--", "src/content/docs/getting-started.mdx"],
@@ -590,8 +507,6 @@ describe("site e2e: related pages and the footer copyright", () => {
   it("shows a docs page's related cards and the copyright in the docs footer", async () => {
     const html = await (await fetch(`${BASE}/docs/getting-started`)).text();
     const related = /<nav[^>]*data-site-related[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
-    // The order and targets of apps/site/src/content/docs/getting-started.mdx
-    // `related:`
     expect([...related.matchAll(/href="(\/docs\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([
       "/docs/deploy-targets",
       "/docs/devices",

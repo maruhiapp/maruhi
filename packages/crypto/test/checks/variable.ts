@@ -1,9 +1,3 @@
-// Checks for CRYPTO_SPEC §4 (AES-256-GCM + AAD for variable values).
-// Vector: test-vectors/variable-encryption.json.
-// There is no fixed-nonce encryption API (to make nonce reuse structurally
-// impossible), so the fixed vector is verified in the decrypt direction (GCM
-// is deterministic, which also guarantees encrypt-direction equivalence).
-
 import {
   buildVariableAad,
   decryptVariable,
@@ -47,9 +41,6 @@ async function vectorChecks(c: Checks): Promise<void> {
 }
 
 async function aadMismatchChecks(c: Checks): Promise<void> {
-  // aad-environment-mismatch / aad-epoch-mismatch are reproduced as context
-  // swaps; also confirm the AAD construction matches the vector's
-  // decrypt_aad_hex
   const mismatches: readonly { name: string; context: VariableContext }[] = [
     {
       name: "aad-environment-mismatch",
@@ -74,7 +65,6 @@ async function aadMismatchChecks(c: Checks): Promise<void> {
 }
 
 async function tamperChecks(c: Checks): Promise<void> {
-  // ciphertext-bit-flip / nonce-mismatch
   for (const n of variableVectors.negative) {
     if (n.name === "aad-environment-mismatch" || n.name === "aad-epoch-mismatch") {
       continue;
@@ -90,9 +80,6 @@ async function tamperChecks(c: Checks): Promise<void> {
 }
 
 async function invalidContextChecks(c: Checks): Promise<void> {
-  // When a numeric context field does not satisfy the LP encoder's
-  // precondition (non-negative safe integer), it returns a CryptoResult of
-  // InvalidInput rather than throwing (both encrypt / decrypt)
   const dek = generateDek();
   const plaintext = new TextEncoder().encode("x");
   const cases: readonly { name: string; context: VariableContext }[] = [
@@ -146,9 +133,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
 }
 
 async function nonceUniquenessChecks(c: Checks): Promise<void> {
-  // §4 / §11: nonces are randomly generated and reuse is forbidden. Checks
-  // that repeated encryption of the same input produces no duplicate nonce
-  // (and that the ciphertext differs every time)
   const dek = generateDek();
   const plaintext = new TextEncoder().encode("same-input-every-time");
   const nonces = new Set<string>();

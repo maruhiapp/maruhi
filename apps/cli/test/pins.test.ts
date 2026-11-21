@@ -1,17 +1,3 @@
-// Unit tests for the invite-pin file's (pins.ts) persistence layer.
-//
-// Properties pinned down:
-//  1. A pin the stored schema rejects (an environment id outside the
-//     AUTH_SPEC §12-1 form) is refused at write time, and the existing file
-//     stays byte-identical (it never becomes a file the next load reads as
-//     corrupt)
-//  2. An issued record keyed `__proto__` (JSON.parse creates it as an own
-//     property, and the schema decoder keeps it as one) reads as corrupt —
-//     the invite-id key rule rejects it rather than it vanishing into the
-//     prototype
-//  3. A file with a leading byte-order mark loads (the FileSystem read
-//     decodes UTF-8 with the BOM stripped)
-
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +19,6 @@ function pin(environmentIds: readonly string[]): IssuedInvitePin {
     role: "member",
     scopeKind: "listed",
     scopeEnvironmentIds: environmentIds.map(testEnvironmentId),
-    // Far inside the retention window (never swept by the next write)
     expiresAtMs: Date.now() + 60 * 60 * 1000,
     expectedGithubLogin: null,
   };
@@ -69,8 +54,6 @@ describe("invite-pin file (pins.ts)", () => {
     const { path, store } = await makeStore();
     await Effect.runPromise(store.saveIssuedPin(testProjectId(PROJECT), INVITE_A, pin(["prod"])));
     const stored = await readFile(path, "utf8");
-    // Rename the issued key in the raw text: JSON.stringify of an object
-    // cannot produce an own `__proto__` key
     await writeFile(path, stored.replace(`"${INVITE_A}"`, `"__proto__"`));
     expect(await readFile(path, "utf8")).toContain(`"__proto__"`);
 

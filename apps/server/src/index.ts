@@ -1,19 +1,3 @@
-// @maruhi/server — Workers + DO + D1. Effect v4 HttpApi (ADR-0005).
-// Server code uses Web standards + the Workers API only. Bun-specific
-// APIs (bun:*) are forbidden.
-//
-// The source keeps the plain Workers API shape (export default
-// { fetch } + DurableObject classes) while the internals are
-// implemented in Effect (ADR-0012: works under both cf and
-// Alchemy v2).
-//
-// Wiring of request authentication (AUTH_SPEC):
-//   - The AuthMiddleware (api-schema contract) implementation is in
-//     auth.package/middleware.ts
-//   - SessionService / TokenService / repositories are built once at
-//     worker startup from env (the D1 binding) and passed to handlers
-//     as request context
-
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { cryptoServicesLayer, SessionService, TokenService } from "@maruhi/core";
 import { Clock, Context, Effect, FileSystem, Layer, Path, Scope } from "effect";
@@ -59,10 +43,6 @@ import { readWorkerSecret, readWorkerSecrets, WorkerEnv, WorkerSecrets } from ".
 export { ProjectChainDO } from "./do/chain-do.ts";
 export type { Env } from "./do/chain-do.ts";
 
-// HttpApiBuilder.layer nominally requires
-// HttpPlatform / FileSystem / Etag.Generator / Path (for a pure JSON
-// API they are never invoked at runtime). workerd has no FS, so
-// FileSystem.layerNoop satisfies the type requirement only
 const platformContext = Layer.mergeAll(
   HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({}))),
   FileSystem.layerNoop({}),
@@ -83,36 +63,16 @@ type RequestServices =
   | Digest.Digest
   | Signature.Signature;
 
-// The crypto services as plain service values for the per-request
-// context: the AuthMiddleware's `requires` are global requires of the
-// HttpApi, satisfied from this context rather than from a Layer. Built
-// once at module scope (the WebCrypto layers are stateless — they draw
-// from `globalThis.crypto` per call). The scope is deliberately never
-// closed: the layers register no finalizers, and the values live for
-// the isolate's lifetime like the rest of the per-env services
 const cryptoServicesContext: Context.Context<
   SecureRandom.SecureRandom | Digest.Digest | Signature.Signature
 > = Effect.runSync(Layer.buildWithScope(cryptoServicesLayer, Scope.makeUnsafe()));
 
 async function buildServices(env: Env): Promise<Context.Context<RequestServices>> {
   const dbServices = makeDbServices(env.DB);
-  // The worker's env-reading boundary for secrets: from here on they
-  // travel only as Redacted (worker-env.ts). Resolution is async
-  // because the hosted deployment's Secrets Store bindings read
-  // through `.get()` (ADR-0012 revision 3); it happens once per env,
-  // here at service construction
   const secrets = await Effect.runPromise(readWorkerSecrets(env));
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
     Context.add(WorkerSecrets, secrets),
-    // In-house counting of GitHub token requests (ops-signals.ts —
-    // the acceptance surface's behavior is unchanged). An
-    // unconfigured deployment closes over an empty client_id here —
-    // the same stand-in the previous shape produced at runtime (an
-    // unregistered secret arriving as undefined under a string
-    // type): the start / config handlers refuse with 503 before
-    // reaching it, and on the callback paths GitHub rejects the
-    // exchange (AuthFlow 400), as it did before
     Context.add(
       GitHubApi,
       countingGitHubApi(
@@ -121,9 +81,6 @@ async function buildServices(env: Env): Promise<Context.Context<RequestServices>
       ),
     ),
     Context.add(ServerKey, makeServerKey(secrets.serverEncKeyIkm)),
-    // The OIDC verifier (AUTH_SPEC §14-1). Since it holds the JWKS
-    // cache per isolate, exactly one is built per env (same lifetime
-    // as handlerCache)
     Context.add(OidcVerifier, makeOidcVerifier()),
     Context.add(SessionService, makeSessionService(Context.get(dbServices, SessionRepo))),
     Context.add(TokenService, makeTokenService(Context.get(dbServices, TokenRepo))),
@@ -135,13 +92,6 @@ interface EnvHandler {
   readonly handler: (request: Request) => Promise<Response>;
 }
 
-// Keep HttpApi Layer construction to once per env (stable per
-// isolate). The middleware's requires (SessionService / TokenService)
-// must be satisfied statically by a Layer, so webHandler is built per
-// env. Construction is async (buildServices resolves the Secrets
-// Store bindings), so the cache holds the construction promise:
-// concurrent first requests share the one build — and the one secret
-// resolution — per env
 const handlerCache = new WeakMap<Env, Promise<EnvHandler>>();
 
 function handlerFor(env: Env): Promise<EnvHandler> {
@@ -151,10 +101,6 @@ function handlerFor(env: Env): Promise<EnvHandler> {
   }
   const built = buildHandler(env);
   handlerCache.set(env, built);
-  // A failed build must not poison the cache for the isolate's
-  // lifetime (the synchronous predecessor cached only after a
-  // successful build): evict on rejection so the next request
-  // retries the construction
   built.catch(() => {
     if (handlerCache.get(env) === built) {
       handlerCache.delete(env);
@@ -182,29 +128,11 @@ async function buildHandler(env: Env): Promise<EnvHandler> {
     Layer.provide(exportLive),
     Layer.provide(mirrorLive),
     Layer.provide(Layer.succeed(AuthMiddleware, authMiddlewareImpl)),
-    // RFC 9457 rendering of framework-level failures (declared on the
-    // API in @maruhi/api-schema). Default options: the 400 problem's
-    // detail stays generic — no per-field reasons leave the server
     Layer.provide(HttpApiMiddleware.layerProblemDetails()),
     Layer.provide(platformContext),
-    // Handler-level crypto-service requirements (SecureRandom / Digest /
-    // Signature) are discharged here; the middleware's are global
-    // requires and ride the per-request context instead (buildServices)
     Layer.provide(cryptoServicesLayer),
     Layer.provide(Layer.succeedContext(services)),
   );
-  // Disable Effect's default HTTP logger (HttpMiddleware.logger —
-  // annotates `http.url` on "Sent HTTP response"). Left enabled,
-  // Workers Logs would record /projects/:id (a capability — AUTH_SPEC
-  // §11-2) per request, and the hole plugged by the deploy config's
-  // `observability.logs.invocationLogs: false` would reopen via the
-  // console path (found by checking real Workers Logs data during an
-  // ops exercise — hosted-ops.md §5-3). The console lines that remain
-  // are static messages + aggregates only (DC-2).
-  // The handler fibers run in the built layer's context, so the server
-  // logger provided here is the logger of every request:
-  // Effect.logWarning / logError reach console.warn / console.error with
-  // the message text only (server-logger.ts)
   const webHandler = HttpRouter.toWebHandler(apiLive.pipe(Layer.provideMerge(ServerLoggerLive)), {
     disableLogger: true,
   });
@@ -213,7 +141,6 @@ async function buildHandler(env: Env): Promise<EnvHandler> {
   };
 }
 
-/** Concatenates a chunk list into one byte string. */
 function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array {
   const body = new Uint8Array(total);
   let offset = 0;
@@ -224,12 +151,6 @@ function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array 
   return body;
 }
 
-/**
- * Buffers the stream up to the cap and returns it (over-cap → null).
- * Content-Length is a client-declared value and cannot be trusted
- * (missing, forged, or chunked), so the cap is enforced by
- * measurement.
- */
 async function readStreamWithinLimit(
   stream: ReadableStream<Uint8Array>,
   limitBytes: number,
@@ -251,19 +172,11 @@ async function readStreamWithinLimit(
   }
 }
 
-/** A cheap early rejection on the declared Content-Length (a missing header counts as 0 = passes). */
 function declaredLengthExceedsCap(request: Request): boolean {
   const declared = Number(request.headers.get("content-length"));
   return Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES;
 }
 
-/**
- * The raw-body cap at the HTTP boundary (policy.ts). Memory-DoS
- * defense ahead of JSON parsing. Over-cap returns null (the caller
- * answers with a schema-less plain 413). An in-cap body is replaced
- * by the buffered bytes and handed to the later stage (JSON
- * parsing).
- */
 async function capRequestBody(request: Request): Promise<Request | null> {
   if (declaredLengthExceedsCap(request)) {
     return null;
@@ -275,9 +188,6 @@ async function capRequestBody(request: Request): Promise<Request | null> {
   if (body === null) {
     return null;
   }
-  // The Request constructor refuses a non-null body for GET / HEAD
-  // (the Fetch spec). The read still happens; a body the later stages
-  // do not reference is discarded at reconstruction.
   const allowsBody = request.method !== "GET" && request.method !== "HEAD";
   return new Request(request.url, {
     method: request.method,
@@ -286,21 +196,6 @@ async function capRequestBody(request: Request): Promise<Request | null> {
   });
 }
 
-/**
- * Common security headers on every response.
- * - `X-Content-Type-Options: nosniff` — this is a JSON-only API and
- *   returns no HTML, but it forecloses MIME-sniffing room including
- *   against future regressions
- * - `Cache-Control: no-store` — responses carry raw token values
- *   (device exchange), ciphertexts, and wraps. They must not remain in
- *   caches along the path (browsers, shared proxies). If a route sets
- *   its own cache policy that one wins (none do at present)
- * - `Strict-Transport-Security` — the API worker can also get a
- *   custom domain via routes (an origin carrying session cookies and
- *   OAuth flows), so it blocks first-connection downgrade like web's
- *   `_headers`. The reason for omitting includeSubDomains is the same
- *   as web's (write-headers.ts)
- */
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("x-content-type-options", "nosniff");
@@ -315,15 +210,6 @@ function withSecurityHeaders(response: Response): Response {
   });
 }
 
-/**
- * Adds the standard `Retry-After` header to 429 responses. The typed
- * errors (TokenLimit / RecoveryRateLimited / InviteRateLimited /
- * AuthRateLimited / LeaseRateLimited) carry retryAfterSeconds in the
- * JSON body, but non-maruhi-CLI clients (curl, SDK retry wrappers,
- * RFC 9110-compliant backoff) look only at the header and would keep
- * consuming the window with immediate retries. Only on 429 (a rare
- * path), the body is parsed once and copied.
- */
 async function withRetryAfterHeader(response: Response): Promise<Response> {
   if (response.status !== 429 || response.headers.has("retry-after")) {
     return response;
@@ -333,14 +219,6 @@ async function withRetryAfterHeader(response: Response): Promise<Response> {
     seconds = ((await response.clone().json()) as { retryAfterSeconds?: unknown })
       .retryAfterSeconds;
   } catch {
-    // A 429 without a JSON body (a future path) is returned as-is
-    // without the header — this is a representation enhancement and
-    // must not promote an unparseable body into a failure (deliberate
-    // degradation). But it is not swallowed silently (CLAUDE.md):
-    // since a missing header invites immediate retries from non-maruhi
-    // clients, a static message that makes the regression noticeable
-    // is left in Workers Logs (same discipline as ipRateLimitAllowed's
-    // fail-open; the body content is not logged)
     console.warn("429 response body is not JSON; returning it without a Retry-After header");
     return response;
   }
@@ -365,33 +243,14 @@ export default {
     const response = await withRetryAfterHeader(
       await (await handlerFor(env)).handler(cappedRequest),
     );
-    // Since disableLogger (handlerFor) also stops the Effect logger's
-    // failure branch (with cause), unhandled failures / defects would
-    // leave nothing in Workers Logs. Instead a single static line
-    // carrying no identifiers is left. Intended 5xx like 503
-    // SetupIncomplete are out of scope — 500 covers only paths where
-    // HttpApi could not map to a typed error
     if (response.status === 500) {
       console.error("unhandled failure at the HTTP boundary (500)");
     }
     return withSecurityHeaders(response);
   },
-  // Scheduled jobs (cloudflare.config.ts's triggers — branch on the
-  // cron string):
-  // - Hourly (OPS_HOURLY_CRON): the DO → R2 evacuation sweep
-  //   (ops-backup.ts; a no-op without the binding) → tripwire
-  //   evaluation and notification (ops-alerts.ts)
-  // - Otherwise (daily): cleanup of expired session rows. The
-  //   resolve-time cleanup (auth.package/session.ts) can only delete
-  //   "the row that was presented". A call with an empty cron string
-  //   (tests' createScheduledController()) also lands here = the
-  //   existing contract
   async scheduled(controller, env, _ctx): Promise<void> {
     const dbServices = makeDbServices(env.DB);
     if (controller.cron === OPS_HOURLY_CRON) {
-      // Only the webhook URL is read on this path (worker-env.ts's
-      // single-field reader; a failed store read disables the alerts,
-      // the same as an unset value)
       const opsAlertWebhookUrl = await Effect.runPromise(
         readWorkerSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
       );

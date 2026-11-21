@@ -1,13 +1,3 @@
-// Integration tests for the per-org project-count admission limit
-// (AUTH_SPEC §11-3). Verifies the HttpApi over SELF plus D1 / DO under
-// @cloudflare/vitest-plugin (real workerd).
-//
-// Running limit-many inits through the real path is heavy (1 init = chain
-// verification + a D1 batch), so the `projects` rows that feed the decision
-// are seeded into D1 directly to build the boundary (reaching it, rejection,
-// freeing). The pure decision function (projectQuotaExceeded) is pinned with
-// numbers only (same shape as the other *Exceeded in quotas.ts).
-
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -31,8 +21,6 @@ const genesisEntry = () => {
   return toWireEntry(genesis);
 };
 
-/** Builds only the decision material: `count` dummy projects rows on the
- * org (IDs are 64 hex). */
 async function seedProjectRows(orgId: string, count: number): Promise<void> {
   const statements = Array.from({ length: count }, (_, index) =>
     env.DB.prepare("INSERT INTO projects (id, org_id, created_at) VALUES (?, ?, ?)").bind(
@@ -68,10 +56,6 @@ describe("POST /projects x projects-per-org limit (§11-3)", () => {
       _tag: "ProjectLimit",
       limit: MAX_ACTIVE_PROJECTS_PER_ORG,
     });
-    // The DO wrote nothing (admitFresh = false is report-only): fetching the
-    // chain is uninitialized = 404 (§11-2), and the DO materialized no tables
-    // at all — the report-only init precedes genesis acceptance, so a refused
-    // fresh init leaves no storage behind (Sc-7 / A-4, §11-3).
     const chain = await getChain(vectorProjectId);
     expect(chain.status).toBe(404);
     const tables = await queryProjectDo(
@@ -79,8 +63,6 @@ describe("POST /projects x projects-per-org limit (§11-3)", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table'",
     );
     expect(tables).toEqual([]);
-    // D1 is also unchanged (neither the projects row nor an
-    // org.project_created audit row is added)
     expect(await projectRowsInOrg(VECTOR_ORG)).toBe(MAX_ACTIVE_PROJECTS_PER_ORG);
     const audit = await env.DB.prepare(
       "SELECT count(*) AS n FROM org_audit_events WHERE event = 'org.project_created' AND project_id = ?",
@@ -109,9 +91,6 @@ describe("POST /projects x projects-per-org limit (§11-3)", () => {
   });
 
   it("does not block the §11-3 repair path at the limit (already-initialized + missing row)", async () => {
-    // init normally -> simulate a crash after the DO admits but before the
-    // D1 row insert (delete just the row) -> re-init while the org has filled
-    // up to the limit in the meantime
     expect((await initChain(genesisEntry())).status).toBe(200);
     await env.DB.prepare("DELETE FROM projects WHERE id = ?").bind(vectorProjectId).run();
     await seedProjectRows(VECTOR_ORG, MAX_ACTIVE_PROJECTS_PER_ORG);
@@ -128,8 +107,6 @@ describe("POST /projects x projects-per-org limit (§11-3)", () => {
       .bind(vectorProjectId)
       .first<{ org_id: string }>();
     expect(row?.org_id).toBe(VECTOR_ORG);
-    // The repair overshoots the limit by 1 (surfacing a project that really
-    // exists in the DO into D1 takes precedence — the §11-3 acceptance)
     expect(await projectRowsInOrg(VECTOR_ORG)).toBe(MAX_ACTIVE_PROJECTS_PER_ORG + 1);
   });
 

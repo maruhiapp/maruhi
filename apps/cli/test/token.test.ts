@@ -1,17 +1,3 @@
-// Wire-level tests for `maruhi token list` / `maruhi token revoke`
-// (AUTH_SPEC §6 — W3a).
-//
-// What they pin down:
-// - list: ascending createdAtMs ordering, scopes joined as
-//   `project:permission`, null lastUsed / expires rendered "never", and
-//   the empty-list wording (exit 0)
-// - list: a 403 guides toward an admin token / browser session (exit 1)
-// - revoke: sends DELETE /auth/tokens/:tokenId and reports success in one
-//   line
-// - revoke: a 404 (uniform — hides existence) guides toward `maruhi token
-//   list`; a 403 is the credential guidance
-// - both: an unexpected server error is a typed error with exit 1
-
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -28,7 +14,6 @@ afterEach(async () => {
 
 const PROJECT_A = "a".repeat(64);
 
-/** Fixture times starting from 2026-01-02T03:04:05Z. */
 const T0 = Date.UTC(2026, 0, 2, 3, 4, 5);
 const HOUR = 60 * 60 * 1000;
 
@@ -51,8 +36,6 @@ describe("maruhi token list", () => {
       onRequest("GET", "/auth/tokens", () => ({
         status: 200,
         json: {
-          // The server's response order is the reverse of creation order
-          // (confirming the CLI sorts)
           tokens: [
             {
               id: "tok_newer",

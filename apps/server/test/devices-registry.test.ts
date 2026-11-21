@@ -1,12 +1,3 @@
-// Integration tests for the device registry and device-add-request APIs
-// (AUTH_SPEC §13-11 — 2026-09-19 DK K3). Verifies the real path via SELF
-// under @cloudflare/vitest-plugin (real workerd).
-//
-// The registry is advisory (it feeds neither verification nor authorization),
-// so what is pinned here is only the HTTP-level contract: authorization (`*` x
-// admin token / sessions may only list), server-side FP recomputation, limits
-// (32 rows / 5 requests per hour), conflicts (409), TTL, and uniform 404s.
-
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -41,7 +32,6 @@ interface DeviceKeys {
   readonly fp: string;
 }
 
-/** Turns a vector key (device key) into registry material. */
 function vectorDevice(name: string): DeviceKeys {
   const keys = vectorKeyNamed(name);
   return {
@@ -51,7 +41,6 @@ function vectorDevice(name: string): DeviceKeys {
   };
 }
 
-/** Disposable device keys (for the limit tests — private keys go unused). */
 async function freshDevice(): Promise<DeviceKeys> {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -139,8 +128,6 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
     expect(reserve?.["sigPubHex"]).toBe(RESERVE.sigPubHex);
     expect(typeof reserve?.["createdAtMs"]).toBe("number");
 
-    // upsert: updates the display name (row count unchanged; tokenId is
-    // replaced with whatever the body carries)
     expect(
       (await registerDevice(bearer(token), PHONE.fp, registerBody(PHONE, "renamed"))).status,
     ).toBe(204);
@@ -171,8 +158,6 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
     const b = await cliToken(605);
     expect((await registerDevice(bearer(a), PHONE.fp, registerBody(PHONE))).status).toBe(204);
     expect((await jsonOf(await listDevices(bearer(b))))["devices"]).toEqual([]);
-    // Another user's row cannot be deleted (looked up as the caller's own
-    // row, so 404)
     expect((await removeDevice(bearer(b), PHONE.fp)).status).toBe(404);
   });
 
@@ -212,7 +197,6 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
     expect((await listRequests(bearer(scoped))).status).toBe(403);
     expect((await getRequest(bearer(scoped), RESERVE.fp)).status).toBe(403);
     expect((await cancelRequest(bearer(scoped), RESERVE.fp)).status).toBe(403);
-    // Listing is open to every authenticated principal
     expect((await listDevices(bearer(scoped))).status).toBe(200);
     const write = await cliToken(608, [{ project: "*", permission: "write" }]);
     expect((await registerDevice(bearer(write), PHONE.fp, registerBody(PHONE))).status).toBe(403);
@@ -245,7 +229,6 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
     expect(body["_tag"]).toBe("DeviceRegistryLimit");
     expect(body["reason"]).toBe("device-rows");
     expect(body["limit"]).toBe(32);
-    // Updating an existing row does not count against the limit
     const first = devices[0];
     if (first === undefined) {
       throw new Error("no device");
@@ -253,7 +236,6 @@ describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () =>
     expect(
       (await registerDevice(bearer(token), first.fp, registerBody(first, "renamed"))).status,
     ).toBe(204);
-    // Deleting one row makes registration possible again
     expect((await removeDevice(bearer(token), first.fp)).status).toBe(204);
     expect((await registerDevice(bearer(token), overflow.fp, registerBody(overflow))).status).toBe(
       204,
@@ -309,8 +291,6 @@ describe("device add requests (§13-11 — /auth/devices/requests)", () => {
     expect((await jsonOf(await listRequests(bearer(b))))["requests"]).toEqual([]);
     expect((await getRequest(bearer(b), RESERVE.fp)).status).toBe(404);
     expect((await cancelRequest(bearer(b), RESERVE.fp)).status).toBe(404);
-    // Another user can create a request with the same public key (rows are
-    // keyed on the (user, fp) axis)
     expect((await createRequest(bearer(b), requestBody(RESERVE))).status).toBe(200);
   });
 
@@ -330,7 +310,6 @@ describe("device add requests (§13-11 — /auth/devices/requests)", () => {
     expect(body["reason"]).toBe("add-requests");
     expect(body["limit"]).toBe(5);
     expect(typeof body["retryAfterSeconds"]).toBe("number");
-    // Cancelling does not restore the window (fixed window)
     expect((await cancelRequest(bearer(token), RESERVE.fp)).status).toBe(404);
     expect((await createRequest(bearer(token), requestBody(RESERVE))).status).toBe(429);
   });

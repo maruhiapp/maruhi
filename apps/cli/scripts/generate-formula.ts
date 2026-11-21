@@ -1,18 +1,3 @@
-// Generates the formula to copy to the Homebrew tap (maruhiapp/homebrew-maruhi).
-//
-//   bun apps/cli/scripts/generate-formula.ts --version v0.1.0
-//   bun apps/cli/scripts/generate-formula.ts --checksums apps/cli/dist/checksums.txt
-//
-// By default fetches checksums.txt from the GitHub Release and writes
-// packaging/homebrew/maruhi.rb (a generated artifact, not committed to the
-// repo — see maruhi.example.rb in the same directory for the shape). The
-// procedure is "Updating the Homebrew tap" in docs/RELEASING.md.
-//
-// Why tap updates are not an automatic PR from the release workflow (in the
-// ADR-0015 line): it would mean adding cross-repo write credentials to a
-// release path that already holds contents: write + id-token: write. Not worth
-// it at this release cadence.
-
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,10 +11,7 @@ const { values } = parseArgs({
   args: process.argv.slice(2),
   strict: true,
   options: {
-    // Defaults to apps/cli/package.json (single source of truth for the
-    // version. ADR-0015 ruling 4)
     version: { type: "string" },
-    // Defaults to fetching checksums.txt from the Release
     checksums: { type: "string" },
     out: { type: "string", default: resolve(repoRoot, "packaging/homebrew/maruhi.rb") },
     "allow-prerelease": { type: "boolean", default: false },

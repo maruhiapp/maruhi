@@ -3,8 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ChainInvalidError, CryptoContractViolationError, cryptoEffect } from "../src/index.ts";
 
-// A marker standing in for key material / a plaintext value riding in a
-// rejection. It must appear in no serialization of the exit or the defect.
 const SECRET_SENTINEL = "S3CR3T-KEY-MATERIAL-4d2f9a1b";
 
 const defectOf = async (
@@ -46,17 +44,13 @@ describe("cryptoEffect", () => {
     const rejection = new Error(SECRET_SENTINEL, { cause: new Error(`inner-${SECRET_SENTINEL}`) });
     const { defect, pretty } = await defectOf(cryptoEffect(() => Promise.reject(rejection)));
 
-    // The defect keeps no part of the rejection: not the object itself,
-    // not its message, not its cause chain
     expect(defect).toBeInstanceOf(CryptoContractViolationError);
     expect(defect).not.toBe(rejection);
     expect(JSON.stringify(defect)).not.toContain(SECRET_SENTINEL);
     expect(String(defect)).not.toContain(SECRET_SENTINEL);
     expect((defect as Error).stack ?? "").not.toContain(SECRET_SENTINEL);
     expect(pretty).not.toContain(SECRET_SENTINEL);
-    // …but the crash is still diagnosable as the crypto contract breaking
     expect(pretty).toContain("CryptoContractViolation");
-    // The fixed static message renders, so the defect reads as more than a bare tag
     expect(pretty).toContain("a CryptoResult-returning crypto operation rejected or threw");
   });
 

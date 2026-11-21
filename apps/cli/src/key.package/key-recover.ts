@@ -1,31 +1,3 @@
-// Recovery (`maruhi key recover`) and the reserve key's resealing /
-// separation (`key recovery`) / rotate (`key reserve rotate`) —
-// CRYPTO_SPEC §3 / §8, design record dk-design.md §9 K4-2 / K4-9 / K4-10 /
-// K4-11.
-//
-// Recovery's tail `finishRecovery` (K4-10): the reserve key B obtained
-// from the ledger is used **only for issuing the device key** (§8.1) —
-// (1) generate this device's new device key and save it to the keychain,
-// (2) on every project where B is a current device, sign
-// `add_device(new device)` with B's sig key and open one's own wraps
-// with B's enc key to backfill the new device, (3) discard B (release
-// the in-memory reference — written to neither the keychain nor agent
-// memory). B is recorded as the reserve key only when the ledger's
-// content carries the reserve mark (CRYPTO_SPEC §8 — DK K16) and it is
-// revoked nowhere on the chains opened for registration.
-//
-// `key recovery` (K4-2 / K4-9 / K16): without a ledger, generate and
-// seal a reserve key (first time). With one, open it; if it lacks the
-// reserve mark or is a key revoked somewhere, generate a fresh reserve
-// key and reseal (separating). Otherwise reseal the same B under a
-// fresh code and restore the record. `--replace` replaces without
-// opening (the escape route for a lost code).
-//
-// `key reserve rotate` (K4-11): open → generate / seal / record a new
-// reserve key → on every project `add_device(new)` + backfill →
-// `revoke_device(old)` + sweep → delete old B's passkey / guardian rows
-// (rows that can only restore a revoked key — leave no false trust).
-
 import { type ProjectId } from "@maruhi/core";
 import { ALL_SCOPE, type ChainDevice } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -99,10 +71,8 @@ import { sweepRotateFor } from "../sweep-rotate.ts";
 import { requestHandoffReserve } from "./handoff.ts";
 import { recoveryRegistered } from "./keygen.ts";
 
-/** How `maruhi key recover` opens the reserve key. */
 type RecoverVia = LedgerOpenVia | "handoff";
 
-/** This device's new device key (issued after recovery — if one already exists, `--resume` reuses it). */
 const newOrExistingDeviceKeys = Effect.fn("key-recover.newOrExistingDeviceKeys")(function* (input: {
   readonly session: CliSession;
   readonly resume: boolean;
@@ -142,17 +112,14 @@ const newOrExistingDeviceKeys = Effect.fn("key-recover.newOrExistingDeviceKeys")
   return validated;
 });
 
-/** The result of the post-recovery registration on one project. */
 interface ProjectRecoveryOutcome {
   readonly projectId: ProjectId;
   readonly state: "registered" | "already" | "reserve-missing" | "reserve-revoked" | "failed";
   readonly backfill: DeviceBackfillOutcome | null;
   readonly message: string | null;
-  /** The opened key's standing on this project (the chain opened before registering — the judgment's material. DK K14-1). */
   readonly standing: KeyStanding;
 }
 
-/** Register the new device key to one project with B (the recovered reserve key) and backfill it. */
 const registerDeviceWithReserve = Effect.fn("key-recover.registerDeviceWithReserve")(
   function* (input: {
     readonly session: CliSession;
@@ -160,11 +127,6 @@ const registerDeviceWithReserve = Effect.fn("key-recover.registerDeviceWithReser
     readonly reserve: ReserveKeys;
     readonly device: MasterKeys;
   }): Effect.fn.Return<ProjectRecoveryOutcome, never, CliServices> {
-    // The keyless prologue (floor, anchors, and gossip do run. Submitting
-    // attestations and the first-sync registration do not run — the new
-    // device is not yet on the chain; signing is done manually with B).
-    // The standing judgment lives in one place, device-standing.ts (a
-    // sync failure folds into "could not sync" — DK K14-1)
     const standing = yield* keyStandingOnProject({
       session: input.session,
       projectId: input.projectId,
@@ -203,7 +165,6 @@ const registerDeviceWithReserve = Effect.fn("key-recover.registerDeviceWithReser
   },
 );
 
-/** On a project where B is a current device, `add_device(new device)` signed by B → backfill with B's enc key. */
 const addDeviceWithReserve = Effect.fn("key-recover.addDeviceWithReserve")(function* (input: {
   readonly session: CliSession;
   readonly reserve: ReserveKeys;
@@ -256,13 +217,6 @@ const addDeviceWithReserve = Effect.fn("key-recover.addDeviceWithReserve")(funct
   return { appended: outcome.appended, backfill };
 });
 
-/**
- * Deciding whether to record the opened key as the reserve key (DK
- * K16): if it is revoked somewhere, or it lacks the reserve mark (the
- * `kind: "reserve"` this CLI writes into the ledger's content when it
- * generates one — CRYPTO_SPEC §8), say so and record nothing. Otherwise
- * record it without asking.
- */
 const settleOpenedKey = Effect.fn("key-recover.settleOpenedKey")(function* (input: {
   readonly session: CliSession;
   readonly reserve: ReserveKeys;
@@ -285,12 +239,6 @@ const settleOpenedKey = Effect.fn("key-recover.settleOpenedKey")(function* (inpu
   yield* logNote(`recorded ${fp} on this machine as your reserve key`);
 });
 
-/**
- * The common tail of every recovery path: new device key → `add_device` signed
- * by the reserve key on every project where it is registered → backfill →
- * decide from the chains whether to record the opened key as the reserve key →
- * discard the reserve key (K4-10, revised by DK K14).
- */
 const finishRecovery = Effect.fn("key-recover.finishRecovery")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -317,9 +265,6 @@ const finishRecovery = Effect.fn("key-recover.finishRecovery")(function* (input:
   for (const outcome of outcomes) {
     yield* reportRecoveryOutcome(outcome);
   }
-  // The judgment runs on the chains opened for registration (no doubled syncs — DK K14-1 / K14-5)
-  // Projects that could not sync are already named in each project's
-  // report, so no Note for the unchecked range is emitted
   yield* settleOpenedKey({
     session: input.session,
     reserve: input.reserve,
@@ -328,13 +273,11 @@ const finishRecovery = Effect.fn("key-recover.finishRecovery")(function* (input:
       listFailure: null,
     }),
   });
-  // B's secret finishes its duty here (release the reference. The save paths are closed by types — reserve.ts)
   yield* logNote(
     "the reserve key was discarded from memory; it stays sealed in the recovery ledger only. This device now signs with its own key",
   );
 });
 
-/** Reporting one project's post-recovery registration (registered / already / reserve-unregistered / revoked / failed). */
 function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<void, never, CliIo> {
   const label = displayText(outcome.projectId);
   switch (outcome.state) {
@@ -347,10 +290,6 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
             ? "registered this device"
             : "this device was already registered",
         backfill: outcome.backfill,
-        // `--resume` backfills even when already registered (with the
-        // reserve key — the only route in a recovery situation where no
-        // other device exists). A registered key cannot create a request,
-        // so `device approve` is not named (DK K11-5)
         rerun: (environmentId) =>
           `Re-run \`maruhi key recover --resume\`. ${describeGapFillRoute(outcome.projectId, environmentId)}`,
       }).pipe(Effect.asVoid);
@@ -367,20 +306,12 @@ function reportRecoveryOutcome(outcome: ProjectRecoveryOutcome): Effect.Effect<v
   }
 }
 
-/**
- * `maruhi key recover [--passkey|--handoff] [--resume]`: open the reserve key,
- * then register this machine as a new device with it (K4-10).
- */
 export const keyRecoverOp = Effect.fn("key-recover.keyRecoverOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly via: RecoverVia;
   readonly resume: boolean;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  // A machine that already has a key is refused before touching the
-  // ceremony (code entry, passkey, creating a request) or the server
-  // (--resume is the only exception — continuing an interrupted
-  // recovery)
   if (!input.resume) {
     const keychain = yield* Keychain;
     const existing = yield* keychain.get(
@@ -421,11 +352,6 @@ export const keyRecoverOp = Effect.fn("key-recover.keyRecoverOp")(function* (inp
   });
 });
 
-/**
- * `maruhi key recovery [--passkey] [--replace]`: create the reserve key (first
- * sealing), replace a ledger key that cannot serve as the reserve key, or reissue its recovery code
- * (K4-2 / DK K16).
- */
 export const keyRecoveryOp = Effect.fn("key-recover.keyRecoveryOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -439,8 +365,6 @@ export const keyRecoveryOp = Effect.fn("key-recover.keyRecoveryOp")(function* (i
     yield* sealNewReserve({ session: input.session, client: input.client });
     return 0;
   }
-  // --replace never opens the ledger, so `via` plays no part in it (the
-  // command refuses --passkey with --replace before any network)
   if (input.replace) {
     return yield* replaceReserveWithoutOpening(input);
   }
@@ -449,12 +373,10 @@ export const keyRecoveryOp = Effect.fn("key-recover.keyRecoveryOp")(function* (i
     client: input.client,
     via: input.via,
   });
-  // When the ledger's key cannot serve as a reserve key (no mark, or revoked somewhere), separate it (DK K16)
   const verdict = yield* separateUnusableLedgerKey({ ...input, opened });
   if (verdict === "separated") {
     return 0;
   }
-  // Resealing the reserve key (same B, a fresh code — the reserve mark is carried along too) + restoring the record
   yield* issueRecoveryCodeOp({
     session: input.session,
     client: input.client,
@@ -467,12 +389,6 @@ export const keyRecoveryOp = Effect.fn("key-recover.keyRecoveryOp")(function* (i
   return 0;
 });
 
-/**
- * If the ledger's key cannot serve as a reserve key, seal a new reserve
- * key and separate it (DK K16): the targets are a key without the
- * reserve mark or a key revoked somewhere (→ "separated"). Everything
- * else goes to resealing and recording (→ "record").
- */
 const separateUnusableLedgerKey = Effect.fn("key-recover.separateUnusableLedgerKey")(
   function* (input: {
     readonly session: CliSession;
@@ -511,28 +427,11 @@ const separateUnusableLedgerKey = Effect.fn("key-recover.separateUnusableLedgerK
   },
 );
 
-/**
- * `key recovery --replace` (the escape route for a lost / leaked code):
- * seals a new reserve key without opening the ledger and revokes the old
- * reserve keys in this machine's records on every project (K4-38). Since
- * the old B cannot be opened, the revocations are signed by this device
- * key (the same route as rotate). An old reserve key absent from the
- * records cannot be revoked, which is warned about.
- */
 const replaceReserveWithoutOpening = Effect.fn("key-recover.replaceReserveWithoutOpening")(
   function* (input: {
     readonly session: CliSession;
     readonly client: MaruhiClient;
   }): Effect.fn.Return<number, CliError, CliServices> {
-    // Before writing, name what disappears: the code, the registrations
-    // of the reserve keys in the records, and the ledger's rows that
-    // sealed the old B (passkeys / guardians). If a passkey survives,
-    // --passkey keeps the same reserve key (noted by pullfrog)
-    // The ledger rows' counts are read only for the warning's wording: an
-    // unreadable listing does not stop the replacement (it is the escape
-    // route of a user who lost the code — not plugged by a listing
-    // failure — noted by Bugbot). The fact it could not be read becomes a
-    // Note
     const status = yield* input.client.keyWraps.status({}).pipe(
       Effect.mapError(toCliError),
       Effect.catch((error) =>
@@ -560,14 +459,6 @@ const replaceReserveWithoutOpening = Effect.fn("key-recover.replaceReserveWithou
   },
 );
 
-/**
- * The description of the ledger rows that sealed the old B, attached to
- * `--replace`'s warning (noted by pullfrog): the generic form when the
- * listing cannot be read, nothing said when there are no rows (no
- * deletion of absent rows, no guidance for the unusable `--passkey`),
- * and when present their count plus — if a passkey exists — the
- * `--passkey` alternative.
- */
 function describeSealedRows(
   status: {
     readonly passkeys: readonly unknown[];
@@ -589,19 +480,12 @@ function describeSealedRows(
   return `, and ${countNoun(passkeys, "passkey wrap")} and ${countNoun(groups, "guardian group")} that seal the current reserve key are deleted${passkeyAdvice}`;
 }
 
-/**
- * Recording the new reserve key → the recorded revocation of the old
- * reserve keys → per project add_device / revoke_device / sweep →
- * deleting the ledger rows that sealed the old B (the shared tail of
- * rotate and `--replace`).
- */
 const registerReserveAndRetire = Effect.fn("key-recover.registerReserveAndRetire")(
   function* (input: {
     readonly session: CliSession;
     readonly client: MaruhiClient;
     readonly next: ReserveKeys;
     readonly retiring: readonly string[];
-    /** The ledger rows read ahead of time (`--replace`). undefined = read at the tail (rotate). */
     readonly ledgerRows?: LedgerRows;
   }): Effect.fn.Return<number, CliError, CliServices> {
     const io = yield* CliIo;
@@ -634,13 +518,11 @@ const registerReserveAndRetire = Effect.fn("key-recover.registerReserveAndRetire
   },
 );
 
-/** The listing of the ledger's rows (`GET /auth/key-wraps`). null = unreadable (already Noted by the advance warning). */
 type LedgerRows = {
   readonly passkeys: readonly { readonly wrapId: string }[];
   readonly guardianGroups: readonly { readonly groupId: string }[];
 } | null;
 
-/** The result of the reserve-key rotate on one project. */
 interface ReserveRotateOutcome {
   readonly projectId: ProjectId;
   readonly added: boolean;
@@ -650,12 +532,10 @@ interface ReserveRotateOutcome {
   readonly failure: string | null;
 }
 
-/** On one project, add the new reserve key, revoke the old ones, and sweep (K4-11's order). */
 const rotateReserveOnProject: (input: {
   readonly session: CliSession;
   readonly projectId: ProjectId;
   readonly newReserve: ReserveKeys;
-  /** The FPs of the old reserve keys to revoke (the opened B + the recorded old reserve keys — left behind by nothing on a re-run after interruption). */
   readonly oldFingerprintsHex: readonly string[];
 }) => Effect.Effect<ReserveRotateOutcome, never, CliServices> = Effect.fn(
   "key-recover.rotateReserveOnProject",
@@ -755,7 +635,6 @@ const rotateReserveOnProject: (input: {
     ),
 );
 
-/** Reporting one project's reserve-key rotate (exit code: 1 on any failure). */
 const reportReserveRotateOutcome = Effect.fn("key-recover.reportReserveRotateOutcome")(function* (
   outcome: ReserveRotateOutcome,
 ): Effect.fn.Return<number, never, CliIo> {
@@ -768,13 +647,6 @@ const reportReserveRotateOutcome = Effect.fn("key-recover.reportReserveRotateOut
   yield* io.log(
     `${label}: new reserve key ${outcome.added ? "registered" : "already registered"}${describeBackfill(outcome.backfill)}; previous reserve key ${outcome.revoked.length > 0 ? "revoked" : "already revoked"}`,
   );
-  // A failed backfill to the new reserve key used to be folded into the
-  // count and invisible (DK K11's G9 — an environment the reserve key
-  // cannot open at recovery would silently remain). Like the
-  // approve / recover backfill failures it is exit code 1 (K11-14 —
-  // the owner's ruling: align. The old reserve key is revoked right
-  // after, so a script must be able to detect the new reserve key's
-  // gap)
   const failed = outcome.backfill?.failed ?? [];
   for (const failure of failed) {
     yield* logWarning(
@@ -785,7 +657,6 @@ const reportReserveRotateOutcome = Effect.fn("key-recover.reportReserveRotateOut
   return failed.length > 0 ? 1 : sweepCode;
 });
 
-/** Reporting the sweep (K4-8) that follows the old reserve key's revocation (1 on any failure). */
 const reportReserveSweep = Effect.fn("key-recover.reportReserveSweep")(function* (
   label: string,
   sweep: DeviceSweepOutcome,
@@ -808,16 +679,9 @@ const reportReserveSweep = Effect.fn("key-recover.reportReserveSweep")(function*
   return sweep.failed.length > 0 ? 1 : 0;
 });
 
-/**
- * The FP set of old reserve keys to revoke (ascending): the opened B
- * and every locally-recorded row of provenance "reserve" (regardless of
- * a revoked mark — picks up a key that got only the mark written before
- * the last interruption), minus the new key.
- */
 const staleReserveFingerprints = Effect.fn("key-recover.staleReserveFingerprints")(function* (
   session: CliSession,
   openedFingerprintHex: string | null,
-  /** The new reserve key (null on rotate, which computes this before generating — a just-generated key is absent from the records). */
   nextFingerprintHex: string | null,
 ): Effect.fn.Return<readonly string[], CliError, OwnDeviceStore> {
   const store = yield* OwnDeviceStore;
@@ -835,15 +699,6 @@ const staleReserveFingerprints = Effect.fn("key-recover.staleReserveFingerprints
     .toSorted();
 });
 
-/**
- * Deleting the old B's passkey rows and guardian groups (rows that can
- * only ever restore a revoked key — K4-11). `rows` undefined = read it
- * now. null (unreadable beforehand — `--replace`) = the intervening
- * writes never touched these rows so the same failure is not hit twice;
- * skip the deletion and put the removal procedure into a Note (noted by
- * pullfrog: do not fail the command on the same failure after the writes
- * are done).
- */
 const retireOldLedgerRows = Effect.fn("key-recover.retireOldLedgerRows")(function* (
   client: MaruhiClient,
   rows?: LedgerRows,
@@ -874,34 +729,20 @@ const retireOldLedgerRows = Effect.fn("key-recover.retireOldLedgerRows")(functio
   }
 });
 
-/**
- * `maruhi key reserve rotate [--passkey]`: register a new reserve key and revoke
- * the previous one on every project (K4-11).
- */
 export const keyReserveRotateOp = Effect.fn("key-recover.keyReserveRotateOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly via: LedgerOpenVia;
 }): Effect.fn.Return<number, CliError, CliServices> {
-  // The old reserve key's revocation and the new reserve key's registration are signed by this device key: verify before opening the ledger (the code entry)
   yield* loadMasterKeys(input.session);
   const command = "maruhi key reserve rotate";
   const old = yield* openLedgerReserve(input);
-  // The opened B proceeds only when it carries the reserve mark and is
-  // revoked nowhere (DK K16 — an unmarked one is left untouched)
   const verdict = yield* ledgerKeyVerdictOf({
     session: input.session,
     client: input.client,
     fingerprintHex: old.fingerprintHex,
   });
   yield* settleLedgerKeyForChange({ session: input.session, reserve: old, verdict, command });
-  // The revocation targets = the opened B + the locally recorded
-  // reserve keys (revoked marks included), minus the new key. If a
-  // previous run was interrupted having replaced only the ledger, B is
-  // the previous run's new key while the original reserve key stays in
-  // the records as revoked but is still on the chains (Bugbot
-  // finding). appendRevokeDevice revokes only devices still valid on a
-  // chain (idempotent)
   const retiring = yield* staleReserveFingerprints(input.session, old.fingerprintHex, null);
   const next = yield* generateReserveKeys();
   yield* issueRecoveryCodeOp({

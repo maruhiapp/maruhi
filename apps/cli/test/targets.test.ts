@@ -1,9 +1,3 @@
-// Pins the shape of the release-target table (TARGETS in
-// scripts/shared.ts). It's the single source for binary generation and
-// release.yml's smoke matrix, so a tear in the table directly means a
-// missed build, an unverified artifact getting published, or a matrix
-// interpretation error.
-
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -29,8 +23,6 @@ describe("the release-target table (TARGETS)", () => {
     for (const target of TARGETS) {
       expect(target.bunTarget).toBe(`bun-${target.name}`);
       expect(target.runner).not.toBe("");
-      // .exe on Windows only (adding it elsewhere breaks the smoke run
-      // path)
       expect(target.bin).toBe(target.name.startsWith("windows") ? "maruhi.exe" : "maruhi");
     }
   });

@@ -1,68 +1,19 @@
-// Shared combinator for CAS-conflict retries (the retry procedure of
-// AUTH_SPEC §12-4 / §12-5).
-//
-// The skeleton "attempt → classify conflict → recover (build re-sign
-// material from a re-synced view) → re-attempt, and run recovery even
-// on the final attempt to surface definite errors" is shared by the
-// CLI's CAS-retrying writes. checkpoint.ts, env rotate's values-conflict
-// retry (env-rotate.ts) and its re-encryption passes (env-rotate-pass.ts)
-// keep their own loops. The CI workload's one-time retries keep their own
-// code too: a lease refused as token-replayed is asked once more with a
-// fresh OIDC token (ci-lease.ts), and ci rotate mints once more, under a
-// new proposal id, after a recipients mismatch (ci-rotate.ts).
-// Domain-specific recovery (adopting the winner, re-resolving, rebuilding
-// wraps) stays in the caller's recover.
-
 import { Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 
-/** The members of E carrying `_tag` K (never when none do). */
 type TaggedMember<E, K extends string> = E extends { readonly _tag: K } ? E : never;
 
 interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> {
   readonly maxAttempts: number;
-  /** One attempt (from the current state through signing and sending). Succeeds with the accepted value or fails with a typed error. */
   readonly attempt: (state: S) => Effect.Effect<A, E, R>;
-  /** Classifies the failure: a classifiable value for a retryable conflict, null for a definite error (mapped to CliError and propagated). */
   readonly classify: (error: E) => C | null;
-  /** Recovery from a conflict. A failure (definite error) propagates as is. */
   readonly recover: (state: S, conflict: C) => Effect.Effect<S, CliError, R>;
-  /** Message for when every attempt is exhausted on conflicts. */
   readonly exhaustedMessage: string;
-  /**
-   * A failure class that bypasses classification and propagates as its
-   * own tagged error (an outer retry's signal — the unclassified path's
-   * toCliError mapping would erase the distinction the caller branches
-   * on). Everything else is classified or mapped, as without the option.
-   * Passing the class itself (not a `_tag` string) makes a mistyped tag
-   * a compile error — a misspelled class name does not resolve — and the
-   * propagated type still narrows to the matching member of E. A real
-   * class whose tag E does not carry still compiles (K infers to its
-   * tag, `TaggedMember<E, K>` is never, and if its instances did flow
-   * through they would propagate untyped): the class must be a member
-   * of the retried union. `K extends TagsOf<E>` cannot say so — at the
-   * call sites E is inferable only through the context-sensitive
-   * lambdas, so the constraint collapses to never (verified on
-   * 2026-10-06 against env-rotate-send.ts).
-   */
   readonly passthrough?: abstract new (...args: never) => { readonly _tag: K };
 }
 
-/**
- * Retries a CAS-style operation: run `attempt`, classify failures into
- * retryable conflicts, `recover` a fresh state (re-sync, re-resolve,
- * re-sign material) and try again, up to `maxAttempts`.
- *
- * Recovery runs even on the final attempt's conflict: definite
- * errors that become known through re-sync and re-resolution
- * (evidence of equivocation, a contradiction between the server's
- * response and the chain, a concurrent-create duplicate, etc.) are
- * more informative than a generic exhausted message. A definite
- * error propagates as is; only a returned retryable state is used on
- * the next round (unused on the final round).
- */
 export const retryOnConflict = Effect.fn("retry.retryOnConflict")(function* <
   S,
   A,
@@ -93,11 +44,7 @@ export const retryOnConflict = Effect.fn("retry.retryOnConflict")(function* <
       Effect.map((value) => ({ kind: "accepted", value }) as const),
       passthrough === undefined
         ? Effect.catch(unclassified)
-        : // instanceof matches catchTag semantics here: the bypassed
-          // error is always constructed through this class. The cast
-          // narrows E to its K-tagged member — E is a union of tagged
-          // classes whose K-member is the only one instanceof accepts.
-          Effect.catch(
+        : Effect.catch(
             (
               error: E,
             ): Effect.Effect<

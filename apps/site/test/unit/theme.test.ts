@@ -1,8 +1,3 @@
-// Ruling B (docs/notes/web-design-pass.md §4 "rulings recorded while
-// implementing DP2"): the site's generated theme artifacts are a mapping
-// of apps/web/theme/maruhi.css, and the committed content must match a
-// fresh regeneration (after changing the dashboard theme, run
-// `bun run --filter @maruhi/site theme:build`).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -28,15 +23,11 @@ describe("site theme artifacts", () => {
 
   it("carry the vermilion accent of the ㊙ mark (DP1 rulings A / B)", () => {
     const brand = extractBrand(readFileSync(join(repoRoot, paths.webThemeCss), "utf8"));
-    // The logo SVG's fill = the light-side accent (DP1 ruling A)
     const logo = readFileSync(join(repoRoot, paths.webLogo), "utf8");
     expect(logo.toLowerCase()).toContain(`fill="${brand.accent.light.toLowerCase()}"`);
-    // The generated brand.css carries the accent of both modes
     const css = readFileSync(join(repoRoot, paths.themeCss), "utf8");
     expect(css).toContain(`--nb-primary: ${brand.accent.light.toLowerCase()};`);
     expect(css).toContain(`--nb-primary: ${brand.accent.dark.toLowerCase()};`);
-    // Raw hex lives only in the generated artifacts (astro.config.ts
-    // references tokens.ts)
     const config = readFileSync(join(repoRoot, "apps/site/astro.config.ts"), "utf8");
     expect(config.replace(/\/\/.*$/gm, "")).not.toMatch(/#[0-9a-fA-F]{6}\b/);
   });

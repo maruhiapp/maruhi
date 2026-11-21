@@ -1,12 +1,3 @@
-// Tests for `maruhi mcp` (PF5 — docs/notes/pf5-design.md): the MCP server
-// driven end to end over the real stdio framing (newline-delimited JSON-RPC
-// through the `Stdio` service), against a mock maruhi server. Pins: the
-// surface is exactly one read-only tool plus the resource pair (M3), a call
-// is one keyless `maruhi schema` (M5 — only metadata endpoints are hit, no
-// value / DEK path), the output is the neutralized shared projection framed
-// as untrusted data (M6), the narrowed Keychain (M7), and the stdio
-// discipline (M8 — nothing on CliIo's stdout, EOF = exit 0).
-
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -164,7 +155,6 @@ async function startEnv(options?: { readonly session?: boolean }): Promise<TestE
     defaultProject: built.projectId,
     defaultEnvironment: "dev",
   });
-  // The shape a host launches it in: pipes on every stream
   env.setTerminal({ stdin: false, stdout: false, stderr: false });
   return env;
 }
@@ -193,11 +183,6 @@ const INITIALIZE = {
   },
 };
 
-/**
- * One MCP session: `initialize`, then `requests` (ids 2, 3, …). stdin stays
- * open until every response has arrived, then ends (EOF) — the host closing
- * the session. Returns the exit code and the responses keyed by id.
- */
 async function mcpSession(
   env: TestEnv,
   requests: readonly { readonly method: string; readonly params?: unknown }[],
@@ -224,7 +209,6 @@ async function mcpSession(
     for (const frame of frames) {
       yield encoder.encode(`${JSON.stringify(frame)}\n`);
     }
-    // Below vitest's 5 s test timeout, so a regression fails on the assertions, not a bare timeout
     const deadline = Date.now() + 4000;
     while (responses().size < expected && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -247,7 +231,6 @@ describe("maruhi mcp — the surface (rulings M2 / M3)", () => {
   it("initializes over stdio and exposes exactly one read-only tool", async () => {
     const env = await startEnv();
     const { exitCode, responses } = await mcpSession(env, [{ method: "tools/list" }]);
-    // stdin EOF (the host went away) is a clean shutdown
     expect(exitCode).toBe(0);
     const init = response(responses, 1);
     expect(init["serverInfo"]).toMatchObject({ name: "maruhi" });
@@ -264,7 +247,6 @@ describe("maruhi mcp — the surface (rulings M2 / M3)", () => {
       openWorldHint: false,
     });
     expect(String(tools[0]?.["description"])).toContain(MCP_UNTRUSTED_NOTICE);
-    // stdout carried only the protocol: nothing went through CliIo.log
     expect(env.logs).toEqual([]);
   });
 
@@ -310,7 +292,6 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
       description: "listen port",
       maxAgeDays: null,
     });
-    // A v1 statement: no schema fields, nothing fabricated
     expect(variables[1]).toEqual({
       name: "LEGACY_KEY",
       declaredType: null,
@@ -319,8 +300,6 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
       description: null,
       maxAgeDays: null,
     });
-    // One call = one keyless `maruhi schema`: only the chain and the
-    // metadata-only pull — never the value pull, a DEK, or a version range
     const paths = lastServer().requests.map((request) => request.path);
     expect(paths.some((path) => path.endsWith("/pull/metadata"))).toBe(true);
     expect(paths.filter((path) => /\/pull$|\/deks|\/versions/u.test(path))).toEqual([]);
@@ -339,7 +318,6 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
     expect(description).not.toContain("\n");
     expect(description).toContain("\\u{001b}");
     expect(description).toContain("\\u{202e}");
-    // The same row the CLI table prints
     expect(await runCli(["schema"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain(`EVIL\t-\tfalse\tdeclared\t-\t${description}`);
   });
@@ -361,7 +339,6 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
     expect(
       (response(responses, 3)["structuredContent"] as Record<string, unknown>)["environment"],
     ).toBe("dev");
-    // No cache: each call synced the chain again
     const chainFetches = lastServer().requests.filter((request) =>
       request.path.endsWith("/chain"),
     ).length;
@@ -431,10 +408,6 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
 
 describe("maruhi mcp — the read path runs narrowed (rulings M7 / M8 — independent review)", () => {
   it("a prologue line meant for stdout goes to stderr, never onto the protocol stream", async () => {
-    // Right after accepting an invite the anchor is unverified, and the
-    // keyless prologue prints "anchor check passed" through CliIo.log. A
-    // read that ran with the real CliIo put that line on stdout (the
-    // review's reproduction)
     const env = await startEnv();
     await mkdir(env.pinsDir, { recursive: true });
     await writeFile(
@@ -458,7 +431,6 @@ describe("maruhi mcp — the read path runs narrowed (rulings M7 / M8 — indepe
     expect(response(responses, 2)["isError"]).toBe(false);
     expect(env.logs).toEqual([]);
     expect(env.errors.join("\n")).toContain("Invite-link anchor check passed");
-    // Every protocol line is JSON
     for (const line of env.stdioOut
       .join("")
       .split("\n")
@@ -478,7 +450,6 @@ describe("maruhi mcp — the read path runs narrowed (rulings M7 / M8 — indepe
     for (const id of [2, 3]) {
       const content = response(responses, id)["structuredContent"] as Record<string, unknown>;
       const warnings = content["warnings"] as readonly string[];
-      // Once per call (a fresh notice ledger per read), without the prefix
       expect(warnings.filter((warning) => warning.includes("invite-pin file"))).toHaveLength(1);
       expect(warnings.every((warning) => !warning.startsWith("Warning:"))).toBe(true);
     }

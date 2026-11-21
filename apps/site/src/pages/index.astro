@@ -1,32 +1,4 @@
 ---
-// LP (apex `maruhi.app/`) — a custom page on the site's BaseLayout
-// (docs/notes/web-design-pass.md §4, rulings D / G).
-//
-// The structure is plan A revision 2 after the owner review (2026-09-04):
-// "the chain of Whys".
-//   Hero (Not even us.) → working through 5 questions (files → server →
-//   key → agents → operator) in order lands on maruhi's design → What we
-//   don't promise → Get started
-// Each question is "question → 1-2 sentences of fact → So: maruhi's answer"
-// + an illustration (inline SVG), ordered so that answering only some of
-// the questions still lets a competitor suffice, but reading to the end
-// lands only on maruhi (competitor LP measurements: 0-4 commands, starting
-// from the threat is standard — §4 G revision 2).
-// Commands appear only twice: hero and schema. The install / self-host
-// steps live in docs.
-// Tone (§2): dark base, one accent color used sparingly, restrained
-// decoration, security stated plainly. No feature that is not written is
-// advertised. Terminal output lines are copied verbatim from the real CLI
-// strings (apps/cli/src).
-//
-// Styling is scoped <style> (plain CSS) only. Colors reference the site's
-// theme tokens (--nb-*); no raw hex. SVGs are colored via classes too
-// (no style attributes — CSP).
-// User-facing text is English (ADR-0017).
-// Whitespace follows Astro 7's default `compressHTML: "jsx"` (JSX rules): a
-// line break between text and an element is dropped, so text that ends a
-// line before an inline element (`·`, `set in`, `and`) ends with an explicit
-// `{" "}`. The landing-page e2e (apps/site/test/e2e.test.ts) pins this.
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Header from "../components/Header.astro";
 import { Banner } from "../components/ui/banner";
@@ -38,8 +10,6 @@ const title = "maruhi — secrets only you can read. Not even us.";
 const description =
   "Diskless, end-to-end encrypted secrets manager on Cloudflare. Self-hostable with a single cf deploy.";
 
-// Trust boundary (ADR-0018 / CRYPTO_SPEC §14.2). Only where a decryptor
-// lives sees plaintext
 const tiles = [
   { who: "Your CLI", note: "and the process it runs", reads: true },
   { who: "The server", note: "ciphertext only", reads: false },
@@ -330,7 +300,6 @@ STRIPE_KEY    string  true      set</span>
         > and needs an invite code. A waitlist opens with the invite-only beta; until then, follow
         the repository for release notes, or run it on your own account today.
       </p>
-      <!-- Placeholder for the waitlist channel (H6 swaps in a POST form to Workers — static text only) -->
       <p class="actions" data-waitlist-placeholder>
         <a class="button" href={`${repo}/releases`}>Watch releases on GitHub</a>
         <a class="link" href="/docs/self-hosting">Self-host instead</a>
@@ -391,14 +360,12 @@ STRIPE_KEY    string  true      set</span>
     font-family: var(--nb-font-sans);
     font-size: var(--lp-hero-size);
     font-weight: 800;
-    /* Archivo's width axis — headings are made wide and extra-bold (web-design-pass.md §4) */
     font-stretch: 112%;
     letter-spacing: -0.03em;
     line-height: 1.05;
     max-width: var(--lp-measure);
   }
 
-  /* Accent is used sparingly: the heading punchline, CTA buttons, and the "key" in figures (§2) */
   .hero .punch {
     display: block;
     color: var(--nb-primary);
@@ -468,13 +435,11 @@ STRIPE_KEY    string  true      set</span>
     padding: 0 0.35em;
   }
 
-  /* Terminal: only in two places as evidence (hero / schema). Background is the code token, no decoration */
   .terminal {
     margin: 0 0 calc(var(--lp-gap) * 1.5);
     padding: var(--lp-gap) calc(var(--lp-gap) * 1.25);
     max-width: var(--lp-measure);
     overflow-x: auto;
-    /* Long output lines wrap (no horizontal scrolling in narrow columns / mobile). Table whitespace is preserved */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font-family: var(--nb-font-mono);
@@ -537,10 +502,6 @@ STRIPE_KEY    string  true      set</span>
     font-weight: 600;
   }
 
-  /* The chain of Whys: number → question → fact → So (left rule) + figure.
-     Every step keeps the figure after the text on screen, as in the DOM —
-     alternating sides would make the visual order disagree with the
-     screen-reader reading order (pinned by the landing-page e2e) */
   .chain {
     margin: calc(var(--lp-gap) * 2) 0 0;
     padding: 0;
@@ -593,12 +554,6 @@ STRIPE_KEY    string  true      set</span>
     margin: 0;
   }
 
-  /* Figures: thick-line pictograms (owner ruling 2026-09-04 — §4 G
-     revision 2). Objects are 3px round-ended foreground strokes + a face of
-     the code background color. Auxiliary lines (arrows, connections) are
-     muted. Accent appears at exactly one point — "what holds the key":
-     01's .env, 02's key, 03's ㊙ mark (reuse of the logo SVG), 04's guarded
-     values, 05's deploy */
   .ill {
     display: block;
     width: 100%;
@@ -650,12 +605,6 @@ STRIPE_KEY    string  true      set</span>
     fill: var(--nb-foreground);
   }
 
-  /* Labels are laid out in viewBox units (Martian Mono advances 0.7em: 7.7
-     units per character at 11px). geometricPrecision keeps that advance at
-     every rendered width — Chromium otherwise lays SVG text out at its
-     on-screen size with whole-pixel glyph advances, so a label drifts by up
-     to half a pixel per character as the figure scales. The landing-page
-     e2e pins that no label crosses a shape or another label */
   .ill .label {
     font-family: var(--nb-font-mono);
     font-size: 11px;
@@ -671,7 +620,6 @@ STRIPE_KEY    string  true      set</span>
     fill: var(--nb-primary);
   }
 
-  /* Trust-boundary tiles: only the CLI holds the key */
   .tiles {
     margin: 0;
     padding: 0;
@@ -727,7 +675,6 @@ STRIPE_KEY    string  true      set</span>
     stroke-linejoin: round;
   }
 
-  /* Only the CLI holds the key — its mark is the logo's ㊙ (light / dark SVGs are swapped; the theme script sets <html data-mode>) */
   .seal {
     width: 1.75rem;
     height: 1.75rem;

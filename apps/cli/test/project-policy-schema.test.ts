@@ -1,16 +1,3 @@
-// Wire-level tests for `maruhi project policy schema` (AUTH_SPEC §12-11).
-//
-// What it pins down:
-// - Bare = show (one GET, no PUT); `--set <tier>` = GET + PUT, and the
-//   PUT is sent even when the tier is already set (the server's same-value
-//   PUT is a no-op without an audit row)
-// - `--set` is a closed set (enabled | locked): anything else, the removed
-//   `disabled` included, is a usage error before any request
-// - A 403 for the role names what it needs; the command runs under an
-//   agent (it displays no value)
-// - The 422 the policy produces (schema-required) renders with the next
-//   step and counts as a settled server rejection
-
 import { SchemaPolicyRejectedError } from "@maruhi/api-schema";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -30,7 +17,6 @@ afterEach(async () => {
 const PROJECT = "a".repeat(64);
 const POLICY_PATH = `/projects/${PROJECT}/schema-policy`;
 
-/** A server holding one policy value: GET reads it, PUT replaces it. */
 function policyHandlers(initial: "enabled" | "locked"): MockHandler[] {
   let current = initial;
   return [

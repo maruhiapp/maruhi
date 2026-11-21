@@ -1,12 +1,3 @@
-// Operations foundation — the restore worker's job processing
-// (docs/notes/hosted-ops.md §2-E / §5-2).
-//
-// The restore worker has no HTTP: it reads restore/jobs/ in R2, calls the DO
-// RPC (opsRestore), and writes a static code + verification values into
-// restore/results/. A real DO (the test worker's namespace = production
-// equivalent) pins that the DO name (= project id) is not written in the job
-// but derived from the snapshot's genesis.
-
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -24,11 +15,6 @@ registerDataScenario();
 const bucket = env.OPS_BACKUP_BUCKET as R2Bucket;
 const restoreEnv = { OPS_BACKUP_BUCKET: bucket, PRODUCTION_PROJECT_CHAIN: env.PROJECT_CHAIN };
 
-// The restore worker scans the product key layout (restore/jobs/ etc.), and
-// this file requires an exact match on the scan result (the set of job
-// names). The prefix cannot be made unique to this file, so each test empties
-// restore/ and builds its own preconditions (R2 is outside storage isolation
-// — see the isolate: false note in apps/server/vitest.config.ts)
 beforeEach(async () => {
   const listed = await bucket.list({ prefix: "restore/" });
   if (listed.objects.length > 0) {
@@ -66,8 +52,6 @@ describe("restore worker (restore-worker.ts)", () => {
 
   it("restores a production target from a job file and writes a verification result", async () => {
     await seedProjectActivity();
-    // Materialize the audit-head column first (the trailer carries the
-    // audit head = material for the diff)
     expect((await requestJson("GET", "/audit-head", token(OWNER))).status).toBe(200);
     const uploaded = await snapshot();
     await resetProjectDo(projectId);
@@ -86,20 +70,14 @@ describe("restore worker (restore-worker.ts)", () => {
       expect(outcome.verification.auditHeadHashHex).toBe(uploaded.trailer.auditHeadHashHex);
       expect(outcome.verification.rows).toEqual(uploaded.trailer.rows);
     }
-    // The job is gone (and nothing is left in the claiming running/ either);
-    // the result carries no project id
     expect(await bucket.head("restore/jobs/drill-1.json")).toBeNull();
     expect(await bucket.head("restore/running/drill-1.json")).toBeNull();
     expect(JSON.stringify(outcome)).not.toContain(projectId);
-    // The restore target really is the same DO (the product path works)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
   });
 
   it("a missing object on a fresh destination leaves no tables (Sc-7 / A-4)", async () => {
-    // The restore materializes the destination only after the object is
-    // fetched, so an object-missing refusal on a never-initialized DO leaves no
-    // storage (the tables would otherwise be created before the fetch failed).
     const fresh = "d4".repeat(32);
     await resetProjectDo(fresh);
     const freshStub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(fresh));
@@ -117,11 +95,6 @@ describe("restore worker (restore-worker.ts)", () => {
       "restore/jobs/claimed.json",
       JSON.stringify({ objectKey: uploaded.objectKey, target: "production" }),
     );
-    // While the restore RPC runs, the jobs/ key must already be gone and
-    // moved into running/ (a restore can take minutes — this invariant keeps
-    // the next per-minute cron from picking up the same job and overwriting
-    // its success result with not-empty). Swap the namespace to observe from
-    // inside the RPC
     const seen: { jobs: R2Object | null; running: R2Object | null }[] = [];
     const observingNamespace = {
       idFromName: (name: string) => env.PROJECT_CHAIN.idFromName(name),
@@ -141,7 +114,6 @@ describe("restore worker (restore-worker.ts)", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.jobs).toBeNull();
     expect(seen[0]?.running).not.toBeNull();
-    // After completion nothing remains in running/ either
     expect(await bucket.head("restore/running/claimed.json")).toBeNull();
     expect(await result("claimed")).toEqual({ status: "failed", code: "not-empty" });
   });
@@ -150,10 +122,6 @@ describe("restore worker (restore-worker.ts)", () => {
     await seedProjectActivity();
     const uploaded = await snapshot();
     await bucket.put("restore/jobs/bad.json", "not json");
-    // A corrupt snapshot (not gzip — the equivalent of a truncated multipart
-    // leftover) — the exception is not let through; a static code is written
-    // and the job deleted (otherwise the per-minute cron would retry it
-    // forever)
     await bucket.put("do/test/corrupt.ndjson.gz", new Uint8Array([1, 2, 3, 4, 5]));
     await bucket.put(
       "restore/jobs/corrupt.json",

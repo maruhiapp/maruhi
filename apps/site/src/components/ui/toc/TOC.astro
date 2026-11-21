@@ -1,9 +1,4 @@
 ---
-/**
- * TOC — on-this-page nav with scroll-spy. Static rail rendered inline
- * (border-s + S-curve SVGs at indent changes); animated active indicator
- * lives in toc.client.ts.
- */
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 import type { TOCItem } from "@cloudflare/nimbus-docs/types";
@@ -13,7 +8,6 @@ interface Props extends HTMLAttributes<"div"> {
 }
 
 const { headings: allHeadings, class: className, ...attrs } = Astro.props;
-// A heading that slugs to "" (an emoji-only `## 🎉`) has no target to link to.
 const headings = allHeadings.filter((h) => h.slug);
 ---
 

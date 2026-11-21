@@ -1,20 +1,3 @@
-// CLI-side pure functions for four-eyes (CRYPTO_SPEC §6.2 — PF1; design
-// record es-design.md §12 K6-F / G / K / O).
-//
-// - The target check and the owner-vote tally are crypto's own
-//   `isApprovalTarget` / `approvalSignersOf` / `ownerVotersOf` (public since
-//   the K6-Q handoff — the consensus rule and the CLI share one definition);
-//   the CLI keeps no copy of either. The consensus rule's 422 stays the
-//   final arbiter, and the differential test against `verifyChain`
-//   (approval-rules.test.ts) pins the CLI's foretelling to it
-// - The vote count does not echo the record (`PendingProposal.approvals`)
-//   verbatim — **it is re-tallied under the current policy and current
-//   members** (the record keeps revoked votes — design record §8 K2
-//   implementation memo)
-// - A proposal's identifier is only the proposal entry's entry_hash (hex
-//   64); the CLI invents no alias. It accepts a unique prefix of at least
-//   the first 8 characters (approval item 23)
-
 import { type UserId } from "@maruhi/core";
 import {
   type ApprovalPolicy,
@@ -39,12 +22,9 @@ const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 
-/** Default proposal lifetime (ruling P6 — 7 days). */
 export const DEFAULT_PROPOSAL_LIFETIME_MS = 7 * MS_PER_DAY;
-/** Server acceptance-policy upper bound of `expires_at_ms` (CRYPTO_SPEC §6.4 — 30 days). */
 export const MAX_PROPOSAL_LIFETIME_MS = 30 * MS_PER_DAY;
 
-/** Default `--ops` set when a policy is enabled (approval item 17 — the recommended default set). */
 export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
   "change_role",
   "grant_server",
@@ -52,34 +32,18 @@ export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
   "set_approval_policy",
 ];
 
-/** Shortest proposal-id prefix accepted on the command line (approval item 23). */
 const MIN_PROPOSAL_REF_LENGTH = 8;
 
-// ---------------------------------------------------------------------------
-// Vote re-tally (the CLI-side copy of the §6.2 principle 2 — the target
-// check is crypto's `isApprovalTarget`)
-// ---------------------------------------------------------------------------
-
-/** Whether the vote's device is currently a valid device of that person (§6.2 "the device vocabulary of an approve vote" — 2026-09-19 DK). */
 function voteIsLive(members: ReadonlyMap<string, ChainMember>, signer: ApprovalVote): boolean {
   return members.get(signer.userId)?.devices.has(signer.keyFingerprintHex) === true;
 }
 
-/**
- * Whether the device's effective role is owner (§6.2 "the device vocabulary
- * of an approve vote"). Foretelling (eligibleApprovers / voteEligibility)
- * and tallying (countedVoters) read the same predicate — so the foretell
- * layer and the tally layer cannot disagree on a capped device (PR #186
- * pullfrog finding). The K2 CLI has one device, so "any device" = that
- * device. K4 narrows it to the signing device (the key at hand)
- */
 function ownerOnAnyDevice(member: ChainMember): boolean {
   return [...member.devices.values()].some(
     (device) => effectivePermissionOf(member, device).role === "owner",
   );
 }
 
-/** Whether the actor's user_id holds a live vote in S (a signature by a currently valid device) (the `duplicate-approval` foretell). */
 function hasVoted(
   members: ReadonlyMap<string, ChainMember>,
   pending: PendingProposal,
@@ -90,7 +54,6 @@ function hasVoted(
   );
 }
 
-/** Whether two operations are the same (match on op and normalized payload_bytes — used to judge proposal idempotency. K6-A). */
 export function sameOperation(a: ProposableOperation, b: ProposableOperation): boolean {
   if (a.op !== b.op) {
     return false;
@@ -100,29 +63,17 @@ export function sameOperation(a: ProposableOperation, b: ProposableOperation): b
   return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
-// ---------------------------------------------------------------------------
-// Display views of pending proposals (with re-tally)
-// ---------------------------------------------------------------------------
-
-/** One pending proposal with the votes recounted under the current policy and member set. */
 export interface ProposalView {
   readonly proposal: PendingProposal;
-  /** Whether the inner op is still a target of the current policy (`approval-not-required` otherwise). */
   readonly target: boolean;
-  /** `required_approvals` of the current policy (null while the policy is off). */
   readonly required: number | null;
-  /** Distinct current owners whose signature counts (recounted — never the raw record). */
   readonly voters: readonly string[];
   readonly votes: number;
-  /** Votes still needed for the next `approve` to apply (0 = the next approve completes it). */
   readonly needed: number | null;
-  /** Current owners who have not voted with their current key (the ones who can complete it). */
   readonly eligibleApprovers: readonly string[];
-  /** Expired by the given clock (the chain keeps it pending until withdrawn — CRYPTO_SPEC §6.2). */
   readonly expired: boolean;
 }
 
-/** The view of one proposal (re-tallied under the current policy and members). */
 export function proposalViewOf(
   verified: VerifiedProject,
   proposal: PendingProposal,
@@ -143,25 +94,21 @@ export function proposalViewOf(
     required,
     voters,
     votes: voters.length,
-    // The next approve's actor themself is one vote, so remaining = required − current votes − 1 (floor 0)
     needed: required === null ? null : Math.max(0, required - voters.length - 1),
     eligibleApprovers,
     expired: nowMs > proposal.expiresAtMs,
   };
 }
 
-/** The list of pending proposals (ascending by proposal seq — K6-F). */
 export function proposalViews(verified: VerifiedProject, nowMs: number): readonly ProposalView[] {
   return [...verified.state.pendingProposals.values()]
     .toSorted((a, b) => a.proposalSeq - b.proposalSeq)
     .map((proposal) => proposalViewOf(verified, proposal, nowMs));
 }
 
-/** Whether I can approve (pre-flight check — follows the §6.2 approve check order). */
 export type VoteEligibility =
   | {
       readonly ok: true;
-      /** Whether this approve reaches the quorum (recounted). */
       readonly completes: boolean;
     }
   | {
@@ -176,14 +123,6 @@ export type VoteEligibility =
       readonly message: string;
     };
 
-/**
- * My vote is judged by the effective role of **the signing device** (the FP
- * of the key at hand) (DK K4 — the foretell `eligibleApprovers` stays
- * "people holding at least one owner-effective device" because it cannot
- * know which device others will vote from). If the key at hand is not a
- * valid device of that person, the vote is not counted (the same predicate
- * as the tally `countedVoters`).
- */
 export function voteEligibility(
   verified: VerifiedProject,
   userId: UserId,
@@ -244,31 +183,17 @@ export function voteEligibility(
   return { ok: true, completes: view.needed === 0 };
 }
 
-// ---------------------------------------------------------------------------
-// Prefix resolution of id (entry_hash)
-// ---------------------------------------------------------------------------
-
 export type ProposalRefResolution =
   | { readonly kind: "pending"; readonly proposal: PendingProposal }
   | { readonly kind: "ambiguous"; readonly candidates: readonly PendingProposal[] }
-  /** The prefix matches more than one completed / withdrawn proposal (nothing pending). */
   | { readonly kind: "ambiguous-closed"; readonly proposalSeqs: readonly number[] }
   | { readonly kind: "completed"; readonly proposalSeq: number; readonly completedAtSeq: number }
   | { readonly kind: "withdrawn"; readonly proposalSeq: number }
   | { readonly kind: "unknown" }
   | { readonly kind: "malformed" };
 
-/**
- * Resolves a prefix of at least the first 8 characters of a proposal id
- * (hex 64) against the pending set. On zero matches it distinguishes
- * completed / withdrawn (core's `indexProposals`) from unknown (telling an
- * old id from a typo).
- */
 export function resolveProposalRef(verified: VerifiedProject, ref: string): ProposalRefResolution {
   const normalized = ref.trim().toLowerCase();
-  // `#<seq>`: reference by the proposal entry's seq (K6-F′ — an immutable
-  // value fixed by the chain; the `#` prefix separates it structurally from
-  // hex prefixes)
   const bySeq = /^#(\d{1,9})$/.exec(normalized);
   if (bySeq !== null) {
     return resolveProposalSeq(verified, Number(bySeq[1]));
@@ -305,7 +230,6 @@ export function resolveProposalRef(verified: VerifiedProject, ref: string): Prop
     : { kind: "completed", proposalSeq: only.entry.seq, completedAtSeq: only.completedAtSeq };
 }
 
-/** Resolves by proposal seq (distinguishes pending → completed / withdrawn → unknown, in that order). */
 function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRefResolution {
   for (const proposal of verified.state.pendingProposals.values()) {
     if (proposal.proposalSeq === seq) {
@@ -322,15 +246,6 @@ function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRef
   return { kind: "unknown" };
 }
 
-/**
- * Detects key-FP re-registration (design record K5-K / K6-I / K6-I′): the
- * user_id under which the key being registered appears in a different
- * membership interval of the verified chain's history (`keyHistory` —
- * including proposal-mediated additions). Distinguishes a past membership
- * of the same user_id from a different user_id. The proposer side
- * (`member add`) and the approver side (`approval show`) use the same
- * single predicate.
- */
 export function keyReuseOf(
   verified: VerifiedProject,
   key: { readonly targetUserId: UserId; readonly encPubHex: string; readonly sigPubHex: string },
@@ -347,7 +262,6 @@ export function keyReuseOf(
   return reuse;
 }
 
-/** Warning text for key-FP re-registration (same wording on the proposer and approver sides. `subject` = "the acceptance key" etc.). */
 export function describeKeyReuse(
   subject: string,
   reuse: { readonly userId: UserId; readonly sameUser: boolean },
@@ -357,7 +271,6 @@ export function describeKeyReuse(
     : `${subject} was registered before for a different user (${displayText(reuse.userId)}). A key must not move between identities — unless this is expected, abort and ask the acceptor to generate a new key`;
 }
 
-/** Human-readable failure for a reference that did not resolve to a pending proposal. */
 export function describeUnresolvedRef(
   resolution: Exclude<ProposalRefResolution, { readonly kind: "pending" }>,
 ): string {
@@ -377,20 +290,10 @@ export function describeUnresolvedRef(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Expiry (`--expires <duration>` — K6-K)
-// ---------------------------------------------------------------------------
-
 export type ProposalExpiryParse =
   | { readonly ok: true; readonly lifetimeMs: number }
   | { readonly ok: false; readonly message: string };
 
-/**
- * `<n>m` / `<n>h` / `<n>d` into a duration (ms). Omitted = 7 days (ruling
- * P6). 0 and over 30 days are refused (the pre-flight checks
- * `expires_at_ms > now` and `≤ now + 30 days` — K5-S; they are folded here
- * by construction).
- */
 export function parseProposalExpiry(text: string | undefined): ProposalExpiryParse {
   if (text === undefined) {
     return { ok: true, lifetimeMs: DEFAULT_PROPOSAL_LIFETIME_MS };
@@ -419,11 +322,6 @@ export function parseProposalExpiry(text: string | undefined): ProposalExpiryPar
   return { ok: true, lifetimeMs };
 }
 
-// ---------------------------------------------------------------------------
-// Display of the inner op
-// ---------------------------------------------------------------------------
-
-/** One-line human summary of the inner operation (ids are neutralized). */
 export function describeInnerOperation(operation: ProposableOperation): string {
   switch (operation.op) {
     case "add_member":
@@ -445,7 +343,6 @@ export function describeInnerOperation(operation: ProposableOperation): string {
   }
 }
 
-/** Detail lines for `approval show` (one field per line, all values neutralized). */
 export function describeInnerOperationLines(operation: ProposableOperation): readonly string[] {
   switch (operation.op) {
     case "add_member":
@@ -485,7 +382,6 @@ export function describeInnerOperationLines(operation: ProposableOperation): rea
   }
 }
 
-/** Policy summary for `project policy approvals` / `approval list` (null = off). */
 export function describePolicy(policy: ApprovalPolicy | null): string {
   if (policy === null) {
     return "off (every operation is appended directly)";

@@ -1,5 +1,3 @@
-// `maruhi approval` (discipline: see commands/index.ts).
-
 import { type UserId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -38,7 +36,6 @@ import { logNote, logWarning } from "../notice.ts";
 import type { SweepOutcome } from "../rotation-sweep.ts";
 import type { Fulfilment } from "./approval-approve.ts";
 
-/** The proposal id positional (`maruhi approval show / approve / withdraw` — approval item 23). */
 const proposalIdArgument = () =>
   Argument.String("proposal-id").pipe(
     Argument.withDescription(
@@ -65,12 +62,6 @@ export const approvalApproveConfig = { ...projectFlags(), "proposal-id": proposa
 /** @public */
 export const approvalWithdrawConfig = { ...projectFlags(), "proposal-id": proposalIdArgument() };
 
-/* -------------------------------------------------------------------------- */
-/* Four-eyes (CRYPTO_SPEC §6.2 — PF1 K6): approval list / show / approve / withdraw, */
-/* project policy approvals. Zero values, so the agent-gate is not applied (design record K6-E) */
-/* -------------------------------------------------------------------------- */
-
-/** The summary line of one proposal (`approval list`). */
 function formatProposalRow(view: ProposalView): string {
   const p = view.proposal;
   const votes = view.required === null ? "policy off" : `${view.votes}/${view.required} approvals`;
@@ -82,7 +73,6 @@ function formatProposalRow(view: ProposalView): string {
   return `${p.proposalHashHex.slice(0, 12)}…\tseq=${p.proposalSeq}\tby ${displayText(p.proposerUserId)}\t${describeInnerOperation(p.inner)}\t${votes}\texpires ${formatUtcMinutes(p.expiresAtMs)}${flags.length === 0 ? "" : `\t[${flags.join(", ")}]`}`;
 }
 
-/** One `--json` document (machine-readable — K6-O. Zero values). */
 function approvalListJson(
   policy: Parameters<typeof describePolicy>[0],
   views: readonly ProposalView[],
@@ -114,11 +104,6 @@ function approvalListJson(
   );
 }
 
-/**
- * The guidance for an already-satisfied pending proposal (K5-L / K6 —
- * after the `required_approvals` reduction): the next approve completes
- * it — only a not-yet-voted owner can complete it.
- */
 function readyNote(view: ProposalView): string | null {
   if (!view.target || view.expired || view.needed !== 0) {
     return null;
@@ -130,7 +115,6 @@ function readyNote(view: ProposalView): string | null {
   return `${view.proposal.proposalHashHex.slice(0, 12)}… already has enough recounted approvals under the current policy — the next approve applies it; ${eligible}`;
 }
 
-/** `maruhi approval list [--json]` (the verified chain's pending — K5-M. Vote counts are re-tallied). */
 const approvalListCommand = Effect.fn("approval-command.approvalListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {
@@ -156,7 +140,6 @@ const approvalListCommand = Effect.fn("approval-command.approvalListCommand")(fu
   }
 });
 
-/** `maruhi approval show <id>` (the proposer, the inner op, the expiry, the voters, whether I can approve). */
 const approvalShowCommand = Effect.fn("approval-command.approvalShowCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {
@@ -174,15 +157,11 @@ const approvalShowCommand = Effect.fn("approval-command.approvalShowCommand")(fu
   for (const line of proposalDetailLines(view)) {
     yield* io.log(line);
   }
-  // The approver-side key-FP re-registration warning (K6-I′ — same predicate and wording as the proposer-side K6-I)
   if (view.proposal.inner.op === "add_member") {
     for (const reuse of keyReuseOf(context.verified, view.proposal.inner.payload)) {
       yield* logWarning(describeKeyReuse("the proposed member's key", reuse));
     }
   }
-  // A vote's eligibility is the signing device's effective role (DK
-  // K4). On a keyless run (MARUHI_TOKEN) no device is determined, so
-  // only that is stated (show stays a key-free command)
   const localKeys = yield* loadMasterKeys(context.session).pipe(Effect.orElseSucceed(() => null));
   yield* io.log(
     eligibilityLine(
@@ -198,7 +177,6 @@ const approvalShowCommand = Effect.fn("approval-command.approvalShowCommand")(fu
   }
 });
 
-/** `approval show`'s detail lines (the proposer, the inner op, the expiry, the votes — a pure function). */
 function proposalDetailLines(view: ProposalView): readonly string[] {
   const p = view.proposal;
   const lapsed = p.approvals.filter((vote) => !view.voters.includes(vote.userId));
@@ -227,7 +205,6 @@ function proposalDetailLines(view: ProposalView): readonly string[] {
   ];
 }
 
-/** The "can you approve" line (including K5-L's guidance). */
 function eligibilityLine(
   verified: Parameters<typeof voteEligibility>[0],
   userId: UserId,
@@ -253,7 +230,6 @@ function eligibilityLine(
   return `  you:             can approve — after yours it still ${describeNeeded(afterMine)}: ${command}`;
 }
 
-/** Reporting the sweep part of the approver's fulfillment (remove / revoke) (preamble → sweep → the completion line). */
 const reportFulfilledSweep = Effect.fn("approval-command.reportFulfilledSweep")(function* (
   io: CliIoShape,
   input: {
@@ -275,7 +251,6 @@ const reportFulfilledSweep = Effect.fn("approval-command.reportFulfilledSweep")(
   return code;
 });
 
-/** Reporting the approver's fulfillment (approval item 22) and the exit code (per inner op kind). */
 const FULFILMENT_REPORTERS: {
   readonly [K in Fulfilment["kind"]]: (
     io: CliIoShape,
@@ -331,7 +306,6 @@ function reportFulfilment(
   io: CliIoShape,
   fulfilment: Fulfilment,
 ): Effect.Effect<number, CliError, CliServices> {
-  // An exhaustive Record narrows the argument type per kind (Extract), but the shared call site calls it with the wide type
   const report = FULFILMENT_REPORTERS[fulfilment.kind] as (
     io: CliIoShape,
     fulfilment: Fulfilment,
@@ -339,7 +313,6 @@ function reportFulfilment(
   return report(io, fulfilment);
 }
 
-/** `maruhi approval approve <id>` (sign → fulfill if complete — K6-B / approval item 22). */
 const approvalApproveCommand = Effect.fn("approval-command.approvalApproveCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<number, CliError, CliServices> {
@@ -348,7 +321,6 @@ const approvalApproveCommand = Effect.fn("approval-command.approvalApproveComman
   );
 
   const io = yield* CliIo;
-  // The completion-time sweep report carries the unconverged duties, so the always-on warning is suppressed (same as a convergent command)
   const context = yield* openProject(flags, { quietMandateWarning: true });
   const outcome = yield* approveProposalOp({
     client: context.client,
@@ -382,7 +354,6 @@ const approvalApproveCommand = Effect.fn("approval-command.approvalApproveComman
   }
 });
 
-/** `maruhi approval withdraw <id>` (the proposer or an owner — K6-L). */
 const approvalWithdrawCommand = Effect.fn("approval-command.approvalWithdrawCommand")(function* (
   flags: CommonFlags & { readonly ref: string },
 ): Effect.fn.Return<void, CliError, CliServices> {

@@ -1,37 +1,3 @@
-// Test-suite resolver for the per-suite vitest invocations (the root
-// package.json `test:*` scripts and the CI jobs' test steps).
-//
-// The root `vitest.config.ts` `projects:` list is the single source of
-// truth for which projects exist. This script expands that list itself
-// (globs via Bun.Glob, literal paths as-is), maps every discovered
-// project config to a suite by path rule, and reads each project's
-// `test.name` from its config. A project that matches no suite rule —
-// or whose name is not a plain literal — fails loudly here, at both
-// local and CI invocation time, instead of being silently skipped by a
-// static `--project` list.
-//
-//   bun scripts/test-suite.mjs list            partition as JSON
-//   bun scripts/test-suite.mjs run <suite>     vp test run --project ...
-//                                              (extra args pass through)
-//   bun scripts/test-suite.mjs probe <path>    print the suite a config
-//                                              path maps to (rule only)
-//
-// Suites: packages (every packages/* config), cli, server, and app-unit
-// (apps/*/vitest.unit.config.ts — the unit-test configs; an app's other
-// configs, like the web e2e vitest.config.ts, intentionally match no
-// rule and fail if added to `projects:`).
-//
-// Requires Bun. `run` spawns `vp test` (vite-plus) for every suite,
-// including the server suite on @cloudflare/vitest-plugin (workerd):
-// test files import the runner from "vite-plus/test", so the workerd
-// pool and the runner share the one vitest copy vite-plus bundles.
-// (A standalone vitest install cannot serve here: with a second copy
-// in the tree, the pool's workers and the runner end up on different
-// copies and suites fail to start — so the root carries no direct
-// vitest dependency. packages/crypto keeps a local vitest pin for
-// its browser-mode suite; see the note in
-// packages/crypto/vitest.browser.config.ts.)
-
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -42,9 +8,6 @@ const ROOT_CONFIG = join(ROOT, "vitest.config.ts");
 
 const SUITES = ["app-unit", "cli", "packages", "server"];
 
-// Ordered path rules (repo-relative POSIX path → suite). A `projects:`
-// entry matching nothing is a design decision to make explicitly: the
-// resolver throws rather than guessing.
 function suiteFor(relPath) {
   if (/^packages\/[^/]+\//.test(relPath)) return "packages";
   if (relPath.startsWith("apps/cli/")) return "cli";
@@ -56,10 +19,6 @@ function suiteFor(relPath) {
   );
 }
 
-// The `projects:` entries from the root config's source. The array must
-// stay plain quoted literals: after stripping comments and string
-// literals, only punctuation may remain — anything else (expressions,
-// spreads, interpolations) is rejected so an entry can never be missed.
 function projectSpecifiers() {
   const src = readFileSync(ROOT_CONFIG, "utf8");
   const m = src.match(/\bprojects\s*:\s*\[/);
@@ -89,9 +48,6 @@ function projectSpecifiers() {
   return strings;
 }
 
-// Expand one `projects:` entry into repo-relative config file paths.
-// Literal entries must exist on disk; glob entries must match at least
-// one file — both fail loudly on a typo or rename.
 function expandSpecifier(spec) {
   if (/[*?[{]/.test(spec)) {
     const matches = [...new Bun.Glob(spec).scanSync({ cwd: ROOT })].toSorted();
@@ -106,10 +62,6 @@ function expandSpecifier(spec) {
   return [spec];
 }
 
-// The literal `name:` inside a project config's `test:` block. A
-// computed name is rejected: names must stay literals so this cheap
-// read stays exact (importing configs executes arbitrary code —
-// apps/server's config reads wrangler.jsonc and .dev.vars.example).
 function projectName(relPath) {
   const src = readFileSync(join(ROOT, relPath), "utf8");
   const testIdx = src.search(/\btest\s*:/);
@@ -126,9 +78,6 @@ function projectName(relPath) {
   return m[2];
 }
 
-// The full audit runs on every invocation — every discovered project is
-// mapped, not just the requested suite — so a new unmatched project
-// fails every `test:*` call rather than slipping through one member.
 function partition() {
   const suites = Object.fromEntries(SUITES.map((s) => [s, []]));
   for (const spec of projectSpecifiers()) {

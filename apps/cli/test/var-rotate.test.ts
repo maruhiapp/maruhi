@@ -1,25 +1,3 @@
-// Integration tests for `maruhi var rotate` (PF6 — docs/notes/pf6-design.md
-// rulings R2–R6), driven through runCli against the honest in-memory value
-// environment and fake issuers.
-//
-// Invariants pinned down:
-//  1. a rotation decrypts the current credential in memory, creates the new
-//     one at the issuer, and pushes it as an ordinary new version — the
-//     previous credential is left valid and the report says how to finalize
-//  2. no value is ever printed (not the old one, not the new one, not the
-//     admin credential)
-//  3. an AWS rule pushes the key id companion and the secret as two versions
-//  4. the admin input may live in another environment the member can decrypt
-//  5. --finalize reads the previous version as a verified ancestor and
-//     invalidates exactly that credential; a non-interactive finalize needs
-//     --yes; an in-place rotation (no grace) asks the same way
-//  6. a missing rule, a missing value, and a config of another project stop
-//     before anything is sent to the issuer
-//  7. the sync config is read and the sync decided before the rotation, as
-//     push does: an explicit config of another project stops it before the
-//     issuer, and one that copies nothing gets a note after the push; the
-//     rotation's warnings (a failed connection test) are shown, never a refusal
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,13 +65,10 @@ afterEach(async () => {
 interface Seed {
   readonly variableId: string;
   readonly name: string;
-  /** Every version's plaintext, ascending. */
   readonly plaintexts: readonly string[];
-  /** The variable's declared schema (layout v3 when maxAgeDays is set). */
   readonly schema?: WireStatementSchema;
 }
 
-/** One environment's stateful mock with the given variables. */
 async function environmentServer(input: {
   readonly environmentId: string;
   readonly dek: Uint8Array;
@@ -172,7 +147,6 @@ async function startEnv(input: {
   readonly prod: readonly Seed[];
   readonly ops?: readonly Seed[];
   readonly config: unknown;
-  /** Handlers consulted before the environment's own (a failure injected at one endpoint). */
   readonly before?: readonly MockHandler[];
 }): Promise<{
   env: TestEnv;
@@ -208,12 +182,6 @@ async function startEnv(input: {
   return { env, prod: prod.state, ops: ops === null ? null : ops.state, configPath };
 }
 
-/**
- * The CLI layer with a fake AWS behind the connector: the issuer origins
- * point at `https://iam.test` / `https://sts.test`, and the fetch behind the
- * ambient `HttpClient` answers those from `issuer` (the maruhi server's
- * requests still go out through the real fetch).
- */
 function withFakeAws(env: TestEnv, issuer: typeof fetch): Layer.Layer<CliServices> {
   const routed = ((input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -287,7 +255,6 @@ const PG_CONFIG = {
   },
 };
 
-/** Writes a sync config for `project` whose one onPush target copies DATABASE_URL from `environment`. */
 async function writeSyncConfig(project: string, environment: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "maruhi-var-rotate-sync-test-"));
   const path = join(dir, "maruhi.sync.json");
@@ -323,13 +290,11 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     expect(
       await runCli(["var", "rotate", "DATABASE_URL", "--rotate-config", configPath], env.layer),
     ).toBe(0);
-    // The statement ran on the admin URL decrypted from the ops environment
     expect(sql.executed).toHaveLength(1);
     expect(sql.executed[0]?.url).toBe(ADMIN_URL);
     expect(sql.executed[0]?.statements[0]).toMatch(
       /^ALTER ROLE "app_b" WITH PASSWORD '[A-Za-z0-9]{32}'$/,
     );
-    // The new URL was pushed as version 2 (an ordinary push — no lineage)
     const versions = prod.writes.filter((write) => write.kind === "version");
     expect(versions).toHaveLength(1);
     const body = versions[0]?.request.body as { sameValueAs?: number } | undefined;
@@ -340,7 +305,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     expect(url.username).toBe("app_b");
     expect(url.password).toMatch(/^[A-Za-z0-9]{32}$/);
     expect(sql.probed).toEqual([latest.plaintext]);
-    // Nothing was written to the ops environment
     expect(ops?.writes).toEqual([]);
     const output = [...env.logs, ...env.errors].join("\n");
     expect(output).toContain(
@@ -349,7 +313,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     expect(output).toContain("role app_b now in use");
     expect(output).toContain("role app_a keeps its previous password until you finalize");
     expect(output).toContain("`maruhi var rotate DATABASE_URL --finalize`");
-    // No value, old or new, and no admin credential anywhere in the output
     expect(output).not.toContain("oldpassword");
     expect(output).not.toContain("adminpassword");
     expect(output).not.toContain(url.password);
@@ -370,8 +333,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     });
     const sql = recordingSql();
     env.setSqlRunner(sql.runner);
-    // The due date is computed off the command's Effect clock — pinned here
-    // so the whole report line can be asserted.
     const { layer } = await withTestClock(env.layer, { at: Date.UTC(2026, 0, 15) });
     expect(
       await runCli(["var", "rotate", "DATABASE_URL", "--rotate-config", configPath], layer),
@@ -391,7 +352,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     });
     const sql = recordingSql();
     env.setSqlRunner(sql.runner);
-    // Non-interactive without --yes: refused before anything is sent
     env.setTerminal({ stdin: false, stdout: false });
     expect(
       await runCli(
@@ -404,7 +364,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     );
     expect(sql.executed).toEqual([]);
     env.errors.length = 0;
-    // Interactive: the question names the versions; answering n aborts
     env.setTerminal({ stdin: true, stdout: true });
     env.setPromptResponses(["n"]);
     expect(
@@ -420,7 +379,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
     expect(sql.executed).toEqual([]);
     env.errors.length = 0;
     env.logs.length = 0;
-    // --yes: the previous role (app_a, from version 1) is scrambled on the admin connection
     expect(
       await runCli(
         ["var", "rotate", "DATABASE_URL", "--finalize", "--yes", "--rotate-config", configPath],
@@ -489,7 +447,6 @@ describe("maruhi var rotate (postgres, alternated roles)", () => {
         env.layer,
       ),
     ).toBe(0);
-    // Self-rotation: the current URL is the admin connection
     expect(sql.executed[0]?.url).toBe(OLD_URL);
     expect(sql.executed[0]?.statements[0]).toMatch(/^ALTER ROLE "app_a" WITH PASSWORD '/);
     expect((await decryptLatest(prod, dekProd, "v-db")).version).toBe(2);
@@ -636,7 +593,6 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
     expect(output).not.toContain("old/secret");
     expect(output).not.toContain("brand/new+secret");
 
-    // Finalize: the previous key id (version 1 of the companion) is deactivated
     env.logs.length = 0;
     expect(
       await runCli(
@@ -652,8 +608,6 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
         issuerLayer,
       ),
     ).toBe(0);
-    // The target is decided against the issuer: the other listed key, held by
-    // version 1 of the key id variable, authenticates with version 1's secret
     expect(iam.actions.slice(2)).toEqual([
       "ListAccessKeys",
       "GetCallerIdentity",
@@ -663,12 +617,6 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
   });
 
   it("--finalize --previous deactivates the key that authenticates with that version's secret, never one the server's history metadata would name", async () => {
-    // Three rotations happened (versions 1..3 of both variables); someone
-    // finalizes version 2 explicitly. The issuer lists AKIAMID… and the
-    // current key; AKIAMID… was held by version 2 of the key id variable and
-    // authenticates with version 2's secret, so it is the one deactivated.
-    // The history endpoint's versions and times play no part (a server
-    // cannot steer the target by backdating rows)
     const { env, configPath } = await startEnv({
       prod: [
         {
@@ -741,9 +689,6 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
   });
 
   it("a push that fails after the issuer accepted the change names what was stored, its rollback, and the issuer-specific recovery", async () => {
-    // The companion (key id) lands as version 2, then the secret's push is
-    // refused by the server: the message must not promise that a re-run
-    // reclaims the key (two active keys refuse) — it names the orphaned key
     const { env, prod, configPath } = await startEnv({
       prod: [
         { variableId: "v-id", name: "AWS_ACCESS_KEY_ID", plaintexts: ["AKIAOLD0000000000001"] },
@@ -853,7 +798,6 @@ describe("maruhi var rotate (exec — a script of the repository, PF8)", () => {
     expect(env.captureCalls).toHaveLength(1);
     const rotate = env.captureCalls[0];
     expect(rotate?.command).toEqual(["./rotate.sh"]);
-    // The scripts run from the config's directory (they travel with the repository)
     expect(rotate?.cwd).toBe(configPath.slice(0, configPath.lastIndexOf("/")));
     expect(rotate?.extraEnv).toEqual({
       MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
@@ -863,7 +807,6 @@ describe("maruhi var rotate (exec — a script of the repository, PF8)", () => {
       STRIPE_SECRET_KEY: "sk_live_old",
       STRIPE_ADMIN_KEY: "rk_admin",
     });
-    // The script's stdout became version 2 (an ordinary signed push)
     const latest = await decryptLatest(prod, dekProd, "v-stripe");
     expect(latest).toEqual({ plaintext: "sk_live_new", version: 2 });
     expect(ops?.writes).toEqual([]);
@@ -876,7 +819,6 @@ describe("maruhi var rotate (exec — a script of the repository, PF8)", () => {
       "Previous credential: the previous credential stays valid until you finalize (./finalize.sh runs with it)",
     );
     expect(output).toContain("`maruhi var rotate STRIPE_SECRET_KEY --finalize`");
-    // Nothing the script saw or printed on stderr reaches the output on success
     expect(output).not.toContain("sk_live_old");
     expect(output).not.toContain("sk_live_new");
     expect(output).not.toContain("rk_admin");
@@ -1089,13 +1031,6 @@ describe("maruhi var rotate refusals (before anything is sent)", () => {
 
 describe("maruhi var rotate --finalize with an ancestor this device cannot decrypt", () => {
   it("skips the undecryptable version with a warning and never treats its key as one maruhi stored", async () => {
-    // The environment rotated from epoch 1 to 2 and this device holds only
-    // the epoch-2 wrap (an unfilled gap — device-gaps.ts). Version 1 of the
-    // key id variable (epoch 1, AKIAOLD…) cannot be decrypted here. The
-    // finalize must still run: that version is skipped with a warning, and
-    // because its id is then not one of the ids maruhi is known to have
-    // stored, the issuer's AKIAOLD… key is left untouched (fail-safe: the
-    // skipped version can only shrink what gets deactivated)
     const dek1 = crypto.getRandomValues(new Uint8Array(32));
     const dek2 = crypto.getRandomValues(new Uint8Array(32));
     const chain = await buildChain([
@@ -1146,7 +1081,6 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
             version: index + 1,
             plaintext: entry.plaintext,
             writer: owner,
-            // Signed at the head where that epoch is current
             head: headOf(chain, entry.epoch === 1 ? 2 : 3),
             ...(previous === undefined
               ? {}
@@ -1243,7 +1177,6 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
     expect(output).toContain(
       "access key AKIAOLD0000000000001 of user deployer was never a version of AWS_ACCESS_KEY_ID (not created through maruhi) — left untouched",
     );
-    // No probe and no deactivation: the skipped version's key is not touched
     expect(actions).toEqual(["ListAccessKeys"]);
     expect(output).not.toContain("old/secret");
     expect(output).not.toContain("new/secret");

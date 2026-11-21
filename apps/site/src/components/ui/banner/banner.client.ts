@@ -1,8 +1,3 @@
-/**
- * Storage key: `nb-banner-dismissed-{id}`. Value is "0" for permanent,
- * or a future timestamp (ms) for time-limited dismissal.
- */
-
 import { mount } from "@cloudflare/nimbus-docs/client";
 
 const KEY_PREFIX = "nb-banner-dismissed-";
@@ -14,9 +9,7 @@ function isDismissed(key: string): boolean {
     const expiry = Number(stored);
     if (expiry === 0 || expiry > Date.now()) return true;
     localStorage.removeItem(key);
-  } catch {
-    // localStorage unavailable; show without persistence.
-  }
+  } catch {}
   return false;
 }
 
@@ -26,9 +19,6 @@ function initBanner(banner: HTMLElement): () => void {
 
   const key = banner.dataset.nbBannerKey ?? `${KEY_PREFIX}${id}`;
 
-  // Banner.astro's inline script removes a dismissed banner before paint. This
-  // check covers a banner from an older Banner.astro, and a page whose content
-  // security policy blocks inline scripts.
   if (isDismissed(key)) {
     banner.remove();
     return () => {};
@@ -42,9 +32,7 @@ function initBanner(banner: HTMLElement): () => void {
     const value = days > 0 ? String(Date.now() + days * 86400000) : "0";
     try {
       localStorage.setItem(key, value);
-    } catch {
-      // localStorage unavailable; dismissal is session-only.
-    }
+    } catch {}
     banner.remove();
   }
 

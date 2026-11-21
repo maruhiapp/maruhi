@@ -1,5 +1,3 @@
-// `maruhi guardian` (discipline: see commands/index.ts).
-
 import { type GuardianMode } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
@@ -19,7 +17,6 @@ export const guardianApproveConfig = {
   ),
 };
 
-/** The guardian group's approval scheme (CRYPTO_SPEC §8.3). */
 const GUARDIAN_MODES = ["any", "all"] as const;
 
 function isGuardianMode(value: string | undefined): value is GuardianMode {

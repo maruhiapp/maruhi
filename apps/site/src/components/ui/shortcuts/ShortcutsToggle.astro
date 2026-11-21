@@ -1,11 +1,4 @@
 ---
-/**
- * ShortcutsToggle — lets a reader turn single-key shortcuts (`/`, `[`, `]`) off,
- * as WCAG 2.1.4 asks of page-wide single keys. Single keys bind page-wide only
- * while a page has this switch. Renders nothing when `src/lib/shortcuts.ts`
- * has no single-key shortcut. `compact` keeps the name for screen readers and
- * the tooltip, for a crowded bar such as the header.
- */
 import { isSingleKey, shortcutLabel } from "@cloudflare/nimbus-docs/client";
 import { cn } from "@/lib/cn";
 import { shortcuts } from "@/lib/shortcuts";
@@ -13,7 +6,6 @@ import { Switch } from "@/components/ui/switch";
 import type { HTMLAttributes } from "astro/types";
 
 interface Props extends HTMLAttributes<"button"> {
-  /** Show only the switch, and its keys from `md` up. */
   compact?: boolean;
 }
 

@@ -1,7 +1,3 @@
-// The argument layer of `maruhi login` and `maruhi logout`
-// (commands/login-logout.ts, ADR-0016 stage 3), driven through the real
-// runCli as in effect-cli.test.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -9,8 +5,6 @@ import { expectNoLeak, startEnv } from "./support/argument-layer.ts";
 
 describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
   it("a type-mismatched value is refused without showing the given value", async () => {
-    // The expected type may be shown since it comes from the declaration,
-    // but the given value could contain plaintext, so it is never shown
     const { env, server } = await startEnv();
     expect(await runCli(["login", "--token-ttl-days", "s3cr3t"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
@@ -20,8 +14,6 @@ describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
   });
 
   it("a valueless number becomes a usage error (2)", async () => {
-    // A number option with no value is an InvalidValue = a usage mistake
-    // (exit 2). Never reported as an internal error (exit 1)
     const { env, server } = await startEnv();
     expect(await runCli(["login", "--token-ttl-days"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unacceptable value for flag --token-ttl-days");
@@ -35,9 +27,6 @@ describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
   });
 
   it("--poll-interval no longer exists and is refused as an unknown flag", async () => {
-    // The hidden test-only shortcut was removed with the polling rewrite
-    // (the schedule now drives the waits; tests drive a virtual clock). An
-    // unknown flag is a usage error (2), and the given value is never echoed
     const { env, server } = await startEnv();
     expect(await runCli(["login", "--poll-interval", "sentinel-value-0x"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");

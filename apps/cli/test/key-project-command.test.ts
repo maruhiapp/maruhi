@@ -1,9 +1,3 @@
-// The argument layer of `maruhi key` and `maruhi project`
-// (key.package/command.ts and project.package/command.ts): their nested
-// subcommands (ADR-0016 stage 3), driven through the real runCli as in
-// effect-cli.test.ts. The two groups share a file because several cases
-// check both.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -12,9 +6,6 @@ import { makeTestEnv } from "./support/env.ts";
 
 describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
   it("an unknown operation lists the possible operations and fails before login / server contact", async () => {
-    // Put behind session resolution, `key bogus` would fail as "Not logged in"
-    // and the typo would never be conveyed (at exit 1, no less). In effect,
-    // subcommand resolution runs before the handler = it structurally never reaches the session
     const key = await makeTestEnv();
     expect(await runCli(["key", "bogus"], key.layer)).toBe(2);
     expect(key.errors.join("\n")).toContain(
@@ -30,9 +21,6 @@ describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
   });
 
   it("the operation name never returns the typed word (neither control chars nor the value reach the terminal)", async () => {
-    // A word carrying ANSI sequences that erase lines and write a fake success
-    // line. The wording is only the list of possible operations — the typed
-    // word is never shown (a positional arg could carry a value)
     const evil = "[2K\rmaruhi: OK";
     for (const command of ["key", "project"]) {
       const { env } = await startEnv();
@@ -54,9 +42,6 @@ describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
   });
 
   it("project verify / anchor / checkpoint / export refuse a malformed --project at its declaration, before login", async () => {
-    // Checked only where the project is resolved, a typo would hide behind
-    // "Not logged in" (verify and export open the session first). The
-    // value is never shown
     for (const subcommand of ["verify", "anchor", "checkpoint", "export"]) {
       const env = await makeTestEnv();
       expect(

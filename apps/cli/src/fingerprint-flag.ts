@@ -1,20 +1,7 @@
-// Format validation of flags that take a key fingerprint (shared by
-// server grant / revoke, invite accept, member add). The consumers are
-// server.package/command.ts, invite.package/command.ts and
-// member.package/command.ts. Wording is English per ADR-0017.
-
 import { Effect } from "effect";
 
 import { type CliError, usageError } from "./errors.ts";
 
-/**
- * Format validation of a flag taking a key FP (lowercase hex, 32
- * chars = 16 bytes). Errors are reported under the **flag name as
- * typed** (shared across grant's --expect-fingerprint / revoke's
- * --fingerprint / the FP flags of invite and member — never point at
- * a flag name that does not exist and confuse). `hint` is the
- * guidance for where the FP comes from (per key kind).
- */
 export function parseFingerprintFlag(
   flagName: string,
   value: string | undefined,
@@ -29,7 +16,6 @@ export function parseFingerprintFlag(
   return Effect.succeed(value);
 }
 
-/** User-key FP flag (CRYPTO_SPEC §3) — inserts only the provenance guidance into the shared parser. */
 export function parseUserFingerprintFlag(
   flagName: string,
   value: string | undefined,

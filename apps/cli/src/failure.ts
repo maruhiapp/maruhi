@@ -1,11 +1,3 @@
-// Maps API / crypto typed errors to user-facing CliErrors.
-//
-// Discipline: messages consist only of identifiers (IDs, reason codes,
-// limit values, HTTP status) and never carry plaintext values, key
-// material, or raw token values (CLAUDE.md). Direct `_tag` access is
-// banned by oxlint, so discrimination is by instanceof
-// (Schema.TaggedError supports instanceof).
-
 import {
   AuditHeadNotReadyError,
   AuthFlowError,
@@ -63,7 +55,6 @@ import { CliError, cliError } from "./errors.ts";
 
 type Renderer = (error: unknown) => string | null;
 
-/** The conversion to display ProposalLimit's TTL (milliseconds) in days. */
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function when<T>(guard: (error: unknown) => error is T, render: (error: T) => string): Renderer {
@@ -74,62 +65,11 @@ function isInstanceOf<T>(ctor: new (...args: never[]) => T) {
   return (error: unknown): error is T => error instanceof ctor;
 }
 
-/**
- * Schema mismatch (`Schema.SchemaError`).
- *
- * A typed client's failure is, per `HttpApiClient`'s declaration, one of
- * three kinds — "the endpoint's declared error | `HttpClientError` |
- * `Schema.SchemaError`" — and the mapping above handles the first two.
- * **This is the remaining kind**.
- *
- * **The direction cannot be told from the type**: upstream sends not only
- * response decodes but also request encodes (`encodePayload` /
- * `encodeParams` / `encodeHeaders` / `encodeQuery`) into **the same error
- * channel**, so `Schema.isSchemaError` catches both. Therefore the
- * wording **does not assert a server-side fault**, and the guidance lists
- * both directions (request side = check the values you provided /
- * response side = version consistency. Listing only "version
- * consistency" would steer to the server, contradicting the first half
- * that avoided asserting it) — in fact an over-long `--token-name` value
- * used to arrive here as an encode failure (today the argument layer
- * drops it before any communication; cli.ts's requireTokenName).
- * Checking request-side values at the argument layer is the plug — not
- * this mapping.
- *
- * Why `message` may pass through (measured — 8 shapes confirmed on
- * rc.109): upstream's formatting shows **only the expected type and
- * location**, **never the mismatching value itself** (`Expected number at
- * ["variables"][0]["version"]`). A response body can carry variable names
- * and ciphertexts, so if this ever became value-containing formatting,
- * diagnostics would become a leak path — that property is pinned by
- * failure.test.ts's **negative check** (it fails if upstream changes it).
- *
- * Newlines are folded into one line before neutralizing (`displayText`
- * also replaces newlines with the replacement character — unfolded it
- * would render `Expected number\uFFFD at …`, unreadable).
- */
 function renderSchemaFailure(error: Schema.SchemaError): string {
   const detail = displayText(error.message.replace(/\s+/g, " ").trim());
   return `Some data does not match the schema (${detail}). Check the values you provided, and that the CLI and server versions match`;
 }
 
-/**
- * Whether the issue is the refusal of a response that omits the
- * environment manifest (required on the wire since AUTH_SPEC
- * 0.28-draft). The struct decode stops at the first error (effect's
- * default `errors: "first"` parse option), so the failure arrives as
- * `AnyOf → Composite → Pointer → MissingKey` (the `AnyOf` is the
- * response union's wrapper) for the
- * pull, metadata-pull and lease responses alike — one match covers
- * all three (the lease path decodes in ci-lease.ts). The descent
- * walks only the non-`Pointer` nodes and stops at the first
- * `Pointer`: a nested field missing further down (e.g. `x.manifest`)
- * reaches its own `Pointer` through another `Pointer`'s subtree and
- * is never entered, so only the missing top-level key can match. An
- * encode-side MissingKey at ["manifest"] would also match, but that
- * direction is unreachable: the manifest field is a required typed
- * field of every request body the CLI builds.
- */
 const isMissingManifestIssue = (issue: SchemaIssue.Issue): boolean => {
   if (issue instanceof SchemaIssue.Pointer) {
     return (
@@ -147,26 +87,9 @@ const isMissingManifestIssue = (issue: SchemaIssue.Issue): boolean => {
   return false;
 };
 
-/**
- * §6.3's manifest-suppression verdict. Unlike every other schema
- * failure this one names a server-side act, not an input or a version
- * problem — an older server always sends the manifest when the row
- * exists, so absence can only mean corruption or a hostile / broken
- * server. It is therefore pulled out ahead of the generic schema
- * renderer, whose "check the values / versions" guidance would
- * misdirect at exactly this verdict. The environment id is not
- * available at this layer, so it is not named.
- */
 const MANIFEST_SUPPRESSION_MESSAGE =
   "The server did not distribute an environment manifest. A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected";
 
-/**
- * Reason-specific guidance for 503 `LeaseUnavailable` (AUTH_SPEC
- * §14-3). All three reasons mean "not a credential problem — the lease
- * cannot be issued right now", and the next step differs — not mixed
- * with 401, the fix target is named per reason (re-run / administrator /
- * deploy config).
- */
 function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   if (error.reason === "oidc-jwks-unavailable") {
     return "The server could not fetch the OIDC issuer's signing keys (oidc-jwks-unavailable). This is a transient issuer or network condition, not a problem with your credentials — retry the job later";
@@ -177,7 +100,6 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (`maruhi env rotate` / `maruhi server grant`), then retry";
 }
 
-/** Reason-specific guidance for 503 `SetupIncomplete` (AUTH_SPEC §3): both are fixed by the server administrator. */
 function renderSetupIncomplete(error: SetupIncompleteError): string {
   if (error.reason === "rate-limit-unconfigured") {
     return "The server's self-hosting setup is incomplete (rate-limit-unconfigured): its deployment lacks the per-source-IP rate-limit binding this request needs. The server administrator should redeploy with the `bindings.rateLimit` entries of apps/server/cloudflare.config.ts (docs/SELF_HOSTING.md)";
@@ -185,14 +107,6 @@ function renderSetupIncomplete(error: SetupIncompleteError): string {
   return "The server's self-hosting setup is incomplete (github-oauth-unconfigured). The server administrator should register a GitHub OAuth App following docs/SELF_HOSTING.md";
 }
 
-/**
- * 422 `DataLimitExceeded` (AUTH_SPEC §12-8). Two resources get their next
- * step named: the DO storage guard is a measured threshold, not "what this
- * request adds", and the never-pruned audit log usually dominates, so
- * deleting frees little; an environment's current ciphertext is freed by
- * deleting or shrinking values of that environment. The other caps keep
- * the general form.
- */
 function renderDataLimit(error: DataLimitExceededError): string {
   if (error.resource === "project-storage-bytes") {
     return `The project's stored data has reached the server's storage guard (${error.limit} bytes — AUTH_SPEC §12-8). Writes that add content are rejected until space is freed; reading values, deleting environments / variables / DEK wraps, removing members and a rotation's key change still work (re-encrypted values cannot be pushed). Delete what you no longer need and retry; if the audit log fills the project, deleting frees little — move the values to a new project before the platform's 10 GB limit stops reads too`;
@@ -203,29 +117,12 @@ function renderDataLimit(error: DataLimitExceededError): string {
   return `Exceeds a server acceptance limit (${error.resource} limit ${error.limit})`;
 }
 
-/**
- * Whether the failure is the server not answering at all — no response
- * (DNS, connection, TLS, a cut-off transfer) or a gateway's own status in
- * front of it (502 / 503 / 504, Cloudflare's 52x) — as opposed to an
- * answer of the server (any typed error, or a 4xx / other 5xx the schema
- * could not interpret). The read-only fallback to a configured mirror
- * (PF2 — AUTH_SPEC §11-7) fires on this and on nothing else.
- */
-/**
- * Whether nothing answered at all (a transport failure or the request
- * bound — never an HTTP status, not even a 500): the question of a
- * promotion's probe ("is the source gone?"), narrower than
- * {@link isUnreachable} ("should a read-only fallback be tried?").
- */
 export function isNoAnswer(error: unknown): boolean {
   return error instanceof HttpClientError.HttpClientError && error.response === undefined;
 }
 
 function isUnreachable(error: HttpClientError.HttpClientError): boolean {
   const status = error.response?.status;
-  // A 500 is the server failing to answer the read (a crashed handler), not
-  // an answer about the read (a 403, a 404): a read-only fallback is as
-  // right for it as for a gateway's 502 (PF2 ruling E revision)
   return (
     status === undefined ||
     status === 500 ||
@@ -239,14 +136,11 @@ function isUnreachable(error: HttpClientError.HttpClientError): boolean {
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   const status = error.response?.status;
   if (status === 413) {
-    // A raw 413 outside the schema (the HTTP raw-body cap — the handed-down branch of session-07 §5)
     return "The server rejected the request for its size (HTTP 413). The value is too large";
   }
   if (status !== undefined) {
     return `Cannot interpret the server response (HTTP ${status}). Check the server URL, and that the CLI and server versions match`;
   }
-  // The request bound of api.ts names itself (a server that accepted the
-  // connection and never answered is told apart from one nothing reached)
   if (
     error.reason instanceof HttpClientError.TransportError &&
     error.reason.description !== undefined
@@ -256,14 +150,7 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   return "Failed to connect to the server (check your network and the server URL)";
 }
 
-// A CliError is returned as-is at toCliError's entry (so the usage flag is not dropped)
 const renderers: readonly Renderer[] = [
-  // Framework-level RFC 9457 problems (Effect 4.1's ProblemDetails
-  // middleware on the API): the server could not decode the request
-  // (400) or could not encode its response (500). The wording asserts
-  // neither side's fault — like renderSchemaFailure below, which the
-  // pre-4.1 schema-error channel fed — and the problem's own fields
-  // (a generic detail only) are never passed through
   when(
     isInstanceOf(HttpApiError.BadRequestProblem),
     () =>
@@ -275,9 +162,6 @@ const renderers: readonly Renderer[] = [
   ),
   when(
     isInstanceOf(UnauthorizedError),
-    // Expiry folds into the same 401 as revocation (AUTH_SPEC §6 — W3a:
-    // the distinction is not put on the wire), so the guidance names both
-    // possibilities
     () =>
       "Authentication failed (the token may be expired or revoked). Log in again with `maruhi login`",
   ),
@@ -286,9 +170,6 @@ const renderers: readonly Renderer[] = [
       ? "Insufficient permission (insufficient-scope): the target environment is outside your environment scope on this project's chain. Your local chain view may be stale (the scope may have just been narrowed) — re-run to resync, or ask a project admin to widen your scope (`maruhi member list` shows scopes)"
       : `Insufficient permission (${e.reason})`,
   ),
-  // The error Schema's ID / field columns are unconstrained Schema.String
-  // on the wire (the server can fill them freely) — unlike reason / op /
-  // resource (Literals), they need neutralizing
   when(
     isInstanceOf(ProjectNotFoundError),
     (e) =>
@@ -310,9 +191,6 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(ChainHeadConflictError),
     (e) => `The chain head conflicted (current head seq=${e.currentHeadSeq}). Re-sync and retry`,
   ),
-  // Manifest-related (§12-5). Paths where a command has its own mapping
-  // (env rotate / push's 409 re-resolution) never arrive here — this is
-  // the catch-all for the rest
   when(
     isInstanceOf(ManifestRejectedError),
     (e) =>
@@ -323,9 +201,6 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `The manifestVersion conflicted (current manifestVersion=${e.currentManifestVersion}). A concurrent meta operation advanced the environment's manifest — re-run to rebuild it from the refreshed state`,
   ),
-  // Meta-statement acceptance (§12-5). The commands with a bounded 409
-  // re-resolution (var rm, schema set, push, env rename / rm) only arrive
-  // here for the refusals they do not retry
   when(
     isInstanceOf(MetaVersionConflictError),
     (e) =>
@@ -360,21 +235,16 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This operation (${e.op}) is only accepted through the compound endpoint (AUTH_SPEC §12-4)`,
   ),
-  // The acceptance policy for device count (AUTH_SPEC §12-3 — not a consensus rule. DK K3)
   when(
     isInstanceOf(DeviceLimitError),
     (e) =>
       `This project already has the maximum number of active devices for that member (${e.limit}). Revoke a device first (\`maruhi device revoke\`), then re-run`,
   ),
-  // The acceptance policy for propose (AUTH_SPEC §12-8 — not a consensus rule. K5)
   when(isInstanceOf(ProposalLimitError), (e) =>
     e.reason === "pending-proposals"
       ? `This project already has the maximum number of pending proposals (${e.limit}). Withdraw or complete an existing proposal first (expired proposals do not count)`
       : `The proposal's expiry is too far in the future (server limit: ${Math.round(e.limit / MS_PER_DAY)} days from now)`,
   ),
-  // The catch-all for the remaining paths that do not go through the
-  // dedicated bounded retries (checkpoint.ts / audit-reconcile.ts).
-  // Retryable, so a re-run is suggested
   when(
     isInstanceOf(AuditHeadNotReadyError),
     () =>
@@ -402,7 +272,6 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(EpochConflictError),
     (e) => `Epoch conflict (current epoch=${e.currentEpoch}). Giving up after the retry limit`,
   ),
-  // The schema policy (AUTH_SPEC §12-11 — schema-required is its only reason)
   when(
     isInstanceOf(SchemaPolicyRejectedError),
     (e) =>
@@ -421,7 +290,6 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(DekWrapRejectedError),
     (e) => `The DEK-wrap registration was rejected (${e.reason})`,
   ),
-  // recipientUserId is a free-form string in the server response — neutralize before emitting to the terminal
   when(
     isInstanceOf(DekWrapExistsError),
     (e) =>
@@ -431,9 +299,6 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(DekWrapNotFoundError),
     (e) => `DEK wrap not found (epoch=${e.epoch}, recipient=${displayText(e.recipientUserId)})`,
   ),
-  // Lease-related (AUTH_SPEC §14-3). reason is a Literal (the server
-  // cannot fill it freely), so it is shown as-is. Token values and
-  // external identifiers are not carried
   when(
     isInstanceOf(LeaseUnauthorizedError),
     (e) =>
@@ -445,7 +310,6 @@ const renderers: readonly Renderer[] = [
       : `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
-  // Sealed value proposals (AUTH_SPEC §14-5). reason is a Literal (shown as-is)
   when(
     isInstanceOf(ExportChangedError),
     () =>
@@ -476,33 +340,22 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(TokenLimitError),
     (e) => `The API-token issuance limit is reached (${e.limit} tokens)`,
   ),
-  // The project-count / org acceptance cap (AUTH_SPEC §11-3). Only new
-  // inits are subject (a repair re-init of an existing project passes
-  // regardless of the cap)
   when(
     isInstanceOf(ProjectLimitError),
     (e) =>
       `This organization already holds the maximum number of projects (${e.limit} — AUTH_SPEC §11-3). New projects are rejected until the limit is raised by the server operator; existing projects are unaffected`,
   ),
-  // Mirrors (AUTH_SPEC §11-7 — PF2)
   when(isInstanceOf(MirrorSyncRejectedError), renderMirrorSyncRejected),
   when(isInstanceOf(MirrorStateError), renderMirrorState),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
-  // §6.3's manifest suppression is pulled out ahead of the generic
-  // schema renderer (see isMissingManifestIssue) — its verdict names a
-  // server-side act, not an input or version problem
   when(
     (error): error is Schema.SchemaError =>
       Schema.isSchemaError(error) && isMissingManifestIssue(error.issue),
     () => MANIFEST_SUPPRESSION_MESSAGE,
   ),
-  // The third kind of typed-client failure (the first two kinds — an
-  // unreachable response and every other HttpClientError — are mapped
-  // in toCliError / above; the declaration is exhausted)
   when(Schema.isSchemaError, renderSchemaFailure),
 ];
 
-/** Why a replication page was refused (AUTH_SPEC §11-7 — `maruhi mirror sync`). */
 function renderMirrorSyncRejected(error: MirrorSyncRejectedError): string {
   switch (error.reason) {
     case "chain-not-extension":
@@ -530,17 +383,6 @@ function renderMirrorState(error: MirrorStateError): string {
     : "This project is not marked as a mirror on that server (not-mirror). An owner marks it with `maruhi mirror mark --server <mirror url> --source <server url>`";
 }
 
-/**
- * Whether the server **rejected with its own error body** (= it is
- * certain the request arrived, was processed, and was refused). Only a
- * server that processed the request can return one of these bodies, so
- * whether it was accepted is settled.
- *
- * Failures not listed here (transport errors, lost responses,
- * uninterpretable 5xx) are **unknown whether accepted** — to default to
- * "unknown", the test is an allow-list (an unknown error never silently
- * falls into the "settled" side).
- */
 export function isServerRejection(error: unknown): boolean {
   return [
     AuditHeadNotReadyError,
@@ -580,33 +422,14 @@ export function isServerRejection(error: unknown): boolean {
   ].some((ctor) => error instanceof ctor);
 }
 
-/**
- * Names the *type* of an internal failure (defect) without echoing its message.
- *
- * A defect's `message` can arrive carrying wording that embeds the typed
- * value (`Invalid value: <plaintext>`), so neutralizing control
- * characters alone cannot uphold the discipline (never show typed values
- * in diagnostics). Yet silently swallowing is also banned (CLAUDE.md), so
- * only the type name — **vocabulary derived from code** — is kept as a
- * clue: it cannot be built from argv, and `bun build --compile` does not
- * minify, so it survives in the distributed binary.
- */
 export function internalErrorKind(failure: unknown): string {
   return displayText(failure instanceof Error ? failure.constructor.name : typeof failure);
 }
 
-/**
- * Collapses any failure into a user-facing {@link CliError}. Failures that no
- * renderer claims are reported by **type name only** — never by their message
- * (see the comment at the fallback).
- */
 export function toCliError(error: unknown): CliError {
-  // Already a CliError: return it as-is without dropping the usage flag (exit code 2)
   if (error instanceof CliError) {
     return error;
   }
-  // The server did not answer (transport, or a gateway in front of it):
-  // the one failure a configured mirror may take over (context.ts)
   if (error instanceof HttpClientError.HttpClientError && isUnreachable(error)) {
     return new CliError({ message: renderHttpFailure(error), unreachable: true });
   }
@@ -616,12 +439,5 @@ export function toCliError(error: unknown): CliError {
       return cliError(message);
     }
   }
-  // Only **the unknown beyond the exhausted declaration** arrives here
-  // (the three kinds of typed-client failure are mapped above). An unknown
-  // message is not passed through — wording may arrive containing
-  // fragments of a response body or a typed value, so control-char
-  // neutralizing alone cannot uphold the discipline. Not swallowed
-  // silently either — the type name (code-derived vocabulary) is kept as
-  // a clue
   return cliError(`Unexpected error (${internalErrorKind(error)})`);
 }

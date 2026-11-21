@@ -6,38 +6,8 @@ import funstackStatic from "@funstack/static";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-// Protect the publicDir's untransformed copies from layer-split's HTML
-// handling. Kept in step with the targets whose byte equality
-// write-headers.ts checks (pages.css is the self-hosted stylesheet shared
-// by /invite and the server-served ceremony pages).
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
-// FunStack splits Vite environments into rsc / client / ssr. ssr emits
-// JS only and no CSS. @astryxdesign/build 0.7.3's astryx-build-layer-split
-// hard-errors when StyleX rules exist but no target CSS does, so it is
-// applied only to environments that emit CSS.
-//
-// In addition, client's writeBundle branches on whether any HTML file is
-// already under the output directory. With none, it rewrites the StyleX
-// block of the SPA CSS in place into the cascade layers (the branch we
-// need). With some, it moves the layers into a separate
-// astryx-stylex-<hash>.css and links that only from the HTML present at
-// that moment (linkStylesheetsForEveryPage). FunStack writes the SPA HTML
-// after every environment has built, so the only HTML present then is the
-// publicDir copy (invite.html): the SPA would never link the layers, and
-// the product layer would be lost while invite.html got a <link>. So the
-// passthrough files are taken out of the output directory while the
-// plugin runs and written back afterwards (also restoring their bytes),
-// and a stray astryx-stylex-*.css fails the build. The stylexOptions key
-// keeps the legacy mode (prebuilt CSS consumption; no src alias).
-//
-// This is a local patch on a vendor plugin (awaiting the upstream fix of
-// ADR-0013 option ⑤). AstryxVitePluginOptions 0.7.3 has neither an
-// environment scope nor a publicDir exclusion (re-verified at the 0.6.5 →
-// 0.7.3 upgrade). If the target plugin is not found or its shape changed,
-// fail loudly rather than silently passing through: so that the next
-// upgrade cannot silently undo one part of the workaround and bring back
-// the ssr hard error / pollute invite.html / drop the product layer.
 const LAYER_SPLIT_PLUGIN = "astryx-build-layer-split";
 const SPLIT_STYLESHEET = /^astryx-stylex-.*\.css$/;
 
@@ -48,7 +18,6 @@ function outputDir(options: {
   return options.dir ?? (options.file === undefined ? undefined : dirname(options.file));
 }
 
-/** Take the passthrough files out of outDir; the returned function writes them back. */
 function parkPassthrough(outDir: string | undefined): () => void {
   if (outDir === undefined) return () => {};
   const parked = PUBLIC_PASSTHROUGH.map((name) => join(outDir, name))
@@ -60,7 +29,6 @@ function parkPassthrough(outDir: string | undefined): () => void {
   };
 }
 
-/** Fail the build if the plugin took the separate-stylesheet branch. */
 function assertNoSplitStylesheet(outDir: string | undefined): void {
   if (outDir === undefined) return;
   const stray = readdirSync(outDir, { recursive: true, encoding: "utf8" }).filter((path) =>
@@ -112,9 +80,6 @@ function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
   });
 }
 
-// The StyleX compiler is always on. A build without it loses all styles
-// at runtime silently (the e2e is the effective defense), so there is
-// no switch to remove the compiler.
 const stylexPlugins = adaptAstryxLayerSplit(
   astryxStylex({
     stylexOptions: {

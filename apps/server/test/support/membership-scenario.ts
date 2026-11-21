@@ -1,30 +1,3 @@
-// Shared scenario for membership-log integration tests (the same
-// "shared fixture + register" pattern as data-scenario.ts).
-//
-// History of the split: vitest-pool-workers 0.22.0 had a harness-side bug
-// where the per-request cost of SELF.fetch grows in proportion to the
-// cumulative request count (workers-sdk#15092 / #15446); the split by
-// describe exploited the fact that workerd is rebuilt per file to reset the
-// degradation. The bug was fixed in @cloudflare/vitest-plugin 1.1.2
-// (already migrated), so this split is no longer required for performance.
-// It is kept for cross-file parallelism (one per core) and readability.
-//
-// Reuse of the test vectors (packages/crypto/test-vectors/chain-entries.json):
-// - Replay the happy path seq 1-12 as server acceptance tests (each actor's
-//   real PAT auth. create_environment / rotate_epoch go through the
-//   composite endpoint — §12-4). Because the composite inserts a boundary
-//   checkpoint (H+2), the head drifts from the vector's fixed seq / prev
-//   after the first composite. Subsequent entries keep op / payload / actor
-//   and are re-signed at the real head to follow it (byte pinning is the job
-//   of the crypto layer's 4-runtime tests; here we pin that the same op
-//   sequence is accepted by the API)
-// - Replay all authz negatives as rejection tests (re-signed at the real
-//   head in the same way)
-//
-// Auth obtains PATs via the real issuance path (CLI login handoff). The
-// vectors' fixed user_ids are aligned by seeding D1 directly (users +
-// linked_identities) (AUTH_SPEC §11-1 ruling).
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 import { vectorEnvironmentDeks } from "@maruhi/crypto/test-support";
@@ -63,7 +36,6 @@ const GITHUB_IDS: Record<string, number> = {
   "user-owner-0001": 9001,
   "user-member-0002": 9002,
   "user-admin-0003": 9003,
-  // 2026-09-14 ES + PF1: the listed / all members and owner joining at seq 13-19 of the canonical chain
   "user-devmember-0010": 9010,
   "user-devadmin-0011": 9011,
   "user-prodreader-0012": 9012,
@@ -109,30 +81,16 @@ export const getChain = (projectId: string, headers?: Record<string, string>): P
     headers: headers ?? bearer(tokenFor("user-owner-0001")),
   });
 
-/**
- * The vector's dummy DEK for (environment, epoch) (paired with the
- * computed commitment). For a negative's invalid coordinates (a
- * nonexistent epoch etc.) there is no vector DEK, so a random value
- * substitutes — their rejection does not depend on wrap contents (they fail
- * on consensus rules / check order).
- */
 function vectorDek(environmentId: string, epoch: number): Uint8Array {
   const dekHex = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_hex;
   return dekHex === undefined ? makeDek() : hexBytes(dekHex);
 }
 
-/** Tracking of valid grants (for replayVectorChain): FP → enc public key + disclosure scope. */
 interface TrackedServerGrant {
   readonly encPubHex: string;
   readonly scope: readonly string[];
 }
 
-/**
- * Latest-manifest tracking per environment (material for the composite's
- * manifestVersion CAS / prev chain — §12-5). Cleared at the start of
- * replayVectorChain (every test begins with a replay). envMeta is pinned
- * by the creation composite's bundled statement (metaVersion 1).
- */
 const replayManifests = new Map<
   string,
   {
@@ -142,10 +100,6 @@ const replayManifests = new Map<
   }
 >();
 
-/**
- * The composite's wrap set (all current members + the server keys of valid
- * grants in the disclosure scope — the complete set of AUTH_SPEC §12-4).
- */
 async function compositeWraps(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
   environmentId: string,
@@ -178,16 +132,6 @@ async function compositeWraps(
   return deks;
 }
 
-/**
- * The composite's bundled statement (creation only) + envMeta + manifest
- * (§12-4 / §12-5): the declared head is the current head before the
- * append; epoch is the one the bundled entry establishes. When there is no
- * tracking in a negative (e.g. rotate on a never-created environment), a
- * dummy-envMeta v1 is used (the rejection is decided by earlier checks).
- * The creation composite pins the wire shape at manifestVersion 1 with
- * empty prev (a negative's duplicate creation is sent in the same shape;
- * the rejection is the consensus rule's job).
- */
 async function compositeManifestParts(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
   environmentId: string,
@@ -242,13 +186,6 @@ async function compositeManifestParts(
   return { statement, envMeta, manifest };
 }
 
-/**
- * Send a create_environment / rotate_epoch vector entry to the composite
- * endpoint (AUTH_SPEC §12-4). The generic append rejects the two ops with
- * CompositeRequired, so both replay and negatives go through the
- * composite. The wrap set wraps the vector's dummy DEK to the current
- * member set (recipients) with real HPKE, signed by the actor itself.
- */
 export async function submitComposite(
   entry: ChainEntry & { readonly op: "create_environment" | "rotate_epoch" },
   recipients: readonly string[],
@@ -275,9 +212,6 @@ export async function submitComposite(
     environmentId,
     epoch,
   );
-  // Boundary checkpoint (H+2 — the mandatory bundled item of §12-4).
-  // Membership tests create no data-plane variables, so values_digest is
-  // always the empty set's enumeration
   const { entry: checkpoint } = await signEntryAt({
     seq: entry.seq + 1,
     prevHashHex: await computeChainEntryHash(entry),
@@ -313,14 +247,6 @@ export async function submitComposite(
   return response;
 }
 
-/**
- * Submit a `delete_environment` entry through the deletion composite
- * (AUTH_SPEC §12-4 — 2026-10-07): the generic append rejects the op with
- * CompositeRequired, so replay and negatives both go through
- * `DELETE /environments/:environmentId`. `urlEnvironmentId` overrides the
- * path (a structural negative carrying an empty id still needs a routable
- * path; its payload is refused by the wire schema).
- */
 export function submitDeletion(
   entry: ChainEntry & { readonly op: "delete_environment" },
   urlEnvironmentId?: string,
@@ -333,7 +259,6 @@ export function submitDeletion(
   });
 }
 
-/** Update the current members / valid grants while tracking the replayed ops (deriving the composite's wrap set). */
 function trackReplayState(
   entry: ReturnType<typeof toWireEntry>,
   members: string[],
@@ -356,7 +281,6 @@ function trackReplayState(
   }
 }
 
-/** The real head after a replay (it drifts from the vector's fixed seq because the composite inserts a boundary checkpoint). */
 export interface ReplayHead {
   readonly seq: number;
   readonly hashHex: string;
@@ -367,31 +291,8 @@ export interface ReplayResult {
   readonly head: ReplayHead;
 }
 
-/**
- * Replay the vector's seq 1..upTo against the server (init + append +
- * composite, with each actor's PAT). The current member set needed for a
- * composite's wrap set is derived while tracking the ops.
- *
- * Because the composite inserts a boundary checkpoint (H+2), the head
- * drifts from the vector's fixed seq / prev after the first composite.
- * Subsequent entries keep op / payload / actor and are re-signed at the
- * real head to follow it (byte pinning of the canonical chain is the job
- * of the crypto layer's 4-runtime tests; here we pin that "the same op
- * sequence is accepted by the API").
- */
-/**
- * Mapping of proposal hashes (the entry_hash of a vector's propose entry
- * → the entry_hash of the same entry re-signed at the real head). Because
- * inserting a boundary checkpoint drifts seq / prev and changes propose
- * hashes too, the `proposal_hash_hex` referenced by approve / withdraw
- * (§6.2 — the proposal entry's entry_hash) is remapped to the real hash
- * at replay time. An unknown hash (a nonexistent proposal in a negative)
- * is not in the mapping and passes through unchanged (preserving the
- * semantics)
- */
 const replayProposalHashes = new Map<string, string>();
 
-/** Remap the reference target of approve / withdraw to the real hash at replay time (anything but propose passes through). */
 export function remapProposalRef(entry: ChainEntry): ChainEntry {
   if (entry.op !== "approve" && entry.op !== "withdraw") {
     return entry;
@@ -400,7 +301,6 @@ export function remapProposalRef(entry: ChainEntry): ChainEntry {
   return actual === undefined ? entry : { ...entry, payload: { proposalHashHex: actual } };
 }
 
-/** Re-sign while keeping consistency between the vector and the real head (remap the reference → re-sign → record the propose hash). */
 async function resignForReplay(
   vector: VectorEntry,
   head: ReplayHead,
@@ -420,7 +320,6 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
   const members: string[] = [];
   const serverGrants = new Map<string, TrackedServerGrant>();
   let head: ReplayHead = { seq: 0, hashHex: "" };
-  // Manifest / proposal-hash tracking is redone per replay (beforeEach wipes the DO)
   replayManifests.clear();
   replayProposalHashes.clear();
   for (const vector of vectorEntries) {
@@ -435,7 +334,6 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
       head = { seq: 1, hashHex: vector.entry_hash_hex };
       continue;
     }
-    // When the head matches the vector, the entry stays the original bytes (re-signing is deterministically identical)
     const { entry, hash } = await resignForReplay(vector, head);
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       const environmentId = entry.payload.environmentId;
@@ -456,14 +354,6 @@ export async function replayVectorChain(upTo: number): Promise<ReplayResult> {
   return { members, head };
 }
 
-/**
- * Replay the precondition chain of an authz negative: when a chain is
- * specified, replay the canonical chain up to base_seq, then have the
- * derived chain's (extended_chains) entries accepted via the generic
- * append (the fact that they are accepted is itself a pinning of §6.2's
- * allowed side; the part where the real head drifted from the vector is
- * followed by re-signing — the same discipline as replayVectorChain).
- */
 export async function replayNegativePrefix(negative: {
   readonly entry: { readonly seq: number };
   readonly chain?: string;
@@ -479,7 +369,6 @@ export async function replayNegativePrefix(negative: {
   let head = base.head;
   for (const vector of extended.entries) {
     const { entry, hash } = await resignForReplay(vector, head);
-    // A deletion goes through its composite (2026-10-07 — §12-4)
     const response =
       entry.op === "delete_environment"
         ? await submitDeletion(entry)
@@ -490,22 +379,8 @@ export async function replayNegativePrefix(negative: {
   return { members: base.members, head };
 }
 
-/**
- * Called once at the top of each test file: registers the fixture's
- * beforeEach.
- *
- * The storage-isolation unit of this @cloudflare/vitest-plugin config is
- * the worker (isolate: false — apps/server/vitest.config.ts), so DO
- * SQLite / D1 carry over not only across tests in a file but also from
- * other files processed by the same worker. Every test explicitly resets
- * to empty, re-seeds the vector users, and re-issues the PATs.
- */
 export function registerMembershipScenario(): void {
   beforeEach(async () => {
-    // The DO reset is independent of the D1-side reset + reseed, so the
-    // two run concurrently, as reseedAuthDb runs its users: every test
-    // gets fresh state and real issued PATs without ~15-20 sequential
-    // round-trips
     const [issued] = await Promise.all([
       reseedAuthDb(GITHUB_IDS, { orgId: VECTOR_ORG, userId: "user-owner-0001" }),
       resetProjectDo(vectorProjectId),

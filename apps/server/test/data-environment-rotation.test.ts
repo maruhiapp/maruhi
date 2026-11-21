@@ -1,13 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — epochs and
-// rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC §7) and the
-// in-composite consistency of boundary checkpoints (§12-4 / CRYPTO_SPEC
-// §4.3 (2)).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// Environment management and creation-composite DEK-wrap verification
-// live in data-environment.test.ts (for the split's motivation see the
-// top of support/membership-scenario.ts).
-
 import { describe, expect, it } from "vite-plus/test";
 
 import type { WireEncryptedPayload } from "./support/data-crypto.ts";
@@ -55,7 +45,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     const varV1 = await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek1, "var-static", "STATIC_KEY", "static-secret");
 
-    // A push under a future epoch before rotation is also rejected
     const early = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -65,8 +54,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(early.status).toBe(409);
     await expect(early.json()).resolves.toMatchObject({ currentEpoch: 1 });
 
-    // Rotation is a composite request (§12-4): bundling a subset is a
-    // 422 recipient-missing, and no chain entry is appended (atomicity)
     const dek2 = makeDek();
     const headBefore = fixture.head;
     const partial = await wrapDekForAll({
@@ -90,7 +77,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       headBefore.seq,
     );
 
-    // The complete-set composite rotation → epoch 2 (chain append + wrap registration are atomic)
     const complete = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -99,7 +85,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // The accepted positive case passes the wrapped DEK's own commitment
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -107,14 +92,12 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
     });
     expect(rotation.status).toBe(200);
-    // The composite appends two entries: rotate (H+1) + boundary checkpoint (H+2) (§12-4)
     await expect(rotation.clone().json()).resolves.toMatchObject({
       environmentId: ENV,
       currentEpoch: 2,
       headSeq: headBefore.seq + 2,
     });
 
-    // A push under the old epoch is a 409 (returns the current epoch — the client re-encrypts and retries)
     const stale = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -124,7 +107,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ currentEpoch: 2 });
 
-    // Overwriting an existing (epoch, recipient) is forbidden (409 DekWrapExists)
     const overwrite = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: await wrapDekForAll({
         projectId,
@@ -139,7 +121,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     const overwriteBody = (await overwrite.json()) as { epoch: number; recipientUserId: string };
     expect(overwriteBody).toMatchObject({ epoch: 2, recipientUserId: READER });
 
-    // Registration addressed to a future epoch (3) is a 422 epoch-out-of-range
     const future = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: await wrapDekForAll({
         projectId,
@@ -153,11 +134,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(future.status).toBe(422);
     expect(((await future.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
 
-    // Push the value re-encrypted under the new epoch (var-static is
-    // kept as-is on the epoch of its time — §7). The declared head = the
-    // current head including the rotate entry, prev chains to v1, and the
-    // epoch is monotonic (1 → 2) — the §4.1 shape of a rotation execution
-    // flow
     const v2 = await encryptValue(
       dek2,
       {
@@ -183,9 +159,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(pushed.status).toBe(200);
     await expect(pushed.json()).resolves.toEqual({ variableId: VAR, version: 2, epoch: 2 });
 
-    // pull: the current epoch is 2, and the latest version's epoch
-    // differs per variable. Wraps addressed to the caller for every epoch
-    // are bundled, so values of both epochs are decryptable client-side
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
     const body = (await pull.json()) as {
@@ -247,11 +220,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
   });
 
   it("rejects a rotation to an environment that was never created with 404", async () => {
-    // An environment's existence is chain-derived + a data row (created
-    // atomically by the composite). A rotate to a never-created
-    // environment is a missing data row = 404 (the unknown-environment
-    // consensus rule is pinned by the crypto layer's vectors — on the
-    // server the data-row check comes first)
     const deks = await wrapDekForAll({
       projectId,
       environmentId: "env-ghost-9999",
@@ -279,7 +247,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // From current epoch 1, the only valid rotate is to 2 (CRYPTO_SPEC §6.3 — verifyChain is authoritative)
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 3,
@@ -291,7 +258,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
   });
 
   it("rejects a rotation whose URL and entry name different environments (422 PayloadMismatch)", async () => {
-    // The in-composite consistency check (§12-4): an entry for one environment × a URL for another is not accepted
     await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, "env-app-0002", "Staging");
     const deks = await wrapDekForAll({
@@ -314,9 +280,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
   });
 
   it("rejects composite wraps whose epoch differs from the entry's new epoch (422 epoch-out-of-range)", async () => {
-    // The §12-4 in-composite consistency check: a bundled wrap's epoch =
-    // the entry's new_epoch. Even slipping a wrap addressed to epoch 1
-    // (an already-registered epoch) into a rotate composite is rejected
     await createEnvironmentOk(fixture, ENV, "App");
     const headBefore = fixture.head;
     const deks = await wrapDekForAll({
@@ -335,7 +298,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
-    // Atomicity: no entry is appended either (the epoch stays at 1)
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
     const list = await requestJson("GET", "/environments", token(READER));
@@ -359,12 +321,11 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       newEpoch: 2,
       deks,
       dekCommitmentHex: "ab".repeat(32),
-      parentHeadHashHex: projectId, // the genesis hash = a stale head
+      parentHeadHashHex: projectId,
     });
     expect(stale.status).toBe(409);
     const staleBody = (await stale.json()) as { currentHeadHashHex: string };
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
-    // The entry rebuilt (re-signed) against the correct parent head is accepted
     const retried = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -375,12 +336,6 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
   });
 });
 
-/**
- * Build a boundary checkpoint with an arbitrary tuple, signed by OWNER
- * (for the bundled-contents-match negatives). Since the match check runs
- * before chain acceptance verification, a dummy prev is fine (it is
- * never reached).
- */
 const shapeCheckpoint = async (tuple: {
   readonly environmentId: string;
   readonly epoch: number;
@@ -437,11 +392,6 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
   });
 
   it("rejects a fabricated audit head on a boundary checkpoint (audit-head-unknown)", async () => {
-    // A non-empty audit_head_hash is accepted under the §16-2 rule
-    // (effective-permission admin + the §6.4 existence / position
-    // checks).
-    // An attestation absent from the stored cumulative hash column =
-    // a fabricated notarization is dropped at the acceptance stage
     const response = await createWithCheckpoint(
       await shapeCheckpoint({
         environmentId: ENV,
@@ -455,9 +405,6 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
   });
 
   it("rejects a checkpoint whose actor differs from the caller (403 actor-mismatch — §12-4)", async () => {
-    // The entry, statement, and manifest stay with the calling
-    // principal (OWNER); only the checkpoint is MEMBER-signed → violates
-    // the strict actor equality across both chain entries
     const { entry: checkpoint } = await signEntryAt({
       seq: fixture.head.seq + 2,
       prevHashHex: "ab".repeat(32),
@@ -476,13 +423,6 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
   });
 
   it("rejects a binding whose manifest hash differs from the bundled manifest (422 checkpoint-binding-mismatch)", async () => {
-    // Make the coordinates (env / epoch / manifestVersion) match the
-    // bundled items, and change only the tuple's manifest_sig_hash: the
-    // shape check and chain acceptance pass, but §4.3 (2)'s exact-match
-    // binding (acceptEnvManifest — the tuple in post-application
-    // history) drops it.
-    // The H+1 entry is reconstructed with a deterministic signature from
-    // the same material as the fixture, and prev connects to it
     const commitment = await commitmentOf(projectId, ENV, 1, makeDek());
     const { hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
@@ -513,16 +453,11 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
     expect(((await response.json()) as { reason: string }).reason).toBe(
       "checkpoint-binding-mismatch",
     );
-    // Atomicity: the rejected composite leaves nothing on the chain
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(fixture.head.seq);
   });
 
   it("rejects a rotate checkpoint whose values digest mismatches the stored enumeration (422 values-digest-mismatch)", async () => {
-    // The same kind of mismatch as a push concurrent with a declared
-    // head's finalization (§12-4): the client re-pulls and retries within
-    // bounds. The tuple's digest is built from a variable absent from
-    // the stored enumeration
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await rotateEnvironmentComposite(fixture, {

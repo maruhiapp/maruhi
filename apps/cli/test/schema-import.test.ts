@@ -1,26 +1,3 @@
-// Tests for `maruhi schema import` (design doc §1-3).
-//
-// Invariants pinned down:
-//  1. **Ceremony-class deny (the ADR-0016 decision-7 pattern)**: known
-//     agent detection and a non-interactive terminal are refused with a
-//     typed error, and no blanket --yes exists. The gate runs before
-//     any file read or communication
-//  2. **Values are never sent**: values are used only for type
-//     inference (observing the shape); no plaintext appears in sends,
-//     displays, or logs. The single exception is the value push of an
-//     activation the user explicitly chose per variable (E2EE —
-//     plaintext never hits the wire)
-//  3. Per-variable interactive approval (editable), the default skip
-//     of existing names, and skipping rows that fail the name
-//     acceptance constraint with a reason
-//  4. The entropy warning (ruling CW) is a check on the description
-//     candidate, and approving it as-is needs its own explicit
-//     confirmation. The warning text never carries the detected value
-//  5. Registration is serial per-variable compounds × manifest CAS
-//     (O(N) round trips — finding F′)
-//  6. The completion-time deletion offer defaults to no (only an
-//     explicit y deletes)
-
 import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -109,7 +86,6 @@ async function startImportEnv(options?: {
   return { env, state };
 }
 
-/** Writes a .env file for the test into a temp directory. */
 async function writeEnvFile(content: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "maruhi-import-test-"));
   const path = join(dir, ".env.example");
@@ -125,7 +101,6 @@ function lastServer(): MockServer {
   return server;
 }
 
-/** Shorthand that inspects only observeValue's observation (the value is passed wrapped). */
 function observe(text: string): ReturnType<typeof observeValue> {
   return observeValue(Redacted.make(text));
 }
@@ -146,12 +121,8 @@ describe("parseEnvFile (the minimal .env parser — env-file.ts)", () => {
     );
     expect(parsed.skipped).toEqual([]);
     expect(parsed.entries.map((entry) => entry.name)).toEqual(["SHOP_URL", "QUOTED", "PLAIN"]);
-    // Consecutive comments join into a candidate and a blank line
-    // breaks them (a distant comment isn't attached)
     expect(parsed.entries[0]?.descriptionCandidate).toBe("Primary endpoint of the shop");
     expect(parsed.entries[1]?.descriptionCandidate).toBe("");
-    // The value is Redacted (plaintext never appears on the default
-    // display/log paths)
     expect(String(parsed.entries[0]?.value)).not.toContain("shop.example");
     expect(Redacted.value(parsed.entries[1]!.value)).toBe("hello world");
   });
@@ -173,7 +144,6 @@ describe("parseEnvFile (the minimal .env parser — env-file.ts)", () => {
     const parsed = parseEnvFile("PORT=8080 # listen port\n");
     expect(Redacted.value(parsed.entries[0]!.value)).toBe("8080");
     expect(parsed.entries[0]?.valueFaithful).toBe(true);
-    // Type inference works on the comment-stripped value
     expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
   });
 
@@ -194,8 +164,6 @@ describe("parseEnvFile (the minimal .env parser — env-file.ts)", () => {
     expect(observe("8080")).toEqual({ varType: "number", looksReal: true });
     expect(observe("https://shop.example")).toEqual({ varType: "url", looksReal: true });
     expect(observe("some-opaque-token")).toEqual({ varType: "", looksReal: true });
-    // Empty and placeholder idioms aren't treated as real values (no
-    // push offer is made at all)
     expect(observe("")).toEqual({ varType: "", looksReal: false });
     expect(observe("changeme")).toEqual({ varType: "", looksReal: false });
     expect(observe("<your key here>")).toEqual({ varType: "", looksReal: false });
@@ -208,8 +176,6 @@ describe("ceremony-class deny (the ADR-0016 decision-7 pattern — the gate prec
   it("refuses with a typed error on known-agent detection (touches neither the file nor the network)", async () => {
     const { env } = await startImportEnv();
     env.setAgent({ isAgent: true, name: "testbot" });
-    // A nonexistent path: if the gate precedes the file read, no file
-    // error is emitted
     expect(await runCli(["schema", "import", "/nonexistent/.env"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("AI agent environment was detected (testbot)");
@@ -242,8 +208,6 @@ describe("approval → declared registration (values are never sent)", () => {
         "\n",
       ),
     );
-    // SHOP_URL: approve → decline the value push / PORT: approve →
-    // decline / deletion offer: default (no)
     env.setPromptResponses(["y", "n", "y", "n", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create", "create"]);
@@ -252,8 +216,6 @@ describe("approval → declared registration (values are never sent)", () => {
       value?: unknown;
       manifest: Record<string, unknown>;
     };
-    // No value is bundled (declared creation — §12-5). The type comes
-    // from observing the value's shape
     expect(first.value).toBeUndefined();
     expect(first.statement["status"]).toBe("declared");
     expect(first.statement["metaVersion"]).toBe(1);
@@ -266,8 +228,6 @@ describe("approval → declared registration (values are never sent)", () => {
     expect(second.statement["name"]).toBe("PORT");
     expect(second.statement["varType"]).toBe("number");
     expect(second.statement["description"]).toBe("");
-    // The value itself appears in no request (observed only, never
-    // sent)
     expect(JSON.stringify(lastServer().requests)).not.toContain("shop.example");
     const output = env.logs.join("\n");
     expect(output).toContain("Declared SHOP_URL");
@@ -275,7 +235,6 @@ describe("approval → declared registration (values are never sent)", () => {
     expect(output).toContain(
       "Import finished: 2 variables declared (0 with a value pushed), 0 candidates skipped",
     );
-    // Neither the value nor fragments of it appear on stdout / stderr
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("shop.example");
     expect(existsSync(file)).toBe(true);
   });
@@ -308,9 +267,6 @@ describe("approval → declared registration (values are never sent)", () => {
   it("can approve after editing (e) the name, type, required, and description", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile("db_url=\n");
-    // db_url is a valid POSIX env-var name even in lowercase — edit
-    // via e to set the name DATABASE_URL, type url, optional, and a
-    // description, then approve
     env.setPromptResponses([
       "e",
       "DATABASE_URL",
@@ -336,9 +292,6 @@ describe("approval → declared registration (values are never sent)", () => {
     expect(state.mutations).toEqual([]);
     const output = env.logs.join("\n");
     expect(output).toContain("stopped before the end");
-    // After q, neither C's prompt nor the deletion offer appears (a
-    // drained queue isn't an error = no additional prompts are
-    // demanded)
     expect(env.prompts).toHaveLength(2);
     expect(existsSync(file)).toBe(true);
   });
@@ -346,7 +299,6 @@ describe("approval → declared registration (values are never sent)", () => {
   it("a rename via edit (e) is checked for form and length with the same acceptance set as the parser (don't let it fall through to a late 400)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile("SHORT=\n");
-    // A 257-char rename → warns and keeps the current → approve as-is
     env.setPromptResponses(["e", "A".repeat(257), "", "", "", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("at most 256 characters");
@@ -357,9 +309,6 @@ describe("approval → declared registration (values are never sent)", () => {
   it("a rename via edit (e) must not collide with unprocessed candidates in the file (an early warning on a local collision)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["ALPHA=", "BETA="].join("\n"));
-    // Trying to rename ALPHA to BETA (a later candidate's name) →
-    // warns and keeps the current → approve as-is. BETA is approved
-    // too
     env.setPromptResponses(["e", "BETA", "", "", "", "y", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("already exists in the environment or in this import");
@@ -381,12 +330,9 @@ describe("the explicit choice of a value push (activation)", () => {
       statement: Record<string, unknown>;
       value: { aad: Record<string, unknown>; ciphertextHex: string };
     };
-    // The activation compound (§12-5): value version 1 + status
-    // active (metaVersion + 1)
     expect(activate.value.aad["version"]).toBe(1);
     expect(activate.statement["status"]).toBe("active");
     expect(activate.statement["metaVersion"]).toBe(2);
-    // Plaintext appears in no request and no output (E2EE)
     expect(JSON.stringify(lastServer().requests)).not.toContain("real-secret-value-xyz");
     expect([...env.logs, ...env.errors].join("\n")).not.toContain("real-secret-value-xyz");
     expect(env.logs.join("\n")).toContain("Pushed the value of TOKEN (version=1, epoch=1)");
@@ -395,7 +341,6 @@ describe("the explicit choice of a value push (activation)", () => {
   it("empty or placeholder values don't produce a push offer at all (the default is always not to send)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["EMPTY=", "PLACEHOLDER=changeme"].join("\n"));
-    // Only 2 approvals + 1 deletion offer (no push prompt exists)
     env.setPromptResponses(["y", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create", "create"]);
@@ -404,14 +349,9 @@ describe("the explicit choice of a value push (activation)", () => {
 
   it("a value that can't be faithfully parsed gets no push offer (fail-closed — never sends a misread value)", async () => {
     const { env, state } = await startImportEnv();
-    // An unclosed quote (the shape of line 1 of a multi-line quoted
-    // value) — a real value, but this parser can't claim to have
-    // reconstructed it faithfully
     const file = await writeEnvFile('CERT="-----BEGIN RSA\n');
     env.setPromptResponses(["y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
-    // It's declared, but no activation happens and no push prompt
-    // appears
     expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
     expect(env.prompts).toHaveLength(2);
     expect(env.errors.join("\n")).toContain("could not be parsed faithfully");
@@ -419,35 +359,21 @@ describe("the explicit choice of a value push (activation)", () => {
 });
 
 describe("the entropy warning (ruling CW — applied to the description candidate)", () => {
-  // A dummy that merely looks like a real value (not an actual secret)
   const FAKE_TOKEN = "x7Gh2kQ9pLmA3vB8nC4dE5fJ6hK7iL8m";
 
   it("approving a detection needs a dedicated explicit confirmation, and the warning text carries no detected value", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile([`# token ${FAKE_TOKEN} here`, "API_HINT=changeme"].join("\n"));
-    env.setPromptResponses([
-      "y", // tries to approve → routed to the explicit confirmation
-      "no", // declines the confirmation → back to the approval loop
-      "e", // edit strips the real-looking run from the description
-      "", // keep the name
-      "", // keep the type
-      "", // keep required
-      "API hint only", // replaces the description
-      "y", // approves with no warning
-      "", // the deletion offer (default no)
-    ]);
+    env.setPromptResponses(["y", "no", "e", "", "", "", "API hint only", "y", ""]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     const body = state.mutations[0]?.request.body as { statement: Record<string, unknown> };
     expect(body.statement["description"]).toBe("API hint only");
     const warningLines = env.errors.filter((line) => line.includes("secret-like high-entropy"));
     expect(warningLines.length).toBeGreaterThan(0);
-    // The warning itself carries no detected value (which could be a
-    // secret) — length and kind only
     for (const line of warningLines) {
       expect(line).not.toContain(FAKE_TOKEN);
       expect(line).toContain("32-character");
     }
-    // The real-looking run never hits the wire (the edit removed it)
     expect(JSON.stringify(lastServer().requests)).not.toContain(FAKE_TOKEN);
   });
 });
@@ -474,11 +400,9 @@ describe("the completion-time deletion offer (default is not to delete)", () => 
   it("a run with skipped candidates doesn't make the offer (only when every candidate was declared)", async () => {
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B="].join("\n"));
-    // A declared, B skipped → the file's 'last job' isn't finished
     env.setPromptResponses(["y", "s"]);
     expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["create"]);
-    // Only 2 approval prompts (no deletion offer)
     expect(env.prompts).toHaveLength(2);
     expect(existsSync(file)).toBe(true);
   });
@@ -495,9 +419,6 @@ describe("the completion-time deletion offer (default is not to delete)", () => 
 
 describe("around the acceptance surface (serial O(N) — finding F′)", () => {
   it("registration is serial per-variable compounds — 3 round trips per declaration (resolve + compound + effect check)", async () => {
-    // The pinned measured shape of finding F′: N declarations = 1
-    // initial resolve + N × (1 resolve + 1 create + 1 effect check). No
-    // bulk compound acceptance
     const { env, state } = await startImportEnv();
     const file = await writeEnvFile(["A=", "B=", "C="].join("\n"));
     env.setPromptResponses(["y", "y", "y", ""]);

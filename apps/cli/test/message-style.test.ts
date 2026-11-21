@@ -1,21 +1,3 @@
-// Turns the user-visible wording conventions into a mechanical check (DP5
-// supplement E — from "keeping" the glossary to "failing when it's
-// broken"). In scope: string literals (including template literals) passed
-// directly to cliError / usageError / evidenceError / io.log / io.logError
-// / logNote / logWarning in apps/cli/src.
-//
-// Additionally, string literals assigned to SCREAMING_SNAKE_CASE constants
-// (wording factored out into a named constant — the
-// `cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)` shape) are subject to the same
-// conventions. Wording assembled inside formatting functions is not
-// followed (a deliberate cutoff).
-//
-// Conventions (ruling record E):
-//   1. No trailing period (compound sentences separate with an in-text
-//      period but end without one)
-//   2. Command names (`maruhi <command>`) are always wrapped in backquotes
-//   3. Markdown emphasis (`**`) is never shown on the terminal
-
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -25,26 +7,16 @@ import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/commands/index.ts";
 
 const SRC_DIR = join(import.meta.dirname, "..", "src");
 
-// Top-level command names are derived from the declaration
-// (COMMAND_SPECS) — a handwritten copy would let convention (2) silently
-// miss a name when a command is added
 const COMMANDS = Object.keys(COMMAND_SPECS)
   .filter((key) => key !== ROOT_SPEC_KEY && !key.includes(" "))
   .join("|");
 
-/** The string literal right after a wording-carrying call (does not span escaped quotes). */
 const MESSAGE_CALL =
   /(cliError|usageError|evidenceError|io\.log|io\.logError|logNote|logWarning)\(\s*(["`])((?:\\.|(?!\2).)*)\2/gs;
 
-/** A string literal assigned to a named constant (SCREAMING_SNAKE_CASE). */
 const MESSAGE_CONST =
   /(?:const|let)\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*(["`])((?:\\.|(?!\2).)*)\2/gs;
 
-/**
- * A body written to a file (a snapshot's header, an export's comment line)
- * is a document rather than a terminal line, so a sentence-final period is
- * legitimate — excluded via a name suffix.
- */
 const FILE_CONTENT_SUFFIX = /_(?:HEADER|COMMENT)$/;
 
 interface Hit {
@@ -54,12 +26,6 @@ interface Hit {
   readonly kind: "call" | "const";
 }
 
-/**
- * The .ts files under src/, as src-relative paths in a stable order.
- * Recursive so a file added under a new src/ subdirectory is still picked
- * up — a flat listing would silently skip it, and the conventions below
- * would pass on a corpus that shrank.
- */
 async function srcFiles(): Promise<readonly string[]> {
   return (await readdir(SRC_DIR, { recursive: true }))
     .filter((entry) => entry.endsWith(".ts"))
@@ -92,9 +58,6 @@ const label = (hit: Hit) => `${hit.file}:${hit.line}: ${hit.text.slice(0, 80)}`;
 
 describe("user-visible wording conventions (apps/cli/src)", () => {
   it("collects a sufficient number of messages (the check isn't idling)", async () => {
-    // Floors ≈90% of the counts at main 94d3b72 (139 files, 1108 calls, 66
-    // constants): a scan that stops walking files fails here before the
-    // conventions it was meant to check can silently pass
     expect((await srcFiles()).length).toBeGreaterThan(125);
     const hits = await collectMessages();
     expect(hits.filter((hit) => hit.kind === "call").length).toBeGreaterThan(995);
@@ -110,9 +73,6 @@ describe("user-visible wording conventions (apps/cli/src)", () => {
   });
 
   it("2. command names are wrapped in backquotes", async () => {
-    // `maruhi <command>` not preceded by a backquote, alphanumeric,
-    // `/` `-` `.`, or the escape `\\` = a bare command name placed in
-    // prose
     const bare = new RegExp(String.raw`(?<![\`\w/\-.\\])maruhi (?:${COMMANDS})\b`);
     const offenders = (await collectMessages()).filter((hit) => bare.test(hit.text));
     expect(offenders.map(label)).toEqual([]);

@@ -1,19 +1,3 @@
-// ES K3 — the DEK-wrap recipient set R(E) (CRYPTO_SPEC §6.2 / §6.3,
-// AUTH_SPEC §12-4 / §12-6; design record docs/notes/es-design.md §9 K3-D).
-//
-// Pinned rules:
-//   - The target of the complete set (environment creation, rotate compound,
-//     initial registration) = R(E) = { m | E ∈ scope(m) } ∪
-//     { grant | E ∈ scope_environments } — including an out-of-scope member
-//     is 422 scope-out-of-range; omitting one is 422 recipient-missing
-//   - Recipient judgment on the append path (backfill): addressing a current
-//     out-of-scope member is 422 scope-out-of-range (same reason code even
-//     for recipient class member)
-//   - The registrant's (signer = calling principal) scope hits §12-3's 403
-//     first (before the recipient-axis 422)
-//   - A listed{} member is a recipient of no environment (CRYPTO_SPEC §6.2
-//     structural rule (3))
-
 import type { ChainState, MemberScope } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
@@ -62,8 +46,6 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
 describe("R(E) — the complete set (environment creation / rotate compound — §12-4)", () => {
   it("the complete set at environment creation is only members whose scope contains E: including a non-listed member is 422 scope-out-of-range, excluding them is 200", async () => {
     await setupListed();
-    // DEV is listed{ENV}, so it is not a recipient of the new environment
-    // env-new-0003
     const withDev = makeDek();
     const overfull = await createEnvironmentComposite(fixture, {
       environmentId: "env-new-0003",
@@ -129,7 +111,6 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
       actorUserId: OWNER,
     });
     expect(complete.status).toBe(200);
-    // Rotating the out-of-scope environment (OTHER) does not include DEV
     const otherDek = makeDek();
     const other = await rotateEnvironmentComposite(fixture, {
       environmentId: OTHER,
@@ -178,7 +159,6 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
       ],
     });
     expect(inScope.status).toBe(204);
-    // The recipient can fetch the wrap addressed to it (in scope)
     const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(DEV));
     expect(mine.status).toBe(200);
     expect(((await mine.json()) as { deks: unknown[] }).deks).toHaveLength(1);
@@ -204,8 +184,6 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
 
   it("the registrant's (signer = calling principal) scope hits 403 first: for an out-of-scope environment it never reaches recipient judgment", async () => {
     const { otherDek } = await setupListed();
-    // DEV (listed{ENV}) tries to register a wrap on OTHER addressed to an
-    // in-scope recipient (OWNER)
     const response = await requestJson("POST", `/environments/${OTHER}/deks`, token(DEV), {
       deks: [
         await wrapDekTo({
@@ -225,7 +203,6 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
   it("a listed{} member is a recipient of no environment (not in the complete set, nor an addressable target)", async () => {
     const envDek = await createEnvironmentOk(fixture, ENV, "App");
     await appendOperation(fixture, OWNER, addMemberOperation(NOBODY, "reader", []));
-    // The new environment's complete set stays the original 3 members
     await createEnvironmentOk(fixture, OTHER, "Other");
     const wrap = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [
@@ -243,7 +220,6 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
   });
 });
 
-/** A one-device member with its own key bytes (no two devices share a key — CRYPTO_SPEC §6.2 key uniqueness). */
 const memberOf = (userId: string, encByte: string, sigByte: string, scope: MemberScope) =>
   [
     testUserId(userId),
@@ -251,8 +227,6 @@ const memberOf = (userId: string, encByte: string, sigByte: string, scope: Membe
       userId: testUserId(userId),
       role: "member" as const,
       scope,
-      // The single first key = one device (cap is structurally (owner, all)
-      // — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
           `${encByte}${sigByte}`.repeat(8),
@@ -301,12 +275,8 @@ describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_S
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-dev: all + dev
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-dev"))).toBe(2);
-    // env-prod: all + grant (dev is out of scope, none is listed{})
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-prod"))).toBe(2);
-    // Unknown environment: all only (U includes future ones — the set
-    // algebra's `all`)
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-future"))).toBe(1);
   });
 });

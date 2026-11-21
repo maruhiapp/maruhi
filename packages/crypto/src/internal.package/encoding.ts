@@ -1,28 +1,9 @@
-// CRYPTO_SPEC §2.1: deterministic length-prefixed encoding.
-// AAD / HPKE info / chain normalization all share this single implementation (a spec requirement).
-// Test vectors: test-vectors/encoding.json
-
 import { concatBytes, utf8Encode } from "./bytes.ts";
 
-/**
- * A field of the length-prefixed encoding: strings are UTF-8 encoded, numbers
- * are converted to their decimal string form, byte arrays are used as-is.
- */
 export type LengthPrefixedField = string | number | Uint8Array;
 
 const UINT32_MAX = 0xffffffff;
 
-/**
- * Encodes fields as `uint32-BE length || body` concatenation (CRYPTO_SPEC §2.1).
- *
- * This is the single shared encoder for AADs, HPKE info strings and chain entry
- * canonicalization. It removes the concatenation ambiguity of plain string
- * joins: `("ab","c")` and `("a","bc")` produce distinct byte strings.
- *
- * @throws {TypeError} if a number field is not a non-negative safe integer,
- *   or a field body exceeds 2^32 - 1 bytes. These are programmer errors, not
- *   runtime conditions, so they throw instead of returning a typed error.
- */
 export function encodeLengthPrefixed(fields: readonly LengthPrefixedField[]): Uint8Array {
   const parts: Uint8Array[] = [];
   for (const field of fields) {

@@ -1,7 +1,3 @@
-// `maruhi device list [--project]`: the cross-check of the chain (the truth),
-// the registry (server-reported), and the local records (the provenance)
-// (the group's overview lives in device.ts).
-
 import { type ProjectId, type UserId } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -19,17 +15,11 @@ import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
 import { compareCodePoints } from "./scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 
-// ---------------------------------------------------------------------------
-// device list
-// ---------------------------------------------------------------------------
-
-/** The display rows' material: FP → on-chain appearances (one row per project) and the synced chains. */
 interface ListRows {
   readonly rows: Map<string, { readonly projectId: ProjectId; readonly line: string }[]>;
   readonly chains: readonly { readonly projectId: ProjectId; readonly verified: VerifiedProject }[];
 }
 
-/** Collects my device from each project's chain (a project that cannot sync is a Note). */
 const collectChainRows = Effect.fn("device-list.collectChainRows")(function* (input: {
   readonly session: CliSession;
   readonly projectIds: readonly ProjectId[];
@@ -66,11 +56,6 @@ const collectChainRows = Effect.fn("device-list.collectChainRows")(function* (in
   return { rows, chains };
 });
 
-/**
- * One device's on-chain appearance: the valid rows (cap, provenance) and
- * the revoked-project rows (the standing judgment is `keyStandingIn` — the
- * same predicate as `device add`: DK K13-6).
- */
 function chainLinesOf(input: {
   readonly listed: ListRows;
   readonly userId: UserId;
@@ -89,7 +74,6 @@ function chainLinesOf(input: {
   return [...active, ...revoked];
 }
 
-/** One device's heading (the registry's display name and token id are server-reported; the local record is provenance). */
 function describeListRow(input: {
   readonly fingerprintHex: string;
   readonly ownFingerprintHex: string | null;
@@ -116,7 +100,6 @@ function describeListRow(input: {
   return `${input.fingerprintHex}${tags.length === 0 ? "" : `\t${tags.join(", ")}`}`;
 }
 
-/** `maruhi device list [--project]` (no values, no keys needed, no gate). */
 export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -127,7 +110,6 @@ export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (inp
   const registry = yield* fetchRegistry(input.client);
   const lookup = yield* store.load(input.session.origin, input.session.userId);
   const local = lookup.state === "loaded" ? lookup.devices : [];
-  // Even when the project list cannot be fetched, the registry and local records can still be shown, so it isn't dropped (DK K13-6)
   const projectIds = yield* resolveProjectIds(input.client, input.project).pipe(
     Effect.catch((error) =>
       logNote(
@@ -138,12 +120,8 @@ export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (inp
   const localKeys = yield* Effect.catch(loadMasterKeys(input.session), () =>
     Effect.succeed<MasterKeys | null>(null),
   );
-  // FP → display rows (the chain is the truth. The registry and local records sit alongside as annotations)
   const listed = yield* collectChainRows({ session: input.session, projectIds });
   const active = local.filter((entry) => entry.revokedAtMs === null);
-  // This device's key is printed even when absent from every chain,
-  // the registry, and every valid record (the place a revoked device's
-  // error defers to with "check with `maruhi device list`" — DK K13-6)
   const fingerprints = [
     ...new Set([
       ...listed.rows.keys(),
@@ -180,15 +158,9 @@ export const deviceListOp = Effect.fn("device-list.deviceListOp")(function* (inp
   }
 });
 
-/**
- * One device's on-chain appearances (when none, say the shown range to
- * that effect — DK K13-6). Never says "none" about a project that could
- * not be synced (Bugbot's catch — K13-16).
- */
 const printChainLines = Effect.fn("device-list.printChainLines")(function* (input: {
   readonly lines: readonly string[];
   readonly project: ProjectId | undefined;
-  /** The count of projects that could not be synced (the ones `collectChainRows` noted). */
   readonly unsynced: number;
 }): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;

@@ -1,7 +1,3 @@
-// The chunked JSON body (handlers/json-stream.ts — AUTH_SPEC §14-2's lease):
-// its bytes are exactly JSON.stringify's, and no chunk holds much more than
-// one piece of the value.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { jsonPieces, jsonStream } from "../src/handlers/json-stream.ts";

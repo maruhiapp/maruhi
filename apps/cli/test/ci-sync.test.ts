@@ -1,15 +1,3 @@
-// Tests for `maruhi ci sync <target>` (SY2 stage 2 — ruling D): OIDC lease
-// (ci-lease.ts — the same pre-phase as `ci run`) → decrypt → driver
-// (exec / http). Receipts are neither read nor written (CI has no §4.1
-// signing key): re-applying the whole set of selected variables never
-// produces a deletion.
-//
-// Leases are per-environment. If the http driver's token lives in a different
-// environment, the 2 environments are leased with **a single OIDC token and a
-// single ephemeral key** (AUTH_SPEC §14-1).
-// Lease faking takes the same stance as ci-run.test.ts (wrapping to the
-// request's ephemeral key with real crypto).
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -159,7 +147,6 @@ function jwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
-/** Fake of the GitHub Actions OIDC issuance endpoint. */
 function oidcHandler(state: { issued: number }): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
@@ -218,7 +205,6 @@ async function leaseWrapFor(
   };
 }
 
-/** Per-environment lease handler (wraps to the request's ephemeral key with real crypto). */
 function leaseHandler(environment: string, leased: { keys: string[] }): MockHandler {
   return async (request) => {
     if (
@@ -266,7 +252,6 @@ interface CiFixture {
   readonly oidc: { issued: number };
 }
 
-/** CI environment: neither login nor config is seeded (CI mode's independence is pinned by this setup). */
 async function startCi(input: {
   readonly targets: Record<string, unknown>;
   readonly environments: readonly string[];
@@ -345,8 +330,6 @@ describe("maruhi ci sync", () => {
       vendorHandlers: cf.handlers,
     });
     expect(await ciSync(fixture, "worker", "--yes"), fixture.env.errors.join("\n")).toBe(0);
-    // Leasing 2 environments = the same ephemeral key, and the OIDC token is
-    // issued once
     expect(fixture.leased.keys).toHaveLength(2);
     expect(new Set(fixture.leased.keys).size).toBe(1);
     expect(fixture.oidc.issued).toBe(1);
@@ -362,7 +345,6 @@ describe("maruhi ci sync", () => {
     expect(out).toContain(
       "Applied to target worker: 2 variables written (no receipt is kept in CI, and nothing is deleted)",
     );
-    // No writes (receipts) to the maruhi server at all. Reads are lease only
     const maruhiWrites = fixture.server.requests.filter(
       (request) =>
         request.method !== "GET" &&
@@ -476,9 +458,6 @@ describe("maruhi ci sync", () => {
       "staging",
     ]);
     expect(new TextDecoder().decode(fixture.env.execCalls[0]?.stdin)).toBe(ALPHA_VALUE);
-    // The only extra env for the child is telemetry off (GH_TOKEN is
-    // inherited from the step's env — live.ts's buildChildEnvironment passes
-    // everything but MARUHI_*)
     expect(fixture.env.execCalls[0]?.extraEnv).toEqual({
       GH_TELEMETRY: "false",
       DO_NOT_TRACK: "1",
@@ -597,8 +576,6 @@ describe("maruhi ci sync", () => {
 
   it("a token environment outside the lease policy (uniform 404) stops with lease guidance and sends nothing", async () => {
     const fixture = await startCi({
-      // The tokens environment's lease is a uniform 404 (the existence-
-      // hiding shape of AUTH_SPEC §14-1)
       environments: [SOURCE_ENV],
       vendorHandlers: [
         (request) =>

@@ -1,5 +1,3 @@
-// `maruhi push` (discipline: see commands/index.ts).
-
 import { Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -49,9 +47,6 @@ export function makePushCommand() {
 
       const io = yield* CliIo;
       const { context, sync } = yield* openWriteEnvironment(values);
-      // stdin is the origin where plaintext enters as raw bytes. Wrapped
-      // here and flows only as a Redacted from now on (unwrapped only at
-      // push.ts's encryption boundary)
       const value = Redacted.make(normalizeStdinValue(yield* io.readStdin), {
         label: "variable-value",
       });
@@ -63,9 +58,6 @@ export function makePushCommand() {
         value,
         verified: context.verified,
         resync: context.resync,
-        // The value signature (§4.1) / the creation-time statement author
-        // signature (§4.2): writer / author = my internal user_id, key =
-        // the master sig key
         writerUserId: context.session.userId,
         signingKey: context.masterKeys.sigKeyPair.privateKey,
         floor: context.floorHandle,

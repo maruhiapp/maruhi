@@ -1,8 +1,3 @@
-// Service layer for tests: in-memory keychain, output-capturing CliIo,
-// recording ProcessRunner, temp-dir config store, real-fetch HttpClient.
-// The real keychain (Bun.secrets) doesn't exist in CI, so it is not wired in
-// (per task instructions).
-
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,17 +45,13 @@ import {
 } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
 
-/** One recorded child-process invocation. */
 export interface RunnerCall {
   readonly command: readonly string[];
   readonly extraEnv: Readonly<Record<string, string>>;
-  /** `proxy run` holds signals for the child's life. */
   readonly holdSignals: boolean;
-  /** The run-output redaction fragments handed to the runner (undefined = stdio inherited). */
   readonly redact: readonly Uint8Array[] | undefined;
 }
 
-/** One recorded vendor-CLI invocation (`maruhi sync` — stdin is what left maruhi). */
 export interface ExecCall {
   readonly command: readonly string[];
   readonly cwd: string;
@@ -68,134 +59,60 @@ export interface ExecCall {
   readonly stdin: Uint8Array;
 }
 
-/** One recorded `exec` rotation-connector script (connector-exec.ts — the env carries the secrets). */
 export type CaptureCall = CaptureInput;
 
-/** One recorded `maruhi agent` session child (agent.ts — env carries the socket path). */
 export interface SessionCall {
   readonly command: readonly string[];
   readonly env: Readonly<Record<string, string>>;
 }
 
-/** A fully in-memory test environment for driving `runCli`. */
 export interface TestEnv {
   readonly layer: Layer.Layer<CliServices>;
   readonly keychain: Map<string, string>;
   readonly logs: string[];
   readonly errors: string[];
   readonly runnerCalls: RunnerCall[];
-  /** Recorded vendor-CLI invocations (sync — argv / cwd / env / stdin). */
   readonly execCalls: ExecCall[];
-  /** Recorded `maruhi agent` child launches (argv and the extra env vars passed). */
   readonly sessionCalls: SessionCall[];
-  /** Recorded `exec` rotation-connector scripts (argv / cwd / the injected env). */
   readonly captureCalls: CaptureCall[];
   readonly configPath: string;
-  /** Directory of the local floor (§6.3) (<configDir>/floor). */
   readonly floorDir: string;
-  /** Directory of invite pins (§6.3 (a) anchor + issue pins) (<configDir>/invites). */
   readonly pinsDir: string;
-  /** File path of the verified fingerprint book (KF) (<configDir>/known-fingerprints.json). */
   readonly fingerprintBookPath: string;
-  /** Prompt strings shown via promptLine (for assertions). */
   readonly prompts: string[];
-  /** URLs passed to openBrowser (for asserting login's auto-browser-launch branch). */
   readonly browserOpens: string[];
-  /**
-   * Raw chunks written to the `Stdio` stdout sink (only `maruhi mcp` writes
-   * there — the protocol channel. Command output goes through CliIo.log).
-   */
   readonly stdioOut: string[];
   setStdin(bytes: Uint8Array): void;
-  /** The `Stdio` stdin stream (`maruhi mcp`'s protocol input — default empty). */
   setStdioIn(stream: Stream.Stream<Uint8Array>): void;
-  /**
-   * Fakes the terminal detection (`Stdio`). It is the **primary boundary** for
-   * whether values may be displayed, so the default is "a human's interactive
-   * terminal" = stdin / stdout / stderr are all terminals. Pass false to
-   * reproduce pipes, redirects, CI, or unknown agents.
-   */
   setTerminal(input: {
     readonly stdin?: boolean;
     readonly stdout?: boolean;
     readonly stderr?: boolean;
   }): void;
-  /**
-   * Queues the responses promptLine returns in order (failure once exhausted =
-   * EOF equivalent). Functions are evaluated at response time (for answers
-   * derived from already-printed logs — e.g. confirming a recovery code was
-   * stored).
-   */
   setPromptResponses(lines: readonly (string | (() => string))[]): void;
   setAgent(profile: AgentProfile): void;
-  /** Color of the stderr prefix (notice.ts). Default is uncolored — so assertions can be plain strings. */
   setColor(enabled: boolean): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
-  /**
-   * Fakes the `run` child (default: exit with the code of setRunnerExitCode).
-   * The handler runs while the parent waits = while `proxy run`'s proxy is
-   * listening, so it can send requests through it and assert what arrives.
-   */
   setRunnerHandler(handler: (call: RunnerCall) => Promise<number>): void;
-  /** Test seams of `maruhi proxy run` (where upstream connections go, the connector's API). */
   setProxySeams(seams: ProxySeamsShape | null): void;
-  /** Fakes the database client of the `postgres` / `mysql` connectors (default: refuses every connection). */
   setSqlRunner(runner: SqlRunnerShape): void;
-  /**
-   * Fakes the vendor CLI's outcome (default: exit 0, no output). Taken as a
-   * function so the result can differ per call (e.g. fail only the Nth call).
-   */
   setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome | CliError): void;
-  /** Fakes the `exec` rotation connector's scripts (default: every script fails to start). A thrown Error is a launch failure. */
   setCaptureHandler(handler: (call: CaptureCall, index: number) => CaptureOutcome): void;
-  /** Fakes whether openBrowser succeeds (default: succeeds). */
   setBrowserOpenSucceeds(succeeds: boolean): void;
-  /**
-   * Stands in for the browser in place of openBrowser (passkey — supplement 20
-   * ruling J). The handler runs while the CLI is waiting for the page's POST,
-   * so it can answer the passed URL via fetch. The return value is "did it
-   * open". When set, takes precedence over setBrowserOpenSucceeds.
-   */
   setBrowserOpenHandler(handler: (url: string) => Promise<boolean>): void;
-  /**
-   * Fakes the `maruhi agent` child (default: exit 0). The handler runs while
-   * the child is alive = while the agent socket is listening, so it can connect
-   * from here and assert the destination.
-   */
   setSessionHandler(handler: (call: SessionCall) => Promise<number>): void;
-  /** Makes keychain writes fail (for asserting login's revocation fallback). */
   failKeychainWrites(): void;
-  /**
-   * Fails only the floor commit of an accepted push (reads and pull commits
-   * still pass). The floor is a SHOULD; used to pin down that detection does
-   * not rely on the floor alone when it cannot be written.
-   */
   failFloorPushCommits(): void;
-  /**
-   * Fails only intent (3-F) appends. journal-before-send is the only
-   * fail-closed floor write (no send when persisting fails); used to pin down
-   * a regression toward fail-open as "not a single request reaches the
-   * server".
-   */
   failFloorIntentAppends(): void;
-  /** For testing the defect path: makes config load throw (a non-CliError). */
   breakConfigLoadWithDefect(): void;
-  /**
-   * Redirects the vendor API (`maruhi sync`'s http driver) targets to a fake
-   * server. Production code only knows the preset fixed hosts
-   * (`https://api.vercel.com` etc.) and offers no override point — the swap
-   * happens at the HttpClient layer (the test boundary).
-   */
   setVendorOrigin(host: string, origin: string): void;
 }
 
-/** The default `maruhi agent` child (does nothing, exits 0). */
 function sessionExitsZero(): Promise<number> {
   return Promise.resolve(0);
 }
 
-/** The default vendor-CLI response (success, no output). */
 function execSucceeds(): ExecOutcome {
   return { exitCode: 0, output: "" };
 }
@@ -227,8 +144,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const stdoutDecoder = new TextDecoder();
   let agent: AgentProfile = { isAgent: false };
   let colorEnabled = false;
-  // Default is the "a human ran this at an interactive terminal" shape (the
-  // only shape where displaying values is allowed)
   let stdinIsTerminal = true;
   let stdoutIsTerminal = true;
   let stderrIsTerminal = true;
@@ -253,11 +168,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const fingerprintBookPath = fingerprintBookPathOf(configPath);
   const fingerprintBook = makeFileFingerprintBook(fingerprintBookPath);
   const layer = Layer.mergeAll(
-    // The crypto services, as in production (live.ts)
     cryptoServicesLayer,
-    // argv is passed per run by runCli (cli-runner.ts remounts it onto Stdio).
-    // What gets fixed here is terminal detection — the primary boundary for
-    // whether values may be displayed (agent-gate.ts)
     Stdio.layerTest({
       stdinIsTerminal: Effect.sync(() => stdinIsTerminal),
       stdoutIsTerminal: Effect.sync(() => stdoutIsTerminal),
@@ -271,8 +182,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
           }),
         ),
     }),
-    // The secondary layer (known-agent detection result); in production
-    // live.ts supplies it from std-env
     Layer.sync(AgentProfileRef, () => agent),
     Layer.succeed(PinStore, pinStore),
     Layer.succeed(FingerprintBook, fingerprintBook),
@@ -363,11 +272,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
         Effect.promise(async () => {
           browserOpens.push(url);
           if (browserOpenHandler !== null) {
-            // The browser stand-in must POST to the page while the CLI is
-            // waiting, so return "opened" without awaiting completion. The
-            // handler's rejection is not swallowed (vitest would fail the test
-            // as an unhandled rejection — don't wait out the 5-minute timeout).
-            // openBrowser itself only reports launch success in production too
             void browserOpenHandler(url);
             return true;
           }
@@ -396,9 +300,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
         }),
       exec: (input: ExecInput) =>
         Effect.suspend(() => {
-          // Fake child process: records the bytes that arrived on stdin
-          // (evidence for where the value went; in production live.ts this is
-          // Bun.spawn's stdin)
           const call: ExecCall = {
             command: input.command,
             cwd: input.cwd,
@@ -407,8 +308,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
           };
           execCalls.push(call);
           const outcome = execHandler(call, execCalls.length - 1);
-          // A faked spawn failure (unimplemented — live.ts's execStartFailure)
-          // is returned as a typed error
           return outcome instanceof CliError ? Effect.fail(outcome) : Effect.succeed(outcome);
         }),
       captureScript: (input) => {
@@ -434,9 +333,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
           catch: () => cliError("cannot spawn the agent session child (test injection)"),
         }),
     }),
-    // Real-fetch HttpClient; only the vendor APIs' fixed hosts are remapped to
-    // the fake server (requests to the maruhi server already have the fake
-    // origin)
     Layer.effect(
       HttpClient.HttpClient,
       Effect.map(HttpClient.HttpClient, (client) =>
@@ -545,14 +441,11 @@ export async function makeTestEnv(): Promise<TestEnv> {
   };
 }
 
-/** Seeds the keychain into a logged-in + master-key-stored state. */
 export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
-    // Fixture shaped like the real server's format (maruhi_pat_ + Base62 random)
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
-    // 2100-01-01 (outside the near-expiry warning window)
     expiresAtMs: 4_102_444_800_000,
   };
   const master: StoredMasterKey = {
@@ -562,16 +455,10 @@ export function seedSession(env: TestEnv, origin: string, user: TestUser): void 
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
   };
-  // JSON.stringify(token) cannot be used — Redacted.toJSON() returns a redacted
-  // string, producing a "seeded but cannot authenticate" test (the same trap as
-  // production login.ts)
   env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
-  // JSON.stringify cannot be used for the master key either (the secret side
-  // would be stored redacted and become undecryptable)
   env.keychain.set(masterKeyEntryName(origin, user.userId), serializeStoredMasterKey(master));
 }
 
-/** Creates the state where config.json has server (+ any defaults) written. */
 export async function seedConfig(
   env: TestEnv,
   config: Readonly<Record<string, string>>,

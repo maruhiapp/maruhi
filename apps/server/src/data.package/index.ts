@@ -1,13 +1,3 @@
-// The public surface of data.package (the ImportLint boundary).
-//
-// Only the data plane's shared vocabulary is re-exported from here: the
-// RPC-boundary types (data-plane.ts), the authorization guards, the
-// rejection vocabulary, the audit events, the storage service, the
-// statement / manifest / value verifiers, and the HTTP adapters. The
-// store's query modules (data-store-*.ts) and the internal row types
-// (data-store-rows.ts) never leave the boundary; the storage service is
-// exposed only through the data-store.ts facade.
-
 export { dataEvent, dekRecipientTarget } from "./data-events.ts";
 export {
   currentEpochOf,

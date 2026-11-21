@@ -1,10 +1,3 @@
-// Checks for the values_digest **subject selection** of CRYPTO_SPEC §6.2
-// (declared of §4.2 layout v3): variables with status = declared (value not
-// yet set) do not appear in values_digest. The LP canonical form itself is
-// already pinned and invariant by the values_digests section of
-// chain-entries.json (checkpoint.ts) — this file pins only the selection rule
-// of selectEnvValuesDigestEntries via checkpoint-digest.json.
-
 import type { EnvValuesDigestEntry, EnvValuesDigestSource } from "../../src/index.ts";
 import { computeEnvValuesDigest, selectEnvValuesDigestEntries } from "../../src/index.ts";
 import digestVectors from "../../test-vectors/checkpoint-digest.json" with { type: "json" };
@@ -57,15 +50,12 @@ export async function checkpointDigestChecks(): Promise<CheckResult[]> {
   const c = new Checks();
   const cases = digestVectors.cases as readonly DigestCase[];
   for (const digestCase of cases) {
-    // Selection: only active entries match the vector's expected entry set, value coordinates included
     const selected = selectEnvValuesDigestEntries(digestCase.variables.map(sourceOf));
     const expected = digestCase.values_digest_entries.map(entryOf);
     c.push(
       `checkpoint-digest ${digestCase.name}: selection keeps active entries only`,
       JSON.stringify(selected) === JSON.stringify(expected),
     );
-    // The digest of the selection result matches the vector's expected value (the encoder is
-    // invariant — it passes straight through the canonical form of chain-entries.json values_digests)
     const computed = await computeEnvValuesDigest("maruhi/v1", selected);
     c.push(
       `checkpoint-digest ${digestCase.name}: digest over selected entries`,
@@ -73,8 +63,6 @@ export async function checkpointDigestChecks(): Promise<CheckResult[]> {
       computed.ok ? undefined : JSON.stringify(computed.error),
     );
   }
-  // The digest of an environment with only declared variables equals the digest of the empty set (§6.2 —
-  // the boundary form of "declared does not appear in values_digest")
   const allDeclared = cases.find((digestCase) => digestCase.name === "all-declared-empty");
   const emptySet = await computeEnvValuesDigest("maruhi/v1", []);
   c.push(

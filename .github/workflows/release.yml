@@ -1,79 +1,27 @@
-# Tag-driven release (ADR-0015 / docs/RELEASING.md)
-#
-# On push of a `v*` tag: quality gate (reuses ci.yml wholesale) → tag ↔
-# apps/cli version match check → bun compile binaries for 5 targets →
-# real-machine smoke (5 OS runners) → GitHub Release (with checksums.txt) →
-# npm publish (trusted publishing + provenance). No reviewer approval gates
-# the publish jobs yet: that gate is enabled before the first public release
-# (docs/RELEASING.md, "Before the first public release"), and until then
-# version-check refuses a stable tag.
-# workflow_dispatch is a dry run: everything except publish runs (for
-# verifying the plumbing before tagging).
-#
-# Operational invariants:
-# - publish comes after all gates (verify / version-check / smoke). A broken
-#   build does not ship even if tagged
-# - Tags are never re-cut (overwriting an existing Release fails in
-#   gh release create). To redo, advance the rc (docs/RELEASING.md)
-# - Tags are only valid on commits in the main ancestry (version-check
-#   enforces this — it closes the path where tagging an unreviewed branch
-#   commit with a v tag reaches publish)
-# - The publish jobs ship only artifacts whose digest matches the build
-#   job's outputs (any job of the run can overwrite an artifact, but only
-#   build can set its outputs)
-# - External actions are pinned by commit SHA (this is a privileged path with
-#   contents: write / id-token: write, so upstream compromise via a mutable
-#   tag is ruled out. Same discipline as ADR-0011's strict pinning — updates
-#   happen deliberately in a dedicated PR that bumps the SHA)
 name: release
 
 on:
   push:
-    # With `v*`, unrelated tags like vendor-... would also run the full CI
     tags: ["v[0-9]*"]
-  # Dry run (up through build + smoke + checksums; no publish)
   workflow_dispatch:
 
-# Do not rely on the default loose permissions. State the minimum per job
 permissions: {}
 
-# Serialize so that reruns or rapid repeats of the same tag never run publish
-# in parallel. cancel-in-progress is not used: killing a run mid-publish could
-# leave GitHub Release and npm in a diverged half-state
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  # Apply the "say nothing" principle (CLAUDE.md) to the release path as in ci.yml
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
   CF_SEND_TELEMETRY: "false"
 
 jobs:
-  # The full quality gate (bun audit + 11 steps). Calls ci.yml via workflow_call.
-  # No job of the release run restores an Actions cache (ci.yml has none: Bun
-  # and the gate's browser are downloaded and checked against pinned
-  # SHA-256s). An Actions cache entry in
-  # the default branch's scope is writable by code in any run there (a push
-  # to main and its dependencies, the Pullfrog agent's workflow_dispatch) —
-  # GITHUB_TOKEN permissions do not limit cache writes — and tag runs read
-  # that scope. Every job of this run, verify and build included, holds a
-  # token that can overwrite the `binaries` / `npm-package` artifacts publish
-  # downloads, so one poisoned entry could reach a published release. (A
-  # dependency cache would be worse still — bun would install a cached hit
-  # without re-verifying lockfile integrity — which is one reason none is
-  # added; the other is that it measured slower than a cold install.)
-  # apps/cli/test/workflows-supply-chain.test.ts keeps every workflow free of
-  # Actions caches
   verify:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  # The single source of truth for the version is apps/cli/package.json
-  # (imported by cli.ts). If it does not match the tag, stop here (do not
-  # build artifacts of a mismatched version)
   version-check:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -85,11 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The main-ancestry check (below) needs history
           fetch-depth: 0
-          # Later git fetches only need unauthenticated access to a public
-          # repository. Do not leave the token in .git/config (same discipline
-          # as jobs that run dependency code)
           persist-credentials: false
 
       - name: Resolve version (tag ↔ apps/cli/package.json, ancestry)
@@ -98,11 +42,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           VERSION=$(node -p "require('./apps/cli/package.json').version")
-          # Canonical SemVer (same shape as SEMVER_PATTERN in
-          # scripts/shared.ts). With a lax check, leading zeros etc. are first
-          # rejected at the final npm publish and Release and npm diverge.
-          # Later jobs expand this output into the shell, so the format check
-          # doubles as injection hardening
           SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
           if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then
             echo "::error::apps/cli/package.json version is not SemVer: ${VERSION}"
@@ -113,13 +52,6 @@ jobs:
             exit 1
           fi
           if [ "${EVENT_NAME}" = "push" ]; then
-            # Force the tag to point at a commit in the main ancestry.
-            # Without this, tagging any unreviewed branch commit with a v tag
-            # would reach a real Release / npm publish (with provenance).
-            # origin/main is already fetched by checkout (fetch-depth: 0 = all
-            # branches, full history) — do not re-fetch here (a manual fetch
-            # after persist-credentials: false is the one line that breaks the
-            # moment the repository goes private)
             if ! git merge-base --is-ancestor HEAD origin/main; then
               echo "::error::tag ${GITHUB_REF_NAME} does not point at a commit on main (docs/RELEASING.md)"
               exit 1
@@ -129,8 +61,6 @@ jobs:
             *-*) PRERELEASE=true ;;
             *) PRERELEASE=false ;;
           esac
-          # A stable tag publishes to npm `latest` with nobody's approval
-          # until the release gate exists, so it stops here
           if [ "${EVENT_NAME}" = "push" ] && [ "${PRERELEASE}" = "false" ]; then
             echo "::error::stable tag ${GITHUB_REF_NAME}: enable the release approval gate first (docs/RELEASING.md, \"Before the first public release\")"
             exit 1
@@ -138,9 +68,6 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
-  # Cross-compile the 5 targets and produce checksums.txt (generation is
-  # centralized in scripts/build-binaries.ts; the build procedure is not
-  # duplicated here)
   build:
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -152,50 +79,27 @@ jobs:
       binaries-digest: ${{ steps.digests.outputs.binaries }}
       npm-package-digest: ${{ steps.digests.outputs.npm-package }}
     steps:
-      # Leave no token on jobs that run dependency code (bun install / build)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # The running Bun bundles the published code and writes every artifact,
-      # so it comes from the SHA-256-pinned zip, never a cache. The runtimes
-      # embedded in the binaries are pinned separately, per target, in
-      # apps/cli/scripts/bun-runtimes.ts
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The smoke matrix is also derived from TARGETS (scripts/shared.ts):
-      # adding a target automatically gains a real-OS smoke (this closes the
-      # shape where a duplicated table forgets only the smoke side and an
-      # artifact that passed nothing but cross-compiling gets published)
       - name: Export smoke matrix (single source = scripts/shared.ts)
         id: smoke-matrix
         run: |
-          # A command substitution inside echo's arguments still lets echo
-          # exit 0 on failure and breaks far downstream at fromJson(''). Go
-          # through an assignment (failures propagate under -e)
           MATRIX=$(bun apps/cli/scripts/print-smoke-matrix.ts)
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
 
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
 
-      # npm staging is also built in the same job: permissions and trust level
-      # (running dependency code under contents: read) are identical, so a
-      # separate job buys nothing. The essential separation from publish-npm
-      # (id-token isolation) is preserved
       - name: Stage npm package (bundle)
         run: bun run --filter @maruhi/cli build:npm
 
-      # Bind what gets published to this job. Every job of this run holds a
-      # token that can overwrite the artifacts below (upload-artifact needs
-      # no permission), but only this job's steps can set its outputs. So the
-      # publish jobs recompute this digest — every file's path and SHA-256 —
-      # over what they downloaded and refuse a mismatch, and a compromised
-      # verify / smoke job cannot swap what ships. The same digest function
-      # runs there (pinned identical by apps/cli/test/workflows-supply-chain.test.ts)
       - name: Digest the artifacts (bound to this job's outputs)
         id: digests
         run: |
@@ -211,14 +115,7 @@ jobs:
           name: binaries
           path: apps/cli/dist/
           if-no-files-found: error
-          # Recovery from a publish-npm-only failure re-runs the job
-          # (docs/RELEASING.md). A re-run can start up to 30 days after the
-          # run, and once the release approval gate is enabled it can then wait
-          # up to 30 days for an approval, so keep the artifacts 60 days
           retention-days: 60
-          # A new "Re-run all jobs" attempt makes the same-named artifact 409;
-          # with tag re-cutting banned, this closes the trap of having to burn
-          # an rc
           overwrite: true
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -229,10 +126,6 @@ jobs:
           retention-days: 60
           overwrite: true
 
-  # Real-machine smoke: cross-compiling only guarantees "it builds", so every
-  # target is launched on a real OS runner. The target/runner list's single
-  # source of truth is TARGETS in scripts/shared.ts (via the build job's
-  # output through fromJSON)
   smoke:
     name: smoke (${{ matrix.target }})
     needs: [version-check, build]
@@ -244,19 +137,10 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     steps:
-      # Download all archives (~150MB) and use just one. download-artifact
-      # cannot fetch part of an artifact, and splitting into per-target
-      # artifacts pushes a duplicate of the target list back into the upload
-      # side and breaks the single source (shared.ts TARGETS). At 5 targets ×
-      # infrequent releases the transfer cost is cheaper (revisit if the
-      # target count grows)
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: binaries
 
-      # Do not expand `${{ }}` directly into run (go through env): values like
-      # the version string must not become an injection path interpreted as
-      # shell (GitHub's hardening guidance)
       - name: Launch check (--version / --help)
         shell: bash
         env:
@@ -270,12 +154,6 @@ jobs:
           test "${GOT}" = "${EXPECTED_VERSION}"
           ./"${BIN}" --help > /dev/null
 
-      # Observe the OS keychain path. logout with no stored token exits 1 via
-      # either "not in the keychain" (= backend reached OK) or a typed
-      # backend-absent error — anything else (crash, signal death, unexpected
-      # output) goes red. Runner keychain behavior (headless / unlocked) is
-      # out of our control, so this is not a release gate (continue-on-error),
-      # but red is readable as a real anomaly
       - name: Keychain probe (typed failure expected)
         continue-on-error: true
         shell: bash
@@ -288,9 +166,6 @@ jobs:
           set -e
           echo "${OUT}"
           echo "exit: ${CODE}"
-          # Emit the annotation via an explicit branch first (letting a bare
-          # test fail under -e would drop without this step's purpose — the
-          # crash-discrimination annotation — ever printing)
           if [ "${CODE}" != "1" ]; then
             echo "::warning::exited in a way that is not the typed-error exit 1 (exit ${CODE}; suspected crash / signal death)"
             exit 1
@@ -300,15 +175,8 @@ jobs:
             *) echo "::warning::failed with output other than the keychain typed error"; exit 1 ;;
           esac
 
-  # Create the GitHub Release (with checksums.txt). Release notes are
-  # auto-generated (ADR-0015: no CHANGELOG until 1.0). The job also checks
-  # the npm-package artifact, so a swapped or roundtrip-damaged npm package
-  # stops the release before the Release exists
   publish-github:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # npm staging lives inside the build job (a precondition via smoke). If it
-    # is broken, build fails and the irreversible Release creation is never
-    # reached
     needs: [verify, version-check, build, smoke]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -320,7 +188,6 @@ jobs:
           name: binaries
           path: binaries
 
-      # Refuse anything the build job did not produce (see its digest step)
       - name: Verify the artifact is the build job's
         working-directory: binaries
         env:
@@ -339,7 +206,6 @@ jobs:
           name: npm-package
           path: npm-package
 
-      # Refuse anything the build job did not produce (see its digest step)
       - name: Verify the artifact is the build job's
         working-directory: npm-package
         env:
@@ -353,8 +219,6 @@ jobs:
             exit 1
           fi
 
-      # Verify against an implementation (coreutils) independent of the
-      # generator (node:crypto) before publishing
       - name: Verify checksums
         working-directory: binaries
         run: sha256sum -c checksums.txt
@@ -374,25 +238,12 @@ jobs:
             "${FLAGS[@]}" \
             maruhi-*.tar.gz checksums.txt
 
-  # npm publish (unscoped `maruhi`). Auth is trusted publishing (OIDC) only:
-  # no long-lived token in GitHub Secrets. provenance is forced via an
-  # explicit flag (bun publish does not support provenance —
-  # oven-sh/bun#15601 — so the npm CLI is used). id-token: write is granted
-  # to this job alone, and only the pinned download-artifact action and the
-  # SHA-256-pinned Node.js / npm run here (no checkout, no repository
-  # dependency code). Lifecycle scripts never run (--ignore-scripts)
   publish-npm:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # build is the producer of the npm-package artifact (execution order is
-    # already serialized via publish-github — this declares the dependency.
-    # With only the implicit transitive dependency, a future change to
-    # publish-github's needs would fail at download after the irreversible
-    # Release creation)
     needs: [version-check, build, publish-github]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
-      # Required for npm trusted publishing (OIDC) and provenance generation
       id-token: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -400,7 +251,6 @@ jobs:
           name: npm-package
           path: dist-npm
 
-      # Refuse anything the build job did not produce (see its digest step)
       - name: Verify the artifact is the build job's
         working-directory: dist-npm
         env:
@@ -414,21 +264,6 @@ jobs:
             exit 1
           fi
 
-      # Node + npm come from the official tarball verified against a pinned
-      # SHA-256 before anything in it runs, not from actions/setup-node: on
-      # a tool-cache miss setup-node downloads Node without a digest check
-      # and runs `node --version` / `npm --version` inside its own step,
-      # where this job's OIDC request token is in the environment. Inline
-      # (not a local action) because this job has no checkout. A Node bump
-      # changes both values: the SHA-256 is the
-      # node-v<version>-linux-x64.tar.gz line of the release's clearsigned
-      # SHASUMS256.txt.asc, checked by gpgv against the active release keys
-      # only (not a personal keyring, where any key would pass):
-      #   curl -fsSLO https://raw.githubusercontent.com/nodejs/release-keys/main/gpg-only-active-keys/pubring.kbx
-      #   rm -f shasums.txt
-      #   gpgv --keyring ./pubring.kbx --output shasums.txt SHASUMS256.txt.asc &&
-      #     grep ' node-v<version>-linux-x64.tar.gz$' shasums.txt
-      # Pinned by apps/cli/test/workflows-supply-chain.test.ts
       - name: Install Node.js (pinned SHA-256, no cache)
         env:
           NODE_VERSION: "24.21.0"
@@ -451,8 +286,6 @@ jobs:
           echo "${node_dir}/bin" >> "${GITHUB_PATH}"
           "${node_dir}/bin/node" --version
 
-      # Trusted publishing requires npm >= 11.5.1. If unmet, stop earlier with
-      # a clearer message than publish's authentication error
       - name: Ensure npm >= 11.5.1
         # The single quotes are the point: `${v}` inside is node's template
         # literal, not a shell expansion (shellcheck SC2016 false positive)
@@ -466,18 +299,9 @@ jobs:
             console.log(`npm ${v}`);
           '
 
-      # upload/download-artifact does not preserve file modes (official docs),
-      # so restore the staging-time executable bit here. Install-time bin is
-      # chmod'ed by npm / bun so real harm is slight, but keep modes correct
-      # inside the published tarball
       - name: Restore executable bit (lost in artifact roundtrip)
         run: chmod +x ./dist-npm/bin.js
 
-      # npm silently rewrites the manifest via publish-time normalization
-      # (auto-correct) and continues the publish with only a warning and
-      # exit 0 (measured at v0.1.0-rc.1: both bins were stripped). The vitest
-      # side can only pin "the input we pass", so npm-side rule changes are
-      # made red here before publish
       - name: Reject npm-side manifest auto-correction (dry-run)
         env:
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
@@ -498,9 +322,5 @@ jobs:
 
       - name: Publish to npm (provenance)
         env:
-          # Prereleases (v0.1.0-rc.1 etc.) go to next without moving latest
           DIST_TAG: ${{ needs.version-check.outputs.prerelease == 'true' && 'next' || 'latest' }}
-        # Always pass the path with ./: a bare `dist-npm` is interpreted by
-        # npm as a registry package name and fails with ENOVERSIONS / E404
-        # (verified with --dry-run)
         run: npm publish ./dist-npm --ignore-scripts --provenance --tag "${DIST_TAG}"

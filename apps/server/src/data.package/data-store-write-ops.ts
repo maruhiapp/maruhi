@@ -1,29 +1,15 @@
-// The synchronous write functions of the data store (DataWriteOps —
-// every write of one operation, audit appends included, bundled into
-// one synchronous block) — assembled into the service's `write` by
-// dataStoreLayer in data-store.ts.
-
 import { decodeEnvironmentId } from "@maruhi/core";
 
 import type { MetaStatementInput } from "./data-plane.ts";
 import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
 import type { DataWriteOps, MetaAuthorInfo, RemovedProposal } from "./data-store.ts";
 
-/**
- * The layout-v3 column values (layout_version + the schema fields —
- * variable statements only). A v1 statement has layout_version 1 and
- * NULL schema fields. required is stored as the signed-target "true" /
- * "false" representation (identical to CRYPTO_SPEC §4.2's LP field).
- */
 function layoutColumnValues(statement: MetaStatementInput): readonly (string | number | null)[] {
   const layoutVersion = statement.layoutVersion ?? 1;
   const schema = statement.schema;
   if (schema === undefined) {
     return [layoutVersion, null, null, null, null];
   }
-  // max_age_days: the signed string ("" = none). Acceptance refuses a v3
-  // statement without the field, so NULL is never written for one (the
-  // decode treats a NULL as a defect)
   const maxAge =
     schema.maxAgeDays === undefined
       ? null
@@ -39,11 +25,6 @@ function layoutColumnValues(statement: MetaStatementInput): readonly (string | n
   ];
 }
 
-/**
- * The INSERT of a statement row (the column order shared by variable
- * and environment; only the table name is swapped). The variable side
- * also writes the layout-v3 columns ({@link layoutColumnValues}).
- */
 function insertStatementRow(
   sql: SqlStorage,
   table: "variable_meta_statements" | "environment_meta_statements",
@@ -86,9 +67,6 @@ function insertStatementRow(
 }
 
 export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
-  // latest_meta_version is inserted as 0 and settled by the
-  // insertEnvironmentMetaStatement (metaVersion 1) inside the same
-  // synchronous block
   insertEnvironment: (environmentId, name, nowMs) => {
     sql.exec(
       "INSERT INTO environments (environment_id, name, latest_meta_version, created_at, deleted_at) VALUES (?, ?, 0, ?, NULL)",
@@ -121,33 +99,14 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       environmentId,
     );
     sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
-    // The subordinate variable statements and the environment's own
-    // statements are also deleted immediately (§12-4 — 2026-10-07: the
-    // delete_environment chain entry is the deletion's only record and its
-    // detection material; an environment ID cannot be reused under the
-    // chain consensus rules, and nothing of a deleted environment is
-    // distributed again)
     sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM environment_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
-    // The environment manifest is also cascade-deleted (§12-4: a
-    // deleted environment has no distribution channel, and a
-    // server-stored artifact that is never distributed has no residual
-    // value as detection material. The delete_environment chain entry
-    // is the terminal detection material)
     sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
-    // The checkpoint tuple and value snapshot are cascade-deleted by
-    // the same argument (§12-4: a deleted environment's snapshot has no
-    // distribution channel)
 
     sql.exec("DELETE FROM environment_checkpoints WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
-    // The sealed value proposals too (§12-4 — 2026-10-08: a client refuses
-    // a deleted environment's proposal as a resurrection, and left to expire
-    // they would hold the §12-8 meter and the pending limit). Expired rows
-    // the sweep has not dropped yet are removed with the rest; the caller
-    // tells them apart by their expiry
     const removed = removedProposalsOf(
       sql
         .exec(
@@ -209,8 +168,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       variableId,
     );
   },
-  // Only the latest one is kept per environment (§12-5 — replaced via
-  // upsert; rows are not accumulated)
   upsertEnvironmentManifest: (environmentId, manifest, signedBytesHashHex, issuer, nowMs) => {
     sql.exec(
       `INSERT INTO environment_manifests
@@ -252,18 +209,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     );
   },
   upsertCheckpointSnapshot: (environmentId, checkpoint, values, nowMs) => {
-    // The digest of the stored enumeration (read before overwriting).
-    // Every call site has already cross-checked "the digest of values =
-    // checkpoint.valuesDigestHex" before saving
-    // (ensureCheckpointValuesDigest — the 3 paths: standalone / create
-    // / rotate), both tables' rows are written only inside the same
-    // synchronous block, and deletion happens to both tables together
-    // (retireEnvironment). So a stored row's values_digest_hex is the
-    // SHA-256 of the stored enumeration itself, and a match means the
-    // enumeration is identical — skipping the wholesale replacement
-    // leaves the stored state unchanged (keeping §6.4's "the state at
-    // acceptance time itself"). The tuple-coordinates row is always
-    // updated
     const stored = sql
       .exec(
         "SELECT values_digest_hex FROM environment_checkpoints WHERE environment_id = ?",
@@ -298,8 +243,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     if (valuesUnchanged) {
       return;
     }
-    // The enumeration is a wholesale replacement per environment (the
-    // state at acceptance time itself — the §6.4 upsert semantics)
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
     for (const value of values) {
       sql.exec(
@@ -381,14 +324,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       recipientEncPubHex,
     );
   },
-  // Two statements, SELECT → DELETE, but inside the same synchronous
-  // task (under the permit, committed atomically). Since recipient is
-  // the third component of the primary key, a key-prefix match is
-  // impossible, so it is looked up via the recipient index dw_recipient
-  // (recipient_user_id, recipient_class) (created by the do-schema.ts
-  // base step) — the scan is limited to the wrap rows addressed to
-  // the target user_id (test/do-schema.test.ts pins it via EXPLAIN
-  // QUERY PLAN)
   deleteStaleMemberWraps: (recipientUserId, keepEncPubHex) => {
     const stale = sql
       .exec(
@@ -468,8 +403,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       nowMs,
       proposal.expiresAtMs,
     );
-    // The minted order is the push order (companions first — CRYPTO_SPEC
-    // §5.3); variable ids are random, so the position is stored
     proposal.variables.forEach((variable, position) => {
       sql.exec(
         "INSERT INTO rotation_proposal_variables (proposal_id, variable_id, base_version, position) VALUES (?, ?, ?, ?)",
@@ -513,7 +446,6 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   },
 });
 
-/** The closing material of the proposal rows a removal selected (id, environment, expiry). */
 function removedProposalsOf(rows: readonly StoredRow[]): RemovedProposal[] {
   return rows.map((row): RemovedProposal => ({
     proposalId: stringColumn(row, "proposal_id"),

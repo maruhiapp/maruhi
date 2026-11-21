@@ -46,9 +46,7 @@ export const ENV_ID = "env-app";
 export const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
 
 export let owner: TestUser;
-/** owner's second device (the new device being approved / the device being revoked). */
 export let dev2: TestUser;
-/** owner's reserve key (only the public side lands on the local record). */
 export let reserve: TestUser;
 export let member: TestUser;
 export let dek: Uint8Array;
@@ -67,7 +65,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** `add_device` (cap-carrying — CRYPTO_SPEC §6.2). actor is a valid device of the same person. */
 export function addDeviceOp(
   device: TestUser,
   cap: { roleCap: "owner" | "admin" | "member" | "reader"; environmentIds?: readonly string[] } = {
@@ -100,7 +97,6 @@ export function revokeDeviceOp(target: TestUser, devices: readonly TestUser[]): 
 export interface ServerState {
   readonly handlers: MockHandler[];
   readonly appended: ChainEntry[];
-  /** Appends to every project (including `extraProjects`) — with project ids. */
   readonly appendedTo: { readonly projectId: string; readonly entry: ChainEntry }[];
   readonly registered: { environmentId: string; deks: readonly Record<string, unknown>[] }[];
   readonly registry: {
@@ -109,10 +105,8 @@ export interface ServerState {
     sigPubHex: string;
     label: string;
     createdAtMs: number;
-    /** The issued token's id carried on the registry row (the match key for K4-13's token-revocation proposal). */
     tokenId?: string;
   }[];
-  /** Token ids whose revocation was requested via `DELETE /auth/tokens/:tokenId` (in call order). */
   readonly tokenRevokes: string[];
   readonly registryPuts: { fp: string; body: Record<string, unknown> }[];
   readonly registryDeletes: string[];
@@ -120,73 +114,35 @@ export interface ServerState {
   readonly paths: () => readonly string[];
 }
 
-/**
- * A mock of the chain (appendable) + one environment (an epoch-1 wrap for
- * owner) + the device registry + the request list + the project list.
- */
 export async function makeServer(input: {
   readonly built: BuiltChain;
   readonly withEnvironment: boolean;
   readonly requests?: readonly Record<string, unknown>[];
   readonly registryRows?: readonly ServerState["registry"][number][];
   readonly tokensStatus?: number;
-  /** The token rows `GET /auth/tokens` returns (default: empty — `tokensStatus` 403 takes precedence). */
   readonly tokens?: readonly Record<string, unknown>[];
-  /** The response code of `DELETE /auth/tokens/:tokenId` (default 204. 404 = TokenNotFound). */
   readonly tokenRevokeStatus?: number;
-  /** Extra handlers (MockServer copies the list at startup, so they cannot be pushed later). */
   readonly extra?: readonly MockHandler[];
-  /** The environment-list GET's response code (default 200. 500 = fails the post-acceptance sweep). */
   readonly environmentsStatus?: number;
-  /**
-   * The registry PUT's response codes in call order (429 = the row cap, 500 =
-   * a transient failure). Once exhausted, 204 (DK K9-1: the re-run after a failed attempt succeeds).
-   */
   readonly registryPutStatuses?: readonly number[];
-  /**
-   * The `POST /auth/devices/requests` response: the deadline, and whether to
-   * raise the signal (the registry row) immediately. Setting `conflict`
-   * returns 409 (after the signal was raised).
-   */
   readonly requestCreate?: {
     readonly expiresAtMs: number;
     readonly signal: boolean;
     readonly conflict?: "request-exists" | "device-registered";
   };
-  /** Other projects the same person belongs to (serves only the chain GET / append and an empty environment list — DK K10). */
   readonly extraProjects?: readonly BuiltChain[];
-  /** The DEK-wrap registration (POST) response code (default 204. 500 = the backfill failure — DK K11). */
   readonly dekRegisterStatus?: number;
-  /**
-   * The response of the GET for DEKs addressed to self (default: 1 row of
-   * epoch 1 for owner). Setting `status` fails it with that code (DK K12 —
-   * the check that the new device's keys arrived).
-   */
   readonly listMine?:
     | { readonly rows: readonly Record<string, unknown>[] }
     | { readonly status: number };
-  /** The live request `GET /auth/devices/requests/:fp` returns (the one whose FP matches — default 404). */
   readonly pendingRequests?: readonly Record<string, unknown>[];
-  /** The project-list GET's response code (default 200 — DK K13's list failure). */
   readonly projectsStatus?: number;
-  /**
-   * Projects on the list that cannot be synced (DK K13-3): `unavailable` =
-   * the chain GET is 500; `tampered` = the head claim disagrees with the
-   * entries (a verification contradiction — `evidence`).
-   */
   readonly brokenProjects?: readonly {
     readonly built: BuiltChain;
     readonly mode: "unavailable" | "tampered";
   }[];
-  /**
-   * Projects the server hides from the list (DK K15): it serves the chain
-   * GET / append but does not list them on `GET /projects` (syncable when
-   * named via `--project` — to assemble a device that synced before the hiding).
-   */
   readonly unlistedProjects?: readonly BuiltChain[];
-  /** Injected response for the project's chain appends, by call (e.g. a 409). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend injects, replaces the subsequent chain with this shape (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
 }): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
@@ -386,7 +342,6 @@ export async function makeServer(input: {
       }
       const body = request.body as { encPubHex: string; sigPubHex: string; label: string };
       if (input.requestCreate.signal) {
-        // In place of the registry PUT the approver does last: compute the FP from the request's public key and raise the signal
         const fp = await computeUserKeyFingerprint(
           hexBytes(body.encPubHex),
           hexBytes(body.sigPubHex),
@@ -423,7 +378,6 @@ export async function makeServer(input: {
   };
 }
 
-/** The response of the GET for DEKs addressed to self (`makeServer`'s `listMine` — default 1 row of epoch 1 for owner). */
 function listMineResponse(
   listMine:
     | { readonly rows: readonly Record<string, unknown>[] }
@@ -475,7 +429,6 @@ export async function recordOwnDevice(
   device: TestUser,
   source: OwnDeviceSource,
   revokedAtMs: number | null = null,
-  /** The observed project (the observation row — the shape the writer always writes. DK K15-6). */
   observedProjectId: string | null = null,
 ): Promise<void> {
   const store = makeFileOwnDeviceStore(ownDevicesPathOf(env.configPath));
@@ -513,7 +466,6 @@ export function registryRowOf(device: TestUser): ServerState["registry"][number]
   };
 }
 
-/** A device without a key (token only — `device add` generates the key). */
 export async function startEnvWithoutKey(origin: string, projectId: string): Promise<TestEnv> {
   const env = await makeTestEnv();
   env.keychain.set(

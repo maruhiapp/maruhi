@@ -1,8 +1,5 @@
 "use client";
 
-// The S6 audit tab (the project / invites axes). See
-// ProjectScreen.tsx for the screen's tab framework.
-
 import { Code } from "@astryxdesign/core/Code";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
@@ -14,11 +11,6 @@ import { AuditEventList } from "./AuditEventList.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { SectionBlock } from "./sections.tsx";
 import type { AuditEventsPage } from "./types.ts";
-
-// ---------------------------------------------------------------------------
-// S6: audit tab (the project / invites axes. The self axis is
-// /dashboard/account)
-// ---------------------------------------------------------------------------
 
 export function AuditTab({ projectId }: { projectId: string }): ReactNode {
   const [axis, setAxis] = useState("project");
@@ -35,12 +27,11 @@ export function AuditTab({ projectId }: { projectId: string }): ReactNode {
   return (
     <VStack gap={4}>
       <HStack gap={3} justify="between" align="center" wrap="wrap">
-        {/* The prescribed wording (AUDIT_SPEC §7 / design document §4-4): never hints at the existence or count of an invisible class */}
+        {}
         <Text type="supporting" data-testid="audit-caption">
           Events visible to your role, as reported by the server.
         </Text>
-        {/* Axis switching is a ToggleButtonGroup(single). SegmentedControl's unselected-label
-            contrast is 4.26:1 (12px) in dark, short of AA (a11y audit — an upstream candidate) */}
+        {}
         <ToggleButtonGroup
           label="Audit source"
           type="single"

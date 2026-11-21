@@ -1,11 +1,3 @@
-// Checks for CRYPTO_SPEC §4.1 (the value write signature).
-// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
-// verified byte-for-byte against the vectors too.
-// For the verification-rule kind (kind = "authorization"), pin that "the
-// signature is valid but is rejected by the §6.3 history verification with
-// expected_reason" via verifyDistributedValue against the history index built
-// by verifyChainWithHistory.
-
 import type {
   ChainHistoryIndex,
   SigningKeyPair,
@@ -93,12 +85,6 @@ function contextOf(v: VectorContext): ValueSignatureContext {
 const positives = valueVectors.vectors;
 const byName = new Map(positives.map((v) => [v.name, v]));
 
-/**
- * Comparison chains (name → verified history index): canonical (canonical
- * 24), tenure-extension (the re-add derived chain in value-signature.json),
- * device-ops (the device-key derived chain in chain-entries.json —
- * 2026-09-19 DK). A vector with `chain` unset means canonical
- */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 function historyFor(
@@ -108,7 +94,6 @@ function historyFor(
   return histories[chain ?? "canonical"];
 }
 
-/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -116,8 +101,6 @@ async function signAndVerifyChecks(
   signatureHex: string,
   writerKeyFingerprintHex: string,
 ): Promise<void> {
-  // Signing direction: sign with the writer's device (user_id, FP) seed and
-  // match the expected signature (Ed25519 is deterministic)
   const signer = await importVectorSigner(context.writerUserId, writerKeyFingerprintHex);
   if (signer === null) {
     c.push(`value-sig ${name}: writer keys`, false, "signer keys missing or failed to import");
@@ -161,8 +144,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.writer_key_fingerprint_hex,
     );
 
-    // History-based composite verification (§6.3): when prev_base exists,
-    // check with the predecessor included
     const base = "prev_base" in vector ? byName.get(vector.prev_base as string) : undefined;
     const distributed = await verifyDistributedValue({
       history,
@@ -200,25 +181,17 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
               epoch: predecessor.context.epoch,
             },
     });
-    // Each branch passes all checks on its own (prevention is impossible —
-    // the evidence-recording of §14.2-5)
     c.push(`value-sig fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
     }
   }
-  // Distinct signed_bytes hashes on the same coordinate = mechanically
-  // decidable evidence of equivocation
   c.push(
     "value-sig fork: same coordinate yields distinct hashes",
     hashes.length === 2 && hashes[0] !== hashes[1],
   );
 }
 
-// Exhaustiveness pinning of the reason space (consideration 7 — checked by
-// support.ts's reasonCoverageChecks): the Record type enforces sync with the
-// union at compile time (same shape as META_REASON_COVERAGE in
-// metadata-signature.ts).
 const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "signature-invalid": true,
   "writer-unknown": true,
@@ -235,7 +208,6 @@ const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "epoch-regressed": true,
 };
 
-/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: RuleNegative,
@@ -270,7 +242,6 @@ async function ruleNegativeCheck(
   );
 }
 
-/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: RuleNegative,
@@ -313,15 +284,12 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // Pin the kind vocabulary (a third value would escape both sieves)
   c.push(
     "value-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
   );
 }
 
-// The lower bound is the 16-byte tag alone (an empty value): exactly 16 bytes
-// signs and verifies
 async function minimumCiphertextCheck(
   c: Checks,
   baseContext: ValueSignatureContext,
@@ -368,8 +336,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
       name: "empty environment id",
       context: { ...baseContext, environmentId: testEnvironmentId("") },
     },
-    // An empty variable id is rejected on par with the other coordinates
-    // (same expectation as meta-sig's "empty variable id")
     { name: "empty variable id", context: { ...baseContext, variableId: testVariableId("") } },
     { name: "empty writer", context: { ...baseContext, writerUserId: testUserId("") } },
   ];
@@ -389,9 +355,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     );
   }
   await minimumCiphertextCheck(c, baseContext, pair);
-  // A check only on the signing side: never sign a version 1 with a non-
-  // empty prev (the verify side instead rejects asymmetrically with a reason
-  // code, "valid signature + prev-shape-mismatch")
   const coupled = await signValue({
     context: { ...baseContext, version: 1, prevValueSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,

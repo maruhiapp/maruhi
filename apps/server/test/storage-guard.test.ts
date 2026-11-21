@@ -1,34 +1,3 @@
-// Tests for the DO total-storage guard (AUTH_SPEC §12-8).
-//
-// Generating a real 8-9 GB is impractical, so this is pinned in two
-// layers:
-// 1. the decision's pure function (storageGuardDecision — the
-//    threshold boundaries)
-// 2. the acceptance paths' wiring: against a real project DO's
-//    SqlStorage (chains, environments, variables the fixture created
-//    via the API), run the **real programs** under a StorageMeter
-//    whose measured size alone is swapped for a fixed value, and pin
-//    that the "surfaces rejection must stop" halt with
-//    limit-exceeded (project-storage-bytes) while the "surfaces that
-//    must stay open under rejection" (reads, deletes, revocations,
-//    rotation, attestation, checkpoint, settings) pass the guard (=
-//    are rejected for another reason or succeed). Since the guard
-//    sits at each program's head (right after membership, before
-//    semantic checks), any result other than limit-exceeded is
-//    evidence the guard was not called (or admitted). The sealed
-//    value proposal mint and pre-flight refuse in the workload
-//    vocabulary (`storage-limit`)
-// 3. the 10 GB floor: the reads that append an audit row run under an
-//    audit store whose appends fail like SQLITE_FULL, and pin that they
-//    fail rather than being served unrecorded
-// 4. no audit-head materialization at or above the rejection threshold:
-//    the export stops (null trailer head, at most one bounded call of
-//    overshoot) and a restore hashes and checks every row but stores no
-//    further head, reporting the head it computed
-//
-// The warning (8 GB) operations log is a static message, once per DO
-// instance (= per meter).
-
 import {
   auditGroup,
   DataLimitExceededError,
@@ -145,7 +114,6 @@ registerDataScenario();
 
 const actor = (userId: string): DataActor => ({ userId: testUserId(userId) });
 
-/** The services in-DO programs require (chain-do.ts's DoServices). */
 type DoProgram<A, E> = Effect.Effect<
   A,
   E,
@@ -153,16 +121,6 @@ type DoProgram<A, E> = Effect.Effect<
 >;
 type Runner = <A, E>(program: DoProgram<A, E>) => Promise<Exit.Exit<A, E>>;
 
-/**
- * Under a meter with a fixed measured size, run programs against the
- * real project DO's SqlStorage (the same layer composition as
- * chain-do.ts's constructor, with the meter swapped). StateCache is
- * empty per call = a full load from the stored rows. `atFloor` swaps the
- * audit store's appends for the 10 GB floor's SQLITE_FULL (the platform
- * limit cannot be reached for real either); `headChunks` shrinks the
- * bounded head extension (50 rows per chunk) so a small log needs several
- * calls; a function size answers per measurement.
- */
 async function runInProject<A>(
   databaseSizeBytes: number | (() => number),
   body: (run: Runner, state: DurableObjectState) => Promise<A>,
@@ -193,11 +151,7 @@ async function runInProject<A>(
               makeAuditStore(state.storage.sql, { maxHeadExtensionChunks: headChunks }),
             ),
       Layer.succeed(StorageMeter, meter),
-      // The deployment key the DO derives (the workload paths authorize against its grant)
       Layer.sync(ServerKey, () => makeServerKey(Redacted.make(env.SERVER_ENC_KEY_IKM ?? ""))),
-      // The DO runtime's logger (chain-do.ts) — without it the
-      // converted Effect.logWarning / logError lines do not reach
-      // the console spies
       ServerLoggerLive,
     );
     const run: Runner = (program) => Effect.runPromiseExit(program.pipe(Effect.provide(layers)));
@@ -207,7 +161,6 @@ async function runInProject<A>(
 
 const SQLITE_FULL = "SQLITE_FULL: database or disk is full";
 
-/** The verified token facts the worker hands the DO, matching the lease scenario's default policy. */
 const workloadFacts = (): LeaseTokenFacts => ({
   issuer: OIDC_ISSUER,
   subject: LEASE_SUBJECT,
@@ -218,7 +171,6 @@ const workloadFacts = (): LeaseTokenFacts => ({
   bindingExpiresAtMs: Date.now() + 300_000,
 });
 
-/** Exit → rejection reason (success / defect is null). */
 function rejectionOf(exit: Exit.Exit<unknown, unknown>): DataRejection | null {
   if (Exit.isSuccess(exit)) {
     return null;
@@ -233,9 +185,6 @@ const STORAGE_REJECTION: DataRejection = {
   limit: DO_STORAGE_REJECT_BYTES,
 };
 
-// Wire-shape dummies (the support wire types carry suite as string) →
-// DO inputs. Since the guard stands before signature verification,
-// zero-signature dummies suffice
 const dummyValueInput = (version: number) =>
   toValueInput({ ...unsignedPayload(aadFor(1, version)), suite: "maruhi/v1" });
 const dummyVariableStatement = (variableId: string, name: string) =>
@@ -283,8 +232,6 @@ describe("storageGuardDecision (pure function — §12-8's two thresholds)", () 
   });
 
   it("keeps the rejection threshold under the 10 GB platform floor in either unit", () => {
-    // Under either interpretation — 10 GB (decimal) / 10 GiB (binary) —
-    // the rejection threshold sits below the floor (§12-8)
     expect(DO_STORAGE_REJECT_BYTES).toBeLessThan(10_000_000_000);
     expect(DO_STORAGE_REJECT_BYTES).toBeLessThan(10 * 1024 ** 3);
     expect(DO_STORAGE_WARN_BYTES).toBeLessThan(DO_STORAGE_REJECT_BYTES);
@@ -306,13 +253,8 @@ describe("error contract — every endpoint on a rejection-effective surface dec
       "environments.create": environmentsGroup.endpoints.create,
       "environments.rename": environmentsGroup.endpoints.rename,
       "deks.register": deksGroup.endpoints.register,
-      // the add_member / grant_server rejection surface
       "membership.append": membershipGroup.endpoints.append,
-      // schemaPolicy change
       "schemaPolicy.set": schemaPolicyGroup.endpoints.set,
-      // reads that require materializing the audit-head derived
-      // column, and rotate, which can bundle a non-empty notarizing
-      // boundary checkpoint
       "audit.auditHead": auditGroup.endpoints.auditHead,
       "environments.rotate": environmentsGroup.endpoints.rotate,
     };
@@ -339,7 +281,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
   it("rejects every content-growth surface with limit-exceeded project-storage-bytes", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // The target keys may be dummies (the guard stands before verifyChain)
     const addMember = await signedEntry({
       op: "add_member",
       payload: {
@@ -491,7 +432,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           grantServer: rejectionOf(
             await run(appendProgram(fixture.head.hashHex, grantServer.entry, OWNER, cache)),
           ),
-          // not a growth surface, but a settings change that piles up audit rows without helping exit / release / remediation
           setSchemaPolicy: rejectionOf(
             await run(setSchemaPolicyProgram(actor(OWNER), "enabled", cache)),
           ),
@@ -500,7 +440,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           expect(rejection, surface).toEqual(STORAGE_REJECTION);
         }
       });
-      // The rejection-band operations log is a static message once per meter (1 line for 12 rejections)
       expect(errorSpy).toHaveBeenCalledTimes(1);
       const [message] = errorSpy.mock.calls[0] ?? [];
       expect(typeof message).toBe("string");
@@ -509,7 +448,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
     } finally {
       errorSpy.mockRestore();
     }
-    // Nothing was written: still 1 variable, version still 1, the chain unchanged
     const versions = await runInProject(0, async (run) => {
       const pulled = await run(
         pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), {
@@ -523,9 +461,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
   });
 
   it("guards the four-eyes path at the entry that first carries the growth intent (propose / approve of add_member or grant_server) and leaves remove / withdraw open", async () => {
-    // Four-eyes enablement (2 owners + the policy) and a pending
-    // add_member proposal are created over HTTP under the normal
-    // meter (design record es-design.md §11 K5-D)
     await seedMemberToken(fixture, "user-owner-0014", 9014);
     await appendOperation(fixture, OWNER, addMemberOperation("user-owner-0014", "owner"));
     await appendOperation(fixture, OWNER, {
@@ -583,7 +518,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
     });
     await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
       const cache: StateCache = { current: null, chain: null };
-      // Surfaces that are rejected (the head does not move)
       const rejected = {
         proposeAddMember: rejectionOf(
           await run(appendProgram(fixture.head.hashHex, proposeAdd.entry, OWNER, cache)),
@@ -598,7 +532,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
       for (const [surface, rejection] of Object.entries(rejected)) {
         expect(rejection, surface).toEqual(STORAGE_REJECTION);
       }
-      // Surfaces that are accepted (a remediation proposal / releasing a proposal)
       const removeProposed = await run(
         appendProgram(fixture.head.hashHex, proposeRemove.entry, OWNER, cache),
       );
@@ -621,9 +554,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
   it("keeps reads, deletions, revocations, rotation, attestation, checkpoint and settings open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Revocation-kind entries with a mismatched parent head:
-    // limit-exceeded if the guard was called, chain-head-conflict if
-    // not (the guard precedes ensureParentHead)
     const staleParent = "00".repeat(32);
     const removeMember = await signedEntry({
       op: "remove_member",
@@ -646,9 +576,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
       op: "checkpoint",
       payload: { environments: [], auditHeadHashHex: "" },
     });
-    // The deletion composite checks the declared parent against the entry's
-    // own prev before the CAS (§12-4), so its entry chains onto the stale
-    // parent to reach the CAS
     const deleteEnv = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: staleParent,
@@ -669,7 +596,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
     });
     await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
       const cache: StateCache = { current: null, chain: null };
-      // (a) reads — succeed (a value pull carries a var.read audit append but is accepted)
       const pulled = await run(
         pullEnvironmentProgram(actor(READER), testEnvironmentId(ENV), cache),
       );
@@ -686,9 +612,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           await run(listMyDekWrapsProgram(actor(READER), testEnvironmentId(ENV), cache)),
         ),
       ).toBe(true);
-      // (b) deletions — pass the guard and are rejected for another reason (dummy input:
-      // the variable statement's metaVersion 1 fails the CAS; the environment
-      // deletion composite's stale parent fails the chain-head CAS)
       expect(
         rejectionOf(
           await run(
@@ -737,7 +660,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           ),
         ),
       ).toEqual({ kind: "dek-wrap-not-found", epoch: 7, recipientUserId: STRANGER });
-      // (c) revocations / permission narrowing + (g) checkpoint — do not pass the guard (chain-head-conflict)
       for (const entry of [
         removeMember.entry,
         changeRole.entry,
@@ -747,7 +669,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
         const rejection = rejectionOf(await run(appendProgram(staleParent, entry, OWNER, cache)));
         expect(rejection?.kind, entry.op).toBe("chain-head-conflict");
       }
-      // (d) the rotation composite — proceeds to the in-composite consistency check (environmentId mismatch)
       expect(
         rejectionOf(
           await run(
@@ -766,7 +687,6 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           ),
         ),
       ).toEqual({ kind: "payload-mismatch", field: "environmentId" });
-      // (f) head attestation — proceeds to signature verification (the dummy signature is attestation-rejected)
       expect(
         rejectionOf(
           await run(
@@ -783,14 +703,10 @@ describe("acceptance-path wiring — a DO at or above the rejection threshold (�
           ),
         )?.kind,
       ).toBe("attestation-rejected");
-      // (h) dismissal — succeeds (audit rows bounded by the flag
-      // count). Changing schemaPolicy is a rejection target (the
-      // growth-surface test above); reading it is a read and passes
       expect(Exit.isSuccess(await run(dismissRotationFlagsProgram(actor(OWNER), [], cache)))).toBe(
         true,
       );
       expect(Exit.isSuccess(await run(getSchemaPolicyProgram(actor(READER), cache)))).toBe(true);
-      // Actual acceptance of (c): a remove_member with the correct parent head is accepted even at/above the rejection threshold
       const removed = await run(
         appendProgram(fixture.head.hashHex, removeMember.entry, OWNER, cache),
       );
@@ -807,7 +723,6 @@ describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surfa
     userId,
     encPubHex: vectorKeyOf(userId).enc_pub_hex,
   }));
-  // Sealed to W(E) (owner + member devices); the server verifies nothing inside a wrap
   const proposal: RotationProposalInput = {
     proposalId: "00112233445566778899aabbccddeeff",
     connector: "exec",
@@ -851,20 +766,17 @@ describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surfa
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(failureOf(await run(preflight(1, cache)))).toEqual(STORAGE_LIMIT);
-        // A stale base version would be base-version-stale: the guard precedes the semantic checks
         expect(failureOf(await run(preflight(5, cache)))).toEqual(STORAGE_LIMIT);
         expect(failureOf(await run(mint(cache)))).toEqual(STORAGE_LIMIT);
       });
       const events = (await readAuditEvents(projectId)).map((event) => event["event"]);
       expect(events).not.toContain("rotation.proposed");
-      // In the warning band the same requests are admitted (observation only)
       await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(Exit.isSuccess(await run(preflight(1, cache)))).toBe(true);
         expect(Exit.isSuccess(await run(mint(cache)))).toBe(true);
       });
       expect(warnSpy).toHaveBeenCalledTimes(1);
-      // The closing paths of a stored proposal stay open under rejection (§12-8 (h))
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         const listed = await run(listRotationProposalsProgram(actor(OWNER), cache));
@@ -903,12 +815,10 @@ describe("sealed value proposals (§12-8 / §14-5 — the mint is a growth surfa
       const stranger = { ...workloadFacts(), claims: { sub: "repo:someone-else/app:ref:main" } };
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run, state) => {
         const cache: StateCache = { current: null, chain: null };
-        // The storage level is project state: never answered before authorization (§11-2 / §14-3)
         expect(failureOf(await run(preflight(1, cache, stranger)))).toEqual({ kind: "not-found" });
         expect(failureOf(await run(mint(cache, stranger)))).toEqual({ kind: "not-found" });
         expect(failureOf(await run(preflight(1, cache)))).toEqual(STORAGE_LIMIT);
         expect(failureOf(await run(mint(cache)))).toEqual(STORAGE_LIMIT);
-        // The refusal precedes the expiry sweep (and the mint window)
         expect(
           state.storage.sql.exec("SELECT COUNT(*) AS n FROM rotation_proposals").one()["n"],
         ).toBe(1);
@@ -953,8 +863,6 @@ describe("the audit-writing reads (§12-8 (a)(e) — open in the rejection band,
       for (const [read, exit] of Object.entries<Exit.Exit<unknown, unknown>>(await reads(false))) {
         expect(Exit.isSuccess(exit), read).toBe(true);
       }
-      // No read is served without its audit row (an unrecorded read of a
-      // member nobody can remove at the floor)
       for (const [read, exit] of Object.entries<Exit.Exit<unknown, unknown>>(await reads(true))) {
         expect(Exit.isSuccess(exit), read).toBe(false);
         if (Exit.isFailure(exit)) {
@@ -973,21 +881,11 @@ describe("materializing the audit-head derived column (the §12-8 (a) exception 
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      // Audit rows exist but the derived column is not yet
-      // materialized (nobody has read the audit head yet) →
-      // materialization requires a write proportional to the audit
-      // row count, so it is rejected at/above the rejection
-      // threshold
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(rejectionOf(await run(auditHeadProgram(actor(OWNER), cache)))).toEqual(
           STORAGE_REJECTION,
         );
-        // A standalone checkpoint of a non-empty attestation stops on
-        // the same input (placed before the parent-head check = after
-        // requireRole(admin)). An empty attestation (the CLI default)
-        // passes — that is the chain-head-conflict in the test
-        // above
         const notarizing = await signedEntry({
           op: "checkpoint",
           payload: { environments: [], auditHeadHashHex: "ab".repeat(32) },
@@ -998,20 +896,14 @@ describe("materializing the audit-head derived column (the §12-8 (a) exception 
           ),
         ).toEqual(STORAGE_REJECTION);
       });
-      // One read below the threshold = it is materialized
       const materialized = await runInProject(0, async (run) =>
         Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
       );
       expect(materialized).toBe(true);
-      // With the column current, it passes as a read-only call even at/above the rejection threshold
       const current = await runInProject(DO_STORAGE_REJECT_BYTES, async (run) =>
         Exit.isSuccess(await run(auditHeadProgram(actor(OWNER), { current: null, chain: null }))),
       );
       expect(current).toBe(true);
-      // When audit rows grow (a value pull's var.read — a read that is
-      // accepted even under rejection) the column lags again, and the
-      // next audit-head read requires materialization and is rejected
-      // again
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(
@@ -1038,7 +930,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
       readonly auditMaxSeq: number;
       readonly auditHeadHashHex: string | null;
     };
-  /** Appends `n` var.read rows (pulls below the line materialize nothing). */
   const seedReads = (n: number) =>
     runInProject(0, async (run) => {
       for (let i = 0; i < n; i += 1) {
@@ -1050,7 +941,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
         );
       }
     });
-  /** The export's single page (a small project: the first page carries the trailer). */
   const exportLines = async (run: Runner, state: DurableObjectState) => {
     const exit = await run(
       exportPageProgram(actor(OWNER), null, state.storage.sql, state.id.toString(), {
@@ -1090,7 +980,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await seedReads(120);
-    // Below the line at the first measurement, at it from the second
     let measured = 0;
     const crossing = () => (measured++ === 0 ? 0 : DO_STORAGE_REJECT_BYTES);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1100,7 +989,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
         async (run, state) => {
           const before = count(state, "audit_head_hashes");
           const trailer = trailerOf(await exportLines(run, state));
-          // One call of one 50-row chunk, then the line stops it
           expect(count(state, "audit_head_hashes") - before).toBe(50);
           expect(trailer.auditHeadHashHex).toBeNull();
         },
@@ -1114,11 +1002,9 @@ describe("no audit-head materialization at or above the rejection threshold (§1
   it("a restore at the line hashes and checks every row but stores no further head, and reports the same head as one below it", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // More rows than one derivation chunk (50), so the line is asked several times
     await seedReads(120);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      // A snapshot whose column lags the log (exported at the line)
       const { lines, carried } = await runInProject(
         DO_STORAGE_REJECT_BYTES,
         async (run, state) => ({
@@ -1148,7 +1034,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
           return {
             head: exit.value.auditHeadHashHex,
             heads: Number(column["n"]),
-            // The column stays a contiguous prefix from seq 1
             prefix: Number(column["mn"]) === 1 && Number(column["n"]) === Number(column["mx"]),
             rows: count(state, "audit_events"),
           };
@@ -1158,9 +1043,6 @@ describe("no audit-head materialization at or above the rejection threshold (§1
       };
       const atLine = await restoreAt(DO_STORAGE_REJECT_BYTES);
       const below = await restoreAt(0);
-      // At the line for the first chunk, below it afterwards: storing never
-      // resumes mid-derivation (a gap), and the convergence afterwards
-      // extends the column from its tail
       let measured = 0;
       const flipping = await restoreAt(() => (measured++ === 0 ? DO_STORAGE_REJECT_BYTES : 0));
       expect(below.heads).toBe(below.rows);
@@ -1201,8 +1083,6 @@ describe("deriveAuditHeads past the store line (§11-7 — every row is still ch
         if (tamper !== null) {
           sql.exec(tamper);
         }
-        // Stores the first chunk (50 rows), then the line is reached; a
-        // predicate that says yes again must not resume storing
         let asked = 0;
         const head = await deriveAuditHeads(sql, "derive_source", "derive_heads", 0, "", () => {
           asked += 1;
@@ -1237,7 +1117,6 @@ describe("the warning threshold (§12-8 — operations log)", () => {
     try {
       await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        // The guard passes with an admit verdict; the dummies fall later (at value-signature verification)
         for (let i = 0; i < 3; i += 1) {
           const rejection = rejectionOf(
             await run(
@@ -1266,11 +1145,6 @@ describe("the warning threshold (§12-8 — operations log)", () => {
   });
 
   it("warns from the value pull path too (pull-only projects cross the band without growth writes)", async () => {
-    // A project whose dominant growth term is var.read crosses
-    // 8 GB → 9 GB with no growth-surface writes. If the observation
-    // points covered only the growth surface, the warning band's
-    // design of "buying the operators response time" would not hold
-    // for pull-dominant projects
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1278,7 +1152,6 @@ describe("the warning threshold (§12-8 — operations log)", () => {
     try {
       await runInProject(DO_STORAGE_WARN_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
-        // Observation only — the pull is accepted (a var.read is also recorded)
         for (let i = 0; i < 3; i += 1) {
           expect(
             Exit.isSuccess(
@@ -1286,7 +1159,6 @@ describe("the warning threshold (§12-8 — operations log)", () => {
             ),
           ).toBe(true);
         }
-        // A metadata-only pull is a read that writes no audit row = it has no observation point
         expect(
           Exit.isSuccess(
             await run(pullEnvironmentMetadataProgram(actor(READER), testEnvironmentId(ENV), cache)),
@@ -1295,7 +1167,6 @@ describe("the warning threshold (§12-8 — operations log)", () => {
       });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(errorSpy).not.toHaveBeenCalled();
-      // Pulls also pass in the rejection band; the rejection-band log fires once (no rejection actually happens)
       await runInProject(DO_STORAGE_REJECT_BYTES, async (run) => {
         const cache: StateCache = { current: null, chain: null };
         expect(

@@ -1,5 +1,3 @@
-// `maruhi invite` (discipline: see commands/index.ts).
-
 import { type EnvironmentId } from "@maruhi/core";
 import { ALL_SCOPE } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";
@@ -30,7 +28,6 @@ import { scopeFromFlags } from "../scope.ts";
 import { inviteCreateOp } from "./invite-create.ts";
 import { inviteListOp, inviteRevokeOp } from "./invite-list.ts";
 
-/** The role an invite can grant (an owner is never granted via an invite — AUTH_SPEC §15-1). */
 const INVITE_ROLES = ["reader", "member", "admin"] as const;
 
 function isInviteRole(value: string | undefined): value is InviteRole {
@@ -65,11 +62,6 @@ export const inviteAcceptConfig = {
     "inviter-fingerprint",
     "Inviter's key fingerprint noted out of band (32 hex chars; checked against the link instead of the interactive ceremony)",
   ),
-  // An invite link embeds the link-key seed = not a mere displayable
-  // string. It is received as `Argument.Redacted` and passed to
-  // invite-link.ts's interpretation boundary still Redacted (only the
-  // existing boundary unwraps it). The link carries the project ID (v2 —
-  // the raw-token path is gone), so it takes no --project
   target: Argument.Redacted("target").pipe(
     Argument.withDescription("Invite link (quote the link so the shell does not interpret it)"),
   ),
@@ -87,7 +79,6 @@ export const inviteRevokeConfig = {
   ),
 };
 
-/** `maruhi invite create --role <r> [--env <id>]… [--github <login>]` (§15-2 issuance + §15-3 link assembly). */
 const inviteCreateCommand = Effect.fn("invite-command.inviteCreateCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly role?: string | undefined;
@@ -103,17 +94,11 @@ const inviteCreateCommand = Effect.fn("invite-command.inviteCreateCommand")(func
       ),
     );
   }
-  // scope: `--env` repetition = listed (ascending, duplicates refused),
-  // `--no-envs` = listed{}, omitted = all (ruling K — no `--all-envs`)
   const scope =
     (yield* scopeFromFlags({ env: flags.env, allEnvs: false, noEnvs: flags.noEnvs })) ?? ALL_SCOPE;
   const expectedGithubLogin = yield* parseGithubLoginFlag("--github", flags.github);
   const identityBacking = yield* loadIdentityBacking;
-  // The issuance signature (CRYPTO_SPEC §6.5) is made with the inviter's chain sig key = requires the master key
   const context = yield* openProject({ server: flags.server, project: flags.project });
-  // The link's `il` (§15-3): a display snapshot of my GitHub login
-  // (/auth/me). Unfetchable still lets the issuance succeed (the
-  // acceptor just falls back to the ceremony)
   const inviterLogin =
     identityBacking === "none"
       ? null
@@ -134,7 +119,6 @@ const inviteCreateCommand = Effect.fn("invite-command.inviteCreateCommand")(func
   });
 });
 
-/** An `invite accept` input-rejection reason → the usage wording. */
 function acceptInputRejectionMessage(reason: InviteInputRejection): string {
   if (reason === "unsupported-version") {
     return "This invite link's format version is not supported. Ask the inviter to issue a new link with the current maruhi CLI (`maruhi invite create`), or update your CLI if it is older than theirs";
@@ -145,12 +129,6 @@ function acceptInputRejectionMessage(reason: InviteInputRejection): string {
   return "Specify an invite link (…/invite#v=2&…). Quote the link so the shell does not interpret it";
 }
 
-/**
- * Resolving `invite accept`'s input (the link). The input arrives from
- * the argument layer still as `Redacted` (a link embeds the link-key
- * seed). The syntax interpretation is left to invite-link.ts's boundary —
- * it is not unwrapped here.
- */
 function resolveAcceptLink(
   rawTarget: Redacted.Redacted<string>,
 ): Effect.Effect<InviteLinkData, CliError> {
@@ -161,7 +139,6 @@ function resolveAcceptLink(
   return Effect.succeed(parsed.link);
 }
 
-/** `maruhi invite accept <link>` (§15-3 / CRYPTO_SPEC §6.3 (a) / §6.5). */
 const inviteAcceptCommand = Effect.fn("invite-command.inviteAcceptCommand")(function* (flags: {
   readonly server?: string | undefined;
   readonly target: Redacted.Redacted<string>;
@@ -199,7 +176,6 @@ const inviteAcceptCommand = Effect.fn("invite-command.inviteAcceptCommand")(func
   });
 });
 
-/** `maruhi invite list` (§6.5 independent verification of the acceptance blocks + the issuance-pin cross-check). */
 const inviteListCommand = Effect.fn("invite-command.inviteListCommand")(function* (
   flags: CommonFlags,
 ): Effect.fn.Return<number, CliError, CliServices> {
@@ -212,9 +188,6 @@ const inviteListCommand = Effect.fn("invite-command.inviteListCommand")(function
     pins: loaded.pins,
     nowMs: yield* Clock.currentTimeMillis,
   });
-  // A signature-verification failure or a pin mismatch is not "a
-  // successful read" but a detection of evidence — never 0 (a script can
-  // use it as a health check)
   return summary.integrityFailures > 0 ? 1 : 0;
 });
 
@@ -231,7 +204,6 @@ export function makeInviteCommands(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription("Issue an invite and build the invite link"),
-    // Each sets the whole scope (an invite has no --all-envs: omitting both is all)
     Command.validate((values) =>
       values.env.length > 0 && values["no-envs"]
         ? invalidFlagCombination("--env and --no-envs cannot be combined")

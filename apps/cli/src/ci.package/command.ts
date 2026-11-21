@@ -1,5 +1,3 @@
-// `maruhi ci` (discipline: see commands/index.ts).
-
 import {
   type EnvironmentId,
   EnvironmentIdSchema,
@@ -140,12 +138,6 @@ export const ciRotateConfig = {
   ),
 };
 
-/**
- * Resolving `maruhi ci run`'s required flags: never falls back to the
- * config file (a CI runner has no persistent config, and pinning the
- * genesis belongs to the workflow YAML's review). The diagnostic also
- * says "write the flag", not "set it in config".
- */
 function requireCiFlag<A extends string>(
   value: A | undefined,
   flag: string,
@@ -154,8 +146,6 @@ function requireCiFlag<A extends string>(
   if (value !== undefined) {
     return Effect.succeed(value);
   }
-  // `ci sync` has no `--env` (the sync config's target decides the
-  // environment), so the fix is stated per command
   const guidance = {
     "ci run": `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`,
     "ci sync": `ci sync requires ${flag} (CI mode reads no config file except the sync config — pass --server and --project explicitly in the workflow; the environment comes from the target)`,
@@ -164,19 +154,11 @@ function requireCiFlag<A extends string>(
   return Effect.fail(usageError(guidance[command]));
 }
 
-/** The lease target of a CI read: the server, or the mirror on the retry. */
 interface CiTarget {
   readonly origin: string;
   readonly audience: string;
 }
 
-/**
- * The CI read's fallback (PF2 — AUTH_SPEC §11-7 ruling E): when the server
- * is unreachable and `--mirror` names a replica, the lease is requested
- * there instead, with an OIDC token for the mirror's audience unless
- * --audience was given (the mirror's own grant names its audience). Never
- * on an answer of the server (a 404 or a 401 is not retried)
- */
 const withCiMirrorFallback = Effect.fn("ci-command.withCiMirrorFallback")(function* <A>(
   values: { readonly mirror?: string | undefined; readonly audience?: string | undefined },
   primary: CiTarget,
@@ -206,7 +188,6 @@ const withCiMirrorFallback = Effect.fn("ci-command.withCiMirrorFallback")(functi
   );
 });
 
-/** `maruhi ci run -- <cmd>`'s body (verification lives in ci-lease.ts / lease-client.ts). */
 const ciRunCommand = Effect.fn("ci-command.ciRunCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
@@ -220,16 +201,12 @@ const ciRunCommand = Effect.fn("ci-command.ciRunCommand")(function* (values: {
     import("./ci-run.ts").then((m) => ({ ciRunOp: m.ciRunOp })),
   );
 
-  // Every format check precedes network / key generation (the same
-  // discipline as the existing commands): the ids' at the declaration, the
-  // origin's here
   const origin = yield* normalizeHttpOrigin(
     yield* requireCiFlag(values.server, "--server"),
     "the server URL",
   );
   const projectId = yield* requireCiFlag(values.project, "--project");
   const environmentId = yield* requireCiFlag(values.env, "--env");
-  // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
   return yield* withCiMirrorFallback(
     values,
     { origin, audience: values.audience ?? origin },
@@ -245,7 +222,6 @@ const ciRunCommand = Effect.fn("ci-command.ciRunCommand")(function* (values: {
   );
 });
 
-/** `maruhi ci sync <target>`'s body (the lease and the sync live in sync-ci.ts). */
 const ciSyncCommand = Effect.fn("ci-command.ciSyncCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
@@ -256,9 +232,6 @@ const ciSyncCommand = Effect.fn("ci-command.ciSyncCommand")(function* (values: {
   readonly yes: boolean;
   readonly target: string;
 }): Effect.fn.Return<void, CliError, CliServices> {
-  // The format checks and the config read precede network / key
-  // generation (the same discipline as ci run). There is no `--env`: the
-  // sync config's target decides the environment
   const origin = yield* normalizeHttpOrigin(
     yield* requireCiFlag(values.server, "--server", "ci sync"),
     "the server URL",
@@ -279,7 +252,6 @@ const ciSyncCommand = Effect.fn("ci-command.ciSyncCommand")(function* (values: {
   );
 });
 
-/** The coordinates of `maruhi ci rotate` (every format check before the config read and the network). */
 const ciRotateCoordinates = Effect.fn("ci-command.ciRotateCoordinates")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
@@ -309,7 +281,6 @@ const ciRotateCoordinates = Effect.fn("ci-command.ciRotateCoordinates")(function
   return { origin, projectId, environmentId, expiresInDays };
 });
 
-/** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
 const ciRotateCommand = Effect.fn("ci-command.ciRotateCommand")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: ProjectId | undefined;
@@ -329,8 +300,6 @@ const ciRotateCommand = Effect.fn("ci-command.ciRotateCommand")(function* (value
 
   const io = yield* CliIo;
   const coordinates = yield* ciRotateCoordinates(values);
-  // The config is read before any network / key generation (the same
-  // discipline as ci run)
   const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
   const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
   if (!rotateConfigNamesProject(rotateConfig, coordinates.projectId)) {
@@ -360,7 +329,6 @@ export function makeCiCommands(onExitCode: (code: number) => void) {
     ciRunConfig,
     Effect.fn("ci-command.ciRun")(function* (values) {
       const { command: parsed, ...flags } = values;
-      // Drops before communication / key generation (at the command body's head) (the same `--` discipline as run)
       const command = yield* commandAfterTerminator(parsed);
       onExitCode(yield* ciRunCommand({ ...flags, command }));
     }),

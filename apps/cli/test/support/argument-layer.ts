@@ -1,9 +1,3 @@
-// The shared setup of the argument-layer tests (effect-cli.test.ts and the
-// command groups' files its header names): a logged-in environment whose
-// server records every request and answers each with 404, and the check
-// that no typed value reaches the output. After each test, the servers it
-// started are closed and its mocks restored.
-
 import { afterEach, expect, vi } from "vite-plus/test";
 
 import { makeTestUser } from "./crypto.ts";
@@ -18,12 +12,6 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-/**
- * An environment that is logged in with the default project / environment.
- * The server **never responds** (every request is 404), but it does record —
- * to confirm via "zero requests" that the rejection happened before the
- * command body ran.
- */
 export async function startEnv(): Promise<{ env: TestEnv; server: MockServer }> {
   const owner = await makeTestUser("user-owner-1111");
   const server = await MockServer.start([]);
@@ -38,7 +26,6 @@ export async function startEnv(): Promise<{ env: TestEnv; server: MockServer }> 
   return { env, server };
 }
 
-/** The shared check that no plaintext is mixed into a diagnostic (a typed value never becomes vocabulary). */
 export function expectNoLeak(env: TestEnv, secrets: readonly string[]): void {
   const output = [...env.logs, ...env.errors].join("\n");
   for (const secret of secrets) {

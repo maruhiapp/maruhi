@@ -1,32 +1,3 @@
-// `maruhi sync plan` / `maruhi sync apply` (the table of "the sync's
-// final form" in integration-options.md §3: driver × repository config
-// × receipt × plan / apply. The http driver and the receipt-less CI
-// path [sync-ci.ts] ride the same core [{@link runDriver}]).
-//
-// plan = shows "the difference between the receipt (the versions
-// delivered last time) and maruhi's current versions" by name and
-// version only. The target is **never read back** (one-way —
-// ADR-0014. A Vercel sensitive value cannot be read back, so the
-// receipt is the only matching material — supplement 13 W2). plan never
-// decrypts the source's values (stops at verifying the value signatures
-// — values.ts's pullVerifiedEnvironment) and never touches the vendor
-// API. apply decrypts (pull.ts), then for the exec driver writes once
-// to the vendor CLI's stdin (sync-exec.ts), or for the http driver puts
-// them in the vendor API's request body (sync-http.ts). Values never
-// appear on stdout / stderr / in an error's wording.
-//
-// production's default is plan only (supplement 14 M4): apply to a
-// target treated as production requires `--yes`. No dedicated gate for
-// an agent environment is built (supplement 9 — the same treatment as
-// `run`).
-//
-// Completeness (supplement 14 M5): when a variable declared required
-// has no value, stop without carrying anything under the same rule as
-// `run`'s presence fail-fast. When a required active variable is left
-// out of the target's selection, warn (missing at the destination is a
-// contract violation, but choosing what to carry is the config's
-// responsibility).
-
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
@@ -67,7 +38,6 @@ import {
   type SyncReceipt,
 } from "./sync-receipt.ts";
 
-/** One line of a plan. `blocked` = apply would refuse it (reason names only the variable). */
 type PlanEntry =
   | { readonly action: "add"; readonly name: string; readonly version: number }
   | {
@@ -85,22 +55,16 @@ type PlanEntry =
       readonly reason: string;
     };
 
-/** A computed plan for one target. */
 interface SyncPlan {
   readonly entries: readonly PlanEntry[];
-  /** Selected variables that have only a required declaration and no value (apply carries nothing). */
   readonly declaredRequired: readonly DeclaredVariable[];
-  /** Names among the required active variables that fell outside the target's selection (warned). */
   readonly requiredNotSelected: readonly string[];
 }
 
-/** One variable of the sync source (plan derives the plaintext length from the ciphertext's length — never decrypts). */
 export interface SourceVariable {
   readonly name: string;
   readonly version: number;
-  /** The plaintext's byte length (plan = ciphertext length − 16-byte GCM tag, apply = measured). */
   readonly byteLength: number;
-  /** The required declaration (layout v1 = false). */
   readonly required: boolean;
 }
 
@@ -110,7 +74,6 @@ function byName<T extends { readonly name: string }>(entries: readonly T[]): Map
   return new Map(entries.map((entry) => [entry.name, entry] as const));
 }
 
-/** Decrypted variables → plan material (apply / ci sync). The plaintext length is measured. */
 export function sourceVariablesOf(
   variables: readonly {
     readonly name: string;
@@ -122,18 +85,11 @@ export function sourceVariablesOf(
   return variables.map((variable) => ({
     name: variable.name,
     version: variable.version,
-    // Reason for unwrapping: measuring the plaintext length (the product
-    // is only the length). The same value as the plan stage's estimate
-    // from the ciphertext length, but apply judges on the byte string it
-    // actually sends
     byteLength: Redacted.value(variable.value).byteLength,
     required: variable.required,
   }));
 }
 
-/** Verified metadata → plan material. From ciphertext = ct || tag (16
- * bytes), derives only the plaintext length (never decrypts — shared by
- * plan / apply). */
 function sourceFromVerified(
   variables: VerifiedEnvironmentPull["variables"],
 ): readonly SourceVariable[] {
@@ -145,24 +101,16 @@ function sourceFromVerified(
   }));
 }
 
-/** Decrypted variables → write material indexable by name (the values stay wrapped). */
 export function writesOf(
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
 ): ReadonlyMap<string, SyncWrite> {
   return byName(variables.map((variable) => ({ name: variable.name, value: variable.value })));
 }
 
-/** The driver's label for wording ("the vercel CLI" / "the Vercel API"). */
 function driverLabel(driver: TargetDriver): string {
   return driver.kind === "exec" ? `the ${driver.spec.command} CLI` : driver.spec.label;
 }
 
-/**
- * Resolves which variables the target carries: the explicit list, or every
- * active variable minus `exclude`. Names in an explicit list that exist
- * neither as an active nor as a declared variable are a hard error (the
- * config and the environment disagree — nothing is synced).
- */
 function selectNames(
   target: SyncTarget,
   source: ReadonlyMap<string, SourceVariable>,
@@ -183,7 +131,6 @@ function selectNames(
   return Effect.succeed([...target.variables].toSorted());
 }
 
-/** One variable's plan line (the name / size / emptiness constraints here; the content constraints at apply). */
 function classifyVariable(
   driver: TargetDriver,
   variable: SourceVariable,
@@ -191,9 +138,6 @@ function classifyVariable(
 ): PlanEntry {
   const { name, version } = variable;
   const { constraints } = driver.spec;
-  // The name rule needs no plaintext = judgeable in plan (apply's
-  // checkValueConstraints remains as the defense line). The reason
-  // wording carries only the name and the rule
   if (constraints.name !== null && !constraints.name.regex.test(name)) {
     return {
       action: "blocked",
@@ -231,14 +175,6 @@ function compareByName(a: { readonly name: string }, b: { readonly name: string 
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
-/**
- * Computes the plan: receipt versions vs current versions, names only.
- * `blocked` entries come from the driver's name / size / emptiness
- * constraints (content constraints need the plaintext and are checked at
- * apply). A receipt-only name is a `delete` even when the driver could not
- * store it today: the delete carries no value, and the vendor reports a name
- * it cannot address.
- */
 export const computePlan = Effect.fn("sync-plan.computePlan")(function* (input: {
   readonly target: SyncTarget;
   readonly source: readonly SourceVariable[];
@@ -250,9 +186,6 @@ export const computePlan = Effect.fn("sync-plan.computePlan")(function* (input: 
   const selected = yield* selectNames(input.target, source, declared);
   const selectedSet = new Set(selected);
   const previous = input.receipt?.variables ?? {};
-  // Declared-only (no value) has nothing to carry: when required it is
-  // material for enforceDeclaredPresence to stop; when optional it is
-  // not put on the plan
   const current = selected.flatMap((name) => {
     const variable = source.get(name);
     if (variable === undefined) {
@@ -261,7 +194,6 @@ export const computePlan = Effect.fn("sync-plan.computePlan")(function* (input: 
     const previousVersion = Object.hasOwn(previous, name) ? previous[name] : undefined;
     return [classifyVariable(input.target.driver, variable, previousVersion)];
   });
-  // Names in the receipt that are no longer carried (left the selection / disappeared from maruhi) = deletes
   const deleted = Object.keys(previous)
     .filter((name) => !selectedSet.has(name) || !source.has(name))
     .map((name): PlanEntry => ({
@@ -288,7 +220,6 @@ function countOf(plan: SyncPlan, action: PlanEntry["action"]): number {
   return plan.entries.filter((entry) => entry.action === action).length;
 }
 
-/** Rendering one line (symbol + name + version. A value never lands). */
 function planLine(entry: PlanEntry): string {
   const name = displayText(entry.name);
   switch (entry.action) {
@@ -305,13 +236,6 @@ function planLine(entry: PlanEntry): string {
   }
 }
 
-/**
- * The destination's description (for the header line): the preset id,
- * the option values of the "destination's label" the preset declared
- * via `describeOptions` (only the strings that are set, in declaration
- * order), and the driver. Neither values nor secrets land (the
- * declaration has only non-secret option names).
- */
 function describeDestination(target: SyncTarget): string {
   const shown = target.driver.spec.describeOptions.flatMap((option) => {
     const value = target.options[option];
@@ -320,15 +244,12 @@ function describeDestination(target: SyncTarget): string {
   return `${[target.preset.id, ...shown].join(" ")} via ${target.driver.kind}`;
 }
 
-/** The choice of plan rendering (the apply right after a push omits the unchanged lines). */
 interface PlanDisplay {
-  /** Whether the `=` lines are shown (default true. The header's counts always cover all). */
   readonly showUnchanged: boolean;
 }
 
 const FULL_PLAN: PlanDisplay = { showUnchanged: true };
 
-/** Prints the plan to stdout (the command's output — names and versions only). */
 const reportPlan = Effect.fn("sync-plan.reportPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
@@ -354,7 +275,6 @@ const reportPlan = Effect.fn("sync-plan.reportPlan")(function* (
   }
 });
 
-/** Everything a plan or apply needs from the project context. */
 interface SyncContextInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -366,7 +286,6 @@ interface SyncContextInput {
   readonly receiptsFloor: FloorHandle;
 }
 
-/** The prologue shared by plan / apply: read the receipt (warnings flow here). */
 const loadTargetReceipt = Effect.fn("sync-plan.loadTargetReceipt")(function* (
   input: SyncContextInput,
 ): Effect.fn.Return<LoadedReceipt, CliError, CliIo> {
@@ -384,13 +303,6 @@ const loadTargetReceipt = Effect.fn("sync-plan.loadTargetReceipt")(function* (
   return loaded;
 });
 
-/**
- * The epilogue shared by plan / apply: emits the plan, flows the
- * contract's advisories, warns on the receipt nearing its cap, and
- * fails when even one blocked entry exists (apply sends nothing).
- * CI (no receipt) passes through the same stage with
- * `receipt: "none-in-ci"`.
- */
 export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
   target: SyncTarget,
   plan: SyncPlan,
@@ -414,7 +326,6 @@ export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
       `required variables are not part of this target: ${plan.requiredNotSelected.map(displayText).join(", ")}. The target's runtime will not receive them (add them to the target's variables in the sync config if it needs them)`,
     );
   }
-  // A selection containing a variable with only a required declaration and no value = nothing is carried (the same rule as run)
   yield* enforceDeclaredPresence(plan.declaredRequired, "Nothing was sent");
   if (receipt.kind === "loaded") {
     const warning = receiptVersionWarning({
@@ -436,11 +347,6 @@ export const reviewPlan = Effect.fn("sync-plan.reviewPlan")(function* (
   }
 });
 
-/**
- * `maruhi sync plan <target>`: receipt + verified names and versions of the
- * source environment. The source values are not decrypted, and the vendor
- * API is not contacted.
- */
 export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
   input: SyncContextInput,
 ): Effect.fn.Return<void, CliError, CliIo> {
@@ -472,33 +378,21 @@ export const syncPlanOp = Effect.fn("sync-plan.syncPlanOp")(function* (
   }
 });
 
-/** apply's input (plan's, plus the signing key and `--yes`). */
 interface SyncApplyInput extends SyncContextInput {
   readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
-  /** The explicit consent for apply to a production target (supplement 14 M4). */
   readonly yes: boolean;
-  /** The floor of the integration token's environment (only for the http driver. exec is null). */
   readonly tokenFloor: FloorHandle | null;
-  /** The vendor API's retry (the default is production tuning. Tests shorten it). */
   readonly httpRetry?: HttpRetryPolicy;
-  /** The plan's rendering (the apply right after a push omits unchanged). */
   readonly display?: PlanDisplay;
 }
 
-/** What apply sends (built from the plan's add / update / delete). */
 interface ApplyWork {
   readonly writes: readonly SyncWrite[];
   readonly deletes: readonly string[];
-  /** The version of each variable written (the coordinate recorded in the receipt). */
   readonly versions: ReadonlyMap<string, number>;
 }
 
-/**
- * Turns the plan into writes and deletes, checking every value's content
- * constraints first (UTF-8, emptiness, size, trailing newline). One
- * refused value means nothing is sent.
- */
 export const prepareWork = Effect.fn("sync-plan.prepareWork")(function* (
   target: SyncTarget,
   plan: SyncPlan,
@@ -516,7 +410,6 @@ export const prepareWork = Effect.fn("sync-plan.prepareWork")(function* (
         cliError("The plan names a variable that was not pulled (internal inconsistency)"),
       );
     }
-    // Reason for unwrapping: the input of the constraint check before sending (the product is only a boolean and a variable name)
     const plaintext = Redacted.value(write.value);
     if (decodeValueText(plaintext) === null) {
       return yield* Effect.fail(
@@ -540,35 +433,18 @@ export const prepareWork = Effect.fn("sync-plan.prepareWork")(function* (
   return { writes, deletes, versions };
 });
 
-/** The driver's run result (the material for advancing only the succeeded names to the receipt). */
 interface DriverResult {
   readonly written: readonly string[];
   readonly deleted: readonly string[];
-  /** The failed invocation (null when none). */
   readonly failure: {
     readonly names: readonly string[];
     readonly kind: "write" | "delete";
-    /** What failed (the executable name and exit code / the API's name). Carries no value. */
     readonly what: string;
-    /**
-     * maruhi's own explanation (the start failure's reason and guidance
-     * — a complete sentence). Not the vendor's output, so it does not go
-     * on `output` (failDriver shows output as the vendor's speech, with
-     * an executable-name / hostname prefix).
-     */
     readonly detail: string | null;
-    /** The scrubbed fragments of output / responses (the vendor's speech. Empty when none). */
     readonly output: readonly string[];
   } | null;
 }
 
-/**
- * Runs the vendor processes in order and stops at the first failure. What
- * succeeded before it is reported so the receipt can record it. A process
- * that cannot be started (the CLI is not installed, or the cwd is gone) is
- * that invocation's failure too — like the http driver's runBatch, so a
- * typed error never drops the names delivered by the invocations before it.
- */
 const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
   driver: Extract<TargetDriver, { kind: "exec" }>,
   options: SyncTarget["options"],
@@ -587,11 +463,6 @@ const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
   const deleted: string[] = [];
   const deleteSet = new Set(work.deletes);
   for (const invocation of invocations) {
-    // A start failure (a typed error — live.ts's execStartFailure) is
-    // also folded into this invocation's failure: aborting the whole
-    // generator here would leave the names delivered by the earlier
-    // invocations unfurled into written / deleted and absent from the
-    // receipt (the same shape as http's runBatch)
     const outcome = yield* runner
       .exec(invocation)
       .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
@@ -603,9 +474,6 @@ const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
           names: invocation.names,
           kind: invocation.kind,
           what: `${displayText(driver.command)} could not be started`,
-          // The start failure's wording is maruhi's own (carries no
-          // value). A process that never ran has no output, so it
-          // travels on detail rather than the vendor-output slot
           detail: displayText(outcome.startFailure),
           output: [],
         },
@@ -620,12 +488,10 @@ const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
           kind: invocation.kind,
           what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
           detail: null,
-          // The vendor's output is untrusted: scrub the values, neutralize control characters, keep only the tail
           output: scrubVendorOutput(outcome.output, work.writes),
         },
       };
     }
-    // A JSON batch mixes writes and deletes (null) — split by name
     for (const name of invocation.names) {
       (deleteSet.has(name) ? deleted : written).push(name);
     }
@@ -633,7 +499,6 @@ const runInvocations = Effect.fn("sync-plan.runInvocations")(function* (
   return { written, deleted, failure: null };
 });
 
-/** Sending to the vendor API (in batch order. Stops at the first failure and returns what was delivered). */
 const runBatches = Effect.fn("sync-plan.runBatches")(function* (
   driver: Extract<TargetDriver, { kind: "http" }>,
   options: SyncTarget["options"],
@@ -667,10 +532,6 @@ const runBatches = Effect.fn("sync-plan.runBatches")(function* (
         failure: {
           names: result.failure.names,
           kind: batch.kind,
-          // What happened (refused / an unconfirmed response / a
-          // failed send / a failed listing / never sent) is
-          // distinguished by runBatch as the failure's author — never
-          // attach "refused" to a retry-exhausted attempt
           what: result.failure.what,
           detail: null,
           output: result.failure.lines,
@@ -681,30 +542,19 @@ const runBatches = Effect.fn("sync-plan.runBatches")(function* (
   return { written, deleted, failure: null };
 });
 
-/** What running the driver needs (exec = processes, http = the token + communication). */
 interface RunDriverInput {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
-  /** The http driver's integration token (null for exec). */
   readonly token: IntegrationToken | null;
   readonly httpRetry: HttpRetryPolicy;
 }
 
-/**
- * Runs the target's driver over the prepared work: the installed vendor CLI
- * (values on stdin) or the vendor API (values in the request body). Prints
- * one line naming where the plaintext goes before sending anything.
- */
 export const runDriver = Effect.fn("sync-plan.runDriver")(function* (
   input: RunDriverInput,
 ): Effect.fn.Return<DriverResult, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
   const { driver } = input.target;
   if (driver.kind === "exec") {
-    // Leave in the output which executable receives it and where (the
-    // config's command / cwd changes the plaintext's destination, so
-    // make it visible on the terminal and in CI logs, not only in the
-    // diff)
     yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
     return yield* runInvocations(driver, input.target.options, input.work);
   }
@@ -719,7 +569,6 @@ export const runDriver = Effect.fn("sync-plan.runDriver")(function* (
   return yield* runBatches(driver, input.target.options, input.work, input.token, input.httpRetry);
 });
 
-/** Extracts the integration token from the decrypted variables (with a check). */
 export function integrationTokenOf(
   token: { readonly environment: EnvironmentId; readonly name: string },
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
@@ -732,14 +581,12 @@ export function integrationTokenOf(
       ),
     );
   }
-  // Reason for unwrapping: checking the token's shape (is it header-safe). The product is Redacted again
   const checked = checkIntegrationToken(token.name, Redacted.value(variable.value));
   return typeof checked === "string"
     ? Effect.succeed(Redacted.make(checked, { label: "integration-token" }))
     : Effect.fail(checked);
 }
 
-/** Fetching the integration token (locally: verifies the token environment and decrypts just that one variable). */
 const fetchIntegrationToken = Effect.fn("sync-plan.fetchIntegrationToken")(function* (
   input: SyncApplyInput,
   driver: Extract<TargetDriver, { kind: "http" }>,
@@ -768,7 +615,6 @@ const fetchIntegrationToken = Effect.fn("sync-plan.fetchIntegrationToken")(funct
   return { token, verified: pulled.verified };
 });
 
-/** The receipt's next content (layers only the succeeded writes / deletes over the previous). */
 function nextReceipt(input: {
   readonly target: SyncTarget;
   readonly previous: SyncReceipt | null;
@@ -797,7 +643,6 @@ function nextReceipt(input: {
 
 function sameVariables(a: SyncReceipt | null, b: SyncReceipt): boolean {
   if (a === null) {
-    // No receipt yet and nothing delivered (the first invocation failed) = nothing to write
     return Object.keys(b.variables).length === 0;
   }
   const left = Object.entries(a.variables).toSorted();
@@ -805,11 +650,6 @@ function sameVariables(a: SyncReceipt | null, b: SyncReceipt): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-/**
- * Saves the receipt when its variables changed. Returns the new version, or
- * null when nothing was written (unchanged, or the write failed — a warning,
- * because the target is already updated and the next apply is idempotent).
- */
 function saveReceipt(
   input: SyncApplyInput,
   loaded: LoadedReceipt,
@@ -841,7 +681,6 @@ function saveReceipt(
   );
 }
 
-/** The driver failure's body (a pure function — failDriver turns it into a typed error as-is). */
 function driverFailureMessage(
   input: {
     readonly target: SyncTarget;
@@ -852,12 +691,6 @@ function driverFailureMessage(
   result: DriverResult,
   failure: NonNullable<DriverResult["failure"]>,
 ): string {
-  // A delete's failure can take the shape "it was already removed at
-  // the destination" (the destination is never read back, so the name
-  // keeps being deleted from the receipt). Recovery is rebuilding the
-  // receipt — but rebuilding also forgets the **deletions not attempted
-  // yet**, so name them and say to remove them at the destination by
-  // hand first
   const failed = new Set(failure.names);
   const notAttempted = input.work.deletes.filter(
     (name) => !result.deleted.includes(name) && !failed.has(name),
@@ -870,24 +703,17 @@ function driverFailureMessage(
     failure.kind === "delete" && input.receiptsEnvironment !== null
       ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
       : "";
-  // When there is not a single output line, never say "shown above"
-  // (some CLIs fail with empty output, and a process that could not
-  // start has none)
   const outputHint =
     failure.output.length === 0 ? "" : " Its output is shown above with values filtered out.";
-  // maruhi's own explanation (the start failure's reason and guidance) is spoken as the body's continuation
   const detail = failure.detail === null ? "" : ` ${failure.detail}.`;
   return `${failure.what} while ${failure.kind === "write" ? "writing" : "deleting"} ${failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted).${detail}${outputHint}${deleteHint} Fix the cause, then ${input.next}`;
 }
 
-/** Reporting the driver's failure (a typed error with the scrubbed output attached). */
 export const failDriver = Effect.fn("sync-plan.failDriver")(function* (input: {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
   readonly result: DriverResult;
-  /** The environment attached to the receipt-rebuild guidance (CI = null: no receipt). */
   readonly receiptsEnvironment: string | null;
-  /** The means to see what is left (locally = plan, CI = re-run). */
   readonly next: string;
 }): Effect.fn.Return<never, CliError, CliIo> {
   const io = yield* CliIo;
@@ -897,7 +723,6 @@ export const failDriver = Effect.fn("sync-plan.failDriver")(function* (input: {
       cliError("failDriver called without a failure (internal inconsistency)"),
     );
   }
-  // output is the vendor's speech, so it is shown with an executable-name / hostname prefix
   const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
   for (const line of result.failure.output) {
     yield* io.logError(`  ${displayText(prefix)}: ${line}`);
@@ -905,7 +730,6 @@ export const failDriver = Effect.fn("sync-plan.failDriver")(function* (input: {
   return yield* Effect.fail(cliError(driverFailureMessage(input, result, result.failure)));
 });
 
-/** Reporting the run's result (a failure is a typed error with the scrubbed output attached). */
 const reportApply = Effect.fn("sync-plan.reportApply")(function* (
   input: SyncApplyInput,
   work: ApplyWork,
@@ -932,7 +756,6 @@ const reportApply = Effect.fn("sync-plan.reportApply")(function* (
   );
 });
 
-/** apply to a production target needs `--yes` (supplement 14 M4). */
 export function requireProductionConsent(
   target: SyncTarget,
   yes: boolean,
@@ -948,20 +771,11 @@ export function requireProductionConsent(
   return Effect.void;
 }
 
-/**
- * `maruhi sync apply <target>`: plan, then write the changed variables to
- * the target through its driver, then record what landed in the receipt.
- */
 export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
   input: SyncApplyInput,
 ): Effect.fn.Return<void, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
   const io = yield* CliIo;
   const loaded = yield* loadTargetReceipt(input);
-  // The plan is built from metadata only (never decrypts — the same
-  // path as sync plan). To never build a plaintext in memory of a
-  // variable outside the selection or outside the required-warning
-  // target, the values are taken in a second pull select-narrowed to
-  // "only the add / update entries actually being sent"
   const meta = yield* pullVerifiedEnvironment({
     client: input.client,
     verified: loaded.verified,
@@ -981,9 +795,6 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
     { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
     input.display ?? FULL_PLAN,
   );
-  // apply decrypts (the same path as run — pull.ts). The plaintext
-  // stays in Redacted all the way to the driver's body / stdin
-  // assembly
   const writeNames = new Set(
     plan.entries
       .filter((entry) => entry.action === "add" || entry.action === "update")
@@ -1007,7 +818,6 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
     return;
   }
   yield* requireProductionConsent(input.target, input.yes, "maruhi sync apply");
-  // The integration token is fetched just before sending (a path that ends without sending never decrypts it)
   let verified = pulled.verified;
   let token: IntegrationToken | null = null;
   if (input.target.driver.kind === "http") {
@@ -1021,9 +831,6 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
     token,
     httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
   });
-  // The receipt advances only by "what was actually delivered". Even
-  // on a failed run the delivered part is recorded, so the next plan
-  // shows only the remainder
   const syncedAtMs = yield* Clock.currentTimeMillis;
   const receipt = nextReceipt({
     target: input.target,
@@ -1032,9 +839,6 @@ export const syncApplyOp = Effect.fn("sync-plan.syncApplyOp")(function* (
     versions: work.versions,
     syncedAt: new Date(syncedAtMs).toISOString(),
   });
-  // The receipt's push starts from the view that may have advanced via
-  // the pulls of the sync source (and the token environment) (the view
-  // at loadReceipt can be stale)
   const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
   yield* reportApply(input, work, result, receiptVersion);
 });

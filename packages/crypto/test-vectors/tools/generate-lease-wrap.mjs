@@ -1,32 +1,8 @@
-// Reference generator for lease-wrap.json (CRYPTO_SPEC §9.1).
-// Uses hpke-js for the same reason as dek-wrap.json: an implementation
-// family independent of the panva hpke the product implementation adopts,
-// and the Seal direction can be pinned deterministically via ekm
-// derandomize (impossible with panva. docs/notes/spike-c.md).
-// A disposable reference tool, not product code. All keys and values are
-// dummies.
-//
-// Reads dek-wrap.json and generates by re-wrapping to the workload
-// ephemeral key with the **same coordinates and same DEK** as its
-// `server-basic` (the persistent wrap to the server key). The handoff of
-// "the server Opened its own wrap and re-wrapped the same DEK to the
-// workload" is traceable on the vector, closing the context at review
-// time (a concrete-data expression of §9.1's "the server does not decrypt
-// the value = the DEK's intermediary").
-//
-// Regenerate: bun install && bun run generate (run in this directory.
-// The correct order is generate-dek-wrap.mjs → this file →
-// generate_reference.py)
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 length-prefixed encoding
-// (same definition as generate-dek-wrap.mjs / generate_reference.py /
-// verify_reference.mjs. tools/ is disposable, so per existing convention
-// each file carries its own independent definition rather than sharing a
-// module)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -56,7 +32,6 @@ const suite = new CipherSuite({
   aead: new Aes256Gcm(),
 });
 
-// --- Inherit coordinates and DEK from dek-wrap.json --------------------
 const dekWrapDoc = JSON.parse(readFileSync(new URL("../dek-wrap.json", import.meta.url), "utf8"));
 const serverWrap = dekWrapDoc.vectors.find((v) => v.name === "server-basic");
 if (serverWrap === undefined) {
@@ -67,31 +42,18 @@ const environmentId = serverWrap.environment_id;
 const epoch = serverWrap.epoch;
 const dek = fromHex(serverWrap.dek_hex);
 
-// A second positive representing the past-epoch portion inside the
-// response (§14-2: all epochs the latest value uses + the current epoch).
-// Shows in real data that the DEK is independent per epoch
 const priorEpoch = epoch - 1;
 const priorDek = pat(0xe0, 32);
 
-// --- The workload ephemeral key (§9.1: generated in memory, discarded when the job ends) ---
-// The vector uses a DeriveKeyPair from a fixed ikm for determinism (in
-// production the ephemeral key is randomly generated each time —
-// determinism is a vector-specific convenience, not part of the spec)
 const ikmW = pat(0xd0, 32);
 const kpW = await suite.kem.deriveKeyPair(ikmW.slice().buffer);
 const pkWm = new Uint8Array(await suite.kem.serializePublicKey(kpW.publicKey));
 const skWm = new Uint8Array(await suite.kem.serializePrivateKey(kpW.privateKey));
 
-// --- claims_digest(§9.1)-----------------------------------------------------
-// claims_digest_hex = lower_hex(SHA-256(LP("maruhi/v1/lease-claims",
-//                                          issuer_url, subject, audience)))
 const CLAIMS_DOMAIN = "maruhi/v1/lease-claims";
 const issuerUrl = "https://token.actions.githubusercontent.com";
 const audience = "https://maruhi.example";
 const subject = "repo:maruhi-example/demo:ref:refs/heads/main";
-// A different workload context (same issuer / audience, different
-// branch). Material for the negative that pins the reuse of a lease
-// response failing decryption
 const otherSubject = "repo:maruhi-example/demo:ref:refs/heads/feature-x";
 
 async function claimsDigest(sub) {
@@ -103,18 +65,16 @@ async function claimsDigest(sub) {
 const claims = await claimsDigest(subject);
 const otherClaims = await claimsDigest(otherSubject);
 
-// --- The lease wrap (§9.1) ---------------------------------------------
-// info = LP("maruhi/v1/lease-wrap", project_id, environment_id, epoch, claims_digest_hex)
 const LEASE_DOMAIN = "maruhi/v1/lease-wrap";
 const DEK_WRAP_DOMAIN = "maruhi/v1/dek-wrap";
 const leaseInfo = (proj, env, ep, digestHex) => lpEncode([LEASE_DOMAIN, proj, env, ep, digestHex]);
 
 const info = leaseInfo(projectId, environmentId, epoch, claims.digestHex);
 const priorInfo = leaseInfo(projectId, environmentId, priorEpoch, claims.digestHex);
-const aad = new Uint8Array(0); // Same as §5: context binding is carried by info; aad is empty
+const aad = new Uint8Array(0);
 
 const ikmE = pat(0xf0, 32);
-const ikmE2 = pat(0x40, 32); // an independent ekm per Seal
+const ikmE2 = pat(0x40, 32);
 
 async function seal(infoBytes, plaintext, ekm) {
   const sender = await suite.createSenderContext({

@@ -1,29 +1,3 @@
-// The local floor's detection rules ((a)(b)(c) of CRYPTO_SPEC §6.3) and the
-// norm for update ordering.
-//
-// Everything checked has already passed the §6.3 signature verification of
-// distributed data (values-verify.ts). A disagreement with the floor is "a
-// contradiction between properly signed data", so a detection is
-// non-repudiable evidence of server equivocation or forgery (by a key inside
-// its membership interval) — no false-positive concern — and every case is
-// therefore refused (the strong side of §6.3's "reject vs warn").
-//
-// - Rule (a): chain shortening, rollback of version / metaVersion / epoch,
-//   unauthorized undeletion
-// - Rule (b): differing signed bytes for the same version / metaVersion as
-//   the floor (evidence of content replacement or a fork)
-// - Rule (c): rejecting a distribution whose epoch, on a version newer than
-//   the floor's version, is below that environment's pull-time epoch baseline
-//   (pullEpoch) (detecting "old-epoch injection into an advanced version" by
-//   a deleted member's key — §14.3-5). The baseline uses the last successful
-//   pull's value and is never advanced by a chain sync alone (both edges:
-//   false rejection and loss of detection).
-//
-// **A meta-statement's floor detects rollback only**: meta carries no epoch
-// anchor (§4.2), so an injected advanced metaVersion is not detected even
-// with a floor (§14.3-5 — the most important non-guarantee; do not put a
-// check here that could be mistaken for "detected").
-
 import { type EnvironmentId, type ProjectId, type VariableId, type UserId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -50,117 +24,73 @@ import {
 import type { VerifiedManifest } from "./manifest.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 
-/** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v3). */
 export interface VerifiedMetaEvidence {
   readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
-  /** The distributed author signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
   readonly authorUserId: UserId;
   readonly authorKeyFingerprintHex: string;
 }
 
-/** A verified environment meta statement: the evidence plus its display name (the only verified source of an environment's name — §4.2). */
 export interface VerifiedEnvironmentStatement extends VerifiedMetaEvidence {
   readonly name: string;
 }
 
-/** A verified tombstone (a deleted statement). */
 export interface VerifiedTombstone extends VerifiedMetaEvidence {
   readonly variableId: VariableId;
-  /** A verified deleted statement's name (keeps the immediately preceding active name — §4.2). */
   readonly name: string;
 }
 
-/** The input of a floor check (a digest of a pull response that passed all §6.3 verification). */
 export interface VerifiedPullSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedPulledValue[];
-  /**
-   * Verified declared statements (valueless — §4.2 layout v3 / §12-7's
-   * declaredVariables). In a value-bearing response, declared variables not
-   * being distributed a value is legitimate (declared is the only legitimate
-   * valueless state — CRYPTO_SPEC §6.3).
-   */
   readonly declared: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /** The verified manifest (§4.3 — values.ts has already refused an omission before the floor check). */
   readonly manifest: VerifiedManifest;
 }
 
-/**
- * The verified digest of a metadata-only pull (§12-7). Since it carries no
- * values, the floor check is limited to the meta level (the meta part of
- * rules (a)(b) + omission and undeletion) — value rollback, equivocation,
- * and rule (c) cannot be checked from this shape (never pretend they were
- * checked: the value-level floor check belongs to value-bearing pulls).
- */
 export interface VerifiedMetadataSnapshot {
   readonly environment: VerifiedMetaEvidence;
-  /** Verified statements of all non-deleted variables (active and declared mixed — §12-7). */
   readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /** The verified manifest (required on the wire — an omission is refused at decode, same as the with-values pull). */
   readonly manifest: VerifiedManifest;
 }
 
-/**
- * The schema column of layout v3 (from a verified statement — CRYPTO_SPEC
- * §4.2). The type is a **declaration** and agreement with the value is not
- * guaranteed (§14.3-7 — display and validation are advisory).
- */
 export interface VerifiedSchemaFields {
   readonly varType: MetaVarType;
   readonly required: boolean;
   readonly description: string;
-  /**
-   * PF6 R9 expiring values (CRYPTO_SPEC §4.2): the days after a value's push
-   * within which it should be replaced, null = no declaration. Advisory like
-   * the type.
-   */
   readonly maxAgeDays: number | null;
 }
 
-/**
- * A verified variable statement (one variable of a metadata-only pull — both
- * active and declared flow, §12-7; the status field discriminates).
- */
 export interface VerifiedVariableStatement extends VerifiedMetaEvidence {
   readonly variableId: VariableId;
-  /** The verified statement's name (name resolution trusts nothing else — §12-2). */
   readonly name: string;
-  /** The wire's layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** The schema column of layout v3 (null for a v1 statement). */
   readonly schema: VerifiedSchemaFields | null;
 }
 
-/** Evidence material of a distributed value side (coordinates, hashes, declared head, signature and attribution). */
 export interface PulledValueEvidence {
   readonly version: number;
   readonly epoch: number;
   readonly valueSigHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
-  /** The distributed writer signature and attribution (self-contained evidence — §14.2-5). */
   readonly signatureHex: string;
   readonly writerUserId: UserId;
   readonly writerKeyFingerprintHex: string;
 }
 
-/** The floor-side (previously verified) meta record. */
 export interface FloorMetaEvidence {
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
 }
 
-/** An active variable floor (the basis of value-side evidence comparison). */
 export type ActiveVariableFloor = Extract<VariableFloor, { status: "active" }>;
 
-/** An inconsistency detected by the floor check (material for refusal + evidence display — formatted by floor-evidence.ts). */
 export type FloorViolation =
   | {
       readonly kind: "chain-shortened";
@@ -199,7 +129,6 @@ export type FloorViolation =
   | {
       readonly kind: "stale-epoch-injection";
       readonly variableId: VariableId;
-      /** The rule (c) baseline (the chain-derived current epoch at the last successful pull). */
       readonly baselineEpoch: number;
       readonly floorVersion: number;
       readonly pulled: PulledValueEvidence;
@@ -241,16 +170,12 @@ export type FloorViolation =
       readonly pulled: VerifiedManifest;
     }
   | {
-      // Rule (c) applied to manifests (§6.3): a distribution whose manifest is
-      // newer than the floor's manifest_version but whose epoch is below the
-      // pull-time epoch baseline
       readonly kind: "stale-manifest-injection";
       readonly baselineEpoch: number;
       readonly floorManifestVersion: number;
       readonly pulled: VerifiedManifest;
     };
 
-/** Kind labels for rejection messages (evidence formatting lives in floor-evidence.ts). */
 export function floorViolationLabel(violation: FloorViolation): string {
   switch (violation.kind) {
     case "chain-shortened":
@@ -284,22 +209,12 @@ export function floorViolationLabel(violation: FloorViolation): string {
   }
 }
 
-/**
- * The chain floor check (the chain part of rule (a)). Requires the synced,
- * verified chain to be an extension that contains the head recorded in the
- * floor: (1) shortening (headSeq regression), (2) hash mismatch at the
- * floor's seq position (= a different branch not containing the floor's head
- * — via the prev_hash chain, matching at the floor's seq means matching every
- * entry at or below it). seq advancing past the floor is normal (other
- * members' appends).
- */
 export function checkChainFloor(
   floor: ProjectFloor,
   verified: VerifiedProject,
 ): FloorViolation | null {
   const floorHead = floor.chainHead;
   if (floorHead === null) {
-    // A floor with no head observation yet (e.g. an intents-only log) — nothing to check
     return null;
   }
   const syncedHead: ChainHeadFloor = {
@@ -347,7 +262,6 @@ function metaEvidenceOf(value: VerifiedPulledValue): VerifiedMetaEvidence {
   };
 }
 
-/** The floor check of variable meta (regression = (a); a difference at the same metaVersion = (b). Advancement is not guaranteed). */
 function checkMetaAgainstFloor(
   target: "variable" | "environment",
   variableId: VariableId | null,
@@ -363,11 +277,6 @@ function checkMetaAgainstFloor(
   return null;
 }
 
-/**
- * The manifest floor check (the manifest part of rules (a)(b)). If the floor
- * has no manifest record there is nothing to check — establishing the record
- * is the job of the floor commit after verification succeeds.
- */
 function checkManifestAgainstFloor(
   floor: EnvironmentFloor,
   manifest: VerifiedManifest,
@@ -383,37 +292,11 @@ function checkManifestAgainstFloor(
     manifest.manifestVersion === manifestFloor.manifestVersion &&
     manifest.signedBytesHashHex !== manifestFloor.manifestSigHashHex
   ) {
-    // Since every signed field including epoch goes into the signed bytes, a
-    // content difference at the same manifestVersion is covered by this one
-    // check (§4.3's full enumeration of signed fields)
     return { kind: "manifest-equivocation", floor: manifestFloor, pulled: manifest };
   }
   return null;
 }
 
-/**
- * Rule (c) applied to manifests (§6.3): a distribution whose manifest is
- * newer than the floor's manifest_version but whose epoch is below the
- * baseline is evidence of an advanced manifestVersion injected with an
- * old-epoch key. Without a manifest floor it is the same as version 0 (same
- * shape as a value's "variable not in the floor" — a legitimate first
- * manifest after introduction has epoch = the current epoch at issuance ≥
- * the baseline).
- *
- * The baseline is the maximum of the pull-time epoch floor, **the floor
- * manifest's own epoch**, and **the environment-level epoch observation
- * (§6.3 coordinate (ii) — the observedEpoch that is joined regardless of
- * origin)**: manifest-chain epochs are non-decreasing (§4.3's
- * epoch-regressed — verified), so once the floor knows a verified epoch E, a
- * legitimate manifest with a newer manifestVersion can only have epoch ≥ E
- * (transitive). Using pullEpoch alone as the baseline lets a burn-in older
- * than the epoch the floor knows slip through in shapes like right after a
- * rotate (commitManifest advances but pullEpoch does not move until a pull)
- * or a bounded resync (pullEpoch is the pre-response view). observedEpoch has
- * no path that falsely rejects a value, so it can join this baseline
- * unconditionally (it is not used for the value rule (c) — the coordinate's
- * type splits them).
- */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
   manifest: VerifiedManifest,
@@ -431,7 +314,6 @@ function checkManifestEpochBaseline(
   return null;
 }
 
-/** The check of an active floor × an active distributed value (the value and variable-meta parts of rules (a)(b)). */
 function checkActiveVariable(
   floor: ActiveVariableFloor,
   value: VerifiedPulledValue,
@@ -442,19 +324,14 @@ function checkActiveVariable(
     return { kind: "value-rollback", variableId, floor, pulled };
   }
   if (value.version === floor.version && value.signedBytesHashHex !== floor.valueSigHashHex) {
-    // Since every signed field including epoch goes into the signed bytes, a
-    // content difference at the same version is covered by this one check
-    // (§4.1's full enumeration of signed fields)
     return { kind: "value-equivocation", variableId, floor, pulled };
   }
   if (value.version > floor.version && value.epoch < floor.epoch) {
-    // §4.1's epoch monotonicity (transitive — required regardless of gaps in version numbers)
     return { kind: "value-epoch-regression", variableId, floor, pulled };
   }
   return checkMetaAgainstFloor("variable", variableId, floor, metaEvidenceOf(value));
 }
 
-/** The meta-level check of a variable the floor records as active (3 branches: active / tombstone / omitted). */
 function checkFloorActiveMeta(
   variableId: VariableId,
   floor: ActiveVariableFloor,
@@ -465,15 +342,11 @@ function checkFloorActiveMeta(
     return checkMetaAgainstFloor("variable", variableId, floor, active);
   }
   if (tombstone !== undefined) {
-    // A deleted whose metaVersion advanced past the floor's is a legitimate
-    // deletion. A different status at the same metaVersion means different
-    // signed bytes = (b) evidence. A regression is (a)
     return checkMetaAgainstFloor("variable", variableId, floor, tombstone);
   }
   return { kind: "variable-omitted", variableId, floor };
 }
 
-/** The check of a variable the floor records as active (value level + meta level). */
 function checkFloorActive(
   variableId: VariableId,
   floor: ActiveVariableFloor,
@@ -486,13 +359,6 @@ function checkFloorActive(
   return checkFloorActiveMeta(variableId, floor, undefined, tombstone);
 }
 
-/**
- * The check of a variable the floor records as declared (meta level only —
- * declared has no value floor, §4.2). Legitimate successors = activation
- * (active, advanced metaVersion) / schema re-issuance (advanced while still
- * declared) / deletion (tombstone). Regression or a same-version difference
- * is rule (a)/(b); omission is variable-omitted.
- */
 function checkFloorDeclared(
   variableId: VariableId,
   floor: Extract<VariableFloor, { status: "declared" }>,
@@ -506,7 +372,6 @@ function checkFloorDeclared(
   return checkMetaAgainstFloor("variable", variableId, floor, evidence);
 }
 
-/** The check of a variable the floor records as deleted (deletion is a terminal state — §4.2 / session-15 §2-2). */
 function checkFloorDeleted(
   variableId: VariableId,
   floor: Extract<VariableFloor, { status: "deleted" }>,
@@ -514,9 +379,6 @@ function checkFloorDeleted(
   tombstone: VerifiedTombstone | undefined,
 ): FloorViolation | null {
   if (active !== undefined) {
-    // Unauthorized undeletion (rule (a)). No legitimate path re-activates a
-    // deleted variable (both server acceptance and predecessor verification
-    // refuse it — session-15 §2-2)
     return { kind: "deletion-revoked", variableId, floor, pulled: active };
   }
   if (tombstone === undefined) {
@@ -526,30 +388,15 @@ function checkFloorDeleted(
     tombstone.metaVersion !== floor.metaVersion ||
     tombstone.metaSigHashHex !== floor.metaSigHashHex
   ) {
-    // deleted is a terminal state with no legitimate successor statement, so
-    // an exact match with the floor is required (regression = (a), difference
-    // = (b), advancement = a post-deletion forgery)
     return { kind: "tombstone-mismatch", variableId, floor, pulled: tombstone };
   }
   return null;
 }
 
-/**
- * The shared skeleton of the environment meta check + the per-variable check
- * of everything in the floor (omission / regression / difference /
- * undeletion). Only the active-side check is swapped by shape (value-bearing
- * / metadata-only). values-verify.ts has already refused an active / deleted pair
- * on the same ID.
- */
 function checkFloorCommon<T extends { readonly variableId: VariableId }>(
   floor: EnvironmentFloor,
   environment: VerifiedMetaEvidence,
   activeList: readonly T[],
-  /**
-   * The verified declared set of a value-bearing pull (§12-7's
-   * declaredVariables). A metadata-only pull mixes declared into activeList
-   * (§12-7), so an empty list is passed.
-   */
   declaredList: readonly VerifiedVariableStatement[],
   tombstoneList: readonly VerifiedTombstone[],
   checkActive: (
@@ -573,18 +420,8 @@ function checkFloorCommon<T extends { readonly variableId: VariableId }>(
     return environmentViolation;
   }
   for (const [key, variableFloor] of Object.entries(floor.variables)) {
-    // The floor's variable keys satisfy §12-1's form by construction
-    // (floor-log-decode.ts's keysAreIds) — a Record's string index erases
-    // the brand, so it is taken back through the same guard; out of form
-    // here is an internal inconsistency
     const variableId = floorKeyAsVariableId(key);
     const active = actives.get(variableId);
-    // For the meta-level check of a declared / deleted floor, a declared
-    // distribution can also serve as evidence. An active floor requires the
-    // value to exist (no legitimate active → declared transition exists —
-    // §4.2), so no declared distribution is passed: on the value-bearing
-    // path, checkActive refuses it as variable-omitted (a missing value —
-    // §6.3's value-distribution requirement)
     const meta = active === undefined ? declared.get(variableId) : toMeta(active);
     const violation =
       variableFloor.status === "active"
@@ -599,12 +436,6 @@ function checkFloorCommon<T extends { readonly variableId: VariableId }>(
   return null;
 }
 
-/**
- * The floor check for one environment (rules (a)(b)(c)). No floor (first
- * run) means nothing to check — what is not guaranteed in that case is
- * §14.3-3 (first-sync client). Returns the first inconsistency found (all
- * are refusal conditions, so no enumeration is needed).
- */
 export function checkEnvironmentPull(
   floor: EnvironmentFloor | null,
   snapshot: VerifiedPullSnapshot,
@@ -624,20 +455,12 @@ export function checkEnvironmentPull(
   if (violation !== null) {
     return violation;
   }
-  // Rules (a)(b) on the manifest floor + omission after establishment + rule (c) applied to manifests
   const manifestViolation =
     checkManifestAgainstFloor(floor, snapshot.manifest) ??
     checkManifestEpochBaseline(floor, snapshot.manifest);
   if (manifestViolation !== null) {
     return manifestViolation;
   }
-  // Rule (c): a distribution whose version is newer than the floor's (a
-  // variable not in the floor counts as version 0 — a variable legitimately
-  // created since the last pull can only have been written at the
-  // then-current epoch or later) and whose epoch is below the pull-time epoch
-  // baseline is evidence of forward injection. "At or above" the baseline is
-  // accepted (a legitimate old-epoch value right after a rotation, before
-  // re-encryption completes — §12-7)
   for (const value of snapshot.variables) {
     const variableFloor = floorRecordGet(floor.variables, value.variableId);
     const floorVersion = variableFloor?.status === "active" ? variableFloor.version : 0;
@@ -654,17 +477,6 @@ export function checkEnvironmentPull(
   return null;
 }
 
-/**
- * The floor check of a metadata-only pull (§12-7): the meta part of rules
- * (a)(b) (regression of environment / variable statements, a difference at
- * the same metaVersion), omission of a verified variable, unauthorized
- * undeletion, and tombstone replacement. Since this shape carries no values,
- * the value-level checks and rule (c) are out of scope. The
- * **environment-level floor commit** after the checks pass (chain head,
- * environment meta floor, manifest floor, and coordinate (ii) only — never
- * fabricating a value floor, never advancing the pull baseline) is done by
- * the caller (enforceMetadataFloor).
- */
 export function checkEnvironmentMetadataPull(
   floor: EnvironmentFloor | null,
   snapshot: VerifiedMetadataSnapshot,
@@ -676,7 +488,6 @@ export function checkEnvironmentMetadataPull(
     floor,
     snapshot.environment,
     snapshot.variables,
-    // A metadata-only pull mixes declared into variables (§12-7) — there is no separate list
     [],
     snapshot.tombstones,
     checkFloorActiveMeta,
@@ -685,24 +496,12 @@ export function checkEnvironmentMetadataPull(
   if (violation !== null) {
     return violation;
   }
-  // The manifest is distributed even in metadata-only mode (§12-7 — meta
-  // verification completeness is the same level), so rules (a)(b) and rule
-  // (c) applied to manifests are checked here too (the value-level rule (c)
-  // and the floor commit remaining the domain of value-bearing pulls is
-  // unchanged)
   return (
     checkManifestAgainstFloor(floor, snapshot.manifest) ??
     checkManifestEpochBaseline(floor, snapshot.manifest)
   );
 }
 
-/**
- * Assembles the next environment floor from a pull response that passed
- * verification (§6.3's update order: the checks run against the previous
- * baseline, and advancing the rule (c) baseline = this run's chain-derived
- * current epoch is committed atomically with the variable floors after
- * verification succeeds — written by the caller via commitPull).
- */
 export function buildEnvironmentFloor(
   chainCurrentEpoch: number,
   snapshot: VerifiedPullSnapshot,
@@ -719,7 +518,6 @@ export function buildEnvironmentFloor(
     };
   }
   for (const declared of snapshot.declared) {
-    // declared advances only on the meta side (the value floor stays empty until activation — §4.2 / session-46 §8)
     variables[declared.variableId] = {
       status: "declared",
       metaVersion: declared.metaVersion,
@@ -735,7 +533,6 @@ export function buildEnvironmentFloor(
   }
   return {
     pullEpoch: chainCurrentEpoch,
-    // The environment-level epoch observation (coordinate (ii)) is established from the same verified observation
     observedEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
@@ -748,80 +545,33 @@ export function buildEnvironmentFloor(
   };
 }
 
-/**
- * The environment floor handle for one command run. When several pulls
- * happen inside one process (push's retry loop), the floor the previous pull
- * committed becomes the baseline of the next check. The in-process cache
- * syncs on every commit to **the environment floor the store folded (= the
- * state persisted to the log)**, not a mere send-snapshot: so that detection
- * material a concurrent CLI's append-only-log join took in (unions, deleted
- * terminal states, newer versions / pullEpochs) is not missed by later checks
- * in the same command. The on-disk floor only ever gets §6.3-verified records
- * written by this CLI, so adopting the fold result as the check baseline is
- * sound (an attacker who can write local state is outside the floor's scope).
- *
- * Intents (3-F) are environment-scoped and this is their window: it holds the
- * intents unresolved at openProject time plus the ones this process appended,
- * and a path that passed the effect confirmation (§12-10 (3)) closes them via
- * resolution.
- */
 export interface FloorHandle {
-  /** The current environment floor (before the first pull, the snapshot read at openProject). */
   readonly current: () => EnvironmentFloor | null;
-  /** This environment's unresolved intents (awaiting reconciliation — §6.3 record discipline (ii)). */
   readonly unresolvedIntents: () => readonly FloorIntent[];
-  /** The atomic commit of a verified pull (rule (c) baseline + variable floors + head in one record). */
   readonly commitPull: (
     environment: EnvironmentFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
-  /** The variable-floor advance of an accepted push (pullEpoch does not move). */
   readonly commitPush: (
     variableId: VariableId,
     variable: VariableFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
-  /**
-   * The environment-level commit of a metadata-only pull (never fabricates a
-   * value floor, never advances the pull baseline; environment meta floor,
-   * manifest floor, and coordinate (ii) only).
-   */
   readonly commitMetadata: (
     commit: Omit<MetadataCommit, "chainHead" | "environmentId">,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
-  /**
-   * Floor promotion of a self-issued manifest confirmed as accepted
-   * (pullEpoch and variable floors do not move). Skipping it would leave the
-   * post-acceptance floor at the old manifestVersion and open a window where
-   * rule (a) cannot detect a server that keeps distributing the old version.
-   */
   readonly commitManifest: (
     manifest: ManifestFloor,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
-  /**
-   * The pre-send intent (3-F) of a security-critical mutation. The send
-   * never happens before persistence (fsync equivalent) succeeds
-   * (fail-closed). The return value is the intent id used for resolution.
-   */
   readonly appendIntent: (input: FloorIntentInput) => Effect.Effect<string, CliError>;
-  /** Closes an intent with the effect-confirmation result (an unknown / resolved id is a no-op — idempotent). */
   readonly resolveIntent: (
     intentId: string,
     outcome: FloorIntentOutcome,
   ) => Effect.Effect<void, CliError>;
 }
 
-/**
- * An `Effect.tapError` callback that closes an intent (3-F) as rejected when
- * the send failed with a rejection in the server's own error body (= the
- * effect never happened — decided). A transport-layer failure (lost
- * response) stays unresolved — the next reconciliation opportunity (chain
- * sync / metadata-only pull) resolves it. A failed resolution append may be
- * swallowed: the direction where an intent stays open is the safe side (it
- * just leaves something to reconcile).
- */
 export function rejectIntentOnServerRejection(
   floor: FloorHandle,
   intentId: string,
@@ -832,13 +582,11 @@ export function rejectIntentOnServerRejection(
       : Effect.void;
 }
 
-/** Builds an environment floor handle over the floor store. */
 export function makeFloorHandle(input: {
   readonly store: FloorStoreShape;
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
   readonly initial: EnvironmentFloor | null;
-  /** This environment's unresolved intents as of openProject (surfaced by the fold — 3-F). */
   readonly intents?: readonly FloorIntent[];
 }): FloorHandle {
   let current = input.initial;
@@ -876,19 +624,6 @@ export function makeFloorHandle(input: {
         .pipe(Effect.map(adopt)),
     commitManifest: (manifest, head) =>
       Effect.suspend(() => {
-        // The in-process baseline advances **first, regardless of whether the
-        // disk write succeeds**: the fact that we know the manifestVersion we
-        // got accepted remains detection material for later scans in the same
-        // run even if the write fails (detecting a server that keeps
-        // distributing the old version after acceptance). The advance uses
-        // the same join implementation as the disk side (no separate
-        // "`>=` last-wins" implementation). If the join detects a conflict
-        // (same version, different hash), the advance is **not adopted**:
-        // making the side that discarded evidence the check baseline would
-        // let the rest of a run whose disk write fell to a warning on I/O
-        // failure proceed without seeing equivocation (when the disk write
-        // succeeds, the fold turns later commits into typed errors on the
-        // same conflict)
         if (current !== null) {
           const conflicts: FloorConflict[] = [];
           const joined = joinEnvironmentFloor(

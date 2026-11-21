@@ -1,10 +1,3 @@
-// Integration tests for workload-lease authorization and existence
-// hiding (AUTH_SPEC §14-1 / §11-2 — a uniform 404). Pin that no grant,
-// a policy mismatch, out-of-scope, a missing environment, and an
-// uninitialized project are ALL the same 404 (no reason leaks). Shared
-// helpers are in support/lease-scenario.ts; for how the suite is split
-// see the top of lease.test.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -43,9 +36,6 @@ async function expect404(input: {
       scope,
       ...(input.leasePolicy === undefined ? {} : { leasePolicy: input.leasePolicy }),
     });
-    // Registering a server-directed wrap for an environment outside
-    // the disclosure scope is itself a 422 (§12-6). In the out-of-scope
-    // case, "no wrap but a grant exists" is the right precondition
     if (scope.includes(ENV)) {
       await backfillServerWrap(1, dek);
     }
@@ -123,9 +113,6 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
       project: other,
     });
     expect(response.status).toBe(404);
-    // The never-initialized DO materializes no tables at all (Sc-7 / A-4): a
-    // probe of an arbitrary project ID leaves no storage — not even an empty
-    // audit log — so the unauthenticated path cannot bloat operator storage.
     const tables = await queryProjectDo(
       other,
       "SELECT name FROM sqlite_master WHERE type = 'table'",
@@ -134,7 +121,6 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
   });
 
   it("hides a deleted environment that is still inside the disclosure scope", async () => {
-    // An environment inside the scope but already tombstoned
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -149,17 +135,6 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
   });
 
   it("returns a byte-identical 404 body for every cause (the core of existence hiding)", async () => {
-    // Watching only the status code would not detect a field added to
-    // one branch in the future. Pin that even the bodies are identical,
-    // in a single test.
-    //
-    // **Take the 4 branches separately**: an empty lease_policy makes
-    // policy-mismatch settle first, never reaching
-    // scope-out-of-range / environment-not-found — the same path's body
-    // collected twice. Set a real policy and split the branches on the
-    // token and requested-environment sides. Which branches were taken
-    // is checked after the fact via lease_denied's reason (a silent
-    // degeneration fails)
     const workload = await workloadKeyPair();
     const bodyOf = async (
       input: {
@@ -180,29 +155,20 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
       return response.text();
     };
 
-    // (a) An unknown project. **A different DO** is hit, so no audit remains (excluded from the comparison below)
     const unknownProject = "f".repeat(64);
     const bodies = [await bodyOf({ project: unknownProject })];
 
-    // (b) No grant
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     bodies.push(await bodyOf());
 
-    // A real policy + a scope containing "ENV and an uncreated environment ID"
     const uncreated = "env-in-scope-uncreated";
     await grantServer({ scope: [ENV, uncreated] });
     await backfillServerWrap(1, dek);
 
-    // (c) A policy mismatch (a subject on a different branch)
     bodies.push(await bodyOf({ subject: "repo:maruhi-test/demo:ref:refs/heads/feature-x" }));
-    // (d) An out-of-scope environment (the policy does match)
     bodies.push(await bodyOf({ environmentId: "env-out-of-scope-0009" }));
-    // (e) An in-scope but uncreated environment
     bodies.push(await bodyOf({ environmentId: uncreated }));
 
-    // The body carries only the echo of the caller's own input
-    // (projectId). Only (a) used a different ID, so check that every
-    // case but that one is identical
     expect(JSON.parse(bodies[0] ?? "{}")).toEqual({
       _tag: "ProjectNotFound",
       projectId: unknownProject,
@@ -210,7 +176,6 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
     expect(new Set(bodies.slice(1)).size).toBe(1);
     expect(JSON.parse(bodies[1] ?? "{}")).toEqual({ _tag: "ProjectNotFound", projectId });
 
-    // Confirm via the audit that the 4 branches really were taken separately
     const denied = await queryProjectDo(
       projectId,
       "SELECT payload FROM audit_events WHERE event = 'server.lease_denied' ORDER BY seq",
@@ -227,7 +192,6 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
   });
 
   it("authorizes when any policy element matches (existential — §14-1)", async () => {
-    // Even with a non-matching element first, a later matching element authorizes
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({
       scope: [ENV],
@@ -309,14 +273,12 @@ describe("workload leases: authorization and existence hiding (§14-1 / §11-2 �
       "SELECT actor_type, actor_user_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_denied'",
     );
     expect(rows.length).toBe(1);
-    // The actor is system (an external workload holds no identity on maruhi — §3.5)
     expect(rows[0]?.["actor_type"]).toBe("system");
     expect(rows[0]?.["actor_user_id"]).toBeNull();
     expect(rows[0]?.["actor_key_fingerprint"]).toBeNull();
     const payload = JSON.parse(String(rows[0]?.["payload"])) as Record<string, unknown>;
     expect(payload["reason"]).toBe("policy-mismatch");
     expect(typeof payload["claimsDigest"]).toBe("string");
-    // External identifiers (sub / repo name) are not written (§14-4 / AUDIT_SPEC §1-2)
     expect(JSON.stringify(payload)).not.toContain("maruhi-test/demo");
   });
 });

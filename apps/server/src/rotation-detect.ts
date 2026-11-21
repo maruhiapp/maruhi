@@ -1,51 +1,3 @@
-// Detection of rotation-needed flags (AUDIT_SPEC §4.1 = the implementation of
-// CRYPTO_SPEC §7) and derivation of flag dismissal (§4.1 step 5).
-//
-// - Detection runs inside the project DO at the acceptance of `remove_member` /
-//   `change_role` (demotion, scope reduction — 2026-09-14 ES) / `revoke_server`
-//   / `revoke_device` (device windows — 2026-09-19 DK), and appends
-//   `rotation.recommended` (one aggregate row per environment, per chunk of at
-//   most MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW variables — §3.3 Sc-5) in
-//   the same synchronous task as the mirror append (chain-accept.ts wires it).
-//   The coordinate system is the audit seq (the total order inside the DO —
-//   chain acceptance and data operations ride on the same sequence)
-// - The candidate set (§4.1 step 2) is **per-environment access windows**: the
-//   list of seq intervals during which the subject could have held
-//   environment E's DEK. A window is determined only by the transition points
-//   of the scope state (`all` / `listed`) in the chain mirror's payload, and
-//   member (genesis / member_added / role_changed / member_removed) and server
-//   (server_granted / server_revoked) **share a single window derivation**
-//   (§4.1 "the implementation shares one window derivation" — design record
-//   es-design.md §9 K3-E). `all` = every environment (including future ones),
-//   so a variable created during an `all` period naturally becomes a candidate
-//   by overlap with its existence interval
-// - Interval overlap is an open-interval check: max(start) < min(end). Even
-//   between adjacent events (e.g. a delete accepted right after a variable's
-//   creation) there is a real-time window and "could have been obtained"
-//   holds (the actual fetch is sandwiched between events, so rank (a) is
-//   correctly empty)
-// - Resolution derivation is a pure fold over the event sequence (flags do not
-//   live in a mutable store — §4.1). It follows the value lineage (§4.1-5 —
-//   2026-09-27 VH): every pushed version carries a plaintext origin epoch
-//   (its own epoch, or — for a push declaring sameValueAs — the origin epoch
-//   of the version it names), and a flag is effective while the live value's
-//   origin epoch is within the flag's exposure bound (the environment's epoch
-//   at the end of the subject's window — the recommended row's epoch column).
-//   A re-encryption therefore neither resolves nor un-resolves (blocks a
-//   mandatory-rotation sweep from auto-resolving everything), and a rollback to
-//   a value the subject could read re-opens a resolved flag. A dismissal
-//   covers the flags effective when it is recorded and is sticky
-// - Environment and variable ids stay plain strings here, unlike the rest of
-//   the server (EnvironmentId / VariableId). The inputs are audit rows,
-//   which replay stored text (audit-api.ts's AuditEventSchema), and a brand
-//   has no safe mint at this read. Detection runs inside the chain
-//   acceptance task (chain-accept.ts), so a checked decode that throws on a
-//   corrupt row would refuse `remove_member` / `revoke_*` themselves, and a
-//   decode that skips the row would silently drop a rotation candidate.
-//   Here, (environment, variable) pairs travel together in row shapes and
-//   `pairKey`. A seam that takes both ids from an already-typed caller takes
-//   the brands instead (`rotationFlagEventsFor` in audit-store-rotation-read.ts)
-
 import type {
   AuditEventRecordOf,
   KeyFingerprintHex,
@@ -65,53 +17,29 @@ import type {
 } from "./audit-store-rotation-read.ts";
 import { MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW } from "./policy.ts";
 
-/** Basis rank (§4.1 step 3): read = definitely obtained / readable = could have been obtained. */
 export type RotationBasis = (typeof ROTATION_BASES)[number];
 
-/**
- * The op that triggered detection (§3.3 `rotation.recommended`'s
- * payload.trigger — 2026-09-14 ES): remove_member / change_role
- * (demotion/shrink) / revoke_server / revoke_device.
- */
 export type RotationTrigger = (typeof ROTATION_TRIGGERS)[number];
 
-/** One `rotation.recommended` row (§3.3) — what every detection variant returns. */
 export type RecommendedEvent = AuditEventRecordOf<"rotation.recommended">;
 
-/** A currently-effective rotation-needed flag (the §4.1 step 5 derivation result; crosses the RPC boundary). */
 export interface EffectiveRotationFlag {
   readonly environmentId: string;
   readonly variableId: string;
   readonly basis: RotationBasis;
-  /** Only on the remove_member / change_role variants. */
   readonly targetUserId?: UserId;
-  /** Only on the revoke_server variant. */
   readonly targetServerKeyFingerprintHex?: string;
-  // No audit seq is carried (the 2026-08-16 ruling C1): the gapless sequence
-  // number cannot go on the wire (it would leak the class-2 row count — §7),
-  // and the dismissal order is already guaranteed by the derivation's input
-  // row order (the seq order of rotationFlagEvents), so the output does not
-  // need it
   readonly recommendedAtMs: number;
-  /** The chain seq of the deletion / demotion-or-shrink / revocation entry that triggered detection (from the payload). */
   readonly triggerChainSeq: number;
-  /** The op that triggered detection (the payload's trigger). */
   readonly trigger: RotationTrigger;
-  /**
-   * The version whose push restored a value from before this flag after the
-   * flag had been resolved (§4.1-5 / §7 — 2026-09-27 VH). Absent when the flag
-   * was never resolved.
-   */
   readonly reopenedByVersion?: number;
 }
 
-/** A half-open interval on the audit seq (end = +Infinity means unclosed). */
 interface SeqInterval {
   readonly start: number;
   readonly end: number;
 }
 
-/** A variable's existence interval (Q2 of §4.1 step 2 — var.created to var.deleted). */
 interface VariableLifetime {
   readonly environmentId: string;
   readonly variableId: string;
@@ -122,28 +50,14 @@ interface VariableLifetime {
 const pairKey = (row: { readonly environmentId: string; readonly variableId: string }): string =>
   `${row.environmentId}\u0000${row.variableId}`;
 
-/** Overlap of two open intervals (includes the real-time window between integer seqs — see the header comment). */
 function overlaps(a: SeqInterval, bStart: number, bEnd: number): boolean {
   return Math.max(a.start, bStart) < Math.min(a.end, bEnd);
 }
 
-/** Whether seq lies inside an event interval (excluding the boundary events themselves). */
 function within(seq: number, interval: SeqInterval): boolean {
   return interval.start < seq && seq < interval.end;
 }
 
-// ---------------------------------------------------------------------------
-// Per-environment access windows (§4.1 step 2 — the window derivation shared
-// by member / server)
-// ---------------------------------------------------------------------------
-
-/**
- * A scope-state transition (one mirror row = one transition): open = start of
- * membership / grant (with a scope), update = replacement of the scope during
- * the interval (change_role, enlarging re-grant), close = end of membership /
- * grant. The window derivation looks only at these three kinds (identical
- * across recipient classes).
- */
 interface ScopeTransition {
   readonly seq: number;
   readonly kind: "open" | "update" | "close";
@@ -156,24 +70,11 @@ function scopeIncludes(scope: ScopeSnapshot, environmentId: string): boolean {
   return scope.kind === "all" || scope.environmentIds.includes(environmentId);
 }
 
-/**
- * The list of access windows for environment E (§4.1 step 2): opens on the
- * transition where E enters scope; closes on the transition (update) where E
- * leaves scope, or on close. A restart spanning a membership / grant interval
- * boundary is a separate window. Chain consensus rules reject double-add and
- * double-grant, but the derivation defensively treats "an open while an
- * interval is open" the same as update, and "an update outside an interval"
- * the same as open (for corrupt input, err toward not missing — design record
- * §9 K3-F. Only a close outside an interval is ignored = a post-deletion
- * transition).
- */
 function accessWindows(
   transitions: readonly ScopeTransition[],
   environmentId: string,
 ): readonly SeqInterval[] {
   const windows: SeqInterval[] = [];
-  // Window-derivation state: whether inside a membership / grant interval, and
-  // from which seq E's window is open
   const state = { openedAt: null as number | null };
   const closeWindow = (seq: number): void => {
     if (state.openedAt !== null) {
@@ -198,13 +99,6 @@ function accessWindows(
   return windows;
 }
 
-/**
- * Map Q1's membership-interval events (genesis / member_added / role_changed /
- * member_removed) onto scope transitions. genesis is structurally `all`
- * (CRYPTO_SPEC §6.2). A row whose scope cannot be read (a corrupt payload)
- * fails safe and opens the window as `all` (for detection, the safe side is
- * not missing — design record §9 K3-F).
- */
 function membershipTransitions(events: readonly MembershipEventRow[]): readonly ScopeTransition[] {
   return events.map((event) => {
     if (event.event === "chain.member_removed") {
@@ -219,16 +113,6 @@ function membershipTransitions(events: readonly MembershipEventRow[]): readonly 
   });
 }
 
-/**
- * Map Q6's grant-interval events (server_granted / server_revoked) onto scope
- * transitions. A re-grant to the same key FP is an update inside the interval;
- * a re-grant after revocation is an open of a new interval. Inside an
- * interval, the scope accumulates **monotonically as a union** (the consensus
- * rules only accept enlargement — CRYPTO_SPEC §6.3. Even if a shrinking
- * re-grant slipped through, never close the disclosure window of a DEK the
- * server already knows before revocation = a fail-safe that also blocks a
- * "cosmetic shrink" on the detection side).
- */
 function grantTransitions(
   events: readonly {
     readonly seq: number;
@@ -237,10 +121,6 @@ function grantTransitions(
   }[],
 ): readonly ScopeTransition[] {
   const transitions: ScopeTransition[] = [];
-  // The disclosed set inside the interval. null = outside an interval. "all" =
-  // an interval containing a grant row whose scope is unreadable (fail-safe to
-  // all environments — the same handling as an unknown scope on the member
-  // axis. K3-F)
   let disclosed: Set<string> | "all" | null = null;
   for (const event of events) {
     if (event.event === "chain.server_revoked") {
@@ -262,7 +142,6 @@ function grantTransitions(
   return transitions;
 }
 
-/** Reconstruction of variable existence intervals (Q2; variable_id is never reused — AUTH_SPEC §12-1). */
 function variableLifetimes(
   rows: readonly VariableLifecycleRow[],
 ): ReadonlyMap<string, VariableLifetime> {
@@ -288,7 +167,6 @@ function variableLifetimes(
   return lifetimes;
 }
 
-/** Lazily derive and memoize windows per environment (candidates are judged per variable; windows are per environment). */
 function windowsByEnvironment(
   transitions: readonly ScopeTransition[],
 ): (environmentId: string) => readonly SeqInterval[] {
@@ -304,15 +182,6 @@ function windowsByEnvironment(
   };
 }
 
-/**
- * The exposure bound of a flag (§4.1-5 — 2026-09-27 VH): the environment's
- * epoch at the end of the subject's last window on it — the newest epoch
- * whose DEK the subject could hold (all-epoch backfill gives every epoch up
- * to it). A window that closed before the trigger (an earlier shrink, a
- * device scope) bounds at that earlier epoch, not the current one. An
- * environment with no epoch row is unbounded (+Infinity — the safe side: the
- * flag then resolves only by dismissal).
- */
 function exposureBound(
   epochRows: readonly EnvironmentEpochRow[],
   environmentId: string,
@@ -328,14 +197,6 @@ function exposureBound(
   return bound;
 }
 
-/**
- * One detected (variable × environment) flag before aggregation: the pair, its
- * basis (§4.1 step 3), and the environment's exposure bound (§4.1-5 — VH). The
- * bound is a per-environment invariant across a detection's candidates (every
- * candidate of E uses the same selected windows), so {@link aggregateRecommended}
- * folds a detection's pairs into rows per environment (chunked) with the bound
- * on the epoch column.
- */
 interface DetectedPairFlag {
   readonly environmentId: string;
   readonly variableId: string;
@@ -343,24 +204,6 @@ interface DetectedPairFlag {
   readonly epochBound: number;
 }
 
-/**
- * Fold a detection's per-pair flags into the §3.3 aggregate rows — **one
- * `rotation.recommended` row per environment, per chunk of at most
- * {@link MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW} variables** (2026-10-11
- * Sc-5, following the var.read aggregation). Chunking bounds a single row's
- * size: a detection's candidates include deleted variables, so one environment
- * can flag up to MAX_VARIABLE_ROWS_PER_ENVIRONMENT (5,000) pairs, and an
- * unbounded row's export line would exceed the mirror page slack and become
- * un-exportable forever (audit rows are permanent — ensurePageBounds in
- * do-mirror.ts). Each row's payload enumerates its variables with the
- * per-variable basis in ascending variableId order (the row_digest input's
- * fixity — §5.1; chunk boundaries fall on that order), the exposure bound rides
- * the epoch column (a per-environment invariant across the whole detection, so
- * every chunk of an environment carries the same bound), and the single
- * subject / trigger ride the columns and payload scalars. Actor is system (the
- * §3.3 recording rules). Each variable lands in exactly one chunk, so each pair
- * still gets one recommended row per detection.
- */
 function aggregateRecommended(input: {
   readonly nowMs: number;
   readonly flags: readonly DetectedPairFlag[];
@@ -368,7 +211,6 @@ function aggregateRecommended(input: {
   readonly triggerChainSeq: number;
   readonly targetUserId?: UserId;
   readonly targetKeyFingerprintHex?: KeyFingerprintHex;
-  /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly KeyFingerprintHex[];
 }): readonly RecommendedEvent[] {
   const byEnvironment = new Map<string, DetectedPairFlag[]>();
@@ -383,10 +225,6 @@ function aggregateRecommended(input: {
   return [...byEnvironment.entries()]
     .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .flatMap(([environmentId, flags]): RecommendedEvent[] => {
-      // Every candidate of one environment shares the same windows, so the
-      // exposure bound is identical across them (the invariant that lets the
-      // bound stay on the epoch column — §3.3; structural, taken from the
-      // first flag rather than asserted)
       const epochBound = flags[0]?.epochBound ?? Number.POSITIVE_INFINITY;
       const variables = flags
         .map((flag) => ({ variableId: flag.variableId, basis: flag.basis }))
@@ -423,17 +261,6 @@ function aggregateRecommended(input: {
     });
 }
 
-/**
- * The shared skeleton of the member variants (remove_member / change_role):
- * candidates = every (variable × environment) whose existence interval
- * overlaps a subject window (including deleted variables — an upstream
- * credential does not expire just because the variable is deleted), and (a) =
- * the subject's var.read inside a subject window (including reads via API
- * token — matched by actor.user_id; a read is itself an event, so judge
- * strictly inside the interval). `selectWindows` decides per variant "which
- * windows are detection targets" (remove = all windows, change_role = windows
- * closed by the trigger).
- */
 function detectForMember(input: {
   readonly read: AuditRotationRead;
   readonly targetUserId: UserId;
@@ -462,11 +289,6 @@ function detectForMember(input: {
   if (candidates.length === 0) {
     return [];
   }
-  // Reads are only counted "inside one of the selected windows" (within —
-  // open interval), so rows outside the envelope of all windows (smallest
-  // start, largest end) are always dropped by the filter below. Pass the
-  // envelope to Q3 to make it a range scan over ae_actor (the result is
-  // identical to not narrowing)
   const envelope = [...selected.values()].flat().reduce(
     (range, window) => ({
       afterSeq: Math.min(range.afterSeq, window.start),
@@ -504,16 +326,6 @@ function detectForMember(input: {
   });
 }
 
-/**
- * Detection at `remove_member` acceptance (§4.1 steps 1-3). Called after the
- * mirror append (the membership interval is closed by the mirror row written
- * just before). Candidates are **all windows** inside the membership interval
- * (including windows previously closed by a shrink — per the letter of §4.1
- * step 2. Rows overlapping what the shrink-time detection emitted remain as
- * multiple effective recommendeds for the same pair = same treatment as a
- * re-delete). Feeding the return value to appendManySync as-is performs step
- * 4.
- */
 export function detectMemberRemoval(input: {
   readonly read: AuditRotationRead;
   readonly targetUserId: UserId;
@@ -532,27 +344,8 @@ export function detectMemberRemoval(input: {
   });
 }
 
-/** Whether a role is member-or-higher (a writer) — used to judge demotion (down to below member). */
 const WRITER_ROLES: ReadonlySet<string> = new Set(["member", "admin", "owner"]);
 
-/**
- * Detection at `change_role` acceptance (the §4.1 change_role variant —
- * 2026-09-14 ES). Called after the mirror append (the `chain.role_changed`
- * row written just before is the tail of Q1).
- * - **Shrink** (old scope \ new scope ≠ ∅): environments of windows closed by
- *   the trigger's mirror row are candidates (CRYPTO_SPEC §7 — the shrunk part
- *   is equivalent to a removal)
- * - **Demotion** (old role ≥ member, new role = reader): all windows open just
- *   before the trigger (= all environments of the old scope). The windows
- *   themselves do not close because environments remaining in the new scope
- *   keep receiving DEKs as a reader, but detection runs on windows clipped at
- *   the trigger seq — detection of the fact "someone who knew upstream
- *   credentials lost the privilege" (§4.1). If a shrink happened at the same
- *   time, the union still lists each (variable × environment) once in the
- *   aggregate enumeration (the §3.3 granularity)
- * - Promotion, enlargement, and scope-unchanged role changes (not demotions)
- *   produce no candidates
- */
 export function detectRoleChange(input: {
   readonly read: AuditRotationRead;
   readonly targetUserId: UserId;
@@ -567,16 +360,9 @@ export function detectRoleChange(input: {
   const previousRole =
     events.toReversed().find((event) => event.seq < trigger.seq && event.role !== null)?.role ??
     null;
-  // A row whose role cannot be read (corrupt payload — unreachable) is judged
-  // as "was a demotion" (the not-missing side — design record §9 K3-F):
-  // unknown old role = was a writer; unknown new role = no longer a writer
   const demoted =
     (previousRole === null || WRITER_ROLES.has(previousRole)) &&
     (trigger.role === null || !WRITER_ROLES.has(trigger.role));
-  // If the trigger row's scope cannot be read, the window derivation falls to
-  // all and the "shrunk part" cannot be detected (windows never close), so use
-  // every window open just before the trigger as candidates, same as demotion
-  // (the not-missing side)
   const closeAll = demoted || trigger.scope === null;
   return detectForMember({
     ...input,
@@ -584,14 +370,9 @@ export function detectRoleChange(input: {
     transitions: membershipTransitions(events),
     selectWindows: (windows) =>
       windows.flatMap((window) => {
-        // A window closed by the trigger's mirror row = the shrunk part
         if (window.end === trigger.seq) {
           return [window];
         }
-        // Demotion: clip a window still open at the trigger (environments
-        // remaining in the new scope) at the trigger seq (the transition list
-        // ends at the trigger row, so a window continuing past the trigger =
-        // an unclosed window)
         if (closeAll && window.start < trigger.seq && window.end > trigger.seq) {
           return [{ start: window.start, end: trigger.seq }];
         }
@@ -600,24 +381,12 @@ export function detectRoleChange(input: {
   });
 }
 
-/** Intersection of two intervals (null when empty). */
 function intersect(a: SeqInterval, b: SeqInterval): SeqInterval | null {
   const start = Math.max(a.start, b.start);
   const end = Math.min(a.end, b.end);
   return start < end ? { start, end } : null;
 }
 
-/**
- * The live interval and device scope of a revoked device (the §4.1
- * revoke_device variant — step 1; design record dk-design.md §8 K3-11): from
- * the latest `chain.device_added` before the trigger (matching FP in the
- * payload) to the trigger. A FP absent from every device_added is the first
- * key of an `add_member` / `genesis`, whose interval runs from the start of
- * the membership interval (the latest open transition before the trigger),
- * with scope all (a first key's cap is structurally (owner, all) — CRYPTO_SPEC
- * §6.2). A row whose scope cannot be read is all (the not-missing side —
- * ES K3-F).
- */
 function revokedDeviceSpans(
   membership: readonly MembershipEventRow[],
   devices: readonly DeviceEventRow[],
@@ -648,18 +417,6 @@ function revokedDeviceSpans(
   });
 }
 
-/**
- * Detection at `revoke_device` acceptance (the §4.1 revoke_device variant —
- * 2026-09-19 DK). Called after the mirror append (the `chain.device_revoked`
- * row written just before is the trigger). Candidates = each revoked device's
- * live interval ∩ the person's per-environment access windows ∩ the device
- * scope (a device whose device scope does not contain E has no window =
- * revoking a vote-only device [empty scope] writes no row). (a) is, same as
- * the remove variant, a match of the subject's `var.read` inside the interval
- * by actor.user_id (`var.read` carries no FP — K1-12). The subject stays a
- * member, so the membership interval does not close (detect on windows
- * clipped at the trigger seq — same shape as the demotion variant).
- */
 export function detectDeviceRevocation(input: {
   readonly read: AuditRotationRead;
   readonly targetUserId: UserId;
@@ -698,17 +455,6 @@ export function detectDeviceRevocation(input: {
   });
 }
 
-/**
- * Detection at `revoke_server` acceptance (the §4.1 revoke_server variant).
- * The interval = the grant intervals of the given server key FP (each
- * interval separately if re-granted); candidates = the variables of
- * environments inside each interval's **per-environment disclosure windows**
- * (an environment that entered later via an enlarging re-grant counts from the
- * enlargement seq — the same window derivation as member); (a) =
- * `server.lease_issued` (every variable active in the environment at issuance
- * — environment-granularity distribution) + `server.value_decrypted`
- * (reserved).
- */
 export function detectServerRevocation(input: {
   readonly read: AuditRotationRead;
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
@@ -739,11 +485,8 @@ export function detectServerRevocation(input: {
         return false;
       }
       if (row.event === "server.lease_issued") {
-        // Environment-granularity distribution (§3.5): every variable active
-        // at issuance counts as (a)
         return lifetime.start < row.seq && row.seq < lifetime.end;
       }
-      // server.value_decrypted (reserved — never occurs in v1): variable-granularity matching
       return row.variableId === lifetime.variableId;
     });
     flags.push({
@@ -766,7 +509,6 @@ export function detectServerRevocation(input: {
   });
 }
 
-/** Read payload.trigger (rows written by this server itself — check the type defensively). */
 function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   const trigger = row.payload?.["trigger"];
   if (
@@ -777,12 +519,9 @@ function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   ) {
     return trigger;
   }
-  // This server is the only writer, so trigger is always present — a missing
-  // or unknown row is corruption (defect)
   throw new Error(`rotation.recommended row has no valid trigger: ${String(trigger)}`);
 }
 
-/** Read the detection-time values from a recommended row's payload (rows written by this server itself — check the type defensively). */
 function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
   const basis = row.payload?.["basis"] === "read" ? "read" : "readable";
   const trigger = row.payload?.["triggerChainSeq"];
@@ -800,17 +539,6 @@ function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
   };
 }
 
-/**
- * The plaintext origin epoch of a pushed version (§4.1-5 — 2026-09-27 VH):
- * the epoch its value was first encrypted under — the version's own epoch,
- * or, when the push declared `sameValueAs` (the writer's lineage
- * declaration, AUTH_SPEC §12-5), the origin epoch of the version it names (a
- * re-encryption carries an old plaintext into a new epoch; the old epoch's
- * key holders could still read it). A named version with no row falls to 0
- * (the oldest possible origin = the safe side: flags stay effective). The
- * acceptance check keeps sameValueAs below the pushed version, so a named
- * version was always pushed earlier in the same pair.
- */
 function originEpochOf(row: RotationFlagSourceRow, origins: ReadonlyMap<number, number>): number {
   const sameValueAs = row.payload?.["sameValueAs"];
   if (typeof sameValueAs === "number" && Number.isInteger(sameValueAs) && sameValueAs >= 1) {
@@ -821,13 +549,6 @@ function originEpochOf(row: RotationFlagSourceRow, origins: ReadonlyMap<number, 
 
 interface FlagState {
   readonly flag: EffectiveRotationFlag;
-  /**
-   * The exposure bound: the environment's current epoch when the flag was
-   * detected (the recommended row's epoch column). The subject held the DEKs
-   * of every epoch up to it, so a value whose origin epoch is at or below it
-   * is one the subject could read. A row without it (corruption) never
-   * resolves by a push — the safe side.
-   */
   readonly epochBound: number;
   dismissed: boolean;
   resolved: boolean;
@@ -836,18 +557,10 @@ interface FlagState {
 
 interface PairState {
   readonly flags: FlagState[];
-  /** version → plaintext origin epoch. */
   readonly origins: Map<number, number>;
-  /** The live (latest pushed) value's origin epoch — null while no version was pushed. */
   liveOrigin: number | null;
 }
 
-/**
- * One var.version_pushed in the lineage fold: record the version's origin
- * epoch and move each non-dismissed flag between resolved and effective. A
- * transition from resolved to effective is a re-exposure (a restore of a
- * value the subject could read).
- */
 function applyPush(pair: PairState, row: RotationFlagSourceRow): void {
   const origin = originEpochOf(row, pair.origins);
   if (row.version !== null) {
@@ -865,11 +578,6 @@ function applyPush(pair: PairState, row: RotationFlagSourceRow): void {
   }
 }
 
-/**
- * The lineage fold shared by the flag view and the history's per-version
- * count: one pass over the rows in seq order, grouped by (variable ×
- * environment).
- */
 function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairState> {
   const pairs = new Map<string, PairState>();
   for (const row of rows) {
@@ -877,9 +585,6 @@ function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairStat
     const pair: PairState = pairs.get(key) ?? { flags: [], origins: new Map(), liveOrigin: null };
     pairs.set(key, pair);
     if (row.event === "rotation.recommended") {
-      // A new flag starts effective unless the live value was already first
-      // encrypted above its bound (a window that closed earlier — an old
-      // shrink — whose environment was rotated and re-pushed since)
       const epochBound = row.epoch ?? Number.POSITIVE_INFINITY;
       pair.flags.push({
         flag: flagOf(row),
@@ -889,10 +594,6 @@ function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairStat
         reopenedByVersion: undefined,
       });
     } else if (row.event === "rotation.dismissed") {
-      // A dismissal covers only the flags effective at that point — what
-      // the dismissing admin saw and accepted. A flag resolved at the time
-      // stays resolved and can still be re-opened by a later restore
-      // (§4.1-5 — 2026-09-27 VH re-check round)
       for (const flag of pair.flags) {
         flag.dismissed ||= !flag.resolved;
       }
@@ -903,13 +604,6 @@ function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairStat
   return pairs;
 }
 
-/**
- * Derivation of flag resolution (§4.1 step 5 — the lineage derivation,
- * 2026-09-27 VH): a flag is effective while it is not dismissed and the live
- * value's plaintext origin predates it. Multiple effective recommendeds on
- * the same pair (a re-delete, departures of different subjects) are all
- * returned (the UI bundles them).
- */
 export function deriveEffectiveFlags(
   rows: readonly RotationFlagSourceRow[],
 ): readonly EffectiveRotationFlag[] {
@@ -929,15 +623,6 @@ export function deriveEffectiveFlags(
   return effective;
 }
 
-/**
- * The history's `flagsIfCurrent` (AUTH_SPEC §12-7 — 2026-09-27 VH): for each
- * listed version of one pair, the number of non-dismissed flags that are
- * effective while that version's value is the live one (= flags whose
- * exposure bound is at or above the version's origin epoch). `rows` are the
- * pair's own rows in seq order. A version with no push row falls to origin 0
- * — the same safe side as {@link originEpochOf} (every non-dismissed flag
- * counts).
- */
 export function flagsIfCurrentByVersion(
   rows: readonly RotationFlagSourceRow[],
   versions: readonly number[],

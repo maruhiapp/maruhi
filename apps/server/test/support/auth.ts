@@ -1,12 +1,3 @@
-// Shared helpers for authenticated integration tests (run inside workerd).
-//
-// Policy (AUTH_SPEC §11-1 ruling): sessions / tokens are always obtained via
-// the real issuance path (Web OAuth callback / CLI login handoff). The only
-// thing that may be stubbed is the GitHub API (the outboundService fake in
-// vitest.config.ts). For vector alignment, users / linked_identities are
-// seeded directly into D1 with fixed IDs (the getOrCreateUser lookup path
-// resolves them as existing users).
-
 import type { TokenScope } from "@maruhi/core";
 import { cryptoServicesLayer } from "@maruhi/core";
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
@@ -15,7 +6,6 @@ import { Digest, SecureRandom } from "effect/crypto";
 
 import { randomBase62, sha256Hex, ulid } from "../../src/ids.ts";
 
-/** Runs an ids.ts generator effect with the real crypto services (the ids are Effects since the 4.1 migration). */
 const runIds = (
   effect: Effect.Effect<string, never, SecureRandom.SecureRandom | Digest.Digest>,
 ): Promise<string> => Effect.runPromise(effect.pipe(Effect.provide(cryptoServicesLayer)));
@@ -29,17 +19,13 @@ export const STATE_COOKIE = "__Host-maruhi_oauth_state";
 export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 export const SIGNUP_CODE_COOKIE = "__Host-maruhi_signup";
 
-// Delete in FK parent-child order (invitations and the audit tables have no FK — they can go last)
 const AUTH_TABLES = [
   "sessions",
   "api_tokens",
-  // CLI login handoff flow rows (AUTH_SPEC §4). Has a FK to users
   "cli_login_flows",
   "recovery_wraps",
-  // Device registry and device add requests (AUTH_SPEC §13-11 — DK K3). Has a FK to users
   "devices",
   "device_add_requests",
-  // master key wrap ledger (AUTH_SPEC §13-6 — KL3). Child → parent order
   "key_handoff_approvals",
   "key_handoff_requests",
   "guardian_shares",
@@ -47,7 +33,6 @@ const AUTH_TABLES = [
   "master_key_wraps",
   "key_wrap_windows",
   "memberships",
-  // membership projection (AUTH_SPEC §11-5). FK-less derived cache
   "project_members",
   "projects",
   "linked_identities",
@@ -56,15 +41,10 @@ const AUTH_TABLES = [
   "invitations",
   "user_audit_events",
   "org_audit_events",
-  // Window counters for login_failed / signup_denied (AUDIT_SPEC §3.1 — mutable state, not audit rows)
   "login_failed_windows",
-  // Also delete the flow signing key (AUTH_SPEC §4-2) = each test goes through
-  // the first-time generation path (idempotent, first-come-first-served)
   "flow_signing_keys",
-  // Signup control (AUTH_SPEC §3). Default is no row = signupPolicy 'open'
   "signup_invites",
   "deployment_settings",
-  // Ops infrastructure (hosted-ops.md §6) — operator-only mutable state, not audit
   "ops_counters",
   "ops_backups",
   "ops_state",
@@ -72,7 +52,6 @@ const AUTH_TABLES = [
 
 const SEED_TIME_MS = 1754006400000;
 
-/** Apply migrations (idempotent) + wipe all auth tables. Called from beforeEach. */
 export async function resetAuthDb(): Promise<void> {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   for (const table of AUTH_TABLES) {
@@ -80,7 +59,6 @@ export async function resetAuthDb(): Promise<void> {
   }
 }
 
-/** Seed a user with a fixed user_id + GitHub link (vector alignment). */
 export async function seedUser(userId: string, githubId: number): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
@@ -92,7 +70,6 @@ export async function seedUser(userId: string, githubId: number): Promise<void> 
   ]);
 }
 
-/** Set signupPolicy (AUTH_SPEC §3 — same upsert as the ops SQL path). */
 export async function setSignupPolicy(value: string): Promise<void> {
   await env.DB.prepare(
     "INSERT INTO deployment_settings (key, value, updated_at) VALUES ('signup_policy', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
@@ -101,10 +78,6 @@ export async function setSignupPolicy(value: string): Promise<void> {
     .run();
 }
 
-/**
- * Seed a signup invite code (AUTH_SPEC §3 — same row shape as the issuance
- * script. Returns the raw value; only the hash goes into the DB).
- */
 export async function seedSignupInvite(options?: {
   readonly expiresAtMs?: number;
 }): Promise<{ readonly id: string; readonly code: string }> {
@@ -119,13 +92,6 @@ export async function seedSignupInvite(options?: {
   return { id, code };
 }
 
-/**
- * The real Web signup path (start [with optional signup_code] → callback).
- * Returns the first response that ended non-302 (start's pre-validation page /
- * 429), or the callback response (success 302 / denial guidance page).
- * `betweenSteps` is for testing acceptance-time decisions (AUTH_SPEC §3) — it
- * moves settings/rows between start and callback.
- */
 export async function signupAttempt(
   githubId: number,
   options?: {
@@ -155,7 +121,6 @@ export async function signupAttempt(
   });
 }
 
-/** Seed an org and its membership (for init's org-member-or-higher requirements). */
 export async function seedOrgMember(
   orgId: string,
   userId: string,
@@ -173,7 +138,6 @@ export async function seedOrgMember(
   ]);
 }
 
-/** Response of `POST /auth/cli/start` (AUTH_SPEC §4-1 (1)). */
 export interface CliFlowStart {
   readonly flowId: string;
   readonly flowToken: string;
@@ -183,7 +147,6 @@ export interface CliFlowStart {
   readonly pollIntervalSeconds: number;
 }
 
-/** Start a CLI login flow (§4-1 (1) — unrecorded, unauthenticated). */
 export async function startCliFlow(payload?: {
   readonly tokenName?: string;
   readonly scopes?: readonly TokenScope[];
@@ -200,13 +163,6 @@ export async function startCliFlow(payload?: {
   return (await response.json()) as CliFlowStart;
 }
 
-/**
- * Browser leg (§4-1 (3)–(4)): verify → 302 to GitHub authorize → callback.
- * Returns the callback response (the approval page on the happy path / the
- * guidance page for a missing account). Cookie values are sent back as the raw
- * Set-Cookie values (same handling as a real browser). `options.code` can
- * replace the callback code (to reproduce an exchange failure).
- */
 export async function cliBrowserLeg(
   verificationUrl: string,
   githubId: number,
@@ -228,7 +184,6 @@ export async function cliBrowserLeg(
   });
 }
 
-/** Extract the approval ticket (hidden input) from the approval page HTML. */
 export function approvalTicketOf(html: string): string {
   const match = /name="ticket" value="([0-9a-f]+)"/.exec(html);
   if (match?.[1] === undefined) {
@@ -237,7 +192,6 @@ export function approvalTicketOf(html: string): string {
   return match[1];
 }
 
-/** POST the approval form (§4-1 (4) — the credential is the single-use ticket only). */
 export function approveCliFlow(
   flowId: string,
   ticket: string,
@@ -250,7 +204,6 @@ export function approveCliFlow(
   });
 }
 
-/** poll (§4-1 (5)). Response interpretation is up to the caller (pending / approved / error). */
 export function pollCliFlow(flowId: string, flowToken: string): Promise<Response> {
   return SELF.fetch(`${BASE}/auth/cli/poll`, {
     method: "POST",
@@ -259,7 +212,6 @@ export function pollCliFlow(flowId: string, flowToken: string): Promise<Response
   });
 }
 
-/** The approved poll response (§4-1 (5) — the complete issuance result). */
 export interface CliIssued {
   readonly token: string;
   readonly tokenId: string;
@@ -267,12 +219,6 @@ export interface CliIssued {
   readonly expiresAtMs: number;
 }
 
-/**
- * Run the CLI login handoff (real path) to completion and get the complete
- * issuance result. The GitHub side is faked (code-<id> → gho_test<id>). CLI
- * login is for existing accounts only (ruling DH), so if there is no linked
- * identity, create the account first via Web login (get-or-create).
- */
 export async function cliIssue(
   githubId: number,
   payload?: {
@@ -310,12 +256,6 @@ export async function cliIssue(
   return body as CliIssued;
 }
 
-/**
- * Get a raw PAT via the CLI login handoff (real path). When `tokenName` is
- * omitted the default name is used — reissuing for the same user under the
- * same name rotates and revokes the existing token (AUTH_SPEC §6), so tests
- * that need both to coexist should pass a different name.
- */
 export async function cliToken(
   githubId: number,
   scopes?: readonly TokenScope[],
@@ -328,13 +268,6 @@ export async function cliToken(
   return issued.token;
 }
 
-/**
- * The auth side of a fixture reset: wipe the auth tables, seed each user and
- * issue it a real PAT through the CLI login handoff, then seat `orgMember` in
- * its org as a member (init's org-member-or-higher requirement). Each user's
- * seed → issuance (~5 round-trips) is independent of the other users', so the
- * users run concurrently. Returns each user's token, keyed by user ID.
- */
 export async function reseedAuthDb(
   githubIds: Readonly<Record<string, number>>,
   orgMember: { readonly orgId: string; readonly userId: string },
@@ -354,7 +287,6 @@ export function bearer(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }
 
-/** Get a raw session cookie via the real Web OAuth path (start → callback). */
 export async function loginSession(githubId: number): Promise<string> {
   const start = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
   if (start.status !== 302) {
@@ -376,7 +308,6 @@ export async function loginSession(githubId: number): Promise<string> {
   return session;
 }
 
-/** Extract the named cookie's value from the Set-Cookie headers (null if absent). */
 export function readCookieValue(setCookies: readonly string[], name: string): string | null {
   const found = setCookies.find((cookie) => cookie.startsWith(`${name}=`));
   if (found === undefined) {
@@ -386,7 +317,6 @@ export function readCookieValue(setCookies: readonly string[], name: string): st
   return (pair ?? "").slice(name.length + 1);
 }
 
-/** Request headers for session auth (includes the CSRF header for writes). */
 export function sessionHeaders(rawSession: string): Record<string, string> {
   return { cookie: `${SESSION_COOKIE}=${rawSession}`, ...CSRF_HEADERS };
 }

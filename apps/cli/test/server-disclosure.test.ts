@@ -1,21 +1,3 @@
-// Tests for the constant display of server disclosure (CRYPTO_SPEC §9 —
-// "this project is disclosed to the server").
-//
-// Invariants pinned down:
-//  1. The shared prologue states it on every command that opens a project
-//     whose verified chain carries an active grant naming an environment:
-//     a project-level command (member list) and a value command (pull) both
-//     show it, on stderr, so a `--json` document on stdout is unchanged
-//  2. Nothing is said for a project without a grant, after revoke_server,
-//     or once deletions emptied the grant's scope
-//  3. `env list` marks each disclosed environment (human column and the
-//     `disclosedToServerKeyFingerprintsHex` JSON field — the server keys,
-//     empty when none)
-//  4. `project verify` lists the disclosing grants (fingerprint, scope,
-//     lease policy, grant seq), and says "none" when there are none
-//  5. Chain-derived only: every input is the verified chain (the mocks serve
-//     no grant report — there is none to trust)
-
 import type { ProjectId } from "@maruhi/core";
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -49,7 +31,6 @@ import {
 } from "./support/pull-run.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-/** The deployment's server key and a mirror's (public halves only). */
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 const MIRROR_ENC_PUB_HEX = "a5".repeat(32);
 
@@ -85,7 +66,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** genesis → env-prod, env-dev → the given steps. */
 async function chainWith(steps: readonly ChainStep[]): Promise<BuiltChain> {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -115,7 +95,6 @@ function servedChain(built: BuiltChain): MockHandler {
   }));
 }
 
-/** The environment list endpoint serving the live environments' statements. */
 async function listHandler(built: BuiltChain, environmentIds: readonly string[]) {
   const statements: WireDistributedEnvironmentStatement[] = [];
   for (const environmentId of environmentIds) {
@@ -173,7 +152,6 @@ describe("the prologue's server-disclosure Note (§9)", () => {
     expect(env.errors).toContain(
       disclosureNote(built.projectId, serverFpHex, "environment env-prod"),
     );
-    // stdout stays one JSON document
     expect(() => JSON.parse(env.logs.join("\n")) as unknown).not.toThrow();
     expect(env.logs.join("\n")).not.toContain("disclosed to the server");
   });
@@ -210,7 +188,6 @@ describe("the prologue's server-disclosure Note (§9)", () => {
   });
 
   it("states each grant on its own line (a mirror's key is another server), fingerprint ascending", async () => {
-    // Granted in both orders, so the output order cannot be the chain's
     const mirrorGrant: ChainStep = {
       actor: owner,
       operation: await grantServerOp(["env-prod", "env-dev"], [], MIRROR_ENC_PUB_HEX),
@@ -232,8 +209,6 @@ describe("the prologue's server-disclosure Note (§9)", () => {
   });
 
   it("is stated on pull of a granted environment, before its output", async () => {
-    // The pull fixture's chain, extended by a grant of its environment: the
-    // same steps sign the same entries, so the fixture's values still verify
     const granted = await buildChain([
       { actor: fixture.owner, operation: genesisOp(fixture.owner) },
       { actor: fixture.owner, operation: createEnvironmentOp(ENV_ID, fixture.dek1) },
@@ -277,9 +252,6 @@ describe("the prologue's server-disclosure Note (§9)", () => {
 
 describe("the Note across projects in one run (§9)", () => {
   it("names each project, so one run's ledger keeps one line per project with the same grant", async () => {
-    // Every project on a deployment is granted to the same server key, and
-    // environment IDs repeat across projects: without the project the two
-    // lines would be identical and the run's ledger would print one
     const other = await makeTestUser("user-owner-2222");
     const grant = await grantServerOp(["env-prod"], LEASE_POLICY, SERVER_ENC_PUB_HEX);
     const first = await chainWith([{ actor: owner, operation: grant }]);

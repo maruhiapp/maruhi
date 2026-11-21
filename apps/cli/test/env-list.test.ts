@@ -1,21 +1,3 @@
-// Tests for `maruhi env list` (the verified chain's environments joined with
-// their verified environment statements).
-//
-// Invariants pinned down:
-//  1. The set of environments is the verified chain's create_environment
-//     entries; the status is chain-derived (delete_environment — CRYPTO_SPEC
-//     §6.2); a live row carries the verified statement's name, the
-//     chain-derived epoch, and whether the caller's effective scope covers
-//     it. Deleted environments (no name — nothing of them is distributed)
-//     appear only with --all; --json is one document. The server-disclosure
-//     column (CRYPTO_SPEC §9) is pinned in server-disclosure.test.ts
-//  2. Fail-closed: a live chain environment missing from the list, a
-//     chain-deleted one served as live (a resurrection), or a listed
-//     statement failing verification, is an error — never silently skipped
-//  3. Zero values: no agent gate, and no master key required. Without this
-//     machine's device key the scope column falls back to the member scope
-//     and says so (scopeBasis "member")
-
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -41,7 +23,6 @@ let devMember: TestUser;
 let built: BuiltChain;
 let devStatement: WireDistributedEnvironmentStatement;
 let prodStatement: WireDistributedEnvironmentStatement;
-/** env-old's statement from before its chain deletion (serving it is a resurrection). */
 let oldStatement: WireDistributedEnvironmentStatement;
 
 const servers: MockServer[] = [];
@@ -90,7 +71,6 @@ function chainHandler(): MockHandler {
   }));
 }
 
-/** The environment list endpoint serving the given statements (the server's advisory epoch is a decoy). */
 function listHandler(statements: readonly WireDistributedEnvironmentStatement[]): MockHandler {
   return onRequest("GET", `/projects/${built.projectId}/environments`, () => ({
     status: 200,
@@ -138,12 +118,10 @@ describe("maruhi env list", () => {
     expect(logs).toContain(
       "env-dev\tDevelopment\tactive\tepoch=1\tin-scope=yes\tdisclosed-to-server=no",
     );
-    // The epoch is chain-derived (the rotation), not the server's advisory value
     expect(logs).toContain(
       "env-prod\tProduction\tactive\tepoch=2\tin-scope=yes\tdisclosed-to-server=no",
     );
     expect(logs.indexOf("env-dev")).toBeLessThan(logs.indexOf("env-prod"));
-    // The deleted environment is hidden without --all, and that is said
     expect(logs).not.toContain("env-old");
     expect(env.errors.join("\n")).toContain("1 deleted environment not shown (--all lists them)");
   });
@@ -216,8 +194,6 @@ describe("maruhi env list", () => {
   });
 
   it("re-syncs once when a live environment is unlisted: a deletion landing after this view's sync is not evidence", async () => {
-    // The list carries no head, so the first omission may be a
-    // delete_environment the view has not seen; the bounded resync settles it
     const raced = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       {

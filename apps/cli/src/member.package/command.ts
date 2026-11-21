@@ -1,5 +1,3 @@
-// `maruhi member` (discipline: see commands/index.ts).
-
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -42,7 +40,6 @@ import { describeScope, scopeFromFlags } from "../scope.ts";
 import type { ChangeRoleRequest } from "./member-change-role.ts";
 import type { MemberOpOutcome } from "./member.ts";
 
-/** The role grantable to a member (CRYPTO_SPEC §6.2). */
 const MEMBER_ROLES = ["reader", "member", "admin", "owner"] as const;
 
 function isMemberRole(value: string | undefined): value is Role {
@@ -61,7 +58,6 @@ export const memberAddConfig = {
     "expect-fingerprint",
     "Acceptor's key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
   ),
-  // Since the declaration is add-only, "omittable when exactly one accepted row exists" is expressed by atMost(1)
   "invite-id": Argument.String("invite-id").pipe(
     Argument.withDescription(
       "Invite ID to add (may be omitted when exactly one invite is accepted)",
@@ -72,7 +68,6 @@ export const memberAddConfig = {
   ),
 };
 
-/** The target user_id of remove / change-role (required, non-empty). */
 const memberTargetArgument = () =>
   Argument.String("user-id").pipe(
     Argument.withDescription("Target user ID (see `maruhi member list`)"),
@@ -114,7 +109,6 @@ export const memberListConfig = {
   json: singleFlag("json", "Print the members as JSON (user id, role, scope, key fingerprint)"),
 };
 
-/** `maruhi member add [invite-id]` (§6.5's mutual confirmation + add_member + the backfill). */
 const memberAddCommand = Effect.fn("member-command.memberAddCommand")(function* (
   flags: CommonFlags & {
     readonly invite?: string | undefined;
@@ -163,7 +157,6 @@ const memberAddCommand = Effect.fn("member-command.memberAddCommand")(function* 
   return yield* reportMemberAdd(io, outcome.summary);
 });
 
-/** `maruhi member remove <user-id>` (§7 — accompanied by the forced rotation of every environment). */
 const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(function* (
   flags: CommonFlags & { readonly target: UserId; readonly expires?: string | undefined },
 ): Effect.fn.Return<number, CliError, CliServices> {
@@ -173,7 +166,6 @@ const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(func
 
   const io = yield* CliIo;
   const proposal = yield* proposalInputOf(flags.expires);
-  // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
   const context = yield* openProject(flags, { quietMandateWarning: true });
   const outcome = yield* memberRemoveOp({
     client: context.client,
@@ -185,7 +177,6 @@ const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(func
     rotateWith: (reason) => sweepRotateFor(context, reason),
     proposal,
   });
-  // Proposing a self-remove (K6-N′): a proposal is not an application, but the consequence is shown to the person before asking an approver
   if (outcome.kind === "proposed" && flags.target === context.session.userId) {
     yield* logNote(
       "this proposal removes you — once an owner approves it, you lose access to the project",
@@ -211,9 +202,6 @@ const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(func
           "Done: the member removal and the rotation of every environment in the target's scope completed",
         );
       }
-      // The needs-rotation-flag count and route (AUDIT_SPEC §4.1. A
-      // rotation only distributes a new DEK — an already-read value
-      // itself cannot be un-read)
       yield* reportRotationChecklist({
         context,
         target: { kind: "member", userId: summary.targetUserId },
@@ -223,7 +211,6 @@ const memberRemoveCommand = Effect.fn("member-command.memberRemoveCommand")(func
   );
 });
 
-/** If it became a proposal (K6-A), report and exit 0; if applied, continue to the aftermath report. */
 function unlessProposed<S>(
   io: CliIoShape,
   outcome: MemberOpOutcome<S>,
@@ -234,12 +221,6 @@ function unlessProposed<S>(
     : applied(outcome.summary);
 }
 
-/**
- * `maruhi member change-role <user-id> [--role <r>] [--env <id>]…
- * [--all-envs]`: the full replacement of (role, scope) (CRYPTO_SPEC
- * §6.2). An omission is kept as-is (design record K4-A). The widened part
- * is backfilled; the demoted / narrowed part carries §7's rotation duty.
- */
 const memberChangeRoleCommand = Effect.fn("member-command.memberChangeRoleCommand")(function* (
   flags: Omit<CommonFlags, "env"> & {
     readonly target: UserId;
@@ -257,7 +238,6 @@ const memberChangeRoleCommand = Effect.fn("member-command.memberChangeRoleComman
   const io = yield* CliIo;
   const request = yield* parseChangeRoleRequest(flags);
   const proposal = yield* proposalInputOf(flags.expires);
-  // A convergent command: the always-on warning of unconverged duties is suppressed (the demotion / narrowing sweep report carries it)
   const context = yield* openProject(
     { server: flags.server, project: flags.project },
     { quietMandateWarning: true },
@@ -287,8 +267,6 @@ const memberChangeRoleCommand = Effect.fn("member-command.memberChangeRoleComman
         "`maruhi member change-role` with the same flags",
       );
       if (summary.sweep !== null) {
-        // A demotion / narrowing raised flags of the change_role trigger
-        // (AUDIT_SPEC §4.1) — the leaver checklist for the narrowed part
         yield* reportRotationChecklist({
           context,
           target: { kind: "member", userId: summary.targetUserId, trigger: "change_role" },
@@ -299,12 +277,6 @@ const memberChangeRoleCommand = Effect.fn("member-command.memberChangeRoleComman
   );
 });
 
-/**
- * change-role's input: at least one of `--role` / `--env`… / `--all-envs`
- * (an omission is kept as-is — design record K4-A). A malformed format
- * drops as usage (2) before any communication. A combination of the
- * scope flags was already refused by the command's validate rule.
- */
 const parseChangeRoleRequest = Effect.fn("member-command.parseChangeRoleRequest")(
   function* (flags: {
     readonly role?: string | undefined;
@@ -331,13 +303,6 @@ const parseChangeRoleRequest = Effect.fn("member-command.parseChangeRoleRequest"
   },
 );
 
-/**
- * `maruhi member list [--json]`: the verified chain's members (user id,
- * role, scope, key FPs). Zero values, so the agent-gate
- * (ensureValueDisplayAllowed) is not applied (design record ruling M /
- * K4-E — the same permissive side as `maruhi schema`). The master key is
- * not required either (the same keyless class as project verify).
- */
 const memberListCommand = Effect.fn("member-command.memberListCommand")(function* (
   flags: CommonFlags & { readonly json: boolean },
 ): Effect.fn.Return<void, CliError, CliServices> {

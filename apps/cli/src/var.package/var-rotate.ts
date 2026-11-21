@@ -1,24 +1,3 @@
-// `maruhi var rotate <NAME> [--finalize]` (PF6 — ROADMAP "minimal upstream
-// rotation" R2; docs/notes/pf6-design.md rulings R2–R6).
-//
-//   - rotate: pull the verified environment, decrypt the current credential
-//     (and the admin inputs the rule names — from this environment or
-//     another the member can decrypt), ask the connector to create a new
-//     credential at the issuer, and push it as an ordinary signed new
-//     version (a fresh value after the environment's mandated rotation
-//     resolves the rotation flag — AUDIT_SPEC §4.1-5). The old credential
-//     stays valid at the issuer: the dual-credential grace period
-//   - finalize: read the previous version as a verified ancestor of the
-//     latest (the rollback's evidence rule — var-history.ts), and ask the
-//     connector to invalidate the credential it held. No state file: the
-//     value history is the rotation state
-//
-// Plaintext lives only in memory as Redacted and is never displayed; the
-// report carries the issuer-side identifiers (a key id, a role, a token id)
-// and the version numbers. A connector that invalidates the current
-// credential as part of the rotation (an in-place database password) asks
-// for confirmation first (`--yes` for scripts). Finalizing asks the same way.
-
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted, Stdio } from "effect";
 
@@ -57,29 +36,22 @@ export interface VarRotateInput {
   readonly context: EnvironmentContext;
   readonly config: RotateConfig;
   readonly configPath: string;
-  /** The variable named on the command line (the rule's variable, or an AWS rule's key id companion). */
   readonly name: string;
-  /** true = skip the confirmation of an invalidating step (the only non-interactive path). */
   readonly yes: boolean;
 }
 
 export interface VarRotateResult {
-  /** The rule's variable (the secret access key for an AWS rule). */
   readonly primary: string;
   readonly connector: RotateRule["connector"];
-  /** Every version pushed, in push order (companions first). */
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
   readonly facts: readonly string[];
-  /** The shape of every value pushed ("N bytes, M lines"; the primary first — shown, never stored). */
   readonly valueShape: string;
   readonly previous: string;
-  /** The max age the primary's schema declares (layout v3 — null = none). */
   readonly maxAgeDays: number | null;
   readonly warnings: readonly string[];
 }
 
 export interface VarFinalizeInput extends VarRotateInput {
-  /** The version that held the credential to invalidate (null = the one before the latest). */
   readonly previousVersion: number | null;
 }
 
@@ -109,7 +81,6 @@ function resolveRule(input: VarRotateInput): Effect.Effect<ResolvedTarget, CliEr
   return Effect.succeed(resolved);
 }
 
-/** The decrypted values of one environment by name (the pull's view and wraps are reused for the keys). */
 const decryptedByName = Effect.fn("var-rotate.decryptedByName")(function* (
   context: EnvironmentContext,
   environmentId: EnvironmentId,
@@ -138,7 +109,6 @@ const decryptedByName = Effect.fn("var-rotate.decryptedByName")(function* (
   return byName;
 });
 
-/** Pulls and decrypts another environment the rule points at for an admin input (scope checked first — §6.3). */
 const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(function* (
   context: EnvironmentContext,
   environmentId: EnvironmentId,
@@ -160,11 +130,6 @@ const pullOtherEnvironment = Effect.fn("var-rotate.pullOtherEnvironment")(functi
   return yield* decryptedByName(context, environmentId, pulled);
 });
 
-/**
- * The admin inputs a rule names, decrypted (this environment's from the
- * pull already made; another environment's through its own verified pull).
- * A missing input stops the command before anything is sent.
- */
 const resolveInputs = Effect.fn("var-rotate.resolveInputs")(function* (
   context: EnvironmentContext,
   refs: InputRefs,
@@ -197,15 +162,11 @@ const resolveInputs = Effect.fn("var-rotate.resolveInputs")(function* (
         ),
       );
     }
-    // Reason for unwrapping: the connector consumes the admin credential in
-    // memory to call the issuer's API (integration-options.md §4 R2). It is
-    // never displayed, written, or sent anywhere but the issuer
     inputs[inputName] = Redacted.value(value);
   }
   return inputs;
 });
 
-/** One companion's current value (the AWS key id), refused with the rule it belongs to when missing. */
 function companionValue(
   local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
   variable: string,
@@ -221,7 +182,6 @@ function companionValue(
     : Effect.succeed(value);
 }
 
-/** The rule's credential as currently stored: the primary and every companion, decrypted. */
 const currentCredential = Effect.fn("var-rotate.currentCredential")(function* (
   target: ResolvedTarget,
   local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
@@ -242,16 +202,10 @@ const currentCredential = Effect.fn("var-rotate.currentCredential")(function* (
   return { primary: Redacted.value(primary), companions };
 });
 
-/** The connector's failure becomes the CLI error carrying its wording as-is (the connector names the issuer's problem). */
 export function connectorFailure(error: ConnectorError): CliError {
   return cliError(error.message);
 }
 
-/**
- * Runs a connector Effect on the command's ambient services (the CLI's
- * egress `HttpClient`, `SqlRunner`, `ProcessRunner`) with its typed failure
- * mapped to the CLI error.
- */
 export function callConnector<A, R>(
   effect: Effect.Effect<A, ConnectorError, R>,
 ): Effect.Effect<A, CliError, R> {
@@ -260,13 +214,11 @@ export function callConnector<A, R>(
   );
 }
 
-/** Confirms an invalidating step: `--yes`, or a y/N prompt at a terminal; non-interactive without --yes refuses. */
 export const ensureConfirmed = Effect.fn("var-rotate.ensureConfirmed")(function* (input: {
   readonly facts: readonly string[];
   readonly prompt: string;
   readonly refusal: string;
   readonly yes: boolean;
-  /** What a "no" answer reports (default: nothing was sent to the issuer). */
   readonly abort?: string | undefined;
 }): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
   const io = yield* CliIo;
@@ -306,13 +258,6 @@ function pushOne(
   });
 }
 
-/**
- * The failure after the issuer accepted the change but a push did not land:
- * what was stored, what exists at the issuer, and the connector's own
- * recovery step (the new credential is held only by this process). A
- * companion already stored next to the old primary is named with its
- * rollback, so the pair does not stay mismatched.
- */
 function pushFailureMessage(
   name: string,
   error: CliError,
@@ -331,7 +276,6 @@ function pushFailureMessage(
   return `The issuer accepted the rotation (${outcome.facts.join("; ")}) but storing ${displayText(name)} failed: ${error.message}. ${stored}. Recovery: ${outcome.recovery}`;
 }
 
-/** Pushes the new credential: companions first (the AWS key id), then the primary. A failure says what already exists at the issuer. */
 const pushOutcome = Effect.fn("var-rotate.pushOutcome")(function* (
   context: EnvironmentContext,
   pulled: VerifiedEnvironmentPull,
@@ -356,7 +300,6 @@ const pushOutcome = Effect.fn("var-rotate.pushOutcome")(function* (
   return pushed;
 });
 
-/** `maruhi var rotate <NAME>`: a new credential at the issuer, pushed as a new version; the old one stays valid until finalized. */
 export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   input: VarRotateInput,
 ): Effect.fn.Return<VarRotateResult, CliError, CliServices> {
@@ -387,7 +330,6 @@ export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   }
   const site = { variable: target.primary, environmentId: context.environmentId };
   const outcome = yield* callConnector(rotateCredential(target.rule, current, inputs, site));
-  // A line count that changed is worth a look before the push (D-16)
   const lineWarning = lineCountWarning(
     displayText(target.primary),
     outcome.shape,
@@ -415,7 +357,6 @@ export const varRotateOp = Effect.fn("var-rotate.varRotateOp")(function* (
   };
 });
 
-/** `maruhi var rotate <NAME> --finalize`: invalidates the credential the previous version held. */
 export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<VarFinalizeResult, CliError, CliServices> {
@@ -434,24 +375,12 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
     name: target.primary,
     toVersion: input.previousVersion,
   });
-  // The admin inputs and the companions' current values come from the
-  // current environment state (a fresh verified pull — the credential in
-  // use now authenticates a self-rotation)
   const pulled = yield* pullVerifiedEnvironment(base);
   const local = yield* decryptedByName(context, context.environmentId, pulled);
-  // A companion (the AWS key id): its current value from the verified
-  // pull, and the ids every earlier version held, lineage-verified. The
-  // connector decides against the issuer which of those to invalidate;
-  // nothing server-declared (the history's versions or times) takes part
   const currentCompanions: Record<string, Uint8Array> = {};
   const previousCompanions: Record<string, Uint8Array> = {};
   const ancestors: Record<string, readonly Uint8Array[]> = {};
   const warnings = [...primary.warnings];
-  // The previous credential's companions are positional: the version
-  // directly before the current one pairs with the primary's only when
-  // the primary's previous version is also the one directly before
-  // (one rotation pushes the pair together); otherwise no pairing is
-  // claimed and the finalize sees the ancestors alone (C-7)
   const paired = primary.ancestorVersion === primary.latestVersion - 1;
   for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
     const value = yield* companionValue(local, variable, target);
@@ -495,7 +424,6 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
   };
 });
 
-/** The report lines of a rotation (the command prints them; values never appear). */
 export function describeRotation(
   result: VarRotateResult,
   environmentId: EnvironmentId,

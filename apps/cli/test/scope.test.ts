@@ -1,17 +1,3 @@
-// Unit tests for the scope rules in scope.ts / deks.ts (2026-09-15 ES K4
-// — design record §10).
-//
-// Properties pinned down:
-//  1. The receiving-side rule (CRYPTO_SPEC §6.3 — K4-F):
-//     environmentKeysFor, the sole entry point for obtaining your own
-//     DEKs, **doesn't fetch or unseal anything** when the environment is
-//     outside your scope — it stops with a typed error
-//  2. Concretizing a mandate's environment set (K4-J): `all` covers only
-//     the environments that existed at the mandate's seq (later-created
-//     environments are excluded)
-//  3. The containment predicates (K4-I): §6.2's set algebra (`all` = U,
-//     `listed ⊉ all`, listed-to-listed is subset)
-
 import type { ProjectId } from "@maruhi/core";
 import { Effect, Exit } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
@@ -91,8 +77,6 @@ describe("receiving-side scope rules (CRYPTO_SPEC §6.3 — K4-F)", () => {
         },
       },
     } as unknown as MaruhiClient;
-    // flip: tilt the failure (CliError) onto the success side to extract
-    // it (success would fail the test)
     const failure = await Effect.runPromise(
       Effect.flip(
         environmentKeysFor({
@@ -112,7 +96,6 @@ describe("receiving-side scope rules (CRYPTO_SPEC §6.3 — K4-F)", () => {
 
 describe("concretizing a mandate's environment set (K4-J)", () => {
   it("all covers only environments that existed at the mandate's seq (later-created environments are excluded)", () => {
-    // seq 5 = remove_member. env-later is created at seq 6
     expect(environmentsOfScopeAt(verified, { kind: "all" }, 5)).toEqual(["env-dev", "env-prod"]);
     expect(environmentsOfScopeAt(verified, { kind: "all" }, 6)).toEqual([
       "env-dev",
@@ -204,8 +187,6 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
       { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
       { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
-      // The shape where another change_role (role only) was stacked
-      // mid-interruption of the widening backfill
       { actor: owner, operation: changeRoleOp(dev, "admin", ["env-dev", "env-prod"]) },
     ]);
     const view = await verify(chain);
@@ -232,11 +213,6 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
 });
 
 describe("the scope gates refuse a chain-deleted environment first (§6.2)", () => {
-  // delete_environment prunes the id from every listed scope, so a scope
-  // judgment run first would tell a listed member to "widen" their scope to
-  // an environment that can no longer be scoped. Both gates every path goes
-  // through (reads, checkpoints, var rotate, epoch rotation) refuse the
-  // deletion before judging scope.
   let view: VerifiedProject;
   beforeAll(async () => {
     const dek = new Uint8Array(32);

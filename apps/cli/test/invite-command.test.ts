@@ -1,7 +1,3 @@
-// The argument layer of `maruhi invite` (invite.package/command.ts): its
-// nested subcommands (ADR-0016 decision 6), driven through the real runCli
-// as in effect-cli.test.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -50,9 +46,6 @@ describe("invite's nested subcommands (ADR-0016 decision 6 — stage 2 ③)", ()
     expect(missing.env.errors.join("\n")).toContain("Missing positional argument target");
     expect(missing.server.requests).toHaveLength(0);
 
-    // Input that is neither a link nor a token (could be a plaintext value)
-    // never appears in the diagnostic. The target is taken as Argument.Redacted
-    // (it can contain a raw token)
     const garbage = await startEnv();
     const typed = "sk-live-hunter2-plaintext";
     expect(await runCli(["invite", "accept", typed], garbage.env.layer)).toBe(2);
@@ -67,7 +60,6 @@ describe("invite's nested subcommands (ADR-0016 decision 6 — stage 2 ③)", ()
     const token = "maruhi_inv_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9xY01";
     expect(await runCli(["invite", "accept", token], raw.env.layer)).toBe(2);
     expect(raw.env.errors.join("\n")).toContain("Specify an invite link (…/invite#v=2&…)");
-    // A raw token never appears in the diagnostic
     expectNoLeak(raw.env, [token]);
     expect(raw.server.requests).toHaveLength(0);
 

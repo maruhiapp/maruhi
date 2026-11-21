@@ -31,23 +31,11 @@ interface PagefindApi {
 
 let pagefind: PagefindApi | undefined;
 
-/**
- * Search leaves out deprecated versions when the site has any: the layouts
- * mark a deprecated-version page with `data-pagefind-filter="status:deprecated"`.
- */
 const excludeDeprecated: PagefindFilters | undefined =
   config.versions && config.versions.deprecated && config.versions.deprecated.length > 0
     ? { status: { none: "deprecated" } }
     : undefined;
 
-/**
- * The filters for a search from the current page, read on every search since
- * this module outlives client-side navigation. A reader on a deprecated
- * version's page searches that version: the layouts mark its version with
- * `data-pagefind-filter="version:<v>"`. Anywhere else, deprecated versions are
- * left out. A page marked deprecated without a version (a later part of an API
- * home) falls back to that too.
- */
 function filtersForPage(): PagefindFilters | undefined {
   const deprecated = document.querySelector('[data-pagefind-filter="status:deprecated"]');
   const version = document
@@ -61,20 +49,11 @@ function filtersForPage(): PagefindFilters | undefined {
 export const provider: SearchProvider = {
   async init() {
     if (pagefind) return;
-    // `searchIndex.bundle` is the site's bundle (`/pagefind/`, under the
-    // base when there is one); a site built in slices (`NIMBUS_BUILD_ONLY`)
-    // keeps each slice's bundle under its prefix, and `merge` names the other
-    // slices' bundles, so one search box still covers the site. Both are
-    // served URLs, base included.
     const pagefindUrl = new URL(`${searchIndex.bundle}pagefind.js`, window.location.origin);
     const loaded = (await import(/* @vite-ignore */ pagefindUrl.href)) as PagefindApi;
-    // Every index is built from the output root, so result URLs already carry
-    // their prefix and need only the base, which Pagefind adds to each one.
     const baseUrl = `${(import.meta.env.BASE_URL ?? "/").replace(/\/+$/, "")}/`;
     await loaded.options({ baseUrl });
     await loaded.init();
-    // A slice that holds several collections writes one bundle; the other
-    // collections' URLs answer 404 and are skipped.
     await mergeSearchIndexes(loaded, searchIndex.merge, { baseUrl });
     pagefind = loaded;
   },

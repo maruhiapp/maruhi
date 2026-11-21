@@ -1,10 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — suite
-// persistence, quantity policy, judgment order, and error-contract
-// derivation (AUTH_SPEC §12-2 / §12-3 / §12-8).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-
 import {
   auditGroup,
   deksGroup,
@@ -133,7 +126,6 @@ describe("suite persistence and the wire (§12-2 / CRYPTO_SPEC §2 design princi
 });
 
 describe("quantity policy (the rest of §12-8: environment / variable / wrap counts)", () => {
-  // Since real generation is unrealistic, rows are seeded directly via SQL to verify the judgment plumbing
   it("caps active environments (422 environments)", async () => {
     await queryProjectDo(
       projectId,
@@ -212,7 +204,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
 
   it("caps DEK wraps per request (422 dek-wraps-per-request)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // The count cap is judged before recipient verification and signature verification, so a structurally-correct fake suffices
     const deks = Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
       suite: "maruhi/v1",
       epoch: 1,
@@ -234,12 +225,10 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
   });
 
   it("caps cumulative dek-wrap rows across every insertion path (422 §12-8, unit + plumbing)", async () => {
-    // The pure-function judgment (registering a million rows is unrealistic — same shape as projectBytesExceeded)
     expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS, 1)).toBe(true);
     expect(wrapRowsExceeded(MAX_PROJECT_DEK_WRAP_ROWS - 3, 3)).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Fill to exactly the cap: the existing 3 rows (the epoch-1 complete set) + seeded rows
     await queryProjectDo(
       projectId,
       `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
@@ -250,9 +239,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
       MAX_PROJECT_DEK_WRAP_ROWS - 3,
     );
 
-    // Path 1: the bundled set of a composite rotation (§12-4) is also
-    // bound by the cap; on overflow the chain entry itself is rejected
-    // (atomicity)
     const headBefore = fixture.head;
     const rotation = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -275,7 +261,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
 
-    // Path 2: the composite environment creation (the bundled epoch-1 set) is bound by the same cap
     const created = await createEnvironmentWith(
       fixture,
       "env-wrap-limit",
@@ -288,7 +273,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
       limit: MAX_PROJECT_DEK_WRAP_ROWS,
     });
 
-    // Path 3: the registration API (repair re-registration — §12-6) is bound by the same cap
     const removedOne = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({
         epoch: 1,
@@ -298,7 +282,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
       })),
     });
     expect(removedOne.status).toBe(204);
-    // Releasing 3 rows → headroom of 3 rows to the cap. Add 4 rows (seed +1) to exceed the cap again
     await queryProjectDo(
       projectId,
       `INSERT INTO dek_wraps
@@ -323,7 +306,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
       limit: MAX_PROJECT_DEK_WRAP_ROWS,
     });
 
-    // Deletion (the repair path) frees rows: removing the extra seed lets the complete set through again
     await queryProjectDo(
       projectId,
       "DELETE FROM dek_wraps WHERE recipient_user_id = 'u-seed-extra'",
@@ -338,11 +320,6 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
 describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
   it("the AAD self-consistency check (422) precedes existence hiding (404) (the §12-3 exception provision)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Even a non-member gets a 422 when the AAD disagrees with the
-    // request itself (carries no existence information). Both stop at
-    // authorization judgment and never reach value-signature
-    // verification (§12-3 judgment order), so an unsigned fake suffices
-    // (STRANGER holds no vector key)
     const mismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -350,7 +327,6 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
       { value: unsignedPayload(aadFor(1, 2, { variableId: "var-other" })) },
     );
     expect(mismatch.status).toBe(422);
-    // If the AAD is self-consistent, a non-member gets a 404 (§11-2)
     const consistent = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -361,9 +337,6 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
   });
 
   it("rejects a malformed composite parentHeadHashHex with 400 (Schema)", async () => {
-    // The CAS parent-head format is pinned as Sha256Hex: a malformed
-    // one never reaches 409 (ChainHeadConflict) and falls at the schema
-    // boundary's 400
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
@@ -399,17 +372,10 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
 
   it("rejects malformed ids and payloads with 400 (Schema)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A malformed environment_id (leading hyphen / 65 chars) is a 400
     for (const badId of ["-bad", "a".repeat(65)]) {
       const response = await requestJson("GET", `/environments/${badId}/pull`, token(READER));
       expect(response.status).toBe(400);
     }
-    // The §12-1 acceptance-policy format is enforced on the
-    // environment_id inside a composite create's entry too (400): since
-    // compositing moved the ID's carriage inside a chain entry and it
-    // has no URL coordinate, a laxer format would give rise to
-    // environments unreachable from the later endpoints that take a URL
-    // param (rotate / rename / delete / pull)
     for (const badId of ["-bad", "a".repeat(65), "my env/💥"]) {
       const { entry } = await signEntryAt({
         seq: fixture.head.seq + 1,
@@ -423,10 +389,6 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
       const response = await requestJson("POST", "/environments", token(OWNER), {
         parentHeadHashHex: fixture.head.hashHex,
         entry,
-        // The statement side is also a 400 under the same
-        // acceptance-policy format (EnvironmentIdSchema) (kept aligned
-        // with the entry to pin the Schema boundary). Signature
-        // verification is never reached
         statement: {
           suite: "maruhi/v1",
           environmentId: badId,
@@ -442,11 +404,6 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
       });
       expect(response.status).toBe(400);
     }
-    // Malformed EncryptedPayloads: suite mismatch / uppercase-hex nonce
-    // / ciphertext shorter than the tag / signature-block format
-    // violations (uppercase signature / bad prev length / bad head-hash
-    // length / chainHeadSeq 0) — all are Schema 400s (before signature
-    // verification)
     const base = unsignedPayload(aadFor(1, 1));
     const badPayloads = [
       { ...base, suite: "maruhi/v2" },
@@ -471,13 +428,6 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
 
 const rejectedOutcome = (rejection: DataRejection) => ({ kind: "rejected", rejection }) as const;
 
-/**
- * The tag set of an endpoint's declared errors. Read from the
- * identifier annotation (Schema.TaggedError grants it identical to the
- * tag) as a path independent of the runtime judgment (Schema.is). If an
- * effect update changes the annotation's shape, fail here explicitly to
- * prompt re-verification of the contract derivation.
- */
 const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
   new Set(
     Array.from(endpoint.error, (schema) => {
@@ -496,18 +446,7 @@ const declaredTagsOf = (endpoint: HttpApiEndpoint.Top): ReadonlySet<string> =>
   );
 
 describe("deriving the error contract from declarations (data-http.ts unwrapDataOutcome)", () => {
-  // DO rejections are screened by a set derived from the endpoint's
-  // contract declarations (api-schema's error: [...]) — no hand-written
-  // allowed list exists. Here the correspondence to the declarations
-  // itself is pinned at the mapping level. dek-wrap-exists is in fact
-  // unreachable from composite create / rotate under the current chain
-  // rules (duplicate-environment / epoch monotonicity), so the contract
-  // is verified in this unit rather than via HTTP integration
-
   it("dek-wrap-exists is returned as a contract error of create / rotate (409 DekWrapExists)", () => {
-    // If it were absent from the declarations, the structure would fall
-    // to defect (500) the moment the chain rules loosen — so it is
-    // included in the declarations and returned as a typed 409 error
     for (const endpoint of [
       environmentsGroup.endpoints.create,
       environmentsGroup.endpoints.rotate,
@@ -527,9 +466,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
         ),
       );
       expect(error).toBeInstanceOf(DekWrapExistsError);
-      // The 409 carries the occupying wrap's stored recipient enc
-      // public key (AUTH_SPEC §12-6 — material for the re-add backfill's
-      // repair judgment)
       expect(error).toMatchObject({
         epoch: 2,
         recipientUserId: READER,
@@ -539,9 +475,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
   });
 
   it("an out-of-contract rejection stays a defect (500) (invariant violations never leak into typed errors)", () => {
-    // variables.pull's declarations are only ProjectNotFound / Forbidden
-    // / EnvironmentNotFound. If a version-conflict rejection ever leaks,
-    // it dies as an implementation bug
     const exit = Effect.runSyncExit(
       unwrapDataOutcome(
         rejectedOutcome({ kind: "version-conflict", currentVersion: 3 }),
@@ -565,10 +498,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     expect(error).toMatchObject({ _tag: "ProjectNotFound", projectId });
   });
 
-  // A representative rejection per kind (every field a valid value
-  // within the Schema vocabulary). `satisfies` type-forces coverage of
-  // all DataRejection kinds — adding a kind fails compilation unless it
-  // is added here
   const representativeRejections = {
     "not-initialized": { kind: "not-initialized" },
     "not-member": { kind: "not-member" },
@@ -661,9 +590,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     readonly [K in DataRejection["kind"]]: Extract<DataRejection, { kind: K }>;
   };
 
-  // The golden table of kind → expected error tag (pinning the
-  // rejectionErrors mapping of data-http.ts). `satisfies` type-forces
-  // coverage of all kinds
   const expectedTagByKind = {
     "not-initialized": "ProjectNotFound",
     "not-member": "ProjectNotFound",
@@ -711,10 +637,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "audit-head-not-ready": "AuditHeadNotReady",
   } as const satisfies Record<DataRejection["kind"], string>;
 
-  // Every data-plane + chain endpoint × every rejection kind (the chain
-  // API — membership — also reports rejections as DataRejection and goes
-  // through the same unwrapDataOutcome. The worker ↔ DO correspondence
-  // is what this table pins)
   const contractCases = Object.entries({
     membership: membershipGroup,
     environments: environmentsGroup,
@@ -722,14 +644,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     deks: deksGroup,
     rotation: rotationGroup,
     schemaPolicy: schemaPolicyGroup,
-    // audit.self does not go through the DO (D1 only), but as a
-    // mapping/declaration correspondence table it is pinned under the
-    // same discipline (every rejection absent from the declarations
-    // becomes a die judgment)
     audit: auditGroup,
-    // Project export (AUTH_SPEC §11-6 — PF3): page / identities
     export: exportGroup,
-    // Mirrors (AUTH_SPEC §11-7 — PF2): status / mark / unmark / pages
     mirror: mirrorGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
@@ -741,7 +657,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     ),
   );
 
-  /** The measured / expected judgment of one combination (in the form "label: fail|die"; for the toEqual diff). */
   const judgeContractCase = (contractCase: (typeof contractCases)[number]) => {
     const { endpoint, rejection, endpointLabel } = contractCase;
     const label = `${endpointLabel} ← ${rejection.kind}`;
@@ -750,7 +665,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     );
     const died = Exit.isFailure(exit) && Cause.hasDies(exit.cause);
     if (!died) {
-      // When within the contract, the returned failure value itself also carries the tag the mapping prescribes
       const failed = Effect.runSync(
         Effect.flip(
           unwrapDataOutcome(rejectedOutcome(rejection), testProjectId(projectId), endpoint),
@@ -775,17 +689,10 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
   });
 
   it("the fail / die judgments of every data-plane endpoint × every rejection kind strictly match the declarations", () => {
-    // A drift detector against effect updates (changes in the meaning of Schema.is / endpoint.error)
     const results = contractCases.map(judgeContractCase);
-    // Make mismatched (endpoint, kind) pairs directly readable in the toEqual diff
     expect(results.map((result) => result.observed)).toEqual(
       results.map((result) => result.expected),
     );
-    // The defense line against a broken enumeration spinning freely
-    // (an unconditional pass). Update this count when endpoints are
-    // added (membership 5 / environments 5 / variables 9 [+ history /
-    // versionValues — VH] / deks 3 / rotation 4 [+ proposals /
-    // resolveProposal — PF7b] / schemaPolicy 2 / audit 4 / export 2 [PF3])
     expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(38);
   });
 });

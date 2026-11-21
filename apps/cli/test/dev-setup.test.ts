@@ -1,19 +1,3 @@
-// Pins "Bun, pnpm and the test browser reach a machine only through a fetch
-// checked against a digest pinned in this repository", for every setup path:
-// CI (.github/actions/install-bun), the Claude Code on the web SessionStart
-// hook (.claude/hooks/session-start.sh) and the Cursor Cloud setup
-// (scripts/dev-setup-cursor.sh, the environment's whole install command) all
-// install Bun through scripts/install-bun.sh, CI and the Cursor Cloud setup
-// install the Chrome Headless Shell through scripts/install-headless-shell.sh
-// (its pin is checked against Playwright in workflows-supply-chain.test.ts),
-// the hook downloads no browser, and it gets pnpm only through corepack's
-// check of the sha512 in .deepsec/package.json.
-//
-// The scripts and the hook are run here, offline, against stubs: the
-// installers against a curl serving a real zip whose executable would leave a
-// marker if it ever ran, the hook and the Cursor Cloud setup against stub
-// installers / bun / corepack / pnpm / fetchers that log every call.
-
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -53,7 +37,6 @@ function writeExecutable(path: string, lines: readonly string[]): void {
   chmodSync(path, 0o755);
 }
 
-/** Where a system tool lives, so a stubbed PATH can still reach it. */
 function systemTool(name: string): string {
   const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" });
   expect(found.status, `${name} is needed by this test`).toBe(0);
@@ -69,7 +52,6 @@ function crc32(data: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-/** A stored (uncompressed) zip whose entries keep the given Unix modes. */
 function zipOf(entries: ReadonlyArray<{ name: string; mode: number; data: string }>): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
@@ -141,7 +123,6 @@ describe(".github/actions/install-bun", () => {
     expect(action).toContain('using: "composite"');
     expect(action).not.toMatch(/^\s*(-\s+)?uses:/m);
     expect(action.match(/^\s*run: \|$/gm)).toHaveLength(1);
-    // The whole line, so nothing (`|| true`, another flag) can ride along
     expect(action).toMatch(
       /^ {8}bash "\$\{GITHUB_WORKSPACE\}\/scripts\/install-bun\.sh" --require-avx2$/m,
     );
@@ -159,10 +140,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       readonly env?: Readonly<Record<string, string>>;
     }
 
-    /**
-     * Runs a copy of the script in a scratch repository. curl serves a real zip holding both
-     * builds' `bun`, which creates a marker if it is ever executed; grep answers the AVX2 probe.
-     */
     function run({ bunVersion = pinned, avx2 = true, args = [], env = {} }: Run) {
       const root = scratch();
       const [repo, home, bin] = ["repo", "home", "bin"].map((dir) => join(root, dir)) as [
@@ -274,19 +251,15 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
     const tree = "chrome-headless-shell-linux64";
 
     interface Run {
-      /** Pin the served zip's own SHA-256 in the copy, so the check passes. */
       readonly repin?: boolean;
-      /** The served zip's entry name. */
       readonly entry?: string;
       readonly curlExit?: number;
-      /** How many copies run at once, each with curl taking a moment to answer. */
       readonly parallel?: number;
       readonly platform?: string;
       readonly args?: readonly string[];
       readonly env?: Readonly<Record<string, string>>;
     }
 
-    /** A uname reporting `kernel/machine`. */
     function stubUname(bin: string, platform: string): void {
       const [kernel, machine] = platform.split("/");
       writeExecutable(join(bin, "uname"), [
@@ -295,7 +268,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       ]);
     }
 
-    /** bash arguments running `command` that many times at once, printing each exit status. */
     function concurrently(command: readonly string[], parallel: number): string[] {
       if (parallel === 1) return [...command];
       return [
@@ -307,7 +279,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       ];
     }
 
-    /** What the install directory holds: the tree's entries, and any leftover partial dir. */
     function contents(installRoot: string): string[] {
       const entries = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []);
       return [
@@ -316,10 +287,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       ].toSorted();
     }
 
-    /**
-     * Runs a copy of the script with a HOME holding an older install. curl serves a real zip whose
-     * executable creates a marker if it is ever run.
-     */
     function run({
       repin = false,
       entry = `${tree}/chrome-headless-shell`,
@@ -416,7 +383,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
       const lock = lines.indexOf('exec 9>"${install_root}/.lock"');
       expect(lock).toBeGreaterThan(-1);
       expect(lines[lock + 1]).toBe('flock 9 || die "could not lock ${install_root}/.lock"');
-      // Same filesystem as the install, so the tree is renamed into place, never copied
       expect(
         lines.indexOf('work="$(mktemp -d "${install_root}/.partial.XXXXXX")"'),
       ).toBeGreaterThan(lock);
@@ -460,7 +426,6 @@ describe.runIf(process.platform === "linux" && process.arch === "x64")(
   },
 );
 
-/** The host ci.yml points every Playwright browser download at. */
 function ciHost(): string | undefined {
   return /^ {2}PLAYWRIGHT_DOWNLOAD_HOST: "([^"]+)"$/m.exec(read(".github/workflows/ci.yml"))?.[1];
 }
@@ -471,21 +436,13 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   const ENV_DOWNLOAD_HOST_LINE = `export PLAYWRIGHT_DOWNLOAD_HOST="${ciDownloadHost}"`;
 
   interface Hook {
-    /** The version ~/.bun/bin/bun reports, or undefined when it is not installed. */
     readonly bun?: string | undefined;
     readonly installBunExit?: number;
     readonly bunInstallExit?: number;
-    /** corepack's exit status, or undefined when it is not on PATH. */
     readonly corepack?: number;
     readonly pnpm?: boolean;
   }
 
-  /**
-   * Runs the real hook against a scratch project, on a PATH holding only logging stubs (bun,
-   * corepack, pnpm, and the fetchers it must never call) plus the few tools it needs. A call
-   * to a tool outside that PATH (an absolute path, or a command after `||` that fails as not
-   * found) is not seen: an accepted limit of the stub approach.
-   */
   function runHook({ bun, installBunExit = 0, bunInstallExit = 0, corepack, pnpm = false }: Hook) {
     const root = scratch();
     const [project, home, stubs, tools] = ["project", "home", "stubs", "tools"].map((dir) =>
@@ -587,7 +544,6 @@ describe("SessionStart hook (.claude/hooks/session-start.sh)", () => {
   });
 
   it("stops when scripts/install-bun.sh fails, before bun install and the session PATH", () => {
-    // An older bun stays on disk, so carrying on would still find a `bun` to run
     const { result, calls, env } = runHook({ bun: "1.0.0", installBunExit: 1, corepack: 0 });
     expect(result.status).not.toBe(0);
     expect(calls).toEqual([`bun --version ${project}`, `install-bun.sh  ${project}`]);
@@ -632,7 +588,6 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     browser:
       'export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$HOME/.cache/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell"',
   };
-  // Commented-out copies of every line: only the exact line counts as present
   const BASHRC = [
     "# the image's own lines",
     ...Object.values(LINES).map((line) => `# ${line}`),
@@ -643,16 +598,9 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     readonly installBunExit?: number;
     readonly bunInstallExit?: number;
     readonly headlessExit?: number;
-    /** Where the stub installer says it installed the browser, relative to HOME. */
     readonly headlessAt?: string;
   }
 
-  /**
-   * Runs the real script from a scratch project whose two installers are logging stubs, with a
-   * HOME holding an image ~/.bashrc and an unverified ~/.cache/ms-playwright, on a PATH of
-   * logging stubs for every fetcher plus the few tools it needs. Calling it again on the same
-   * root reruns it on that prepared disk.
-   */
   function runSetup(
     {
       installBunExit = 0,
@@ -709,7 +657,6 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
     for (const fetcher of ["curl", "wget", "npm", "npx", "node", "bunx", "git", "playwright"]) {
       writeExecutable(join(stubs, fetcher), logged(fetcher, ["exit 0"]));
     }
-    // Ahead of ~/.bun/bin unless the script puts the installed Bun first on PATH
     writeExecutable(join(stubs, "bun"), logged("stray-bun", ["exit 0"]));
     const result = spawnSync(systemTool("bash"), [join(project, "scripts/dev-setup-cursor.sh")], {
       encoding: "utf8",
@@ -777,7 +724,6 @@ describe("Cursor Cloud setup (scripts/dev-setup-cursor.sh)", () => {
   });
 
   it("fails without the browser line when the browser install fails, Playwright's own browsers already gone", () => {
-    // Its own status: the setup stops on the installer's failure itself
     const { result, calls, bashrc, unverifiedKept } = runSetup({ headlessExit: 7 });
     expect(result.status).toBe(7);
     expect(calls).toEqual(installs);

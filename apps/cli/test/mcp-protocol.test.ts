@@ -1,12 +1,3 @@
-// Protocol-level tests for the MCP server through Effect 4.1's
-// `McpTest.makeClient`: the same `registrationsLayer` the stdio
-// transport serves (mcp.ts) is driven in memory over the real JSON-RPC
-// encoding — no stdio framing, no mock maruhi server. This complements
-// test/mcp.test.ts (which drives the full CLI over stdio against a mock
-// server): here the registration layer itself is pinned — exactly one
-// tool, the resource pair, and a `get_schema` round trip against a stub
-// read.
-
 import { Effect } from "effect";
 import { McpTest } from "effect/ai";
 import { describe, expect, it } from "vite-plus/test";

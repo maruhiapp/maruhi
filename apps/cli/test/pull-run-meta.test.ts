@@ -1,7 +1,3 @@
-// Tests for pull (§5.1 distribution-time verification + §12-7 all-epoch DEKs)
-// and run (memory injection), and for the AI-agent-detection boundary
-// (value display is refused / run is allowed).
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -49,7 +45,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("refuses a name swap (a statement with only its name replaced) (the carriage form of a name-swap)", async () => {
-    // Keep the signature honest but rewrite only the name field = rejected by the byte-exact signature
     const swapped = { ...fixture.entryAlpha.statement, name: "DEBUG_ENDPOINT" };
     const env = await startEnv([
       chainHandler(),
@@ -90,7 +85,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("refuses tampered environment-statement distribution", async () => {
-    // Signature bit-flip
     const flipped = `${fixture.envStatement.signatureHex.slice(0, -1)}${
       fixture.envStatement.signatureHex.endsWith("0") ? "1" : "0"
     }`;
@@ -100,14 +94,9 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
     ]);
     expect(await runCli(["pull"], tampered.layer)).toBe(1);
     expect(tampered.errors.join("\n")).toContain("meta statement failed");
-    // A status-deleted environment statement cannot be signed at all (an
-    // environment deletion is the chain op delete_environment — CRYPTO_SPEC
-    // §4.2 / §6.2); a chain-deleted environment is refused before any pull
-    // (env-rename-rm.test.ts)
   });
 
   it("a deleted variable's tombstone is verified; co-listing it with active (the carriage form of unauthorized resurrection) is refused", async () => {
-    // Happy path: a distribution of only a deleted statement is accepted and never surfaces in values
     const tombstone = await statementFor({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -122,7 +111,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
     expect(await runCli(["pull"], ok.layer)).toBe(0);
     expect(ok.logs.join("\n")).not.toContain("RETIRED_KEY");
 
-    // The same variableId distributed as both active and deleted = refusal
     const revived = { ...tombstone, variableId: fixture.entryAlpha.variableId };
     const conflict = await startEnv([chainHandler(), pullHandler({ deletedVariables: [revived] })]);
     expect(await runCli(["pull"], conflict.layer)).toBe(1);
@@ -130,7 +118,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       "served as both live (active or declared) and deleted",
     );
 
-    // A tampered tombstone signature is refused too (as long as it is distributed, it is verified)
     const flipped = `${tombstone.signatureHex.slice(0, -1)}${
       tombstone.signatureHex.endsWith("0") ? "1" : "0"
     }`;
@@ -167,8 +154,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("a removed author's statement verifies under a during-membership head (the §6.3-1 counterpart)", async () => {
-    // author (oldKeys) is removed at seq 4. A statement declaring head seq 3
-    // (during membership) verifies under the key of that time against the whole post-removal chain
     const oldKeys = await makeTestUser("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -219,8 +204,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       variables: [{ variableId: "vh", statement: historicStatement, value }],
       deletedVariables: [],
       deks: [wrap],
-      // The manifest issuer is a current member (owner) — the author's removal
-      // is independent of whether the manifest may be issued (the §4.3 issuer-membership check applies only to the issuer itself)
       manifest: await manifestFor({
         projectId: built.projectId,
         environmentId: ENV_ID,
@@ -289,9 +272,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       writer: owner,
       head: headOf(built, 3),
     });
-    // Of meta forward-injections, "declaring a post-removal head" is rejected
-    // by the membership check (§6.3-3. A forward injection declaring a
-    // during-membership head has no epoch anchor and is undetected in v1 — §14.3-5)
     const forgedStatement = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -355,8 +335,6 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("a statement's future head is accepted via bounded resync too (reusing the same mechanism as values — §6.3-2b)", async () => {
-    // Old view = up to seq 2. The statement declares seq 3 (the rotate) as
-    // head. First verification is chain-head-future → the resync reveals the extension; re-verification accepts
     const { built } = fixture;
     const futureStatement = await statementFor({
       projectId: built.projectId,

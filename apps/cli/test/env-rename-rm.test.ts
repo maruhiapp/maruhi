@@ -1,28 +1,3 @@
-// Tests for `maruhi env rename` (the environment's own meta statement —
-// AUTH_SPEC §12-4 → the §12-5 meta rules) and `maruhi env rm` (the
-// delete_environment chain entry — AUTH_SPEC §12-4 / CRYPTO_SPEC §6.2).
-//
-// Invariants pinned down:
-//  1. A rename signs over the verified current statement: metaVersion + 1,
-//     prev chained to its signed-bytes hash, NFC name, bundled with the next
-//     manifest (manifestVersion + 1, envMeta = the new statement). A
-//     deletion is a delete_environment entry at the verified head (no
-//     statement, no manifest)
-//  2. A CAS conflict (409 — metaVersion / manifestVersion for a rename,
-//     the chain head for a deletion) re-syncs, re-verifies and re-signs; a
-//     determinate refusal is rendered and not retried
-//  3. Deletion is terminal: an interactive run requires retyping the
-//     environment ID, a non-interactive run refuses without --force, and a
-//     non-admin is refused before any prompt or send
-//  4. Before the confirmation, a deletion prints the variables' verified
-//     names and which of them carry an open rotation flag: the deletion
-//     takes the names, the flags outlive it (AUDIT_SPEC §7)
-//  5. Success is the verified effect (1-E′), not the 2xx: a rename shows up
-//     in the verified metadata pull, a deletion as its own entry on the
-//     verified chain; afterwards the deleted environment is refused by pull
-//     and by a second `env rm` from the chain alone, and a server serving it
-//     as live again is refused
-
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -60,7 +35,6 @@ const ENV_NAME = "Development";
 let owner: TestUser;
 let member: TestUser;
 let built: BuiltChain;
-/** `built` plus the owner's delete_environment of ENV_ID (seq 4 — a concurrent deletion). */
 let deletedChain: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let port: WireDistributedVariableStatement;
@@ -79,7 +53,6 @@ beforeAll(async () => {
     { actor: owner, operation: addMemberOp(member, "member") },
   ];
   built = await buildChain(steps);
-  // Same steps (Ed25519 signing is deterministic), so the prefix is identical
   deletedChain = await buildChain([
     ...steps,
     { actor: owner, operation: deleteEnvironmentOp(ENV_ID) },
@@ -103,10 +76,6 @@ afterEach(async () => {
   servers = [];
 });
 
-/**
- * Starts the honest in-memory environment (with optional handlers tried
- * first — injected refusals / concurrent changes) and a logged-in CLI.
- */
 async function startEnv(options?: {
   readonly user?: TestUser;
   readonly before?: (state: MetaEnvironmentState) => readonly MockHandler[];
@@ -135,7 +104,6 @@ async function startEnv(options?: {
   return { env, state, requests: () => server.requests };
 }
 
-/** Reads the floor (the fold of the observation log). */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
@@ -154,7 +122,6 @@ function bodyOf(request: MockRequest | undefined): {
   };
 }
 
-/** The environment deletion composite's body (AUTH_SPEC §12-4). */
 function deletionBodyOf(request: MockRequest | undefined): {
   parentHeadHashHex: string;
   entry: Record<string, unknown>;
@@ -162,7 +129,6 @@ function deletionBodyOf(request: MockRequest | undefined): {
   return request?.body as { parentHeadHashHex: string; entry: Record<string, unknown> };
 }
 
-/** A chain-head CAS conflict answer (the head the mock claims is irrelevant: the client re-syncs). */
 function headConflict(): { readonly status: number; readonly json: unknown } {
   return {
     status: 409,
@@ -174,7 +140,6 @@ function headConflict(): { readonly status: number; readonly json: unknown } {
   };
 }
 
-/** Only the requests of one method against the environment resource itself. */
 function environmentCalls(requests: readonly MockRequest[], method: string): MockRequest[] {
   return requests.filter(
     (request) =>
@@ -183,10 +148,6 @@ function environmentCalls(requests: readonly MockRequest[], method: string): Moc
   );
 }
 
-/**
- * A concurrent rename landing on the honest server (metaVersion 2 + the
- * manifest chained to v1): the material a 409 retry must re-verify.
- */
 async function concurrentRename(state: MetaEnvironmentState, name: string): Promise<void> {
   const renamed = await environmentStatementFor({
     projectId: built.projectId,
@@ -211,7 +172,6 @@ async function concurrentRename(state: MetaEnvironmentState, name: string): Prom
   });
 }
 
-/** A handler answering the first `method` call on the environment once (after an optional concurrent change). */
 function conflictOnce(
   method: string,
   response: { readonly status: number; readonly json: unknown },
@@ -246,7 +206,6 @@ describe("maruhi env rename", () => {
       prevMetaSigHashHex: await statementHashOf(built.projectId, envStatement),
       chainHeadSeq: built.entries.length,
     });
-    // The manifest advances by one, keeps the meta set and copies the new envMeta (§4.3)
     expect(body.manifest).toMatchObject({
       manifestVersion: 2,
       envMetaVersion: 2,
@@ -256,7 +215,6 @@ describe("maruhi env rename", () => {
     expect(env.logs.join("\n")).toContain(
       "Renamed environment dev from Development to Staging (metaVersion=2)",
     );
-    // The confirmation pull joined the new statement into the floor
     const floor = await loadFloor(env);
     expect(floor.environments[ENV_ID]).toMatchObject({ metaVersion: 2 });
     expect(floor.intents.filter((intent) => intent.environmentId === ENV_ID)).toEqual([]);
@@ -321,7 +279,6 @@ describe("maruhi env rename", () => {
     const winner = seen.winner;
     expect(winner).toBeDefined();
     const retried = bodyOf(patches[1]);
-    // prev chains to the concurrent winner (refetched and re-verified — §12-5)
     expect(retried.statement).toMatchObject({
       name: "Staging",
       metaVersion: 3,
@@ -386,7 +343,6 @@ describe("maruhi env rm", () => {
     expect(await runCli(["env", "rm", ENV_ID], env.layer)).toBe(0);
     expect(state.mutations.map((m) => m.kind)).toEqual(["remove-environment"]);
     const body = deletionBodyOf(state.mutations[0]?.request);
-    // The deletion is a chain entry at the verified head (parent-head CAS)
     expect(body.parentHeadHashHex).toBe(built.hashes[built.hashes.length - 1]);
     expect(body.entry).toMatchObject({
       op: "delete_environment",
@@ -394,7 +350,6 @@ describe("maruhi env rm", () => {
       payload: { environmentId: ENV_ID },
       actor: { userId: owner.userId, keyFingerprintHex: owner.fingerprintHex },
     });
-    // No statement or manifest travels with a deletion (§12-4)
     expect(body).not.toHaveProperty("statement");
     expect(body).not.toHaveProperty("manifest");
     expect(state.chainEntries).toHaveLength(built.entries.length + 1);
@@ -416,7 +371,6 @@ describe("maruhi env rm", () => {
     );
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
     expect(state.mutations.map((m) => m.kind)).toEqual(["remove-environment"]);
-    // The refusals are chain-derived: neither run asked about the environment itself
     expect(
       requests()
         .slice(before)
@@ -463,7 +417,6 @@ describe("maruhi env rm", () => {
     expect(errors).toContain("  PORT (v-port) — rotation flag open");
     expect(errors).toContain("The open rotation flags outlive the deletion");
     expect(errors).not.toContain("v-other");
-    // The record comes before the confirmation line
     expect(errors.indexOf("PORT (v-port)")).toBeLessThan(
       errors.indexOf("You are about to delete environment dev"),
     );
@@ -529,8 +482,6 @@ describe("maruhi env rm", () => {
     expect(env.logs.join("\n")).toContain(
       "Deleted environment dev (Renamed; delete_environment at chain seq 4)",
     );
-    // The name the confirmation showed changed: one line says so (the
-    // confirmation binds the ID, so there is no second prompt)
     expect(env.errors.join("\n")).toContain(
       "Note: Environment dev was renamed concurrently from Development to Renamed; deleting it under its new name (the confirmation binds the ID, not the name)",
     );
@@ -591,8 +542,6 @@ describe("maruhi env rm", () => {
   it("reconciles a deletion whose response was lost on the next run (journal-before-send — 3-F)", async () => {
     const { env } = await startEnv({
       before: (current) => [
-        // The server applies the deletion, but the response is lost (a
-        // gateway error with no server error body leaves the intent open)
         async (request) => {
           if (
             request.method !== "DELETE" ||
@@ -610,8 +559,6 @@ describe("maruhi env rm", () => {
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);
     expect(env.logs.join("\n")).not.toContain("Deleted environment");
-    // The next run's prologue finds this machine's entry in the slot after
-    // the declared head and closes the intent as accepted
     expect(await runCli(["env", "list", "--all"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain(
       "an earlier delete_environment for environment dev (interrupted before its confirmation) is confirmed as accepted on the chain",

@@ -1,29 +1,3 @@
-// `maruhi invite create|accept|list|revoke` (AUTH_SPEC §15 / CRYPTO_SPEC
-// §6.5 — the 2026-09-13 IV revision).
-//
-// - create: assign the invite id → generate the link key (seed → Ed25519)
-//   → sign the issuance with one's own chain sig key → issue (the
-//   issuance to the server; the secret is never sent) → assemble the
-//   §15-3 link (seed + issuance + signature; the anchor = the verified
-//   head at issuance) → save the issuance pin (link_pub / role /
-//   addressee login — an extra cross-check at member add)
-// - accept: interpret the link → verify the issue signature (mechanical;
-//   failure = no acceptance) → mutual confirmation of the inviter FP
-//   (§6.5, invitee side — the mechanical check against the chain happens
-//   on the first sync after add_member = context.ts) → key generation
-//   [when absent, guarded] → joint acceptance signature (one's own sig
-//   key + the link key) → accept → pinning the anchor (§6.3 (a) — only
-//   after the acceptance is established)
-// - list: verify the issuance (with the chain-derived inviter key) +
-//   independent §6.5 verification of the acceptance block (acceptance
-//   signature + link signature) + FP-word display + issuance-pin
-//   cross-check
-// - revoke: revocation
-//
-// The link key's seed exists only on the wire (the link) and in display —
-// never persisted (the issuance pin holds only the public key). The
-// server never receives the seed.
-
 import {
   cryptoEffect,
   type UserId,
@@ -57,7 +31,6 @@ import { CliIo } from "../io.ts";
 import { type InvitePins, issuedPinOf } from "../pins.ts";
 import { describeScope, sameScope } from "../scope.ts";
 
-/** The issuance (a listing response row — §15-1). */
 export interface InviteIssuance {
   readonly linkPubHex: string;
   readonly headHashHex: string;
@@ -65,7 +38,6 @@ export interface InviteIssuance {
   readonly issueSignatureHex: string;
 }
 
-/** An invite's acceptance block (a listing response row — §15-1). */
 export interface InviteAcceptance {
   readonly inviteeUserId: UserId;
   readonly inviteeEncPubHex: string;
@@ -75,12 +47,10 @@ export interface InviteAcceptance {
   readonly acceptedAtMs: number;
 }
 
-/** One row of the listing response (same shape as api-schema's InvitationSummary). */
 export interface InvitationRow {
   readonly id: string;
   readonly projectId: ProjectId;
   readonly role: InviteRole;
-  /** The scope to grant (2026-09-14 ES — part of the issuance; add_member signs this scope). */
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
   readonly status: "pending" | "accepted" | "completed" | "revoked";
@@ -91,7 +61,6 @@ export interface InvitationRow {
   readonly acceptance: InviteAcceptance | null;
 }
 
-/** Fetching the invite list (the shared prologue of invite list / member add). */
 export function listInvitations(
   client: MaruhiClient,
   projectId: ProjectId,
@@ -102,13 +71,6 @@ export function listInvitations(
   );
 }
 
-/**
- * Whether one §6.5 invite signature verifies. Each crypto failure the
- * verification can produce (bad input, a key that does not import, or
- * the signature itself — `signatureTag`) means it does not: the same
- * folding the pre-bridge `!ok` checks made. Any other kind is an
- * invariant break and dies.
- */
 function signatureVerifies(
   signatureTag:
     | "CryptoInviteIssueSignature"
@@ -125,19 +87,10 @@ function signatureVerifies(
   );
 }
 
-/** The issuance verification result (the reason is mapped to wording). */
 export type IssuanceVerdict =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "inviter-not-member" | "signature" };
 
-/**
- * Verifying the issuance (CRYPTO_SPEC §6.5): the row's issuance + issue
- * signature are verified under **the inviter's current key derived from
- * the chain**. When the inviter is oneself this checks "is this a row I
- * issued" under one's own key (independent of the issuance pin —
- * supplement 21, ruling A ⑦), and a different admin running `member add`
- * detects a swapped row by the same check.
- */
 export const verifyIssuance = Effect.fn("invite.verifyIssuance")(function* (input: {
   readonly verified: VerifiedProject;
   readonly row: InvitationRow;
@@ -147,13 +100,7 @@ export const verifyIssuance = Effect.fn("invite.verifyIssuance")(function* (inpu
   if (inviter === undefined) {
     return { ok: false, reason: "inviter-not-member" } as const;
   }
-  // The issue signature's verification key = **any of the inviter's
-  // current devices** (DK K4-16 — the issuance names a device's key
-  // pair, so iterate all valid devices; if any verifies it is genuine.
-  // A row issued by a revoked device does not pass = the inviter
-  // reissues)
   for (const inviterDevice of devicesOf(inviter)) {
-    // A failure means "this device's key does not verify the row"
     const verified = yield* signatureVerifies(
       "CryptoInviteIssueSignature",
       cryptoEffect(() =>
@@ -183,7 +130,6 @@ export const verifyIssuance = Effect.fn("invite.verifyIssuance")(function* (inpu
   return { ok: false, reason: "signature" } as const;
 });
 
-/** The wording for an issuance verification failure (shared by list / member add). */
 export function issuanceFailureText(
   reason: Exclude<IssuanceVerdict, { ok: true }>["reason"],
 ): string {
@@ -195,13 +141,6 @@ export function issuanceFailureText(
   }
 }
 
-/**
- * The acceptance block's independent §6.5 verification: **reconstruct**
- * signed_bytes oneself from the listing's material + the verified
- * context's projectId, and verify the acceptance signature (the declared
- * key) and the link signature (the issuance's link public key) (never
- * trusting the server's declared verification result).
- */
 export const verifyAcceptanceBlock = Effect.fn("invite.verifyAcceptanceBlock")(function* (input: {
   readonly projectId: ProjectId;
   readonly issuance: InviteIssuance;
@@ -219,7 +158,6 @@ export const verifyAcceptanceBlock = Effect.fn("invite.verifyAcceptanceBlock")(f
     inviteeEncPubHex: input.acceptance.inviteeEncPubHex,
     inviteeSigPubHex: input.acceptance.inviteeSigPubHex,
   };
-  // A failure folds to the block's rejection kind
   const linkVerified = yield* signatureVerifies(
     "CryptoInviteLinkSignature",
     cryptoEffect(() =>
@@ -256,7 +194,6 @@ export const verifyAcceptanceBlock = Effect.fn("invite.verifyAcceptanceBlock")(f
   return { ok: true, fingerprintHex: encodeHex(fingerprint) } as const;
 });
 
-/** The wording for an acceptance-block verification failure (shared by list / member add). */
 export function acceptanceFailureText(which: "accept" | "link" | "keys"): string {
   switch (which) {
     case "link":
@@ -268,7 +205,6 @@ export function acceptanceFailureText(which: "accept" | "link" | "keys"): string
   }
 }
 
-/** The post-issuance guidance (the link to stdout, explanations to stderr). */
 export const reportIssued = Effect.fn("invite.reportIssued")(function* (input: {
   readonly link: Redacted.Redacted<string>;
   readonly inviteId: string;
@@ -278,10 +214,6 @@ export const reportIssued = Effect.fn("invite.reportIssued")(function* (input: {
   readonly expectedGithubLogin: string | null;
 }): Effect.fn.Return<void, never, CliIo> {
   const io = yield* CliIo;
-  // Reason for unwrapping: displaying the link is this command's very
-  // function. Displayability was already decided by the TTY + agent
-  // gate at the head of inviteCreateOp, and the unwrap happens behind
-  // it
   yield* io.log(Redacted.value(input.link));
   yield* io.logError(
     `Issued an invite (id=${displayText(input.inviteId)}, role=${input.role}, scope=${describeScope(input.scope)}, expires=${formatDateTimeUtc(input.expiresAtMs)})`,
@@ -296,17 +228,9 @@ export const reportIssued = Effect.fn("invite.reportIssued")(function* (input: {
   );
 });
 
-// createdAtMs / expiresAtMs are the server's declared, unbounded numbers
-// (B4): display them via the total shared formatter so a value outside
-// the Date range cannot become a defect (RangeError) (never let invite
-// create / list end in an untyped crash)
 export const formatDateTimeUtc = formatUtcMinutes;
 
-/** Deriving the link key (seed → key pair + public key hex). */
 export const resolveLinkKey = Effect.fn("invite.resolveLinkKey")(function* (link: InviteLinkData) {
-  // Reason for unwrapping: key derivation needs the byte string itself.
-  // The seed is consumed here; from here on only the CryptoKey
-  // (non-extractable) and the public key flow
   const seed = decodeHex(Redacted.value(link.linkSeedHex));
   if (seed === null) {
     return yield* Effect.fail(cliError("The link's key seed (k=) is malformed"));
@@ -317,13 +241,6 @@ export const resolveLinkKey = Effect.fn("invite.resolveLinkKey")(function* (link
   return { keyPair: derived, linkPubHex: encodeHex(derived.publicKeyRaw) };
 });
 
-/**
- * The issuance-pin cross-check (§6.5's inviter-side extra material —
- * SHOULD): a server-claimed row disagreeing with the issuance-time
- * link_pub / role / scope is a sign of a swapped row or a false role /
- * scope claim. With no pin (issued on another device) only the issue
- * signature's verification pins the row.
- */
 export function pinMismatchOf(
   pins: InvitePins | null,
   row: InvitationRow,

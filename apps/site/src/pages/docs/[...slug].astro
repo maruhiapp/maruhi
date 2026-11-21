@@ -15,9 +15,6 @@ import {
 import { getCollection } from "astro:content";
 import { components } from "../../components";
 
-// The docs collection is mounted at /docs by this route's folder
-// (src/pages/docs/) — the route-folder mount is what every URL Nimbus
-// builds for the collection follows.
 export const getStaticPaths = getCollectionStaticPaths("guide");
 
 const page = await getCollectionPage(Astro, "guide");
@@ -35,23 +32,14 @@ const prevNext = await getPrevNext(currentSlug, {
   sidebarTree: sidebar === false ? [] : sidebar,
   overrides: { prev: entry.data.prev, next: entry.data.next },
 });
-// Pass `collection` so versioned pages (docs-<v>) get version-prefixed
-// breadcrumb hrefs — parity with the getSidebar call above.
 const breadcrumbs = await getBreadcrumbs(currentSlug, { collection: entry.collection });
 const editUrl = await getEditUrl(entry);
-// Frontmatter wins; git is the fallback.
 const lastUpdated = entry.data.lastUpdated ??
   await getLastUpdated(entry);
-// `tocOn` already implies `tableOfContents !== false`, but TS can't carry
-// that boolean narrowing to the value here — re-check it so `getTOC` only
-// ever sees its options object (or undefined), never `false`.
 const tocConfig = entry.data.tableOfContents;
 const toc = tocOn && tocConfig !== false ? getTOC(headings, tocConfig) : false;
 const socialImage = entry.data.socialImage ?? ogImageUrl;
 
-// The "Related pages" cards (the `related:` frontmatter field, carried
-// over from Blume): resolve each /docs/<slug> link to its page's title
-// and description, in the order the page lists them.
 const allDocs = await getCollection("guide");
 const bySlug = new Map(allDocs.map((doc) => [doc.id, doc]));
 const related = (entry.data.related ?? []).flatMap((link) => {

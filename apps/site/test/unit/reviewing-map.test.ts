@@ -1,13 +1,3 @@
-// docs/REVIEWING.md is a map for outside reviewers, so its tables must not
-// drift. doc-paths.test.ts only checks that a bare filename exists somewhere,
-// which is weak here: `invite-link.ts`, `recovery.ts` and `dek-wrap.ts` exist
-// in both packages/crypto and the CLI. This test pins the tables:
-//   (a) every file cell resolves in its column's directory — a cell starting
-//       with `apps/`, `packages/` or `.` is from the repository root;
-//   (b) every § reference in a table resolves to a heading of the spec it
-//       names (a cell without a spec name means CRYPTO_SPEC); a `-k` list
-//       item ref in CRYPTO / AUDIT must also name an existing item k.
-
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -22,7 +12,6 @@ const SPECS: Record<string, string> = {
   AUDIT: "AUDIT_SPEC",
 };
 
-/** The data rows (cells) of the markdown tables under the `## <n>.` heading. */
 function tableRows(section: string): string[][] {
   const body = doc.split(new RegExp(`^## ${section}\\. .*$`, "m"))[1]?.split(/^## /m)[0] ?? "";
   return body
@@ -32,14 +21,12 @@ function tableRows(section: string): string[][] {
     .map((line) => line.slice(1, -1).split(" | "));
 }
 
-/** Backticked file or directory tokens of a cell. */
 const filesIn = (cell: string): string[] =>
   [...cell.matchAll(/`([^`\s]+)`/g)].map((m) => m[1]!).filter((t) => /(\.\w+|\/)$/.test(t));
 
 const resolveIn = (dir: string, token: string): string =>
   /^(apps|packages)\/|^\./.test(token) ? token : join(dir, token);
 
-/** Heading ids per spec: `6.3`, `12-5`, `14` … */
 const headingIds = (spec: string): Set<string> =>
   new Set(
     [
@@ -50,7 +37,6 @@ const headingIds = (spec: string): Set<string> =>
   );
 const HEADINGS = Object.fromEntries(Object.values(SPECS).map((s) => [s, headingIds(s)]));
 
-/** `CRYPTO_SPEC §6.1–§6.4, §1 …; AUTH §12-5` → [[CRYPTO_SPEC, 6.1], …, [AUTH_SPEC, 12-5]]. */
 function sectionRefs(cell: string): [string, string][] {
   let spec = "CRYPTO_SPEC";
   return [...cell.matchAll(/\b(CRYPTO|AUTH|AUDIT)(?:_SPEC)?\b|§([\d.]+(?:-\d+)?)/g)].flatMap(
@@ -61,7 +47,6 @@ function sectionRefs(cell: string): [string, string][] {
   );
 }
 
-/** The body of section `id` of a spec: from its heading to the next heading. */
 function sectionBody(spec: string, id: string): string {
   const text = readFileSync(join(repoRoot, "docs", `${spec}.md`), "utf8");
   const escaped = id.replace(/\./g, "\\.");
@@ -69,11 +54,6 @@ function sectionBody(spec: string, id: string): string {
   return after.split(/^#{2,4} /m)[0] ?? "";
 }
 
-/**
- * A trailing `-k` is list item k inside the section in CRYPTO / AUDIT
- * (§14.2-12): the section must exist and hold a `k. ` item. AUTH uses `-k`
- * in its own headings (§12-5), so it never reaches here.
- */
 function resolvesToListItem(spec: string, id: string): boolean {
   const [, section = "", item = ""] = /^(.+)-(\d+)$/.exec(id) ?? [];
   return (

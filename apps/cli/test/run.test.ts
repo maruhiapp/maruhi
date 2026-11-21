@@ -1,6 +1,3 @@
-// Unit tests for run.ts: runOp, and the child environment `maruhi run`
-// injects (buildInjectionEnv's checks and buildChildEnvironment).
-
 import { Effect, Exit, Layer, Stdio } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -9,7 +6,6 @@ import { buildChildEnvironment, buildInjectionEnv, ProcessRunner, runOp } from "
 import { variable } from "./support/variable.ts";
 
 describe("runOp", () => {
-  /** A runner that never spawns the child process (so reaching spawn is observable). */
   const spawnedNothing = Layer.mergeAll(
     Layer.succeed(ProcessRunner, {
       run: () => Effect.succeed(0),
@@ -17,7 +13,6 @@ describe("runOp", () => {
       captureScript: () => Promise.resolve({ exitCode: 0, stdout: new Uint8Array(0), stderr: "" }),
       runSession: () => Effect.succeed(0),
     }),
-    // The run-output redaction's terminal evidence (run.ts) — a human terminal here
     Layer.succeed(CliIo, {
       log: () => Effect.void,
       logError: () => Effect.void,
@@ -44,14 +39,11 @@ describe("runOp", () => {
   });
 
   it("does not spawn a child process for an empty-string command", async () => {
-    // The same check as the entry point's argument validation (cli.ts) lives here
-    // too (a defense line for direct callers). `[""]` is the "one element but not runnable" shape
     const exit = await Effect.runPromiseExit(
       runOp({ command: [""], variables: [] }).pipe(Effect.provide(spawnedNothing)),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("Specify the command to run after `--`");
-    // Usage mistakes surface as the same usage error as the entry point (exit code 2)
     expect(JSON.stringify(exit)).toContain('"usage":true');
   });
 });
@@ -95,7 +87,6 @@ describe("buildInjectionEnv", () => {
   });
 
   it("rejects injection into execution-control env var names (PATH / LD_* / NODE_OPTIONS etc.)", async () => {
-    // "Path" defends against Windows case-insensitivity (compared after uppercasing)
     for (const name of [
       "PATH",
       "Path",
@@ -114,9 +105,8 @@ describe("buildInjectionEnv", () => {
 
   it("also rejects injection into POSIX / Windows execution-control names", async () => {
     for (const name of [
-      // POSIX: rc / config-directory substitution and prompt evaluation
       "HOME",
-      "home", // defense against case-folded comparison (Windows case-insensitivity)
+      "home",
       "USERPROFILE",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
@@ -127,7 +117,6 @@ describe("buildInjectionEnv", () => {
       "BASHOPTS",
       "NODE_REPL_EXTERNAL_MODULE",
       "PYTHONINSPECT",
-      // Windows: substitution of execution resolution
       "PATHEXT",
       "COMSPEC",
       "SYSTEMROOT",
@@ -142,7 +131,6 @@ describe("buildInjectionEnv", () => {
 
   it("also rejects injection into names that launch other programs", async () => {
     for (const name of [
-      // Programs a child process would launch (pager / editor / browser / askpass)
       "LESSOPEN",
       "LESSCLOSE",
       "PAGER",
@@ -152,19 +140,16 @@ describe("buildInjectionEnv", () => {
       "BROWSER",
       "SSH_ASKPASS",
       "SUDO_ASKPASS",
-      // Interpreter init hooks and module search paths
       "LUA_INIT",
       "LUA_PATH",
       "LUA_CPATH",
-      "PSModulePath", // defense against case-folded comparison (Windows case-insensitivity)
-      // Loader / auxiliary-data search locations
+      "PSModulePath",
       "GLIBC_TUNABLES",
       "MALLOC_CONF",
       "LOCPATH",
       "NLSPATH",
       "TERMINFO",
       "TERMCAP",
-      // shell autoload / TLS trust / Python user-site
       "FPATH",
       "KSH_ENV",
       "SSL_CERT_FILE",
@@ -174,7 +159,6 @@ describe("buildInjectionEnv", () => {
       "AWS_CA_BUNDLE",
       "PYTHONUSERBASE",
       "PYTHONWARNINGS",
-      // Windows home/config, shell lookup, npm settings
       "HOMEDRIVE",
       "HOMEPATH",
       "APPDATA",
@@ -183,7 +167,7 @@ describe("buildInjectionEnv", () => {
       "TERMINFO_DIRS",
       "NPM_CONFIG_USERCONFIG",
       "NPM_CONFIG_GLOBALCONFIG",
-      "npm_config_script_shell", // individual name + case-insensitive
+      "npm_config_script_shell",
       "NPM_CONFIG_SHELL",
       "NPM_CONFIG_NODE_OPTIONS",
       "NPM_CONFIG_PREFIX",
@@ -197,7 +181,6 @@ describe("buildInjectionEnv", () => {
       "NPM_CONFIG_STRICT_SSL",
       "NPM_CONFIG_CA",
       "NPM_CONFIG_GIT",
-      // interpreter / runtime hooks that do not need an attacker-controlled rc file
       "PYTHONBREAKPOINT",
       "PYTHONEXECUTABLE",
       "PYTHON",
@@ -214,13 +197,10 @@ describe("buildInjectionEnv", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
-    // Pins the ruling (M2) that no blanket prefix rejection was adopted: legitimate variables like NODE_ENV pass
     const allowed = await Effect.runPromise(
       buildInjectionEnv([
         variable("NODE_ENV", "production"),
         variable("BUN_INSTALL", "x"),
-        // npm registry auth is a legitimate secret-injection use of maruhi run.
-        // NPM_CONFIG_ as a whole is not rejected — only the execution-control keys above are denied individually
         variable("NPM_CONFIG__AUTH", "credential"),
         variable("NPM_CONFIG__AUTHTOKEN", "credential"),
         variable("NPM_CONFIG_REGISTRY", "https://registry.example"),
@@ -236,21 +216,16 @@ describe("buildInjectionEnv", () => {
   });
 
   it("rejects injection into maruhi's own namespace (MARUHI_*)", async () => {
-    // resolveSession checks MARUHI_TOKEN before the keychain, so a co-member who
-    // can create a variable of this name could authenticate a nested `maruhi`
-    // inside the victim's `maruhi run -- make deploy` as themselves. It is a
-    // reserved namespace, so the whole prefix is blocked rather than individual names (adding more MARUHI_* later cannot reopen the hole)
     for (const name of [
       "MARUHI_TOKEN",
       "MARUHI_TOKEN_ORIGIN",
-      "maruhi_token", // defense against case-folded comparison (Windows case-insensitivity)
-      "MARUHI_FUTURE_KNOB", // unknown future MARUHI_* are covered by the prefix
+      "maruhi_token",
+      "MARUHI_FUTURE_KNOB",
     ]) {
       const exit = await Effect.runPromiseExit(buildInjectionEnv([variable(name, "x")]));
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("execution-control");
     }
-    // Names outside the reserved namespace pass (names merely starting with MARUHI are not caught)
     const allowed = await Effect.runPromise(
       buildInjectionEnv([variable("MARUHISECRET", "x"), variable("APP_MARUHI_TOKEN", "y")]),
     );

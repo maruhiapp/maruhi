@@ -1,7 +1,3 @@
-// The environment-side read queries of the data store (environments,
-// environment meta statements, environment manifests) — assembled into
-// DataStoreShape by dataStoreLayer in data-store.ts.
-
 import type { EnvironmentId } from "@maruhi/core";
 import { decodeEnvironmentId, decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -58,9 +54,6 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  // Live environments only (§12-7 — 2026-10-07): a deleted environment's
-  // statements are deleted with its data, and the client derives deletion
-  // from the delete_environment entry on its verified chain
   listEnvironmentStatements: Effect.sync(() =>
     sql
       .exec(
@@ -106,9 +99,6 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
           .toArray()[0],
       ),
     ),
-  // Distribution (§12-2) does not select signed_bytes_hash_hex = never
-  // distributes it (a verifier recomputes it themselves — the same
-  // discipline as statement distribution)
   environmentManifest: (environmentId: EnvironmentId) =>
     Effect.sync(() => {
       const row = sql

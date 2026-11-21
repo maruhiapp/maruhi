@@ -1,15 +1,3 @@
-// Integration tests for `maruhi member list` (2026-09-15 ES K4 — design
-// note es-design.md ruling M / K4-E).
-//
-// Properties pinned down:
-//  1. From the verified chain, displays user id, role, scope (all /
-//     environment-id list / no environments), and key FP (user-id
-//     ascending). `--json` is a single document
-//  2. Zero values means the agent gate does not apply: it succeeds with
-//     agent detection + non-TTY (the same permissive side as `maruhi
-//     schema`). It also doesn't require a master key (the keyless class)
-//  3. `project verify`'s member rows carry the same scope column
-
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -115,8 +103,6 @@ describe("maruhi member list", () => {
     });
     expect(document.members[1]?.scope).toEqual({ kind: "listed", environmentIds: [] });
     expect(document.members[2]?.scope).toEqual({ kind: "all" });
-    // Device list (DK K4-20): FP + cap. The concatenated
-    // keyFingerprintHex was removed
     expect(document.members[2]?.devices).toEqual([
       { keyFingerprintHex: owner.fingerprintHex, roleCap: "owner", scope: { kind: "all" } },
     ]);
@@ -128,8 +114,6 @@ describe("maruhi member list", () => {
     const env = await startEnv(noneReader);
     env.setAgent({ isAgent: true, name: "testbot" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
-    // No master key (equivalent to a MARUHI_TOKEN run — works in the
-    // keyless class)
     env.keychain.delete(masterKeyEntryName(env.server.origin, noneReader.userId));
     expect(await runCli(["member", "list", "--json"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain(`"userId": "${owner.userId}"`);

@@ -1,11 +1,3 @@
-// Stateful mock for the four-eyes (PF1 K6) CLI tests: chain GET / append POST
-// (with CAS injection), /auth/config, invite list, environment list, pull (no
-// variables), acceptance of the rotate composite, dek_wraps (self-addressed
-// fetch and registration capture). Shared by approval.test.ts /
-// approval-propose.test.ts.
-// The acceptance side is not verified (the CLI's verified chain is the source
-// of truth for derivation — that's what the tests care about).
-
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
@@ -34,28 +26,20 @@ export interface FourEyesServerState {
   readonly rotateBodies: WireRotateBody[];
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
-  /** The current chain (for assertions after appends). */
   readonly entries: ChainEntry[];
   readonly hashes: string[];
 }
 
 export async function makeFourEyesServer(input: {
   readonly built: BuiltChain;
-  /** environment → current epoch and (actor-addressed) self wraps. */
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  /** The issuer of rotate acceptances and the recipient of self-addressed wraps (= the actor). */
   readonly actor: TestUser;
-  /** The author of environment statements (the member as of seq 1 — default: `actor`, same as the genesis creator). */
   readonly author?: TestUser;
-  /** The `/auth/config` response (for server-grant tests). */
   readonly authConfig?: Record<string, unknown>;
-  /** Invite list rows (for member-add tests). */
   readonly invitations?: readonly Record<string, unknown>[];
-  /** Injected response for chain appends (e.g. 409). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend injects, replaces the subsequent chain with this shape (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
 }): Promise<FourEyesServerState> {
   const actor = input.actor;

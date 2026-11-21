@@ -1,9 +1,3 @@
-// Checks for CRYPTO_SPEC §5.3 (sealed value proposals).
-// Same layout as dek-wrap / lease-wrap: fixed vectors (generated via
-// hpke-js ekm derandomize) are verified in the Open direction, and the Seal
-// direction is covered by a roundtrip (panva cannot derandomize a one-shot
-// Seal — the spike-c finding).
-
 import {
   buildSealedValueInfo,
   encodeLengthPrefixed,
@@ -50,7 +44,6 @@ function contextOf(vector: typeof base): SealedValueContext {
 
 const baseContext = (): SealedValueContext => contextOf(base);
 
-/** The recipient device key = dek-wrap.json's recipient (a sealed value goes to the key that receives DEK wraps). */
 async function recipientKeyPair() {
   return importEncryptionKeyPair({
     publicKey: fromHex(dekWrapVectors.recipient_keypair.pkRm_hex),
@@ -75,8 +68,6 @@ async function vectorOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<voi
       opened.ok && toHex(opened.value) === vector.plaintext_hex,
     );
   }
-  // The recipient and coordinates are inherited from dek-wrap.json's basic
-  // (§5.3: W(E) ⊆ R(E) — the same device key receives both)
   const dekBasic = dekWrapVectors.vectors.find((v) => v.name === "basic");
   c.push(
     "sealed-value: recipient and coordinates match dek-wrap.json basic",
@@ -85,7 +76,6 @@ async function vectorOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<voi
       dekBasic.environment_id === base.environment_id &&
       dekBasic.recipient_user_id === base.recipient_user_id,
   );
-  // One proposal, two variables: the proposal id is shared, the variable id separates them
   c.push(
     "sealed-value: companion shares the proposal id under its own variable id",
     companion.proposal_id === base.proposal_id &&
@@ -95,7 +85,6 @@ async function vectorOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<voi
   c.push("sealed-value: proposal id form", isProposalId(sealedValueVectors.proposal.proposal_id));
 }
 
-/** A negative: the vector's open_info_hex (or ciphertext) matches what we build, and Open fails. */
 async function negativeCheck(
   c: Checks,
   input: {
@@ -107,10 +96,6 @@ async function negativeCheck(
 ): Promise<void> {
   const vector = sealedValueVectors.negative.find((n) => n.name === input.name);
   const infoMatches = vector?.open_info_hex === input.infoHex;
-  // The domain-substitution negative cannot be built through the
-  // implementation's typed context (the domain is fixed by the type) — only
-  // the info byte string is matched here; the Open failure is pinned by
-  // verify_reference.mjs
   if (input.context === null) {
     c.push(`sealed-value negative: ${input.name}`, infoMatches);
     return;
@@ -161,11 +146,6 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
       pair,
     });
   }
-  // Domain separation from the §5 persistent wrap: the implementation's
-  // typed context cannot swap the domain, so the vector's byte string is
-  // matched by assembling §5's domain over the §5.3 fields (the shape the
-  // generator used); the Open failure itself is pinned by
-  // verify_reference.mjs (the independent implementation)
   const dekDomain = sealedValueVectors.negative.find((n) => n.name === "info-dek-wrap-domain");
   c.push(
     "sealed-value negative: info-dek-wrap-domain",
@@ -182,7 +162,6 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
         ]),
       ) && dekDomain.open_info_hex !== base.info_hex,
   );
-  // Tampered ciphertext (the AEAD tag covers the body)
   const tampered = sealedValueVectors.negative.find((n) => n.name === "ciphertext-tampered");
   const tamperedResult =
     tampered?.ciphertext_hex === undefined
@@ -203,8 +182,6 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
 async function invalidContextChecks(c: Checks): Promise<void> {
   const recipient = await generateEncryptionKeyPair();
   const value = new TextEncoder().encode("dummy-credential");
-  // A proposal id outside the 32-lowercase-hex form is InvalidInput (an
-  // uppercase id would make "the same proposal, a different info")
   const upperId = await sealProposedValue({
     recipientPublicKey: recipient.publicKey,
     value,
@@ -231,7 +208,6 @@ async function invalidContextChecks(c: Checks): Promise<void> {
       (result) => !result.ok && result.error.kind === "InvalidInput",
     ),
   );
-  // Value length: empty and over the §4 cap never reach Seal
   const empty = await sealProposedValue({
     recipientPublicKey: recipient.publicKey,
     value: new Uint8Array(0),
@@ -249,7 +225,6 @@ async function invalidContextChecks(c: Checks): Promise<void> {
 }
 
 async function roundtripChecks(c: Checks): Promise<void> {
-  // Seal direction: self-roundtrip to a generated (non-extractable) device key
   const recipient = await generateEncryptionKeyPair();
   const value = new TextEncoder().encode("postgres://app_b:fresh-dummy@db.example/shop");
   const sealed = await sealProposedValue({
@@ -267,8 +242,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
     context: baseContext(),
   });
   c.push("sealed-value: roundtrip", opened.ok && toHex(opened.value) === toHex(value));
-  // Another device of the same user cannot open it (the keys differ — the
-  // same plaintext is sealed once per device)
   const otherDevice = await generateEncryptionKeyPair();
   const crosswise = await openProposedValue({
     recipientKeyPair: otherDevice,
@@ -279,7 +252,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
     "sealed-value: another device key cannot open",
     !crosswise.ok && crosswise.error.kind === "DekUnwrapFailed",
   );
-  // The largest value the cap admits round-trips
   const largest = new Uint8Array(MAX_SEALED_VALUE_BYTES).fill(0x41);
   const sealedLargest = await sealProposedValue({
     recipientPublicKey: recipient.publicKey,

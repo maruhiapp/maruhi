@@ -1,8 +1,3 @@
-// wrapAndSignFor's `Promise<WrapBuildResult>` contract (the shape backfill.ts
-// consumes): every crypto failure folds into a `reason` string the caller
-// embeds verbatim in its message. Driven through the exported function, which
-// runs the internal effect and folds `WrapBuildFailed` back into the Result.
-
 import { unwrapDek, verifyDekWrapSignature } from "@maruhi/crypto";
 import { testKeyFingerprintHex, unwrapResult } from "@maruhi/crypto/test-support";
 import { Redacted } from "effect";
@@ -90,9 +85,6 @@ describe("wrapAndSignFor", () => {
       recipientUserId: "ab".repeat(16),
       recipientEncPubHex: server.encPubHex,
     });
-    // The produced wrap is real: the §5.1 signature verifies under the
-    // signer's key, and the HPKE wrap opens under the recipient's key to
-    // the input DEK (pins encHex/ciphertextHex and the context fields)
     unwrapResult(
       await verifyDekWrapSignature({
         context: {

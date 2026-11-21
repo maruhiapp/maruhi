@@ -1,15 +1,3 @@
-// Operations foundation — DO -> R2 evacuation and restore
-// (docs/notes/hosted-ops.md §2-D / §2-E / §4-2).
-//
-// Against a real project DO (@cloudflare/vitest-plugin): evacuate a fixture
-// (chain, environments, variables, audit rows built via the API), write it
-// back into an emptied DO, and pin that the chain head, audit head (the
-// ensureHeadCurrent value), every table's rows, and the gapless audit seq
-// (AUDIT_SPEC §5.1) all match. The same real DO also covers the absence of
-// an overwrite path (refusing to restore into a non-empty DO), refusing a
-// partially-failed snapshot, the skip rule, the multipart path, and sweep
-// records.
-
 import {
   createExecutionContext,
   createScheduledController,
@@ -58,7 +46,6 @@ async function restore(objectKey: string): Promise<OpsRestoreOutcome> {
   return (await stub().opsRestore(objectKey)) as OpsRestoreOutcome;
 }
 
-/** All rows of every table (rowid order) — for pre/post-restore diffing. */
 async function allRows(): Promise<Record<string, Record<string, unknown>[]>> {
   const rows: Record<string, Record<string, unknown>[]> = {};
   for (const table of PROJECT_DO_TABLES) {
@@ -92,8 +79,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     if (outcome.kind !== "uploaded") {
       return;
     }
-    // key = do/<image of idFromName>/<timestamp>.ndjson.gz — carries no
-    // capability (project id)
     expect(outcome.objectKey).toMatch(
       /^do\/[0-9a-f]{64}\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.ndjson\.gz$/,
     );
@@ -106,8 +91,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     }
     expect(await bucket.head(outcome.objectKey)).not.toBeNull();
 
-    // Empty it and write back (resetProjectDo leaves schema_meta = the same
-    // schema version)
     await resetProjectDo(projectId);
     const restored = await restore(outcome.objectKey);
     expect(restored.kind).toBe("restored");
@@ -120,16 +103,13 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(restored.auditHeadHashHex).toBe(headBefore);
     expect(restored.rows).toEqual(outcome.trailer.rows);
     expect(await allRows()).toEqual(rowsBefore);
-    // Audit seq stays gapless (AUDIT_SPEC §5.1)
     const seqs = (await queryProjectDo(projectId, "SELECT seq FROM audit_events ORDER BY seq")).map(
       (row) => Number(row["seq"]),
     );
     expect(seqs).toEqual(seqs.map((_, index) => index + 1));
-    // After restore the product path works as-is (instance memory was
-    // discarded — the pre-restore empty state is never served)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
-    expect(await auditHeadViaApi()).not.toBe(headBefore); // the pull adds a var.read = the head advances
+    expect(await auditHeadViaApi()).not.toBe(headBefore);
   });
 
   it("refuses a snapshot whose audit log has a gap: the restored DO stays empty (ruling J revision, round 9)", async () => {
@@ -183,7 +163,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -262,10 +241,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(second).toBeGreaterThan(-1);
     const row = JSON.parse(lines[second] ?? "{}") as { values: unknown[] };
     const values = [...row.values];
-    // Neither NULL nor 32 lowercase hex: the shape check refuses it
-    // before any head is derived over the restored table (its stored-row
-    // decode would otherwise throw, or read as a NULL the digest never
-    // stored)
     values[columns.indexOf("actor_key_fingerprint")] = "not-a-fingerprint";
     const corrupt = lines.map((line, at) =>
       at === second ? JSON.stringify({ ...row, values }) : line,
@@ -308,9 +283,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     });
     expect(firstRow).toBeDefined();
     const row = JSON.parse(firstRow ?? "{}") as { values: unknown[] };
-    // A second environments segment holding one extra row on a disjoint
-    // primary key, with the trailer counting only that segment (1): the
-    // first segment's rows must not restore unaccounted
     const extra = JSON.stringify({
       kind: "row",
       table: "environments",
@@ -337,7 +309,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -373,7 +344,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       expect(await restore(key), name).toEqual({ kind: "refused", code: "trailer-mismatch" });
       expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries"), name).toEqual([]);
     }
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -414,7 +384,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -438,10 +407,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
       rows: Record<string, number>;
     };
-    // Every present row is genuine and the trailer counts the omission,
-    // but the staged chain holds the environment live and its creation
-    // composite wrote the manifest atomically — presence is required,
-    // not just the consistency of what is present
     const attacked = [
       ...lines.slice(0, manifestRow),
       ...lines.slice(manifestRow + 1, -1),
@@ -465,7 +430,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM environments")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -501,9 +465,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         rows: { ...trailer.rows, environment_checkpoints: rows },
       });
     const omitted = [...lines.slice(0, first), ...lines.slice(first + 1, -1), withCount(count - 1)];
-    // The added row copies the genuine row (its declared head still
-    // resolves to the staged chain) under an environment the chain has
-    // no checkpoint tuple for — only the tuple exactness refuses it
     const row = JSON.parse(lines[first] ?? "{}") as { values: unknown[] };
     const extraValues = [...row.values];
     const idIndex = columns.indexOf("environment_id");
@@ -527,7 +488,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         name,
       ).toEqual([{ n: 0 }]);
     }
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -555,7 +515,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(first).toBeGreaterThan(-1);
     const row = JSON.parse(lines[first] ?? "{}") as { values: unknown[] };
     const values = [...row.values];
-    // The seeded environment is at epoch 1 (created, never rotated)
     values[columns.indexOf("epoch")] = 99;
     const attacked = lines.map((line, at) =>
       at === first ? JSON.stringify({ ...row, values }) : line,
@@ -569,7 +528,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -585,9 +543,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         "version"
       ],
     );
-    // The format admits a snapshot with no chain table at all (an empty
-    // project's evacuation shape): with no staged chain there is no
-    // lifecycle to anchor presence to, and the empty watermarks agree
     await bucket.put(
       "do/test/chain-less.ndjson.gz",
       await gzipLines([
@@ -620,7 +575,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
       { n: 0 },
     ]);
-    // The intact snapshot still restores
     expect((await restore(outcome.objectKey)).kind).toBe("restored");
   });
 
@@ -667,9 +621,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       kind: "refused",
       code: "trailer-missing",
     });
-    // An import restores the body its pre-check verified, by etag (ruling H
-    // revision, round 4): another etag is `object-changed` before any byte
-    // is read; the verified one reaches the content checks as before
     expect(await stub().opsRestore("do/test/truncated.ndjson.gz", "0".repeat(32))).toEqual({
       kind: "refused",
       code: "object-changed",
@@ -679,7 +630,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       kind: "refused",
       code: "trailer-missing",
     });
-    // The partially written rows are gone (rolled back to empty)
     expect(await queryProjectDo(projectId, "SELECT * FROM environments")).toEqual([]);
 
     await bucket.put(
@@ -699,9 +649,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         "version"
       ],
     );
-    // Read the live column lists before the reset: a reset now drops the
-    // tables (a DO is never-initialized until genesis acceptance — Sc-7 / A-4),
-    // and the restore below re-materializes them to compare against these.
     const chainColumns = (
       await queryProjectDo(
         projectId,
@@ -758,8 +705,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
         ]),
       );
       expect(await restore(key), name).toEqual({ kind: "refused", code: "malformed" });
-      // The table is not destroyed (no DROP), the DO stays empty, and no
-      // staging table is left behind
       expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries"), name).toEqual([]);
       expect(
         await queryProjectDo(
@@ -785,9 +730,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     };
     const second = await backup(marks);
     expect(second.kind).toBe("skipped");
-    // The head-attestation upsert writes neither a chain row nor an audit
-    // row (AUTH_SPEC §16-1), but counts as a content change that lifts the
-    // skip (the third watermark)
     await runInDurableObject(stub(), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO head_attestations (attester_user_id, suite, chain_head_seq, chain_head_hash_hex, signature_hex, attester_key_fingerprint, accepted_at)
@@ -804,15 +746,13 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(afterAttestation.attestationMark).toBeGreaterThan(marks.attestationMark);
     marks.attestationMark = afterAttestation.attestationMark;
     expect((await backup(marks)).kind).toBe("skipped");
-    // A pull with values writes an audit row (var.read) = treated as changed
-    // content, so it evacuates again
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
     const third = await backup(marks);
     expect(third.kind).toBe("uploaded");
     if (third.kind === "uploaded") {
       expect(third.auditSeq).toBeGreaterThan(marks.auditSeq);
-      expect(third.objectKey).not.toBe(first.objectKey); // never overwritten (timestamped keys)
+      expect(third.objectKey).not.toBe(first.objectKey);
     }
   });
 
@@ -846,9 +786,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       }
     });
     await evictProjectDo(projectId);
-    // Evacuate twice with the same nowMs (= same header, same key): the first
-    // run measures the compressed total, and the second uses exactly that
-    // total as the part size to force the "0 bytes remaining" path
     const nowMs = Date.now();
     const probe = (await stub().opsBackup({ ...backupInput(), nowMs })) as OpsBackupOutcome;
     expect(probe.kind).toBe("uploaded");
@@ -871,11 +808,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
 
   it("uses multipart for large snapshots (uniform parts) and still restores identically", async () => {
     await seedProjectActivity();
-    // Seed hard-to-compress rows (random-hex ciphertexts) directly to push
-    // the compressed size past 5 MiB. The filler rows declare the chain
-    // head they were accepted against, as every real version row does:
-    // the genesis entry's (seq 1) hash — a declared head that does not
-    // resolve is refused at restore
     await runInDurableObject(stub(), (_instance, state) => {
       const genesisHash = String(
         state.storage.sql
@@ -898,9 +830,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       }
     });
     await evictProjectDo(projectId);
-    // Materialize the audit-head column first (the restore side extends it
-    // up to MAX(seq), so evacuating before materialization would make
-    // post-restore audit_head_hashes look larger)
     await auditHeadViaApi();
     const rowsBefore = await allRows();
     const outcome = (await stub().opsBackup({
@@ -921,10 +850,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
   });
 
   it("skips a never-initialized DO without materializing its tables (Sc-7 / A-4)", async () => {
-    // The sweep enumerates D1 `projects` (only an accepted genesis writes one),
-    // so a never-initialized DO is not reached in production; the guard keeps
-    // a direct call from faulting on the missing watermark tables, and leaves
-    // no storage behind.
     const fresh = "c9".repeat(32);
     await resetProjectDo(fresh);
     const freshStub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(fresh));
@@ -938,8 +863,6 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
 
 const opsRepo = () => Context.get(makeDbServices(env.DB), OpsRepo);
 
-// The scheduled() root's logger (index.ts) — without it the converted
-// Effect.logWarning lines do not reach the console spies
 const withLogger = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   program.pipe(Effect.provide(ServerLoggerLive));
 
@@ -972,7 +895,6 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     expect(second).toMatchObject({ visited: 1, uploaded: 0, skipped: 1 });
     const after = await opsRepo().backupRecord(testProjectId(projectId)).pipe(Effect.runPromise);
     expect(after?.lastObjectKey).toBe(record?.lastObjectKey);
-    // The end was reached, so the cursor returns to the start (empty string)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
   });
 
@@ -992,15 +914,11 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     } finally {
       warn.mockRestore();
     }
-    // The end was reached and the save overwrote the bad row (empty string)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
   });
 
   it("records oversize without counting it as a consecutive failure (and clears earlier ones)", async () => {
     await seedProjectActivity();
-    // Seed one failure first: verifies that recording an oversize resets the
-    // counter to 0 on the UPDATE branch too (starting from no row would only
-    // exercise the INSERT branch)
     await opsRepo()
       .recordBackupAttempt(
         testProjectId(projectId),
@@ -1027,9 +945,6 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
   });
 
   it("records a rejected backup RPC as rpc-failed with the static warning only (RpcCallError, caught by tag)", async () => {
-    // A namespace whose stub rejects opsBackup (the shape of an
-    // unreachable DO or a DO-side defect). The rejection text stands in
-    // for DO error text: it must not reach the log
     const rejectionText = "dummy DO failure text";
     const rejecting = {
       idFromName: (name: string) => workerEnv.PROJECT_CHAIN.idFromName(name),

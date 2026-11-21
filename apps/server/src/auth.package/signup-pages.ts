@@ -1,30 +1,7 @@
-// Guidance pages for signup control (AUTH_SPEC §3).
-//
-// The delivery discipline is identical to cli-pages.ts (the §15-3 invite
-// landing page's mold): no scripts, self-hosted CSS only (the shared `page()`
-// frame), CSP `script-src 'none'`. The response point is handlers-auth.ts
-// (the delivery header shares handlers-auth-cli.ts's htmlResponse). All
-// wording is English (ADR-0017).
-//
-// All three pages are written in the same 3 stages ("landing wording on
-// denial"):
-//   1. What happened (h1 + one sentence)
-//   2. What did not happen — **"No account was created" is stated on the
-//      outcome row** (visualizing fail-closed — AUTH_SPEC §3; the wording
-//      matches the implementation that creates no rows)
-//   3. What can be done next (h2 "What you can do" + bullet list)
-// - invite-invalid does not differentiate invalid / expired / consumed (the
-//   same uniformity as §15's 410; with a 256-bit single-use code the
-//   enumeration-oracle concern is thin to begin with, and differentiating
-//   buys no UX)
-// - No waitlist-collection surface is built (hosted-design.md §2-2 — the
-//   guidance goes as far as contacting the operators)
-
 import { page } from "./cli-pages.ts";
 
 const NO_ACCOUNT_CREATED = `        <p class="outcome">No account was created.</p>`;
 
-/** Denial page for signupPolicy = closed (§3 — ends after the OAuth round trip, creating no rows). */
 export function renderSignupClosedPage(): string {
   return page(
     "maruhi — sign-ups closed",
@@ -42,7 +19,6 @@ ${NO_ACCOUNT_CREATED}
   );
 }
 
-/** Denial page for signupPolicy = invite with no code presented (§3). */
 export function renderSignupInviteRequiredPage(): string {
   return page(
     "maruhi — invite required",
@@ -64,11 +40,6 @@ ${NO_ACCOUNT_CREATED}
   );
 }
 
-/**
- * Page for an invalid signup invite code (§3 — used both when start's
- * pre-verification fails and when the callback's consumption CAS loses.
- * Does not differentiate unknown / expired / consumed).
- */
 export function renderSignupInviteInvalidPage(): string {
   return page(
     "maruhi — invite code can't be used",

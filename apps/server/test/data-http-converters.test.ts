@@ -1,11 +1,3 @@
-// toMetaStatementInput shaping (AUTH_SPEC §12-5).
-//
-// The runtime request struct still carries the wire-declared coordinates
-// (environmentId / variableId), which are not part of WireMetaStatement. The
-// converter must copy only the stored-input fields so those coordinates never
-// reach the DO (the DO reconstructs the signed target from the storage
-// coordinates, never from the wire's declared values — §12-5).
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { toMetaStatementInput } from "../src/data.package/index.ts";

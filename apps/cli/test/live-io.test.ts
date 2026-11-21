@@ -1,14 +1,3 @@
-// Unit tests for live.ts's interactive-input primitives.
-//
-// - makeStdinLineReader: retains unconsumed lines across prompts (the
-//   close-readline-each-time shape was dropping the next line), CRLF,
-//   newline-less termination, EOF
-// - readHiddenLine: termination handling of raw-mode input (no hang on
-//   end/error), Ctrl+D abort, ignoring escape sequences (arrow keys) and
-//   control characters, Backspace
-//
-// Driven by adding a TTY stub (setRawMode / isRaw) onto PassThrough.
-
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +8,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { makeStdinLineReader, readHiddenLine, writeLine } from "../src/live.ts";
 
-/** A pseudo stdin with a raw-mode stub. */
 function fakeTty(): PassThrough & { isRaw: boolean; setRawMode: (raw: boolean) => void } {
   const stream = new PassThrough();
   return Object.assign(stream, {
@@ -40,7 +28,6 @@ describe("makeStdinLineReader (the shared non-TTY line reader)", () => {
     const stream = new PassThrough();
     const readLine = makeStdinLineReader(asStdin(stream));
     stream.write("WRONG\nAAAA-BBBB\n");
-    // The first prompt gets line 1; the second (a retry) gets line 2
     expect(await readLine()).toBe("WRONG");
     expect(await readLine()).toBe("AAAA-BBBB");
   });
@@ -69,15 +56,12 @@ describe("readHiddenLine (raw-mode non-echo input)", () => {
     const pending = readHiddenLine(asStdin(tty));
     tty.write("ABCX\u007fD\r");
     expect(await pending).toBe("ABCD");
-    // Raw mode is restored
     expect(tty.isRaw).toBe(false);
   });
 
   it("escape sequences like arrow keys and tabs never mix into the input (prevents invisible corruption)", async () => {
     const tty = fakeTty();
     const pending = readHiddenLine(asStdin(tty));
-    // Sandwiched between a left arrow (ESC [ D) and a tab, only printable
-    // characters remain
     tty.write("AB\u001b[D\tCD\n");
     expect(await pending).toBe("ABCD");
   });
@@ -117,10 +101,6 @@ describe("writeLine (synchronous writes and closed pipes)", () => {
   });
 
   it("writes to a pipe closed by the reader first (EPIPE) are not defects — the process exits 0", () => {
-    // The `maruhi … | head -1` shape. writeSync throws EPIPE on the second
-    // line onward, but like console.log it swallows silently. Verify with a
-    // real process: run the writer under bun and watch the exit code after
-    // the reader head closes at 1 line
     const script =
       'import { writeLine } from "./apps/cli/src/live.ts"; for (let i = 0; i < 200000; i += 1) writeLine(1, `line${i}`); process.exit(0);';
     const result = spawnSync(
@@ -128,15 +108,8 @@ describe("writeLine (synchronous writes and closed pipes)", () => {
       ["-c", `bun -e '${script}' | head -1; echo "writer-exit=\${PIPESTATUS[0]}"`],
       { cwd: new URL("../../..", import.meta.url).pathname, encoding: "utf8" },
     );
-    // stderr is attached so a failure's cause (bun missing, script syntax)
-    // is readable (the bash side's exit code is always 0 due to the
-    // trailing echo, so assertions go on the writer's exit code =
-    // writer-exit plus the first line arriving)
     expect(result.stdout, result.stderr).toContain("line0");
     expect(result.stdout, result.stderr).toContain("writer-exit=0");
     expect(result.stderr).not.toContain("EPIPE");
-    // A real bun process plus 200k swallowed EPIPE writes: 1.3-2 s on the
-    // 2-core CI runner, 5.6 s once beside CI's other parallel test suites
-    // and builds. Same headroom as the other live-*.test.ts process tests
   }, 60_000);
 });

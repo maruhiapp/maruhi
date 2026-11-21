@@ -1,27 +1,3 @@
-// Signing and appending (parent-head CAS) of device ops (`add_device` /
-// `revoke_device` — CRYPTO_SPEC §6.2, 2026-09-19 DK), plus the shared
-// core of the device-addition backfill (§7) and the device-revocation
-// sweep (§7) (K4). Users: device-add.ts (`device add`'s key-arrival
-// check), device-approve.ts (`device approve`), device-revoke.ts
-// (`device revoke`), device-sync.ts (registration on first sync),
-// key-recover.ts (registering the new device key after recovery,
-// rotating the reserve key).
-//
-// The pre-flight checks are a copy of the consensus rules (§6.2) and do
-// not wait for the server's 422: actor = the current device matching
-// the signing key (device-key.ts), key uniqueness (every current device's
-// keys and the server keys grants have named), existence of the `listed`
-// environments, monotonicity (cap vs cap — principle D2), revocation =
-// the target being a current device, last-device protection, and for
-// others the role rule (the same two stages as `remove_member`) plus the
-// principle-1 inclusion (the **person's** scope).
-//
-// Backfill (§7 "device-addition backfill"): for each environment in the
-// new device's **effective scope** (person ∩ device), unwrap every
-// epoch's DEK from the my-addressed wraps and re-wrap it to the new
-// device's enc public key (the shared core in backfill.ts — 409 counts
-// as already registered).
-
 import {
   cryptoEffect,
   type EnvironmentId,
@@ -71,30 +47,22 @@ import {
 } from "./rotation-sweep.ts";
 import { compareCodePoints, requireScopeEnvironmentsExist, scopeContains } from "./scope.ts";
 
-/** A device key to register (public side + declared cap). */
 export interface DeviceCandidate {
   readonly encPubHex: string;
   readonly sigPubHex: string;
   readonly cap: DeviceCap;
 }
 
-/** The signer of a device op: the person and the signing keypair of one of their devices. */
 export interface DeviceOpSigner {
   readonly userId: UserId;
   readonly signingKeyPair: SigningKeyPair;
 }
 
-/**
- * Shared scaffolding for a CAS append of a device op (chain-append.ts's
- * appendWithRetry). `signEntry` runs the op's pre-flight checks on each
- * view, so the resync after a head conflict needs no recheck of its own.
- */
 function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly opLabel: string;
-  /** null = already in the desired state (a concurrent run appended first) — continue without appending. */
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry | null, CliError>;
 }): Effect.Effect<{ readonly verified: VerifiedProject; readonly appended: boolean }, CliError> {
   return appendWithRetry(input, {
@@ -107,7 +75,6 @@ function appendWithCas(input: {
   );
 }
 
-/** Pre-flight judgment of key uniqueness (§6.2 duplicate-member-key — registeredKeyHolderOf). */
 function duplicateKeyRejection(
   verified: VerifiedProject,
   candidate: DeviceCandidate,
@@ -121,7 +88,6 @@ function duplicateKeyRejection(
     : `The key's enc public key is server key ${holder.serverKeyFingerprintHex}, which a grant has named, so no device may hold it (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2)`;
 }
 
-/** `add_device` pre-flight checks → sign (null if already registered). */
 const signAddDevice = Effect.fn("device-ops.signAddDevice")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
@@ -178,11 +144,6 @@ const signAddDevice = Effect.fn("device-ops.signAddDevice")(function* (input: {
   ).pipe(Effect.mapError(() => cliError("Failed to sign the add_device entry")));
 });
 
-/**
- * Appends `add_device` for `candidate` (signed by `signer`'s device that holds
- * `signingKeyPair`), with CAS retries. Idempotent: an already-registered key
- * appends nothing.
- */
 export function appendAddDevice(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -200,7 +161,6 @@ export function appendAddDevice(input: {
   });
 }
 
-/** The role rule for revoking another person's device (the same two stages as `remove_member` — the strict reading of K2 handoff 4). */
 function revokeRoleRejection(
   actorRole: ChainMember["role"],
   actorScope: MemberScope,
@@ -218,7 +178,6 @@ function revokeRoleRejection(
   return null;
 }
 
-/** Pre-flight checks (role rule for others; last-device-protected for anyone). null when ok. */
 function revokeRejection(input: {
   readonly actor: ChainMember;
   readonly actorDevice: ChainDevice;
@@ -239,7 +198,6 @@ function revokeRejection(input: {
   return null;
 }
 
-/** `revoke_device` pre-flight checks → sign (null if no revocation target remains). */
 const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
@@ -259,8 +217,6 @@ const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (inp
       cliError(`${displayText(input.targetUserId)} is not a current member of this project`),
     );
   }
-  // The payload carries the target's own chain device FPs (the verified
-  // chain's values — the requested strings only select them)
   const revoking = input.fingerprintsHex
     .flatMap((fingerprintHex) => {
       const device = target.devices.get(fingerprintHex);
@@ -297,11 +253,6 @@ const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (inp
   return { entry, revoking };
 });
 
-/**
- * Appends `revoke_device` for the target's devices among `fingerprintsHex`
- * that are still active (CAS retries; idempotent). Returns the fingerprints
- * actually revoked by this call.
- */
 export const appendRevokeDevice = Effect.fn("device-ops.appendRevokeDevice")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -336,7 +287,6 @@ export const appendRevokeDevice = Effect.fn("device-ops.appendRevokeDevice")(fun
   return { verified: outcome.verified, revoked: outcome.appended ? revoked : [] };
 });
 
-/** Result of the device-addition backfill (aggregated per environment; one environment's failure does not stop the rest). */
 export interface DeviceBackfillOutcome {
   readonly environments: number;
   readonly registered: number;
@@ -344,14 +294,6 @@ export interface DeviceBackfillOutcome {
   readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
-/**
- * The environments a device should receive: among the verified,
- * non-deleted environments, those included in the device's effective
- * scope (code-point order). The backfill targets and the set `device
- * add` of the new device checks key reachability against (DK K12-1) are
- * decided by the same function — the structure keeps "the set we should
- * have delivered" and "the set we check" identical.
- */
 export function deviceEnvironmentsOf(input: {
   readonly verified: VerifiedProject;
   readonly targetMember: ChainMember;
@@ -367,12 +309,6 @@ export function deviceEnvironmentsOf(input: {
     .toSorted(compareCodePoints);
 }
 
-/**
- * Backfills every epoch of every environment in the target device's effective
- * scope to that device (CRYPTO_SPEC §7 "device-addition backfill"). `recipient`
- * is the caller's own key that opens the DEKs (this device, or the reserve key
- * during recovery).
- */
 export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -403,24 +339,13 @@ export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(functio
   };
 });
 
-/** Result of the device-revocation sweep (same shape as the member one — shares the report). */
 export type DeviceSweepOutcome = SweepOutcome & {
   readonly skippedDeleted: readonly EnvironmentId[];
-  /** Obligation environments that cannot be rotated because they are outside the signing device's effective scope (or role is insufficient) (K4-8 — carried over). */
   readonly outOfScope: readonly EnvironmentId[];
 };
 
-/** Rotation reason recorded on the `rotate_epoch` entries of a device-revocation sweep. */
 export const DEVICE_REVOKED_ROTATION_REASON = "device-revoked";
 
-/**
- * Scanning the obligation environments of §7's device revocation
- * (design record K4-8): among the target's `device-revoked`
- * obligations, rotate those inside the signing device's effective
- * scope (and where the effective role is member or above); the rest go
- * to `outOfScope` as "carried over to another device of the same person
- * or the next sync".
- */
 export const sweepAfterDeviceRevoke = Effect.fn("device-ops.sweepAfterDeviceRevoke")(function* <
   R,
 >(input: {

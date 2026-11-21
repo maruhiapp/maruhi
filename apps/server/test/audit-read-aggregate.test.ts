@@ -1,25 +1,3 @@
-// Tests for the aggregated form of `var.read` (AUDIT_SPEC §3.3 —
-// audit-log growth-density countermeasure ②). @cloudflare/vitest-plugin
-// (real workerd environment).
-//
-// What is pinned:
-// - Recorded shape: one bulk pull with values = one row per
-//   environment. The variable_id / epoch / version columns are NULL,
-//   and payload = { variables: [{ variableId, epoch, version }, …] }
-//   (variableId ascending). A pull that returned zero variables writes
-//   no row
-// - Density: one pull of a 100-variable environment → 1 audit row.
-//   The byte count of rows + indexes is measured (the source of the
-//   numbers in the spec §3.3 / AUTH_SPEC §12-8 headroom accounting)
-// - Rotation-needed detection (§4.1 step 3 (a)): the
-//   detectMemberRemoval basis is determined from the aggregated-form
-//   enumeration (aggregation must not lose detection inputs — the
-//   ruling CZ line). Reads outside the interval are not counted
-// - The §7 variable_id filter (Q4): the union of column matches
-//   (var.created etc.) and the aggregated payload match. Paging
-//   (cursor / limit) stays seq-descending with no duplicates across
-//   the 2-query union
-
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -68,7 +46,6 @@ function varReadRows(events: readonly Record<string, unknown>[]): Record<string,
 describe("recording the aggregated form (§3.3)", () => {
   it("a pull with values is one row per environment — variable-grained columns are NULL, payload carries an ascending enumeration", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Create in the reverse of ascending order to verify the enumeration is pinned to variableId ascending
     await createVariableOk(dek, "var-zeta", "ZETA", "z");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await createVariableOk(dek, "var-alpha", "ALPHA", "a");
@@ -86,7 +63,6 @@ describe("recording the aggregated form (§3.3)", () => {
     expect(read["version"]).toBeNull();
     expect(read["target_user_id"]).toBeNull();
     expect(read["actor_key_fingerprint"]).toBeNull();
-    // Pinned down to the stored bytes (the input of row_digest): key order is variableId → epoch → version
     expect(String(read["payload"])).toBe(
       JSON.stringify({
         variables: [
@@ -96,7 +72,6 @@ describe("recording the aggregated form (§3.3)", () => {
         ],
       }),
     );
-    // Round-trip through the shared helper (the server's writer and the CLI's reader are the same implementation)
     expect(auditReadVariablesOf(JSON.parse(String(read["payload"])))).toEqual([
       { variableId: "var-alpha", epoch: 1, version: 1 },
       { variableId: VAR, epoch: 1, version: 1 },
@@ -134,7 +109,6 @@ describe("recording the aggregated form (§3.3)", () => {
   });
 });
 
-/** Seed aggregated-form rows directly (for detection and density measurement). */
 function aggregatedRead(
   actorUserId: string,
   environmentId: string,
@@ -156,12 +130,6 @@ function aggregatedRead(
   };
 }
 
-/**
- * For density comparison: the pre-aggregation one-variable-per-row shape —
- * the measurement's control. The current schema refuses it (a `var.read`
- * payload enumerates the variables — packages/core audit-payloads.ts), so the
- * control is inserted with raw SQL in the store's column layout.
- */
 function insertPerVariableReads(sql: SqlStorage, variableIds: readonly string[]): void {
   const firstSeq =
     1 + Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"]);
@@ -184,7 +152,6 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
       ensureProjectDoTables(state.storage);
       const sql = state.storage.sql;
       const store = makeAuditStore(sql);
-      // Identifiers match the CLI's real issuance shape (`v` + 24 hex = 25 chars — meta-statement.ts)
       const variables = Array.from(
         { length: 100 },
         (_v, i) => `v${i.toString(16).padStart(24, "0")}`,
@@ -227,7 +194,6 @@ describe("measured density (row + index bytes — the §3.3 / AUTH_SPEC §12-8 a
     console.log(
       `var.read density — legacy ${measured.legacyPerRow.toFixed(1)} B/row; aggregated ${base.toFixed(1)} B/row + ${perVariable.toFixed(1)} B/variable (1 var ${measured.aggregated1PerRow.toFixed(1)} B, 100 vars ${measured.aggregated100PerRow.toFixed(1)} B)`,
     );
-    // A pull of 100 variables: legacy 100 rows vs aggregated 1 row — smaller in bytes too
     expect(measured.aggregated100PerRow).toBeLessThan(measured.legacyPerRow * 100);
     expect(perVariable).toBeGreaterThan(0);
   });
@@ -241,7 +207,6 @@ describe("the aggregate rotation.recommended row size (§3.3 Sc-5 — the mirror
       const sql = state.storage.sql;
       sql.exec("DELETE FROM audit_events");
       const store = makeAuditStore(sql);
-      // A full chunk at the worst case: 64-char ids (AUTH_SPEC §12-1), ascending, all readable
       const variables = Array.from(
         { length: MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW },
         (_v, index) => ({
@@ -258,8 +223,6 @@ describe("the aggregate rotation.recommended row size (§3.3 Sc-5 — the mirror
         epoch: 1,
         payload: { triggerChainSeq: 2, trigger: "remove_member", variables },
       });
-      // The snapshot export line (do-snapshot.ts): { kind, table, values } with the
-      // row's columns verbatim (audit rows carry no blobs, so values serialize directly)
       const raw = [
         ...sql
           .exec("SELECT rowid AS __rid, * FROM audit_events WHERE event = 'rotation.recommended'")
@@ -276,7 +239,6 @@ describe("the aggregate rotation.recommended row size (§3.3 Sc-5 — the mirror
     console.log(
       `rotation.recommended full chunk (${MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW} × 64-char ids): payload ${measured.payloadBytes} B, export line ${measured.lineBytes} B (mirror slack ${MAX_MIRROR_PAGE_SLACK_BYTES} B)`,
     );
-    // A > 2x margin under the slack, so the row's export line is always accepted (never un-mirrorable)
     expect(measured.lineBytes).toBeLessThan(MAX_MIRROR_PAGE_SLACK_BYTES / 2);
   });
 });
@@ -285,7 +247,6 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
   const TARGET = testUserId("user-target-0001");
   const E = "env-equiv-0001";
 
-  /** A column sharing the membership interval (genesis through member_removed), the existence of variables V1–V3, and out-of-interval reads. */
   function scenario(readsInside: readonly AuditEventInput[]): readonly AuditEventInput[] {
     const ts = 1_700_000_000_000;
     return [
@@ -324,7 +285,6 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         variableId: "v3",
         payload: { name: "V3" },
       },
-      // Reads before the membership interval (not counted)
       aggregatedRead(TARGET, E, ["v3"]),
       {
         serverTs: ts,
@@ -362,8 +322,6 @@ describe("rotation-needed detection (§4.1 step 3 (a) — enumeration of the agg
         nowMs: 1_700_000_000_500,
       });
       sql.exec("DELETE FROM audit_events");
-      // One aggregate row per environment (§3.3 Sc-5) — expand its payload
-      // enumeration to (environment/variable → basis)
       return Object.fromEntries(
         recommended.flatMap((event) =>
           (event.payload?.variables ?? []).map(
@@ -398,7 +356,6 @@ describe("the §7 variable_id filter (Q4 — column match + aggregated payload m
     await pullAs(READER);
     await pullAs(MEMBER);
     expect((await deleteVariableRequest(VAR, OWNER)).status).toBe(204);
-    // The pull after deletion enumerates only var-second
     await pullAs(READER);
 
     const forVar = await fetchEvents(token(OWNER), { variableId: VAR, limit: "200" });
@@ -412,7 +369,6 @@ describe("the §7 variable_id filter (Q4 — column match + aggregated payload m
     expect(forVar.events.map((event) => event.event)).toEqual(
       expect.arrayContaining(["var.created", "var.version_pushed", "var.deleted", "var.read"]),
     );
-    // The column-match rows are only that variable's rows
     for (const event of forVar.events.filter((e) => e.event !== "var.read")) {
       expect(event.variableId).toBe(VAR);
     }
@@ -462,7 +418,6 @@ describe("the §7 variable_id filter (Q4 — column match + aggregated payload m
   });
 });
 
-/** A SqlStorage wrapper that captures the SQL executed (for pinning EXPLAIN / query shape). */
 function capturing(sql: SqlStorage): { readonly sql: SqlStorage; readonly queries: string[] } {
   const queries: string[] = [];
   const proxy = new Proxy(sql, {
@@ -479,12 +434,10 @@ function capturing(sql: SqlStorage): { readonly sql: SqlStorage; readonly querie
   return { sql: proxy, queries };
 }
 
-/** Rewrite a row's environment ID (for seeding the shape where multiple environments hold the same variable ID). */
 function inEnv(row: AuditEventInput, environmentId: string): AuditEventInput {
   return { ...row, environmentId };
 }
 
-/** The environment-ID column of var.read rows (still seq-descending). */
 function readEnvironments(
   rows: readonly { event: string; environmentId: string | null }[],
 ): readonly (string | null)[] {
@@ -596,7 +549,6 @@ describe("scan range of the variable_id filter (bounding the shared resource con
           environmentId: E,
           variableId: "v-shared",
         },
-        // B's pull after A's deletion — a row that would be dropped if a per-variable MAX(deleted) were used as the upper bound
         aggregatedRead(READER, B, ["v-shared"]),
       ],
       (store) => {
@@ -656,7 +608,6 @@ describe("scan range of the variable_id filter (bounding the shared resource con
           variableId: testVariableId("v-flagged"),
           visibility: { kind: "admin" },
         });
-        // A below-admin viewer who is not the actor still sees it (class 1 — no self restriction)
         const forOther = store.queryEventsSync({
           ...baseQuery,
           variableId: testVariableId("v-other"),
@@ -674,7 +625,6 @@ describe("scan range of the variable_id filter (bounding the shared resource con
         };
       },
     );
-    // The column match (var.created) and the aggregate-payload match both appear for v-flagged
     expect(result.flagged).toEqual(expect.arrayContaining(["rotation.recommended", "var.created"]));
     expect(result.otherVisibleBelowAdmin).toBe(true);
     expect(result.absent).not.toContain("rotation.recommended");

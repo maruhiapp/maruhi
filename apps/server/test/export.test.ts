@@ -1,25 +1,3 @@
-// Integration tests for the project export API and the import path (PF3 —
-// AUTH_SPEC §11-6, docs/notes/pf3-design.md). Verifies the HttpApi, the DO
-// and D1 via SELF on @cloudflare/vitest-plugin (the real workerd
-// environment).
-//
-// What this suite pins:
-// - the pages reproduce the evacuation format (header / table / row /
-//   trailer; the trailer's counts equal the rows emitted) and the restore
-//   path accepts the gzipped lines unchanged — the project is readable
-//   again afterwards
-// - the first page records `project.exported` (the owner as actor) and
-//   the exported audit log carries that row
-// - owner only (members and admins 403, strangers the uniform 404); a
-//   cursor the server did not mint or whose marks are stale is 409; the
-//   per-project window is 429
-// - the identities companion lists the current members' provider
-//   identities (never a provider id of a non-member)
-// - an import job provisions the members with the chain's user ids so the
-//   first login on the destination lands on them (identity continuity),
-//   refuses a colliding account without writing anything, and reports the
-//   static codes
-
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
@@ -72,8 +50,6 @@ const restoreEnv = {
   DB: env.DB,
 };
 
-// The restore worker scans the product key layout (restore/jobs/ …), so
-// every test empties restore/ first (R2 is outside storage isolation)
 beforeEach(async () => {
   const listed = await bucket.list({ prefix: "restore/" });
   if (listed.objects.length > 0) {
@@ -110,7 +86,6 @@ async function exportPage(userId: string, cursor?: string): Promise<Response> {
   );
 }
 
-/** Pages the whole export as the CLI does (the lines in order, the pages for inspection). */
 async function exportAll(): Promise<{ lines: string[]; pages: WirePage[] }> {
   const lines: string[] = [];
   const pages: WirePage[] = [];
@@ -134,7 +109,6 @@ function parsedLine(line: string | undefined): Record<string, unknown> {
   return JSON.parse(line ?? "{}") as Record<string, unknown>;
 }
 
-/** Row lines per table line (the trailer's counts must equal these — an empty table counts 0). */
 function rowCounts(lines: readonly string[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const line of lines) {
@@ -172,7 +146,6 @@ async function jobResult(name: string): Promise<RestoreJobResult> {
   return (await object?.json()) as RestoreJobResult;
 }
 
-/** Exports the live project and parks the file (and the identities companion) in the bucket. */
 async function exportToBucket(): Promise<{
   readonly objectKey: string;
   readonly identitiesKey: string;
@@ -190,18 +163,12 @@ async function exportToBucket(): Promise<{
   return { objectKey, identitiesKey, trailer: parsedLine(lines[lines.length - 1]), identities };
 }
 
-/**
- * Asserts the destination DO materialized no tables: a pre-check-refused
- * import never touches the DO, and a reset DO holds nothing until genesis /
- * restore materializes it (Sc-7 / A-4).
- */
 async function expectDestinationUnmaterialized(): Promise<void> {
   expect(
     await queryProjectDo(projectId, "SELECT name FROM sqlite_master WHERE type = 'table'"),
   ).toEqual([]);
 }
 
-/** The live row count of every snapshot table (the export's trailer must say exactly this). */
 async function liveCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const table of PROJECT_DO_TABLES) {
@@ -211,7 +178,6 @@ async function liveCounts(): Promise<Record<string, number>> {
   return counts;
 }
 
-/** Writes an identities companion of the given shape and runs an import job named `name`. */
 async function importWith(
   name: string,
   objectKey: string,
@@ -235,7 +201,6 @@ async function d1Rows(query: string, ...bindings: (string | number)[]) {
   ).results;
 }
 
-/** The DO's schema version as the export's marks carry it (the latest recorded version). */
 function readProjectDoSchemaVersionOf(): number {
   return PROJECT_DO_LATEST_SCHEMA_VERSION;
 }
@@ -243,7 +208,6 @@ function readProjectDoSchemaVersionOf(): number {
 describe("project export (AUTH_SPEC §11-6)", () => {
   it("pages the project in the evacuation format, records project.exported, and the restore path accepts the file", async () => {
     await seedProjectActivity();
-    // Materialize the audit-head column (the trailer carries the head)
     expect((await requestJson("GET", "/audit-head", token(OWNER))).status).toBe(200);
     const { lines, pages } = await exportAll();
     const header = parsedLine(lines[0]);
@@ -251,25 +215,20 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     const trailer = parsedLine(lines[lines.length - 1]);
     expect(trailer["kind"]).toBe("trailer");
     expect(trailer["rows"]).toEqual(rowCounts(lines));
-    // … and those counts are the live tables' (not only self-consistent)
     expect(trailer["rows"]).toEqual(await liveCounts());
     expect(trailer["chainHeadSeq"]).toBe(fixture.head.seq);
     expect(trailer["chainHeadHashHex"]).toBe(fixture.head.hashHex);
     expect(pages[0]?.head.chainHeadHashHex).toBe(fixture.head.hashHex);
-    // The audit row is appended before the marks are taken: the first
-    // page's audit seq is that row's seq
     const exportedSeq = await queryProjectDo(
       projectId,
       "SELECT seq FROM audit_events WHERE event = 'project.exported'",
     );
     expect(pages[0]?.head.auditMaxSeq).toBe(exportedSeq[0]?.["seq"]);
-    // chain_entries is the last table (the restore's "chain comes last" rule)
     const tables = lines
       .map((line) => parsedLine(line))
       .filter((line) => line["kind"] === "table")
       .map((line) => line["table"]);
     expect(tables[tables.length - 1]).toBe("chain_entries");
-    // The export records itself: the audit row exists and is inside the export
     const exported = (await readAuditEvents(projectId)).filter(
       (event) => event["event"] === "project.exported",
     );
@@ -279,7 +238,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       chainHeadSeq: fixture.head.seq,
     });
     expect(lines.some((line) => line.includes('"project.exported"'))).toBe(true);
-    // The file restores into an empty DO and the project is readable again
     const objectKey = "do/export-test/roundtrip.ndjson.gz";
     await bucket.put(objectKey, await gzipLines(lines));
     await resetProjectDo(projectId);
@@ -328,9 +286,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           throw new Error("unexpected change");
         }
         if (n === 1) {
-          // A read served between pages appends audit rows past the bound:
-          // they are not exported and the trailer must say the bound, not
-          // the live maximum (ruling C revision, round 3)
           sql.exec(
             "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type) VALUES (?, ?, ?, 'var.read', 'user')",
             exportedSeq + 1,
@@ -356,8 +311,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(parsedLine(all[0])["kind"]).toBe("header");
     expect(parsedLine(all[all.length - 1])["kind"]).toBe("trailer");
     const live = await liveCounts();
-    // The row appended between pages is past the bound: the file's counts
-    // are the bound's, and so is the trailer
     expect(live["audit_events"]).toBe(exportedSeq + 1);
     const bounded = { ...live, audit_events: exportedSeq };
     expect(rowCounts(all)).toEqual(bounded);
@@ -366,11 +319,9 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(trailer["auditMaxSeq"]).toBe(exportedSeq);
     for (const page of pages) {
       expect(page.rows).toBeLessThanOrEqual(3);
-      // A page passes the byte bound by at most its last line (the row that crossed it)
       const last = page.lines[page.lines.length - 1] ?? "";
       expect(page.bytes - (new TextEncoder().encode(last).length + 1)).toBeLessThan(700);
     }
-    // Every row line of the concatenation follows its table line exactly once
     const tables = all.map((line) => parsedLine(line)).filter((line) => line["kind"] === "table");
     expect(new Set(tables.map((line) => line["table"])).size).toBe(tables.length);
   });
@@ -382,16 +333,13 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect((await exportPage(STRANGER)).status).toBe(404);
     expect((await requestJson("GET", "/export/identities", token(MEMBER))).status).toBe(403);
     expect((await requestJson("GET", "/export/identities", token(STRANGER))).status).toBe(404);
-    // An admin is not an owner either (ruling E)
     await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "admin"));
     expect((await exportPage(MEMBER)).status).toBe(403);
     expect((await requestJson("GET", "/export/identities", token(MEMBER))).status).toBe(403);
-    // Nothing was recorded for the refused calls
     const exported = (await readAuditEvents(projectId)).filter(
       (event) => event["event"] === "project.exported",
     );
     expect(exported).toHaveLength(0);
-    // The export row is class 2: an owner sees it in the audit read, a member does not
     await expectStatusOk(await exportPage(OWNER));
     const ownerView = await fetchEvents(token(OWNER), { eventPrefix: "project." });
     expect(ownerView.events.map((event) => event.event)).toContain("project.exported");
@@ -405,11 +353,9 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     const first = await exportPage(OWNER);
     expect(first.status).toBe(200);
     const head = ((await first.json()) as WirePage).head;
-    // A cursor the server never minted (well-formed base64url, wrong shape)
     const foreign = await exportPage(OWNER, base64Url(JSON.stringify({ hello: "world" })));
     expect(foreign.status).toBe(409);
     expect(await foreign.json()).toMatchObject({ _tag: "ExportChanged" });
-    // A cursor carrying the current marks continues (no header on a continuation)
     const mutation = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
     const cursorOf = (overrides: Record<string, unknown>) =>
       base64Url(
@@ -434,17 +380,10 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(continued.status).toBe(200);
     const page = (await continued.json()) as WirePage;
     expect(parsedLine(page.lines[0])["kind"]).toBe("table");
-    // A read between pages (the reader's pull appends var.read) does not
-    // restart the export: the audit log is exported up to the mark, and
-    // the rows past it belong to the next export (ruling C revision)
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     expect((await exportPage(OWNER, current)).status).toBe(200);
     const liveAudit = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_events");
     expect(Number(liveAudit[0]?.["n"])).toBeGreaterThan(head.auditMaxSeq);
-    // The cursor is the exporting owner's: another owner continuing it is
-    // refused (their export would have no audit row and no window of its
-    // own — ruling D revision), as is a cursor naming a row that is not the
-    // export's
     await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
     const afterPromotion = await exportPage(OWNER);
     expect(afterPromotion.status).toBe(200);
@@ -467,8 +406,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       });
     expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(200);
     expect((await exportPage(MEMBER, ownersCursor({}))).status).toBe(409);
-    // A cursor from another schema version (an export spanning a deploy
-    // that migrated the schema) restarts at the source (ruling C revision, round 5)
     expect(
       (
         await exportPage(
@@ -486,7 +423,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       ).status,
     ).toBe(409);
     expect((await exportPage(OWNER, ownersCursor({ exportedSeq: 1 }))).status).toBe(409);
-    // A cursor past the table order is refused too (never a 500)
     const beyond = base64Url(
       JSON.stringify({ ...JSON.parse(atob(current)), table: 999, started: false }),
     );
@@ -495,12 +431,9 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       JSON.stringify({ ...JSON.parse(atob(current)), table: 0.5, rowid: -2 }),
     );
     expect((await exportPage(OWNER, fractional)).status).toBe(409);
-    // A data-only write between pages (a push moves the mutation counter,
-    // no chain entry) makes the same cursor stale
     await createVariableOk(dek, "var-second-0002", "SECOND", "value-two");
     const stale = await exportPage(OWNER, ownersCursor({}));
     expect(stale.status).toBe(409);
-    // The window: the first page consumed one slot; an exhausted window is 429
     await queryProjectDo(
       projectId,
       "UPDATE lease_windows SET count = ?, window_start = ? WHERE kind = 'exported'",
@@ -510,7 +443,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     const limited = await exportPage(OWNER);
     expect(limited.status).toBe(429);
     expect(await limited.json()).toMatchObject({ _tag: "ExportRateLimited" });
-    // A continuation is not window-counted (the cursor path skips the window)
     expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(409);
   });
 
@@ -553,11 +485,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
         text,
         exportedSeq,
       );
-    // The stored row decodes to the cursor's head: the continuation is served
     expect((await exportPage(OWNER, cursor)).status).toBe(200);
-    // A payload column that is not JSON, is not the bound object, or names
-    // another head never binds — the continuation restarts like a foreign
-    // or stale cursor
     for (const bad of [
       "not json",
       "5",
@@ -578,7 +506,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       expect(refused.status).toBe(409);
       expect(await refused.json()).toMatchObject({ _tag: "ExportChanged" });
     }
-    // The row restored, the same cursor binds again
     await writePayload(payload);
     expect((await exportPage(OWNER, cursor)).status).toBe(200);
   });
@@ -588,7 +515,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     const first = await exportPage(OWNER);
     expect(first.status).toBe(200);
     const page = (await first.json()) as WirePage;
-    // Reads while the export runs append rows past the mark
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(MEMBER))).status).toBe(200);
     const lines = [...page.lines];
@@ -606,7 +532,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(trailer["rows"]).toEqual(rowCounts(lines));
     const live = await liveCounts();
     expect(live["audit_events"]).toBeGreaterThan(page.head.auditMaxSeq);
-    // The file restores (its counts are its own) and the restored log ends at the mark
     const objectKey = "do/export-test/bounded.ndjson.gz";
     await bucket.put(objectKey, await gzipLines(lines));
     await resetProjectDo(projectId);
@@ -625,7 +550,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
 
   it("the identities companion lists the current members' provider identities and names an unlinked member", async () => {
     await seedProjectActivity();
-    // A member on the chain with no linked identity on this deployment
     const DEV = testUserId("user-devmember-0010");
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member"));
     const response = await requestJson("GET", "/export/identities", token(OWNER));
@@ -642,7 +566,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       providerUserId: "9002",
       providerLogin: "user9002",
     });
-    // A non-member's identity is never listed
     expect(JSON.stringify(body)).not.toContain(STRANGER);
     expect(JSON.stringify(body)).not.toContain("9009");
   });
@@ -652,7 +575,6 @@ describe("project import (the restore job with identitiesKey)", () => {
   it("provisions the members with the chain's user ids, and the first login on the destination lands on them", async () => {
     await seedProjectActivity();
     const { objectKey, identitiesKey, trailer } = await exportToBucket();
-    // A fresh destination: no project DO, no accounts
     await resetProjectDo(projectId);
     await resetAuthDb();
     await bucket.put(
@@ -672,9 +594,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     if (outcome.status === "ok") {
       expect(outcome.verification.chainHeadHashHex).toBe(trailer["chainHeadHashHex"]);
     }
-    // The D1 side looks as if every member had logged in once and the owner
-    // had created the project here (users with the chain's ids, the login
-    // lookup rows, personal orgs, the projects row, the projection)
     expect((await d1Rows("SELECT id FROM users ORDER BY id")).map((row) => row["id"])).toEqual(
       [OWNER, MEMBER, READER].toSorted(),
     );
@@ -706,16 +625,11 @@ describe("project import (the restore job with identitiesKey)", () => {
       "SELECT payload FROM org_audit_events WHERE event = 'org.project_created'",
     );
     expect(JSON.parse(String(created[0]?.["payload"]))).toMatchObject({ imported: true });
-    // Identity continuity: a login with the owner's GitHub id resolves to the
-    // chain's user id, so the project is theirs on the destination
     const ownerToken = await cliToken(9001);
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, ownerToken);
     expect(pull.status).toBe(200);
     const listed = await requestJson("GET", "/chain", ownerToken);
     expect(listed.status).toBe(200);
-    // Re-running the same job: the DO refuses (not-empty); D1 keeps the
-    // exporter's project row and provisions what is missing — here nothing
-    // (ruling I revision), after a member's rows were removed, that member
     await bucket.put(
       "restore/jobs/import-2.json",
       JSON.stringify({ objectKey, target: "production", identitiesKey }),
@@ -727,8 +641,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       identities: { kind: "provisioned", existing: 3, created: 0, members: 3, project: "kept" },
     });
     expect(await d1Rows("SELECT COUNT(*) AS n FROM projects")).toEqual([{ n: 1 }]);
-    // A member who has not logged in here yet: no account, no org (what a
-    // member added after the first import looks like)
     await env.DB.batch([
       env.DB.prepare("DELETE FROM project_members WHERE user_id = ?").bind(READER),
       env.DB.prepare("DELETE FROM memberships WHERE user_id = ?").bind(READER),
@@ -756,7 +668,6 @@ describe("project import (the restore job with identitiesKey)", () => {
         "SELECT COUNT(*) AS n FROM org_audit_events WHERE event = 'org.project_created'",
       ),
     ).toEqual([{ n: 1 }]);
-    // Somebody else's project row (another org) refuses the import
     await env.DB.batch([
       env.DB.prepare(
         "INSERT INTO organizations (id, slug, name, created_at) VALUES ('org-other-0001', 'other-org', 'Other', 0)",
@@ -773,11 +684,9 @@ describe("project import (the restore job with identitiesKey)", () => {
       code: "import-refused",
       identities: { kind: "refused", code: "project-exists" },
     });
-    // The results carry no project id (the same discipline as restores)
     expect(JSON.stringify(outcome)).not.toContain(projectId);
   });
 
-  /** The triggers a snapshot table carries: the three mutation triggers on a tracked one, the audit write trigger on the audit log, none elsewhere. */
   function expectedTriggers(table: string): string[] {
     if (isMutationTracked(table)) {
       return [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`];
@@ -785,7 +694,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     return table === "audit_events" ? ["mutation_audit_events_write"] : [];
   }
 
-  /** The mutation counter's current value. */
   async function counterSeq(): Promise<number> {
     const rows = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
     return Number(rows[0]?.["seq"]);
@@ -801,7 +709,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       );
       expect(triggers.map((row) => row["name"])).toEqual(expectedTriggers(table));
     }
-    // No other table carries a trigger (the mutation triggers go on the declared tables only — ruling C revision, round 5)
     const triggered = await queryProjectDo(
       projectId,
       "SELECT DISTINCT tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY tbl_name",
@@ -812,12 +719,9 @@ describe("project import (the restore job with identitiesKey)", () => {
         .every((table) => PROJECT_DO_TABLES.includes(table)),
     ).toBe(true);
     const before = await counterSeq();
-    // A change by a path no entry point knows about (a raw statement) still moves it
     await queryProjectDo(projectId, "UPDATE variables SET name = name");
     const after = await counterSeq();
     expect(after).toBeGreaterThan(before);
-    // A write-class audit row (a dismissal's only effect) moves it; a
-    // read-path row does not (ruling C revision, round 6)
     const auditRow = (event: string, rowId: string) =>
       queryProjectDo(
         projectId,
@@ -830,8 +734,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(afterWrite).toBe(after + 1);
     await auditRow("var.read", "fe".repeat(16));
     expect(await counterSeq()).toBe(afterWrite);
-    // A fresh DO's audit write trigger is the text the re-assert expects:
-    // its first re-open performs no DDL (the schema row stays — round 9)
     const auditTrigger = await queryProjectDo(
       projectId,
       "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
@@ -843,9 +745,6 @@ describe("project import (the restore job with identitiesKey)", () => {
         "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
       ),
     ).toEqual(auditTrigger);
-    // The trigger's deny list is re-asserted at every open (ruling C
-    // revision, round 7): a deployed trigger naming fewer read-path rows is
-    // re-created with the list the code carries
     await queryProjectDo(projectId, "DROP TRIGGER mutation_audit_events_write");
     await queryProjectDo(
       projectId,
@@ -858,8 +757,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     );
     expect(String(reasserted[0]?.["sql"])).toContain("'server.lease_issued'");
     expect(String(reasserted[0]?.["sql"])).toContain("'project.exported'");
-    // Any other drift of the trigger's text is re-created too (the whole
-    // stored text is compared — ruling C revision, round 8) …
     const current = String(reasserted[0]?.["sql"]);
     await queryProjectDo(projectId, "DROP TRIGGER mutation_audit_events_write");
     await queryProjectDo(projectId, current.replace("seq = seq + 1", "seq = seq + 2"));
@@ -869,9 +766,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
     );
     expect(String(redone[0]?.["sql"])).toBe(current);
-    // … while an up-to-date trigger is left alone at an open: no DDL (the
-    // schema row is the same row; a later object keeps a re-creation from
-    // reusing its rowid)
     await queryProjectDo(projectId, "CREATE TABLE later_marker (id INTEGER PRIMARY KEY)");
     await evictProjectDo(projectId);
     const untouched = await queryProjectDo(
@@ -880,7 +774,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     );
     expect(untouched).toEqual(redone);
     await queryProjectDo(projectId, "DROP TABLE later_marker");
-    // … while the bounded and drift tables do not
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', 1, 1)",
@@ -890,7 +783,6 @@ describe("project import (the restore job with identitiesKey)", () => {
 
   it("refuses a companion read at another chain head than the file's, and accepts a re-run under a co-owner's project row", async () => {
     await seedProjectActivity();
-    // A second owner on the chain before the export
     await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
     const { objectKey, identitiesKey, identities } = await exportToBucket();
     await resetProjectDo(projectId);
@@ -915,8 +807,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       kind: "provisioned",
       project: "created",
     });
-    // The co-owner re-exports the companion: the row under the first
-    // owner's org is a re-run, not someone else's project (ruling I revision)
     expect(
       (await importWith("import-coowner", objectKey, { ...identities, exportedBy: MEMBER }))
         .identities,
@@ -929,7 +819,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     const { lines } = await exportAll();
     await resetProjectDo(projectId);
     await resetAuthDb();
-    // A colliding account: refused by the pre-check, the DO stays empty
     await seedUser("user-somebody-0099", 9002);
     const conflict = await importWith("import-pre-conflict", objectKey, identities);
     expect(conflict).toEqual({
@@ -942,8 +831,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       env.DB.prepare("DELETE FROM linked_identities"),
       env.DB.prepare("DELETE FROM users"),
     ]);
-    // A snapshot whose chain was altered (one entry's hash column) is
-    // refused before the restore — the verifier the DO runs on load, run first
     const tampered = lines.map((line) => {
       const parsed = parsedLine(line);
       if (parsed["kind"] !== "row" || parsed["table"] !== "chain_entries") {
@@ -960,8 +847,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       code: "snapshot-chain-invalid",
     });
     await expectDestinationUnmaterialized();
-    // A drill with the companion rehearses the import (no drill namespace
-    // here, so the DO half is target-unavailable); D1 is untouched
     await bucket.put(
       "restore/jobs/import-drill.json",
       JSON.stringify({ objectKey, target: "drill", identitiesKey }),
@@ -981,7 +866,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     const { objectKey, identitiesKey } = await exportToBucket();
     await resetProjectDo(projectId);
     await resetAuthDb();
-    // Somebody logged in with the member's GitHub id before the import
     await seedUser("user-somebody-0099", 9002);
     await bucket.put(
       "restore/jobs/import-conflict.json",
@@ -996,10 +880,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     });
     expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 1 }]);
     expect(await d1Rows("SELECT COUNT(*) AS n FROM projects")).toEqual([{ n: 0 }]);
-    // The operator removes the colliding account and resubmits: the DO is
-    // restored now (the pre-check refused before touching it) and the D1
-    // step runs. A job whose D1 step failed after the restore is retried
-    // the same way on the not-empty DO
     await env.DB.batch([
       env.DB.prepare("DELETE FROM linked_identities"),
       env.DB.prepare("DELETE FROM users"),
@@ -1019,7 +899,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       project: "created",
     });
     expect((await requestJson("GET", "/chain", await cliToken(9002))).status).toBe(200);
-    // A missing companion and a malformed one are static codes
     await bucket.put("restore/identities-bad.json", "not json");
     await bucket.put(
       "restore/jobs/import-missing.json",
@@ -1052,7 +931,6 @@ describe("project import (the restore job with identitiesKey)", () => {
     const { objectKey, identities } = await exportToBucket();
     await resetProjectDo(projectId);
     await resetAuthDb();
-    // The companion is confirmed against the chain before anything is written
     const ghost = {
       ...identities,
       identities: [
@@ -1096,7 +974,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       code: "identities-malformed",
     });
     expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 0 }]);
-    // The chain's owner id is held by somebody with another GitHub id
     await seedUser(OWNER, 9777);
     expect((await importWith("import-taken", objectKey, identities)).identities).toEqual({
       kind: "refused",
@@ -1106,7 +983,6 @@ describe("project import (the restore job with identitiesKey)", () => {
       env.DB.prepare("DELETE FROM linked_identities"),
       env.DB.prepare("DELETE FROM users"),
     ]);
-    // A member who already logged in here with the same identity is kept as-is
     await seedUser(MEMBER, 9002);
     const outcome = await importWith("import-existing", objectKey, identities);
     expect(outcome.identities).toEqual({

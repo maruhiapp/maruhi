@@ -1,31 +1,10 @@
-# Operations foundation H3 — scheduled D1 export (docs/notes/hosted-ops.md
-# §2-G / §4-1) and a trip-wire on total D1 size (same §3 row 1). For the
-# operator (hosted) account only: runs only when the repository variable
-# OPS_BACKUP_ENABLED is "true" (disabled on forks and self-hosts).
-#
-# The artifact (SQL dump) is encrypted to an age public key and placed under
-# d1/ in the same R2 bucket as the DO backups. The private key lives only on
-# the operator's device; the API token is an Account API token with D1: Edit +
-# Workers R2 Storage: Edit (measured 2026-09-03 — with D1 Read the export
-# fails authentication, and with bucket-scoped Bucket Item permission the
-# object put returns 403; hosted-ops.md §2-G). Neither artifacts nor keys are
-# placed in the repository / Actions artifacts (on a public repository an
-# artifact could be fetched by a third party).
-#
-# Required Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
-# Required Variables: OPS_BACKUP_ENABLED=true / OPS_BACKUP_BUCKET (bucket name) /
-#                     OPS_BACKUP_AGE_RECIPIENT (age recipient public key "age1…")
 name: ops-backup
 
 on:
   schedule:
-    # Low-traffic hour (during export D1 blocks other requests — primary source)
     - cron: "41 2 * * *"
   workflow_dispatch:
 
-# If cron and a manual run overlap, two exports run in parallel and block D1
-# for twice as long (during export D1 blocks other requests). No cancellation
-# (an in-flight export is not discarded)
 concurrency:
   group: ops-backup
   cancel-in-progress: false
@@ -37,7 +16,6 @@ env:
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
   CF_SEND_TELEMETRY: "false"
-  # hosted-ops.md §3 row 1: warning threshold for total D1 size (decimal 5 GB)
   D1_SIZE_WARN_BYTES: "5000000000"
 
 jobs:
@@ -50,10 +28,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # This job carries the operator's Cloudflare Account API token (D1 + R2
-      # edit), so it restores no Actions cache (pinned by
-      # apps/cli/test/workflows-supply-chain.test.ts): Bun comes from the
-      # SHA-256-pinned zip
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
@@ -62,11 +36,6 @@ jobs:
       - name: Install age
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
 
-      # --mode hosted resolves the operator DB — the D1 API takes the database
-      # ID (UUID), never the binding name, so scripts/d1-export.ts resolves it
-      # from cloudflare.config.ts, calls the export endpoint directly (cf has
-      # no `d1 export` command since 1.0.0-beta.6) and owns the poll +
-      # signed-URL download loop wrangler d1 export used to hide
       - name: Export D1 (hosted)
         working-directory: apps/server
         env:
@@ -93,18 +62,12 @@ jobs:
           bunx cf r2 objects put "d1/$stamp.sql.age" --bucket-name "$BUCKET" --file "$RUNNER_TEMP/d1.sql.age" --content-type application/octet-stream
           rm -f "$RUNNER_TEMP/d1.sql.age"
 
-      # Trip-wire on total D1 size (hosted-ops.md §3 row 1): at or above the
-      # threshold the job fails, reaching the operator via GitHub's failure
-      # notification (the worker side does not hold D1's measured size)
       - name: D1 size trip-wire
         working-directory: apps/server
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # wrangler 4.124 renamed the API's file_size to database_size; accept
-          # either name in cf d1 get's JSON (and a wrapped {result: {...}} shape
-          # if cf ever prints the raw API envelope)
           set -o pipefail
           size=$(bunx cf d1 get "$(bun scripts/d1-id.ts hosted)" | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); const v = o.database_size ?? o.file_size ?? o.result?.database_size ?? o.result?.file_size; v === undefined ? "" : v')
           case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from cf d1 get"; exit 1 ;; esac

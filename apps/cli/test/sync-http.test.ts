@@ -1,23 +1,3 @@
-// Tests for `maruhi sync`'s http driver: the declarative-preset assembly
-// (values may only be placed in body entries — sync-http.ts) and `sync
-// apply` end-to-end against the fake vendor APIs (test/support/
-// vendor-api.ts — stateful).
-//
-// Properties pinned down: values and tokens never appear on the URL,
-// headers (other than Authorization), stdout, stderr, or error text; the
-// request-body shapes (Workers = merge-patch secrets / Vercel = array +
-// upsert); how deletions are expressed (Workers = null / Vercel = list →
-// DELETE); 429 / 5xx retries; scrubbing of failure responses (value /
-// token echoes); the missing-Worker (10007) guidance; partial success
-// (Vercel's failed) split by name and left on the receipt; the
-// integration token never travels to the sync target; plan never
-// touches the vendor API.
-// Netlify: lists to check presence and then POSTs (new) / PATCHes (one
-// context of an existing key) per variable; the secret default and
-// scopes; deletion by value id (the last value deletes the whole key); a
-// failed POST to an existing key turns into a PATCH on the next apply;
-// partial success; 429 / 5xx.
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,8 +136,6 @@ async function variable(input: {
     version: input.version,
     plaintext: input.plaintext,
     writer: owner,
-    // The head after every environment was created (straddling the
-    // per-environment creation positions 2 / 3 / 4)
     head: headOf(built, built.entries.length),
   });
   return { variableId: input.variableId, statement, value };
@@ -219,7 +197,6 @@ function vercelTarget(overrides: Record<string, unknown> = {}): Record<string, u
 const NETLIFY_ACCOUNT = "my-team";
 const NETLIFY_SITE = "0f1e2d3c-site-id";
 
-/** A Netlify target (`driver` omitted = http is the only driver). */
 function netlifyTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     preset: "netlify",
@@ -343,7 +320,6 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** Values and tokens never appear on stdout / stderr / the URL / headers (other than Authorization). */
 function expectNoSecretLeak(env: TestEnv, requests: readonly MockRequest[]): void {
   const shown = [
     allOutput(env),
@@ -385,7 +361,6 @@ async function decryptReceipt(fixture: Fixture, target: string): Promise<Record<
   return JSON.parse(decoder.decode(result.value)) as Record<string, unknown>;
 }
 
-/** The write material for one variable (for checking batch splitting). */
 function write(name: string) {
   return {
     name,
@@ -393,7 +368,6 @@ function write(name: string) {
   };
 }
 
-/** Runs one target's config through the strict parser (result or reason). */
 function base(target: Record<string, unknown>) {
   return parseSyncConfig(
     JSON.stringify({ version: 1, receipts: { environment: "r" }, targets: { t: target } }),
@@ -401,7 +375,6 @@ function base(target: Record<string, unknown>) {
   );
 }
 
-/** Extracts target t from the parser's result (a reason string would violate the test's premise). */
 function targetOf(parsed: ReturnType<typeof base>): SyncTarget {
   if (typeof parsed === "string") {
     throw new Error(parsed);
@@ -409,18 +382,15 @@ function targetOf(parsed: ReturnType<typeof base>): SyncTarget {
   return parsed.targets.get("t") as SyncTarget;
 }
 
-/** A stub that returns a 429 (Retry-After: 0) only on the first call. */
 const rateLimitedOnce: VendorOverride = (call) =>
   call === 1 ? { status: 429, headers: { "retry-after": "0" } } : undefined;
 
-/** The preset's write-request declarations (upsert = one, create-or-update = two). */
 function writeSpecsOf(preset: HttpPreset) {
   return preset.write.kind === "upsert"
     ? [preset.write.request]
     : [preset.write.create, preset.write.update];
 }
 
-/** Every path / query token appearing in the preset's declarations (write, list, delete). */
 function pathTokensOf(preset: HttpPreset): PathToken[] {
   const lists = [
     ...(preset.write.kind === "create-or-update" ? [preset.write.list] : []),
@@ -449,8 +419,6 @@ describe("the http presets' declarations", () => {
           expect(["option", "id", "name"]).toContain(token.kind);
         }
       }
-      // The name token appears only on requests carrying a single
-      // variable (`single` writes, per-item deletes)
       for (const spec of writeSpecsOf(preset)) {
         if (spec.entries !== "single") {
           expect(
@@ -458,7 +426,6 @@ describe("the http presets' declarations", () => {
           ).toBe(false);
         }
       }
-      // The host is fixed (not replaceable via config)
       expect(preset.host).toMatch(/^api\.(cloudflare|vercel|netlify)\.com$/);
     }
   });
@@ -542,8 +509,6 @@ describe("the http presets' declarations", () => {
         netlifyTarget({ options: { accountId: "a", siteId: "s", context: "dev", secret: true } }),
       ),
     ).toContain("secret cannot be true when context is dev");
-    // The production default: production / all count as production,
-    // the rest don't
     for (const [context, production] of [
       ["production", true],
       ["all", true],
@@ -584,8 +549,6 @@ describe("the http presets' declarations", () => {
     expect(base(vercelTarget({ options: { environment: "preview", project: "x" } }))).toContain(
       "targets.t.options has unknown keys (project)",
     );
-    // A same-environment token is silently dropped from "all"; on an
-    // explicit list it's a config error
     const sameEnvAll = base(
       cloudflareTarget({ token: { environment: SOURCE_ENV, name: "CF_API_TOKEN" } }),
     );
@@ -599,7 +562,6 @@ describe("the http presets' declarations", () => {
         }),
       ),
     ).toContain("targets.t.variables lists the token variable");
-    // A driver-less config takes the preset's default driver (exec)
     const driverless = base({
       preset: "vercel",
       environment: "p",
@@ -640,8 +602,6 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.cloudflare.com with the token from variable CF_API_TOKEN in environment tokens",
     );
-    // The header line names the sync destination via the preset's
-    // describeOptions (name / environment)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target worker (environment prod -> cloudflare-workers my-worker staging via http)",
     );
@@ -745,8 +705,6 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(down.requests).toHaveLength(3);
     const errors2 = fixture2.env.errors.join("\n");
     expect(errors2).toContain("the Cloudflare API answered 503 (3 attempts)");
-    // Exhausted attempts aren't a 'refusal' — worded as a send
-    // failure
     expect(errors2).toContain("the request to the Cloudflare API failed while writing");
     expectNoSecretLeak(fixture2.env, down.requests);
   });
@@ -814,8 +772,6 @@ describe("maruhi sync apply (http, Cloudflare Workers)", () => {
     expect(await decryptReceipt(fixture, "worker")).toMatchObject({
       variables: { ALPHA: 3, BETA: 1 },
     });
-    // Second run: reads the receipt (the new version) from the same
-    // floor, and the token reads too
     expect(await sync(fixture, "plan", "worker"), fixture.env.errors.join("\n")).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("2 unchanged");
     expectNoSecretLeak(fixture.env, cf.requests);
@@ -890,7 +846,6 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(list.method).toBe("GET");
     expect(list.query).toEqual({ target: "preview", teamId: "team_9" });
     expect(remove.method).toBe("DELETE");
-    // Deletes only preview's OLD (the production namesake survives)
     expect(remove.path).toBe("/v10/projects/prj_123/env/env_old");
     expect(vercel.envs.map((env) => env.key).toSorted()).toEqual(["ALPHA", "BETA", "OLD"]);
     expect(await decryptReceipt(fixture, "web")).toMatchObject({
@@ -994,7 +949,6 @@ describe("maruhi sync apply (http, Vercel)", () => {
     expect(fixture.env.errors.join("\n")).toContain(
       "the Vercel API returned a paginated list of variables, so maruhi could not confirm that GONE is gone from the target. It stays in the receipt",
     );
-    // No receipt is written (GONE remains = the next apply retries)
     expect(fixture.receipts.writes).toEqual([]);
   });
 
@@ -1070,8 +1024,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(update.path).toBe(`/api/v1/accounts/${NETLIFY_ACCOUNT}/env/BETA`);
     expect(update.query).toEqual({ site_id: NETLIFY_SITE });
     expect(update.body).toEqual({ context: "deploy-preview", value: BETA_VALUE });
-    // The target's state: ALPHA is new (secret), BETA kept its
-    // production value and got a deploy-preview added
     expect(netlify.vars.get("ALPHA")?.is_secret).toBe(true);
     expect(netlify.vars.get("BETA")?.values.map((value) => [value.context, value.value])).toEqual([
       ["production", "keep"],
@@ -1080,8 +1032,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "Sending to api.netlify.com with the token from variable NETLIFY_TOKEN in environment tokens",
     );
-    // The header line names the sync destination via the preset's
-    // describeOptions (context / branch)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target site (environment prod -> netlify deploy-preview via http)",
     );
@@ -1094,8 +1044,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       preset: "netlify",
       variables: { ALPHA: 3, BETA: 1 },
     });
-    // Second run: both are in the list, so PATCH only (no POST). plan
-    // never touches the API
     netlify.requests.length = 0;
     expect(await sync(fixture, "plan", "site")).toBe(0);
     expect(netlify.requests).toEqual([]);
@@ -1158,8 +1106,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(bodies[0]).toEqual([
       { key: "ALPHA", is_secret: false, values: [{ context: "all", value: ALPHA_VALUE }] },
     ]);
-    // plain: ALPHA / BETA are in the list (made by everywhere) = PATCH
-    // gets the production value
     expect(bodies[2]).toEqual({ context: "production", value: ALPHA_VALUE });
     expect(bodies[4]).toEqual({
       context: "branch",
@@ -1208,8 +1154,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
     const calls = netlify.requests.map((request) => [request.method, request.path]);
-    // GONE (absent from the list = counts as deleted, no DELETE sent)
-    // → OLD (one value) → ONLY (the whole key)
     expect(calls).toEqual([
       ["GET", `/api/v1/accounts/${NETLIFY_ACCOUNT}/env`],
       ["GET", `/api/v1/accounts/${NETLIFY_ACCOUNT}/env`],
@@ -1241,9 +1185,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(errors).toContain("error 422: Value for BETA is invalid: [redacted]");
     expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
     expectNoSecretLeak(fixture.env, netlify.requests);
-    // The shape where the same name was created between the list and
-    // the send (a POST to an existing key surfaces as the target's
-    // failure)
     const raced = netlifyFake({
       override: (call, request) =>
         call === 1 && request.method === "GET" ? { status: 200, json: [] } : undefined,
@@ -1261,8 +1202,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHandlers: raced.handlers,
       vendorHosts: ["api.netlify.com"],
     });
-    // The POST is refused for an existing key (422) → re-list → ALPHA
-    // is there → PATCH. It lands in the same apply
     expect(await sync(fixture2, "apply", "site"), fixture2.env.errors.join("\n")).toBe(0);
     expect(raced.requests.map((request) => request.method)).toEqual([
       "GET",
@@ -1289,7 +1228,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site")).toBe(1);
-    // GET → POST ALPHA → POST BETA(422)→ GET × 3(503)
     expect(flaky.requests.map((request) => request.method)).toEqual([
       "GET",
       "POST",
@@ -1309,7 +1247,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
   });
 
   it("even if one variable's send exhausts its attempts, it's reported as that variable's failure and the already-delivered names stay on the receipt", async () => {
-    // ALPHA's POST passes; BETA's POST gets 503 × 3
     let posts = 0;
     const down = netlifyFake({
       override: (_call, request) => {
@@ -1335,8 +1272,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     ]);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain("the Netlify API answered 503 (3 attempts)");
-    // Exhausted attempts aren't a 'refusal' — worded as a send
-    // failure
     expect(errors).toContain(
       "the request to the Netlify API failed while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
@@ -1369,8 +1304,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site")).toBe(1);
-    // The write batch (GET → POST ALPHA) delivered; the delete batch's
-    // GET got 503 × 3
     expect(flaky.requests.map((request) => request.method)).toEqual([
       "GET",
       "POST",
@@ -1397,8 +1330,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
-    // GET → POST ALPHA (stored but 503) → POST ALPHA (retry = 422) →
-    // GET → PATCH ALPHA → POST BETA
     expect(lossy.requests.map((request) => request.method)).toEqual([
       "GET",
       "POST",
@@ -1435,18 +1366,13 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(errors).toContain(
       "BETA already exists at the target with is_secret off, and the config asks for it on. Netlify cannot turn an existing variable into a secret",
     );
-    // Don't call something that was never sent 'refused'
     expect(errors).toContain(
       "maruhi did not send the request while writing BETA (delivered before that: 1 variable written, 0 deleted)",
     );
-    // Nothing was sent to BETA (its value stays readable = no maruhi
-    // value was placed)
     expect(netlify.requests.map((request) => request.method)).toEqual(["GET", "POST"]);
     expect(netlify.vars.get("BETA")?.values[0]?.value).toBe("readable");
     expect(await decryptReceipt(fixture, "site")).toMatchObject({ variables: { ALPHA: 3 } });
     expectNoSecretLeak(fixture.env, netlify.requests);
-    // With secret: false it writes to the non-secret variable (the
-    // default secret explicitly lowered)
     const plain = netlifyFake({ initial });
     const fixture2 = await startFixture({
       targets: {
@@ -1474,7 +1400,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
       vendorHosts: ["api.netlify.com"],
     });
     expect(await sync(fixture, "apply", "site"), fixture.env.errors.join("\n")).toBe(0);
-    // The list gets 429 → retry → POST × 2
     expect(limited.requests.map((request) => request.method)).toEqual([
       "GET",
       "GET",
@@ -1509,8 +1434,6 @@ describe("maruhi sync apply (http, Netlify)", () => {
     expect(await sync(fixture3, "apply", "site")).toBe(1);
     const listingErrors = fixture3.env.errors.join("\n");
     expect(listingErrors).toContain("HTTP 401 while listing variables at the target");
-    // The list did get a response: word it as a listing failure, not
-    // 'nothing sent'
     expect(listingErrors).toContain("the Netlify API did not list the existing variables");
     expect(fixture3.receipts.writes).toEqual([]);
     expectNoSecretLeak(fixture3.env, wrongToken.requests);

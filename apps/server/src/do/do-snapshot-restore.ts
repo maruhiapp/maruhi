@@ -1,11 +1,3 @@
-// The restore of an evacuation into an empty project DO
-// (docs/notes/hosted-ops.md §2-E / §5-2): the lines (do-snapshot.ts's
-// format) are checked in order and batch-inserted table by table,
-// chain_entries through a staging table that is promoted only after the
-// row counts, the trailer's watermarks and the audit log are verified.
-// Run by do-ops.ts's restoreProgram; the mirror (do-mirror.ts) shares
-// the line and column checks.
-
 import { Data, Effect } from "effect";
 
 import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
@@ -20,57 +12,34 @@ import type {
 } from "./do-snapshot.ts";
 import { CHAIN_TABLE, decodeScalar, decodeSnapshotLine } from "./do-snapshot.ts";
 
-/** DO SQLite bound-parameter limit (per statement — durable-objects/platform/limits). */
 export const MAX_BOUND_PARAMETERS = 100;
 
-/** Whether chain_entries is empty (the restore acceptance condition — creates no overwrite path). */
 function isProjectDoEmpty(sql: SqlStorage): boolean {
   return sql.exec(`SELECT 1 FROM ${CHAIN_TABLE} LIMIT 1`).toArray().length === 0;
 }
 
-/** The restore staging table for chain_entries. Not listed in `tables`,
- * so it never appears in evacuations; leftovers are DROPped at the start
- * / completion / failure of the next restore.
- */
 const CHAIN_STAGING_TABLE = "chain_entries_restore";
 
-/** Restore refusal reasons (static codes — safe to put in result files and logs). */
 export type RestoreFailureCode =
   | "not-empty"
   | "object-missing"
-  /** The object's etag is not the one the import's pre-check verified (replaced between the two reads). */
   | "object-changed"
   | "malformed"
   | "schema-mismatch"
   | "trailer-missing"
   | "row-count-mismatch"
-  /** The trailer's chain / audit watermarks do not match the restored rows. */
   | "trailer-mismatch"
   | "unknown-table";
 
-/**
- * The refusal in the Effect error channel (the code is the static
- * RestoreFailureCode — safe to put in result files and logs). Inside
- * transactionSync closures and the stream loop it is still thrown — the
- * throw is what rolls a batch back and stops the read — and the
- * boundary's `catch` turns it back into the typed error (the only place
- * an instanceof may remain).
- */
 export class RestoreRefusedError extends Data.TaggedError("RestoreRefused")<{
   readonly code: RestoreFailureCode;
 }> {}
 
 export interface RestoreSnapshotInput {
-  /** DO storage with transactionSync (sql is taken from here). */
   readonly storage: DurableObjectStorage;
   readonly tables: readonly string[];
   readonly schemaVersion: number;
   readonly body: ReadableStream;
-  /**
-   * Asked before each chunk of the audit-head derivation: false = hash and
-   * check, but store no further head (the storage guard's rejection line —
-   * AUTH_SPEC §11-7 / §12-8; do-ops.ts's restoreProgram measures it).
-   */
   readonly storesAuditHeads: () => boolean;
 }
 
@@ -78,7 +47,6 @@ export interface RestoreSnapshotResult {
   readonly header: SnapshotHeader;
   readonly trailer: SnapshotTrailer;
   readonly rows: Readonly<Record<string, number>>;
-  /** The audit head at the restored log's end, as the derivation computed it (stored or not — AUTH_SPEC §11-7). */
   readonly auditHeadHashHex: string;
 }
 
@@ -108,21 +76,12 @@ async function* lines(body: ReadableStream): AsyncGenerator<string> {
 
 export function parseLine(text: string): SnapshotLine {
   try {
-    // Decoded against the wire union: a non-JSON line, or a shape no
-    // line kind writes, is a corrupted evacuation (fold the reason into
-    // a static code — the body is not carried)
     return decodeSnapshotLine(text);
   } catch {
     throw new RestoreRefusedError({ code: "malformed" });
   }
 }
 
-/**
- * The thrown value crossing the async boundary — inside the reader and
- * its transactionSync batches the refusal is a throw (that is what
- * rolls a batch back); here it is turned back into the typed error. The
- * only place an instanceof may remain; any other throw is a defect.
- */
 const toRestoreRefusal = (error: unknown): RestoreRefusedError => {
   if (error instanceof RestoreRefusedError) {
     return error;
@@ -136,7 +95,6 @@ function wipeTables(sql: SqlStorage, tables: readonly string[]): void {
   }
 }
 
-/** Buffers one table's rows and inserts each batch in a single transaction. */
 class RowInserter {
   #buffer: (readonly SnapshotScalar[])[] = [];
   readonly #rowsPerStatement: number;
@@ -159,7 +117,6 @@ class RowInserter {
     }
   }
 
-  /** Commits the buffered rows in one transaction (transactionSync). */
   flush(): void {
     if (this.#buffer.length === 0) {
       return;
@@ -180,19 +137,11 @@ class RowInserter {
   }
 }
 
-/**
- * Validates and returns the column names of an evacuation's table line
- * (the wire schema has already decoded them as strings). Any miss — not
- * an exact match including order with the live table's column names —
- * is "malformed" (column names are embedded as SQL identifiers, so only
- * values that pass here are used).
- */
 export function acceptColumns(
   sql: SqlStorage,
   table: string,
   columns: readonly string[],
 ): readonly string[] {
-  // table is already checked against the set of known tables (a value safe to embed as an identifier)
   const live = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
   if (
     columns.length === 0 ||
@@ -219,7 +168,6 @@ const strField = (record: Record<string, unknown>, key: string): string | null =
   return typeof value === "string" ? value : null;
 };
 
-/** A payload field that is an array of strings (a grant's scope list), or null. */
 const strArrayField = (record: Record<string, unknown>, key: string): readonly string[] | null => {
   const value = record[key];
   return Array.isArray(value) && value.every((item) => typeof item === "string")
@@ -227,7 +175,6 @@ const strArrayField = (record: Record<string, unknown>, key: string): readonly s
     : null;
 };
 
-/** One environment tuple of a checkpoint entry, with the entry's chain position (CRYPTO_SPEC §6.2). */
 interface ChainCheckpointTuple {
   readonly seq: number;
   readonly entryHashHex: string;
@@ -237,36 +184,12 @@ interface ChainCheckpointTuple {
   readonly valuesDigestHex: string;
 }
 
-/**
- * The projection state the staged chain anchors, derived from the staged
- * entries in seq order (the same derivation as do-mirror.ts's
- * stagedChainAnchors, read against the restore staging table): the
- * environment lifecycle (create opens epoch 1, rotate pushes its
- * newEpoch, delete drops the checkpoint baseline), the latest checkpoint
- * tuple per environment, and the grants entries apply. An entry whose
- * JSON does not parse, or whose payload fields are not of the shapes
- * read here, is skipped: the staged chain's content is verified by
- * import-check or at DO load (the restore deliberately holds no chain
- * verifier), and a chain carrying such an entry fails that verification
- * before it can ever serve, so on every chain that reaches a reader the
- * derivation below is exact.
- * create / rotate / delete / checkpoint are never four-eyes proposals
- * (the policy target set is closed — CRYPTO_SPEC §6.2 — and a propose
- * of one is `approval-not-required`), so they are read from their
- * direct entries only; grant_server IS a target, so an approve entry
- * also applies the grant its referenced propose carries.
- */
 interface StagedChainAnchors {
-  /** Environments the chain created (live and deleted alike). */
   readonly created: ReadonlySet<string>;
-  /** Created environments the chain has not deleted. */
   readonly live: ReadonlySet<string>;
   readonly deleted: ReadonlySet<string>;
-  /** The chain's current epoch per live environment (epochs are exactly 1..current: create is 1, rotate is always +1). */
   readonly currentEpoch: ReadonlyMap<string, number>;
-  /** The latest checkpoint tuple per environment (a deletion drops the baseline). */
   readonly latest: ReadonlyMap<string, ChainCheckpointTuple>;
-  /** Per seq, the scope of the grant that seq applies (a direct grant_server, or the approve that applied a proposed one). */
   readonly grantScopes: ReadonlyMap<number, readonly string[]>;
 }
 
@@ -399,8 +322,6 @@ function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
 }
 
 export function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
-  // A non-header line in the header's slot (the wire schema has already
-  // refused a bad format/version at decode)
   if (line.kind !== "header") {
     throw new RestoreRefusedError({ code: "malformed" });
   }
@@ -410,15 +331,12 @@ export function acceptHeader(line: SnapshotLine, schemaVersion: number): Snapsho
   return line;
 }
 
-/** A state machine that consumes an evacuation's lines in order and batch-inserts per table. */
 class RestoreReader {
   header: SnapshotHeader | null = null;
   trailer: SnapshotTrailer | null = null;
   readonly rows: Record<string, number> = {};
   #inserter: RowInserter | null = null;
-  /** The logical table name under accept; distinct from the insert target (chain_entries is routed to staging). */
   #table: string | null = null;
-  /** The tables this snapshot has already begun (a second table line for one is refused — #beginTable). */
   readonly #begunTables = new Set<string>();
   #chainColumns: readonly string[] | null = null;
 
@@ -453,7 +371,6 @@ class RestoreReader {
     }
   }
 
-  /** Verifies every table's row count against the trailer, the trailer's watermarks, the restored rows' declared chain heads and the chain-anchored presence / binding rules against the staged chain, derives the audit heads, promotes the chain to the real table, and returns the result. */
   async verify(tables: readonly string[]): Promise<RestoreSnapshotResult> {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
@@ -469,9 +386,6 @@ class RestoreReader {
     this.#verifyDeclaredChainHeads();
     this.#verifyChainAnchoredState();
     const auditHeadHashHex = await this.#deriveAuditHeads();
-    // The trailer's audit head is carried only when the source's column
-    // was current; when it is, the derivation over the restored log must
-    // land on the same head
     if (trailer.auditHeadHashHex !== null && trailer.auditHeadHashHex !== auditHeadHashHex) {
       throw new RestoreRefusedError({ code: "trailer-mismatch" });
     }
@@ -479,16 +393,6 @@ class RestoreReader {
     return { header, trailer, rows: this.rows, auditHeadHashHex };
   }
 
-  /**
-   * The trailer's watermarks against the restored rows: the chain head
-   * (max seq and its entry hash) of the staged chain — the live table is
-   * still empty, promotion is below — and the audit log's max seq. The
-   * counts above compare the trailer against this reader's own tally of
-   * the lines it accepted; these compare it against what actually
-   * landed, so a trailer written for other rows (or other rows smuggled
-   * past the tally) cannot promote. An evacuation with no chain rows
-   * carries seq 0 / a null hash (readWatermarks' empty shape).
-   */
   #verifyTrailerWatermarks(trailer: SnapshotTrailer): void {
     const sql = this.storage.sql;
     let chainHeadSeq = 0;
@@ -502,8 +406,6 @@ class RestoreReader {
         const heads = sql
           .exec(`SELECT entry_hash_hex FROM ${CHAIN_STAGING_TABLE} WHERE seq = ?`, chainHeadSeq)
           .toArray();
-        // The head seq names exactly one entry (a duplicate makes the
-        // head hash ambiguous — no hash can be taken as the head's)
         if (heads.length !== 1) {
           throw new RestoreRefusedError({ code: "trailer-mismatch" });
         }
@@ -522,20 +424,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * Every restored row that declares a chain head binds to the staged
-   * chain: the entry at the declared seq carries the declared hash.
-   * Each of these rows was accepted only against a head the chain
-   * actually had (the §12-5 / §16-1 head checks, the checkpoint
-   * tuple's own entry), and the chain is append-only, so a declared
-   * head that does not resolve was never served by the source DO —
-   * the projections were paired with a chain they do not belong to.
-   * This binds the projections to the chain's contents, not to its
-   * signatures: recomputing the manifests' digests and verifying
-   * their signatures needs the verified chain's history index and
-   * the project id (verify-manifest.ts's machinery), which a restore
-   * deliberately does not hold (the snapshot carries neither).
-   */
   #verifyDeclaredChainHeads(): void {
     const sql = this.storage.sql;
     const declared: readonly (readonly [string, string, string])[] = [
@@ -547,8 +435,6 @@ class RestoreReader {
       ["environment_checkpoints", "chain_seq", "entry_hash_hex"],
     ];
     for (const [table, seqColumn, hashColumn] of declared) {
-      // With no chain table in the evacuation the staged chain is
-      // empty, so any declared head is unresolvable by construction
       const violations =
         this.#chainColumns === null
           ? Number(sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).one()["n"])
@@ -567,21 +453,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * The restored projections against the staged chain's lifecycle and
-   * tuples ({@link stagedChainAnchors}) — the presence half of the
-   * binding {@link #verifyDeclaredChainHeads} cannot express: that check
-   * validates only rows that are present, so a snapshot carrying a
-   * genuine chain and genuine statements but omitting a live
-   * environment's manifest (or a checkpoint row, or carrying a
-   * checkpoint row the chain never made) restored silently before this
-   * check. The mirror path applies the corresponding rules to a staged
-   * replica (do-mirror.ts's verifyChainAnchoredProjections); the
-   * restore applies the subset its pre-promotion point supports
-   * synchronously. A chain-less evacuation has no chain to anchor to
-   * and is skipped (a chain-less snapshot carrying declared heads was
-   * already refused above, against the empty staging).
-   */
   #verifyChainAnchoredState(): void {
     if (this.#chainColumns === null) {
       return;
@@ -595,18 +466,6 @@ class RestoreReader {
     this.#verifyRestoredProposals(anchors);
   }
 
-  /**
-   * Every environment the staged chain created has its restored row,
-   * tombstoned exactly when the chain deleted it (the creation
-   * composite writes the row atomically with its chain entry; the
-   * deletion composite only tombstones it — the row itself is never
-   * deleted). Every environment the chain holds live has its manifest
-   * row (the creation and rotation composites upsert it atomically with
-   * the chain entry, and a live environment with no manifest is
-   * corruption on every other surface — checkpoint-accept.ts dies on
-   * it), and no manifest row names a chain-deleted environment (the
-   * deletion composite cascade-deletes it in the same block).
-   */
   #verifyEnvironmentPresence(anchors: StagedChainAnchors): void {
     const sql = this.storage.sql;
     const tombstoned = new Map<string, boolean>();
@@ -636,14 +495,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * The restored checkpoint rows are exactly the staged chain's latest
-   * tuple per environment, in both directions (the mirror's
-   * verifyStagedCheckpoints rule): acceptance writes the row atomically
-   * with its checkpoint entry — chain seq, entry hash and every tuple
-   * field — an environment the payload does not cover keeps its earlier
-   * row, and a deletion removes both the baseline and the row.
-   */
   // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
   // fallow-ignore-next-line complexity -- the restored-checkpoint binding checked in both directions in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
   #verifyRestoredCheckpoints(anchors: StagedChainAnchors): void {
@@ -672,15 +523,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * No restored DEK wrap names an environment the staged chain does not
-   * hold live, or an epoch it has not opened: wraps are written only
-   * for the epoch a composite establishes or the current epoch (the
-   * §12-6 range), and a deletion cascade-deletes the environment's
-   * wraps in the same block. (The mirror checks the per-environment
-   * maximum; per row is the same writer discipline stated exactly —
-   * epochs are 1..current with no gaps.)
-   */
   #verifyRestoredWrapEpochs(anchors: StagedChainAnchors): void {
     const rows = this.storage.sql
       .exec("SELECT DISTINCT environment_id, epoch FROM dek_wraps")
@@ -700,18 +542,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * A checkpoint value enumeration exists only under a checkpoint row:
-   * upsertCheckpointSnapshot writes the row and its enumeration in one
-   * block and the deletion cascade removes both, so an enumeration
-   * naming an environment with no restored checkpoint row was never
-   * the source's. The enumeration's contents stay unbound — their
-   * digest is the checkpoint row's chain-bound values_digest_hex, and
-   * recomputing it is WebCrypto work (the same residual the mirror
-   * states); a variable deleted after the checkpoint legitimately
-   * leaves an enumeration entry with no variable_versions row, so no
-   * stronger relational binding exists.
-   */
   #verifyRestoredCheckpointValues(): void {
     const orphaned = Number(
       this.storage.sql
@@ -727,14 +557,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * The project settings row has no chain entry or trailer field to
-   * bind to (a policy change is an unsigned admin action, carried only
-   * by its audit row), so the one binding the staged data supports is
-   * the writer's closed value domain: the data plane's reader dies on
-   * any other stored value, which restored would fault every later
-   * read of the setting.
-   */
   #verifyRestoredSettings(): void {
     const row = this.storage.sql.exec("SELECT schema_policy FROM project_settings").toArray()[0];
     if (
@@ -746,20 +568,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * Sealed rotation proposals are minted off-chain under a lease
-   * (programs-proposal.ts), so the staged chain binds only their
-   * coordinates: the environment is chain-live (authorizeWorkload
-   * required an active environment, and a deletion cascade-deletes its
-   * proposals in the same block), the grant seq is a grant the chain
-   * applied whose scope covers the environment (the mint's judged
-   * grant — its seq stays on the append-only chain across a later
-   * re-grant or revoke), and the child rows hang under a restored
-   * proposal (insertProposal writes the three tables in one block and
-   * every deletion removes them together). The proposals' contents —
-   * connector, facts, claims digest, the sealed wraps — are the
-   * resolving client's verification, as at mint.
-   */
   #verifyRestoredProposals(anchors: StagedChainAnchors): void {
     const sql = this.storage.sql;
     const proposals = sql
@@ -796,17 +604,6 @@ class RestoreReader {
     }
   }
 
-  /**
-   * The audit heads past the snapshot's column, derived from its tail (a
-   * head hash, or the empty string with no column) before the chain is
-   * promoted (ruling J revision, round 10): a row the canonical form
-   * refuses is `malformed` and the DO stays empty — restored, it threw the
-   * append-only defect on every later read, with the DO `not-empty` for a
-   * re-run. The convergence after the restore then has nothing to do.
-   * Heads are stored only below the storage guard's rejection threshold
-   * (AUTH_SPEC §11-7 / §12-8): past it every row is still hashed and
-   * checked, and the head is returned from memory.
-   */
   async #deriveAuditHeads(): Promise<string> {
     const sql = this.storage.sql;
     const tail = sql
@@ -817,9 +614,6 @@ class RestoreReader {
     if (tail !== undefined && !isAuditHeadHex(start)) {
       throw new RestoreRefusedError({ code: "malformed" });
     }
-    // Every row's numbers in the canonical form's domain, the rows under
-    // the snapshot's column included (round 11); then the heads past the
-    // column, chunk by chunk into the live column (wiped on a failure)
     if (auditRowShapeViolations(sql, "audit_events") !== 0) {
       throw new RestoreRefusedError({ code: "malformed" });
     }
@@ -837,12 +631,6 @@ class RestoreReader {
     return derived;
   }
 
-  /**
-   * The audit log is exactly seq 1..N and the head column exactly 1..M with
-   * M ≤ N (the append-only invariant the lazy extension relies on — a
-   * restored log with a gap threw the defect on every later read; the
-   * mirror's trailer applies the same rule — ruling J revision, round 9).
-   */
   #verifyAuditContiguity(): void {
     const sql = this.storage.sql;
     const shape = (table: string) => {
@@ -870,37 +658,18 @@ class RestoreReader {
     if (!this.known.has(line.table)) {
       throw new RestoreRefusedError({ code: "unknown-table" });
     }
-    // The writer emits each table exactly once. A second table line for
-    // a table already begun would restart its row tally below while the
-    // earlier segment's rows stay committed in the live table (only the
-    // chain's staging is DROPped and recreated), so the trailer's count
-    // would be compared against the last segment alone and the earlier
-    // segment's rows would restore unaccounted — refuse it instead
     if (this.#begunTables.has(line.table)) {
       throw new RestoreRefusedError({ code: "malformed" });
     }
     this.#begunTables.add(line.table);
     this.#flush();
-    // The column names come from the evacuation's line and are embedded
-    // as identifiers into the INSERT / CREATE TABLE below. The schema
-    // version already matched in the header, so unless they exactly match
-    // the live table's column names — taken the same way the writer
-    // (writeSnapshot) takes them — including order, refuse as corrupt
-    // (never flow identifiers from an evacuation into SQL unverified).
     const columns = acceptColumns(this.storage.sql, line.table, line.columns);
-    // chain_entries is written to the staging table and moved to the
-    // real table in verify. Since RowInserter commits per batch, if the
-    // process dies mid-chain-table a "valid but truncated chain" remains,
-    // and the isProjectDoEmpty refusal would make restore impossible
-    // forever. Going through staging, an interruption always falls to
-    // "chain_entries empty" (= uninitialized).
     const target = line.table === CHAIN_TABLE ? this.#beginChainStaging(columns) : line.table;
     this.#inserter = new RowInserter(this.storage, target, columns);
     this.#table = line.table;
     this.rows[line.table] = 0;
   }
 
-  /** Remembers the chain's column names, creates the staging table, and returns its name. */
   #beginChainStaging(columns: readonly string[]): string {
     const columnList = columns.join(", ");
     this.storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
@@ -909,11 +678,10 @@ class RestoreReader {
     return CHAIN_STAGING_TABLE;
   }
 
-  /** Moves the verified staging rows to chain_entries in one transaction. */
   #promoteChainStaging(): void {
     const columns = this.#chainColumns;
     if (columns === null) {
-      return; // the evacuation had no chain_entries table (empty project)
+      return;
     }
     const columnList = columns.join(", ");
     this.storage.transactionSync(() => {
@@ -934,21 +702,11 @@ class RestoreReader {
     this.rows[line.table] = (this.rows[line.table] ?? 0) + 1;
   }
 
-  /** Commits the in-flight table's buffer (transactions are opened per batch by RowInserter). */
   #flush(): void {
     this.#inserter?.flush();
   }
 }
 
-/**
- * Writes an evacuation back into an empty DO (the caller must hold the
- * permit). Each batch is atomically committed with transactionSync; a
- * mid-way failure (a refusal, a defect) wipes all tables back to empty
- * before it propagates. chain_entries rows go to the staging table and
- * are moved to the real table in one transaction only after
- * verification passes — wherever the process dies, it falls on the
- * "uninitialized" side and restore can be retried.
- */
 export function restoreSnapshot(
   input: RestoreSnapshotInput,
 ): Effect.Effect<RestoreSnapshotResult, RestoreRefusedError> {
@@ -957,7 +715,6 @@ export function restoreSnapshot(
     if (!isProjectDoEmpty(storage.sql)) {
       return yield* new RestoreRefusedError({ code: "not-empty" });
     }
-    // Wipe the previous partial restore (leftover non-chain tables) first
     wipeTables(storage.sql, tables);
     storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
     const reader = new RestoreReader(
@@ -977,9 +734,6 @@ export function restoreSnapshot(
       },
       catch: toRestoreRefusal,
     }).pipe(
-      // On every mid-way failure the DO is wiped back to empty (the
-      // not-empty refusal above does not reach this — there is nothing
-      // of this restore's to wipe)
       Effect.onError(() =>
         Effect.sync(() => {
           wipeTables(storage.sql, tables);

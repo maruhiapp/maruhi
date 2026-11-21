@@ -1,12 +1,3 @@
-// Server-side verification (CRYPTO_SPEC §6.4 = verifyChain re-run) —
-// rejection tests for the authorization negative vectors that go
-// through generic append (including the checkpoint wire-schema
-// rejections). Negatives via the composite endpoint live in
-// membership-negatives-composite.test.ts.
-// The shared fixture and vector-replay helpers are in
-// support/membership-scenario.ts (for the split's motivation see the
-// top of the scenario module).
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -27,20 +18,6 @@ import {
 
 registerMembershipScenario();
 
-/**
- * Generic-append tests for the checkpoint op: a fixed-length-hex
- * format violation is rejected first at 400 by api-schema's hex
- * Schema (the same division of labor as the create-env-commitment-*
- * composite expectations). The other consensus-rule negatives (role /
- * audit role / unknown / epoch / regression and the check order) are
- * pinned reason-by-reason by the crypto layer's 4-runtime tests, and
- * their prerequisite chain (the checkpoint-baseline derived chain —
- * dummy tuple content) cannot pass §16-2's content match and cannot
- * be replayed through the API, so they are not repeated here. The
- * API's acceptance surface (2 authorization levels, 5 content-match
- * reasons, atomicity, snapshot storage) is pinned with real data by
- * data-checkpoint.test.ts.
- */
 function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegatives)[number]): void {
   const schemaRejected = [
     "checkpoint-manifest-hash-uppercase-hex",
@@ -61,22 +38,6 @@ function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegative
   });
 }
 
-/**
- * Among ES / PF1's (2026-09-14) structural negatives, the ones where
- * api-schema's closed-set literals (scope_kind / ops / inner op),
- * fixed-length hex (proposal_hash_hex), or the inner payload's
- * required fields reject at 400 before verifyChain (the same division
- * as the create-env-commitment-* / checkpoint-* hex Schemas).
- * `invalid-payload` as a consensus rule is pinned reason-by-reason by
- * the crypto layer's 4-runtime tests
- */
-/**
- * Among the structural negatives, shapes the test-time signing API
- * (signChainEntry) does not accept (a negative expires_at_ms is
- * outside §2.1's encoding). Since structural checks precede signature
- * verification, sending it unresigned still settles the reason code
- * at the structural stage (invalid-payload)
- */
 const UNSIGNABLE_STRUCTURE_NEGATIVES: ReadonlySet<string> = new Set(["propose-expires-negative"]);
 
 const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
@@ -88,10 +49,6 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "propose-inner-shape-precedes-role",
   "approve-hash-uppercase",
   "approve-hash-bad-length",
-  // Device keys (DK): closed-set literals (role_cap / ops) and
-  // fixed-length hex (public key, FP) are rejected by api-schema at
-  // 400 first. Since K3 (2026-09-20) the prerequisite chain (device-
-  // derived) is replayed and these are pinned on the normal path
   "add-device-role-cap-unknown",
   "add-device-enc-pub-bad-length",
   "add-device-sig-pub-uppercase-hex",
@@ -99,14 +56,11 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "revoke-device-fp-bad-length",
   "policy-ops-add-device",
   "policy-ops-revoke-device",
-  // Environment deletion (2026-10-07): ops' closed-set literal rejects
-  // delete_environment at 400 first
   "policy-ops-delete-environment",
 ]);
 
 type AuthzNegative = (typeof vectorAuthzNegatives)[number];
 
-/** Replay the prerequisite chain, then send the original with only seq / prev re-pointed at the real head (not re-signed). */
 async function appendUnsignedAtHead(negative: AuthzNegative): Promise<Response> {
   const { head } = await replayNegativePrefix(negative);
   return appendEntry(vectorProjectId, head.hashHex, {
@@ -116,12 +70,6 @@ async function appendUnsignedAtHead(negative: AuthzNegative): Promise<Response> 
   });
 }
 
-/**
- * A shape the signing API refuses (negative expires_at_ms) cannot be
- * re-signed. Since structural checks precede signature verification
- * (the §6.3 verification stage order), sending the original settles
- * the reason code at the structural stage
- */
 function registerStructureBeforeSignatureTest(negative: AuthzNegative): void {
   it(`rejects ${negative.name} with 422 (${negative.expected_reason}) before the signature`, async () => {
     const response = await appendUnsignedAtHead(negative);
@@ -138,19 +86,13 @@ function registerWireSchemaRejectTest(negative: AuthzNegative): void {
   });
 }
 
-/** Rejection at a consensus rule (verifyChain) — re-sign at the real head and send; pin the reason code and seq. */
 function registerConsensusRejectTest(negative: AuthzNegative): void {
-  // For a non-member actor, §11-2's existence hiding (404) acts before verifyChain
   const expectsConcealment = negative.expected_reason === "actor-not-member";
   const label = expectsConcealment
     ? `rejects ${negative.name} with 404 (§11-2 concealment)`
     : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
   it(label, async () => {
     const { head } = await replayNegativePrefix(negative);
-    // Re-sign at the real head (absorbing the shift from inserted
-    // boundary checkpoints — same as the composite side). approve /
-    // withdraw references are re-pointed at the real hash from
-    // replay
     const { entry } = await resignEntryAt(
       remapProposalRef(toWireEntry(negative.entry)),
       head.seq + 1,
@@ -168,45 +110,6 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
   });
 }
 
-/**
- * Splitting the authz negatives (pullfrog round 3): pin each branch's
- * count exactly so the suite cannot quietly empty as the judgment
- * widens. K5 (2026-09-16) removed the acceptance guard and returned
- * four-eyes-op negatives and negatives whose prerequisite chains
- * include four-eyes ops all to the normal paths (a consensus-rule 422
- * / wire-schema 400 / pre-signature structural stage) (the K2-10
- * breakdown of `skipped` 58 + `fourEyesGuard` 7 = 65: consensus +57,
- * wireSchema +7, structureBeforeSignature +1).
- *
- * 2026-09-20 DK K2 (authz negatives +57): the device-op negatives
- * (41) plus negatives that write a device op into ops (2) had an
- * acceptance guard (`deviceOpsGuard` 43); the rest whose prerequisite
- * is a device-derived chain (10) were `skipped`. **K3 (2026-09-20)
- * removed the acceptance guard and returned both branches to the
- * normal paths** (design record dk-design.md §8 K3-12 — the same
- * procedure as ES K2-10 → K5): a device-derived chain is replayed by
- * `replayNegativePrefix` via generic append (the acceptance itself
- * pins §6.2's permissive side). Breakdown: consensus 104 + 36
- * (consensus rules on device ops) + 10 (device-derived-chain
- * prerequisites) = 150, wireSchema 8 + 7 (closed-set literals and
- * fixed-length hex on device ops) = 15
- *
- * 2026-10-07 (environment deletion on the chain — authz negatives +28):
- * the delete_environment negatives (12) and the rotate / create negatives
- * on a deleted environment (3) go through the composites (composite 27 +
- * 15 = 42); the checkpoint tuples naming a deleted environment are the
- * checkpoint branch (21 + 3 = 24); policy-ops-delete-environment is a
- * closed-set literal (wireSchema 15 + 1 = 16); the scope / grant / propose
- * references are consensus rules over a replayed deletion (150 + 9 = 159),
- * and #344's last two convention-27 precedence negatives (approval-required
- * before unknown-server-grant / grant-scope-narrowed) are too (159 + 2 = 161)
- *
- * 2026-10-25 (§6.2 key uniqueness — test-vectors/README.md convention 34):
- * the fifteen appended negatives (the grant clause's refusals, its
- * check-order pins and the grant side's re-checks) are consensus rules, and
- * the two retired with the derived chain server-key-member-sock were
- * (161 + 15 − 2 = 174)
- */
 const EXPECTED_PARTITION = {
   checkpoint: 24,
   composite: 42,
@@ -217,16 +120,6 @@ const EXPECTED_PARTITION = {
 
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;
 
-/**
- * A negative's branch (the judgment order is fixed): checkpoint →
- * composite (create / rotate / delete) → the four-eyes (PF1) 4 ops and
- * four-eyes-derived chains are replayed and accepted by the server
- * since K5; the device-key (DK) 2 ops and device-derived chains since
- * K3 (propose's acceptance policy does not reject fixed-timestamp
- * vectors — expires_at_ms stays within its upper bound, and an
- * expired proposal is merely excluded from the pending-count
- * computation. Design record es-design.md §11 K5-C)
- */
 function bucketOf(negative: AuthzNegative): PartitionBucket {
   const op = negative.entry.op;
   if (op === "checkpoint") {
@@ -241,7 +134,6 @@ function bucketOf(negative: AuthzNegative): PartitionBucket {
   return WIRE_SCHEMA_REJECTED.has(negative.name) ? "wireSchema" : "consensus";
 }
 
-/** Registration per branch (composites go to membership-negatives-composite.test.ts; skipped exists only in the crypto layer). */
 const REGISTER_BY_BUCKET: Record<PartitionBucket, (negative: AuthzNegative) => void> = {
   checkpoint: registerCheckpointAppendGuardTest,
   composite: () => undefined,
@@ -270,9 +162,6 @@ describe("server-side verification (§6.4) — authorization negative vectors (v
   });
 
   it("rejects a tampered payload with 422 (bad-signature)", async () => {
-    // Reconstructing the vector negative "tampered-payload-role":
-    // rewrite entry 2's payload role while keeping the original
-    // signature → rejected at signature verification
     await replayVectorChain(1);
     const genesis = vectorEntries[0];
     const entry2 = vectorEntries[1];

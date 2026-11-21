@@ -1,10 +1,3 @@
-// Checks for CRYPTO_SPEC §5.2 (the epoch DEK commitment).
-// Beyond the dek-commitment.json-driven positive / negative cases, this pins at
-// implementation level the cross-check against the chain vectors
-// (environment_deks of chain-entries.json) and re-wrap invariance
-// (backfill / repair re-registration — the commitment is invariant even when
-// HPKE Seal randomness changes the wrap).
-
 import {
   buildDekCommitmentBytes,
   computeDekCommitment,
@@ -67,12 +60,6 @@ async function negativeChecks(c: Checks): Promise<void> {
   for (const negative of dekCommitmentVectors.negative) {
     const context = contextOf(negative.context);
     const dek = fromHex(negative.context.dek_hex.toLowerCase());
-    // The commitment computed under the modified context must match the vector's
-    // computed value, and verification against the basic commitment (the value
-    // the chain would carry) must fail with DekCommitmentMismatch.
-    // uppercase-hex is reinterpreted as pinning that "this implementation cannot
-    // generate an uppercase-hex preimage" (encodeHex is the only generation
-    // point) — identical DEK bytes yield the lowercase-preimage commitment
     if (negative.name === "uppercase-hex") {
       const computed = await computeDekCommitment({ context, dek });
       c.push(
@@ -99,14 +86,13 @@ async function negativeChecks(c: Checks): Promise<void> {
   }
 }
 
-/** Cross-check against the chain vectors: the published value in a create/rotate payload = the value recomputed from the dummy DEK. */
 async function chainCrossChecks(c: Checks): Promise<void> {
   const genesis = vectorEntries[0];
   if (genesis === undefined) {
     c.push("dek-commitment: chain cross-check setup", false, "genesis missing");
     return;
   }
-  const projectId = testProjectId(genesis.entry_hash_hex); // project ID = genesis hash (§6.4)
+  const projectId = testProjectId(genesis.entry_hash_hex);
   for (const entry of vectorEntries) {
     if (entry.op !== "create_environment" && entry.op !== "rotate_epoch") {
       continue;
@@ -127,12 +113,6 @@ async function chainCrossChecks(c: Checks): Promise<void> {
   }
 }
 
-/**
- * Re-wrap invariance (§5.2 / rewrap_invariance in dek-commitment.json): re-wrapping
- * the same DEK to a new recipient (backfill / repair re-registration — HPKE Seal
- * is randomized) still leaves the unwrapped DEK verifying against the same
- * commitment.
- */
 async function rewrapInvarianceChecks(c: Checks): Promise<void> {
   const invariance = dekCommitmentVectors.rewrap_invariance;
   const dek = fromHex(invariance.dek_hex);
@@ -162,9 +142,6 @@ async function rewrapInvarianceChecks(c: Checks): Promise<void> {
     c.push("dek-commitment: rewrap invariance", false, "unwrap failed");
     return;
   }
-  // The new wrap's ciphertext differs from the fixed vector's wrap (Seal
-  // randomness), yet the commitment verification succeeds (the preimage has no
-  // wrap-related fields)
   const differs = toHex(wrapped.value.ciphertext) !== dekWrapVectors.vectors[0]?.ciphertext_hex;
   const verified = await verifyDekCommitment({
     context,

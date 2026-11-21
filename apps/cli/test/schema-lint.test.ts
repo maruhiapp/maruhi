@@ -1,10 +1,3 @@
-// Tests for the valueless-schema lint (design doc §1-7): `maruhi schema
-// lint` — static scanning of env references in source, cross-checked
-// against the store-side schema. Pins its best-effort positioning
-// (always-on caveat output), name-only reports (no descriptions), the
-// exit-code asymmetry (undeclared = exit 1 / unread only = exit 0), and
-// the keyless class.
-
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,11 +30,8 @@ const SECRET_DESCRIPTION = "Endpoint description that must never reach the lint 
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared (url type, with a description) — the side the code reads. */
 let declaredShopUrl: WireDistributedVariableStatement;
-/** active (v1 — no schema fields) — the name exists in the store. */
 let activeV1: WireDistributedVariableStatement;
-/** declared — the side no code reads. */
 let declaredUnread: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -144,7 +134,6 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv & { o
   return { ...env, origin: server.origin };
 }
 
-/** Writes a source tree (path → contents) under a temp directory. Returns the root path. */
 async function sourceTree(files: Readonly<Record<string, string>>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "maruhi-lint-"));
   for (const [path, content] of Object.entries(files)) {
@@ -229,8 +218,6 @@ describe("scanEnvReferences (the scanner — the verbatim shape of the implement
         "const { d } = MY_ENV;",
       ].join("\n"),
     );
-    // rest doesn't fit the identifier shape; a non-env right side fails
-    // the left-boundary + right-side pinning
     expect(found.size).toBe(0);
   });
 
@@ -244,8 +231,6 @@ describe("scanEnvReferences (the scanner — the verbatim shape of the implement
       ].join("\n"),
     );
     expect(found.size).toBe(0);
-    // The bare shape keeps being picked up (the boundary addition must
-    // not drop the positive case)
     expect([...scanEnvReferences('ENV["RUBY_VAR"]')]).toEqual(["RUBY_VAR"]);
   });
 
@@ -272,8 +257,6 @@ describe("maruhi schema lint (§1-7 — the code-contract cross-check)", () => {
       `Read by the scanned code but not declared in environment ${ENV_ID}: 1`,
     );
     expect(output).toContain("MISSING_VAR");
-    // Declared references don't appear under undeclared (a v1 variable's
-    // name still exists in the store)
     expect(output).not.toContain("  SHOP_URL");
     const errors = env.errors.join("\n");
     expect(errors).toContain("not declared in environment");
@@ -302,8 +285,6 @@ describe("maruhi schema lint (§1-7 — the code-contract cross-check)", () => {
     expect(await runCli(["schema", "lint", root], env.layer)).toBe(0);
     const all = [...env.logs, ...env.errors].join("\n");
     expect(all).not.toContain(SECRET_DESCRIPTION);
-    // Types are declarations — the report never uses the word
-    // "verified" (§14.3)
     expect(all.toLowerCase()).not.toContain("verified");
   });
 
@@ -361,8 +342,6 @@ describe("maruhi schema lint (§1-7 — the code-contract cross-check)", () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "lint", "/nonexistent/source-dir"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Could not scan");
-    // The scan failure precedes any server round-trip (not a single
-    // request is made)
     const server = servers[servers.length - 1];
     expect(server?.requests ?? []).toHaveLength(0);
   });

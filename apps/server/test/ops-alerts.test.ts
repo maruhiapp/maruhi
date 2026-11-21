@@ -1,16 +1,3 @@
-// Operations foundation — tripwire counting, evaluation, and notification
-// (docs/notes/hosted-ops.md §2-A / §2-B / §3).
-//
-// - Sources of counting: GitHub token requests are counted by decorating
-//   exchangeCode (the real path — one login via the CLI handoff = one count);
-//   reaching the flow cap is counted by noteOpsCounter
-// - Evaluation: per-window maximums, window aggregation of existing audit
-//   rows (auth.signup_denied etc.)
-// - Notification: deriving transitions (firing / resolved) and
-//   re-notification is pinned as a pure function; that the body carries no
-//   identifiers and that state does not advance on a failed send are pinned
-//   against real D1
-
 import { env } from "cloudflare:test";
 import { Context, Duration, Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -56,7 +43,6 @@ async function seedAuditRows(event: string, serverTs: number, n: number): Promis
   }
 }
 
-/** A notification target that captures payloads (delivered is switchable). */
 function capturingNotifier(delivered = true): {
   payloads: OpsAlertPayload[];
   service: OpsNotifier["Service"];
@@ -119,7 +105,6 @@ describe("evaluation (hosted-ops.md §3)", () => {
     );
     await seedAuditRows("auth.signup_denied", now - 60_000, OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD);
     await seedAuditRows("auth.login_failed_suppressed", now - 60_000, 1);
-    // Old windows (8 days back) are cleaned up before evaluation
     await seedCounter("cli_flow_capacity", opsWindowStart(now - 8 * 24 * 3600_000), 5);
     const signals = await runOps(evaluateOpsSignals(now));
     const byName = Object.fromEntries(signals.map((signal) => [signal.name, signal]));
@@ -185,8 +170,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
     expect(first).toEqual([
       { signal: "cli_flow_capacity_reached", state: "firing", value: 1, threshold: 1 },
     ]);
-    // Could not send = state does not advance -> the same transition is
-    // derived next time
     expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBeNull();
 
     const capturing = capturingNotifier(true);
@@ -200,8 +183,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
     const payload = capturing.payloads[0];
     expect(payload?.service).toBe("maruhi");
     expect(payload?.text).toContain("cli_flow_capacity_reached is firing (value 1, threshold 1)");
-    // The body carries no identifiers (user IDs, 64-hex project IDs, token
-    // shapes)
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toMatch(/user-ops/);
     expect(serialized).not.toMatch(/[0-9a-f]{64}/);
@@ -228,7 +209,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
     };
     const runNotify = (notifier: OpsNotifier["Service"]): Promise<boolean> =>
       Effect.runPromise(notifier.notify(payload).pipe(Effect.provide(ServerLoggerLive)));
-    // The URL arrives Redacted from the env (worker-env.ts)
     const webhookUrl = await Effect.runPromise(
       readWorkerSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
     );
@@ -239,16 +219,12 @@ describe("notification (hosted-ops.md §2-B)", () => {
       expect(warn).toHaveBeenCalledWith(
         "ops signal firing: storage_warn_projects (value 1, threshold 1)",
       );
-      // An unreachable URL (the outbound fake answers 500) returns false
-      // (resent next time) with the same static line — never swallowed
-      // silently
       expect(
         await runNotify(makeWebhookNotifier(Redacted.make("https://unreachable.invalid/hook"))),
       ).toBe(false);
       expect(warn).toHaveBeenCalledWith(
         "ops alert webhook responded with a non-2xx status; retrying on the next evaluation",
       );
-      // The URL is a secret: it appears in no warn line
       expect(JSON.stringify(warn.mock.calls)).not.toContain("unreachable.invalid");
       expect(JSON.stringify(warn.mock.calls)).not.toContain("ops-webhook.test");
     } finally {
@@ -257,10 +233,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
   });
 
   it("a webhook POST that never answers resolves to false once the timeout elapses (the scheduled run is not blocked)", async () => {
-    // The webhook path runs inside the cron Effect (scheduled()) — not in
-    // a workerd request handler — so the clock is drivable by TestClock.
-    // fetch is swapped per run through the FetchHttpClient's `Fetch`
-    // reference (github.test.ts's pattern)
     const payload: OpsAlertPayload = {
       service: "maruhi",
       at: new Date(0).toISOString(),
@@ -276,7 +248,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
             makeWebhookNotifier(Redacted.make("https://ops-webhook.test/hook")).notify(payload),
           );
           yield* TestClock.adjust(Duration.millis(4999));
-          // One ms inside the bound: the request has not been abandoned
           expect(fiber.pollUnsafe()).toBeUndefined();
           expect(warn).not.toHaveBeenCalled();
           yield* TestClock.adjust(Duration.millis(1));
@@ -317,8 +288,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
           ),
       );
       expect(outcome).toBe(false);
-      // The transport kind name only — the same second argument main's
-      // raw-fetch catch logged (never the URL or the body)
       expect(warn).toHaveBeenCalledWith(
         "ops alert webhook request failed; retrying on the next evaluation",
         "TypeError",
@@ -332,11 +301,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
   it("restarts from an empty state on a malformed stored state row (the same static line)", async () => {
     const now = Date.now();
     await seedCounter("cli_flow_capacity", opsWindowStart(now), 1);
-    // Stored rows the cast accepted (or crashed on) but the Schema
-    // decode rejects — unparseable text, JSON null (the cast's
-    // TypeError defect), a bare array, a wrong-shaped entry. The
-    // outcome is the same line + restart from "all inactive"
-    // (operational state only)
     const malformed = [
       "not json",
       "null",
@@ -363,7 +327,6 @@ describe("notification (hosted-ops.md §2-B)", () => {
         expect(warn).toHaveBeenCalledWith(
           "ops alert state row is not valid JSON; starting from an empty state",
         );
-        // The state saved is exactly the freshly derived one (started from {})
         expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBe(
           JSON.stringify({
             cli_flow_capacity_reached: { active: true, since: now, lastNotifiedAt: now },

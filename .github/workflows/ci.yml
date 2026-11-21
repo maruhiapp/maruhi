@@ -1,103 +1,35 @@
-# Quality gate — the same gates as `bun run check` (CLAUDE.md's numbered
-# list; the numbers in step names keep that order), split into jobs that
-# run in parallel on separate runners:
-# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
-#
-# Until 2026-11-15 this was one job whose step-level `background:` /
-# `parallel:` / `wait:` groups all shared one runner's CPUs, so the wall
-# time was the sum of the group maxima (~5 min, dominated by the server
-# suite). The split puts the groups on separate runners and shards the
-# two big suites; each job pays its own checkout + Bun install (~15 s).
-#
-# Layout (every job starts checkout → install-bun → bun install; a job
-# adds only what its steps need):
-#   static: workflow lint + 0. English, then the static gates as one
-#     `parallel:` group (audit + steps 1–6 + 10)
-#   server: step 7h as four matrix jobs sharded by file; cli: step 7g
-#     as two matrix jobs sharded by file
-#   unit: apt zsh (the docs recipe checks assert it in CI), then steps
-#     7e + 7f as a `parallel:` group
-#   crypto: the test-vectors tools install + apt pyca (the 7c vector
-#     generator), then steps 7b / 7c / 7d
-#   e2e: the Chrome Headless Shell as a background step (its $GITHUB_ENV
-#     write is published by the `wait:` ahead of the browser steps, as
-#     before), the builds (8 + 8d) as a `parallel:` group, then their
-#     dependents in two sequential `parallel:` groups — the dry-runs +
-#     validation (8b/8c + 8d2) before the browser steps (9 + 9b + 11),
-#     the order the old groups ran in. The e2e steps depend only on
-#     these builds, never on a test job
-# The jobs are the checks — there is no aggregate `check` job: nothing
-# references that name (main has no branch protection and no rulesets,
-# and release.yml calls this workflow wholesale via `workflow_call`,
-# which fails if any job here fails).
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-  # release.yml reuses this whole file as its pre-publish quality gate
-  # (duplicating it would leave the release side on a stale copy when ci.yml
-  # changes)
   workflow_call:
 
-# Cancel stale runs on consecutive pushes to the same PR (don't spend a runner
-# on runs that will never be looked at). Non-PR runs (pushes to main,
-# workflow_call from release.yml) get a per-run group so nothing is cancelled
-# or replaced: pending entries in one group are superseded by newer runs, so
-# putting main pushes in a shared group would silently drop CI for intermediate
-# commits
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Don't rely on the loose default permissions. Test execution only needs checkout
 permissions:
   contents: read
 
 env:
-  # The "say nothing" principle (CLAUDE.md) applies to the maintainer-side CI
-  # too: disable telemetry for cf / wrangler / alchemy / other tools in one
-  # place (cf delegates its build/dev internals to the workspace wrangler, so
-  # WRANGLER_SEND_METRICS stays)
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
   CF_SEND_TELEMETRY: "false"
-  # Every Playwright browser download (any `playwright install`, however it
-  # is invoked) goes to this unresolvable host and fails before anything is
-  # unpacked: playwright-core replaces all its mirrors, Chrome for Testing's
-  # included, with this one. The only browser is the verified headless shell
-  # installed by the headless-shell background step, which
-  # scripts/install-headless-shell.sh fetches with curl directly
   PLAYWRIGHT_DOWNLOAD_HOST: "https://playwright-download.invalid"
 
 jobs:
   static:
     name: Static gates
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fallow audit needs to compare against the base branch, and
-          # fallow health reads the full history
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # Workflow lint: only needs the checkout, so a broken workflow fails
-      # fast here instead of after the Bun install. The binary comes from
-      # scripts/install-jactionlint.sh (size + archive/binary SHA-256 pins,
-      # verify-then-unpack — the same shape as install-bun /
-      # install-headless-shell), and .github/jactionlint.yaml declares the
-      # referenced vars/secrets names. shellcheck covers the run: scripts:
-      # ubuntu images ship it, and the apt fallback keeps it from being
-      # silently skipped on an image change
       - name: Lint GitHub Actions workflows (jactionlint, pinned SHA-256)
         run: |
           set -euo pipefail
@@ -105,7 +37,6 @@ jobs:
           command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck; }
           "${RUNNER_TEMP}/jactionlint-bin/jactionlint"
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
       # ADR-0019: no tracked file may contain CJK text (exemptions:
@@ -118,10 +49,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Static gates. Every member reads the checkout and
-      # node_modules only; none writes state another member reads (the fallow
-      # audit writes $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for itself), except
-      # the .fallow/ cache that steps 5 and 5a share safely (see 5a).
       - parallel:
           # Known-vulnerability audit (GHSA advisory matching). The strict-pinning
           # policy intentionally does not chase every update, so CI continuously
@@ -172,17 +99,6 @@ jobs:
           - name: 1. Format (vp fmt)
             run: bun run fmt:check
 
-          # Type-aware (tsrs via vite-plus; the lint block of
-          # vite.config.ts). The lint also carries the Effect-aware
-          # diagnostics (@effect/tsgo's effecttsgo preset) over the programs
-          # that use Effect: a dropped Effect, an unhandled error or
-          # requirement, a bare `yield` in a generator — the gate that used
-          # to be the separate step 3b (scripts/effect-diagnostics.mjs).
-          # `bun run lint` runs `vp lint --deny-warnings` through the
-          # effect-tsgo --tsrs-lint wrapper (the effecttsgo plugin exists
-          # only inside it), and the config sets denyWarnings too: a
-          # warning-level finding fails this step (the pass bar is zero
-          # warnings)
           - name: 2. Lint (vp lint, type-aware + Effect diagnostics, warnings fail)
             run: bun run lint
 
@@ -192,11 +108,6 @@ jobs:
           - name: 4. ImportLint
             run: bunx import-lint --format github
 
-          # fallow 3.22: run the analysis once and render two CI-facing formats from
-          # the same JSON. The annotations / summary formats render even on fork PRs
-          # with no write token, so they are used instead of the PR-comment format
-          # (which needs one). The gate verdict (exit code) is the audit's own,
-          # returned last
           - name: 5. fallow (baseline audit)
             run: |
               set +e
@@ -207,163 +118,84 @@ jobs:
               bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
               exit "$audit_status"
 
-          # fallow audit (step 5) analyzes only the changed files, so it never
-          # judges whether a baseline entry is stale. This whole-project run
-          # (dead-code + health + dupes in one combined pass, each against its
-          # committed baseline) fails when a baseline still lists a finding that
-          # no longer exists, so a fix lands together with its baseline shrink.
-          # Like the audit, it fails on any clone group the dupes baseline
-          # does not list (the duplicates threshold in .fallowrc.json), here
-          # across the whole project.
-          # It shares .fallow/ with step 5, which runs concurrently: since
-          # fallow 3.34.0 each cache save writes through a uniquely named temp
-          # file and renames it into place, so concurrent runs share the cache
-          # safely
           - name: 5a. fallow whole-project baselines (stale-baseline gate)
             run: bun run fallow:baselines
 
-          # The duplication baseline is shrink-only: it lists accepted clone debt
-          # and may lose entries, never gain them, relative to the merge-base with
-          # the PR's base branch (a push to main compares main with itself).
-          # fallow's own --fail-on-baseline-growth does not replace this. Up to
-          # fallow 3.32 it passed a baselined clone swapped for a new one and a
-          # clone grown in place (normalized_clone_fingerprints measured
-          # identical for unrelated two-copy clones). Since the content
-          # fingerprints of 3.33.0 it fails both, as this check does, but it
-          # also fails a baselined clone trimmed in place (a smaller clone is a
-          # new key), which this check accepts as a shrink
           - name: 5b. fallow dupes baseline (shrink-only)
             env:
               BASE_REF: ${{ github.base_ref }}
             run: bun scripts/check-dupes-baseline.mjs "origin/${BASE_REF:-main}"
 
-          # Whole web tree, warnings block (no baseline: the tree is clean, so
-          # any new diagnostic fails)
           - name: 6. React Doctor (web, full scan)
             run: bun run doctor
 
-          # astryx doctor runs read-only health checks on the web project's
-          # setup (component / theme integration) — source-level, no dist —
-          # so it sits with the static gates, not the build dependents
           - name: 10. Astryx doctor (web)
             run: bun run --filter @maruhi/web doctor:astryx
 
   server:
     name: Test — server (Vitest, workerd), shard ${{ matrix.shard }}/4
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 15
     strategy:
-      # All shards always report: a cancelled sibling would hide its
-      # share of the suite behind the other shards' results
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history, as in every job here: the six jobs share one
-          # checkout prefix, and the history readers (fallow in static,
-          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
-          # the floor for all of them
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The workerd pool (@cloudflare/vitest-plugin): the suite that
-      # dominated the old single test step. Sharded across four jobs:
-      # scripts/test-suite.mjs passes the flag through to `vp test run`,
-      # and vitest splits the suite's files by path hash. The hash
-      # ranges are not duration-balanced (measured shard test times:
-      # 2-way 0m35s / 2m14s, 3-way 0m33s / 0m40s / 2m00s — the slow
-      # files cluster in the last hash range, so each added shard
-      # cuts that range again)
       - name: 7h. Test — server (Vitest, workerd) — shard ${{ matrix.shard }}/4
         run: bun scripts/test-suite.mjs run server --shard=${{ matrix.shard }}/4
 
   cli:
     name: Test — cli (Vitest), shard ${{ matrix.shard }}/2
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 15
     strategy:
-      # Both shards always report: a cancelled sibling would hide its
-      # half of the suite behind the other shard's result
       fail-fast: false
       matrix:
         shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history, as in every job here: the six jobs share one
-          # checkout prefix, and the history readers (fallow in static,
-          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
-          # the floor for all of them
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Sharded across two jobs like the server suite (see the server job)
       - name: 7g. Test — cli (Vitest) — shard ${{ matrix.shard }}/2
         run: bun scripts/test-suite.mjs run cli --shard=${{ matrix.shard }}/2
 
   unit:
     name: Test — packages + app unit (Vitest)
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history, as in every job here: the six jobs share one
-          # checkout prefix, and the history readers (fallow in static,
-          # 7d's merge-base in crypto, Nimbus's lastUpdated in e2e) set
-          # the floor for all of them
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
-      # installed shell (sh / bash / zsh / dash). ubuntu-26.04 has no zsh, so
-      # install it (the page promises zsh by name, and the check asserts its
-      # presence in CI — PR #153 revision 5).
       - name: Install apt packages (zsh for the docs recipe checks)
         run: >-
           sudo apt-get update -qq &&
           sudo apt-get install -y --no-install-recommends zsh
 
-      # The plain-node suites (the workerd server suite and the cli
-      # suite are their own sharded jobs)
       - parallel:
           - name: 7e. Test — packages (Vitest)
             run: bun run test:packages
@@ -374,66 +206,32 @@ jobs:
   crypto:
     name: Crypto vectors cross-check + regeneration
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # 7d diffs the vectors against the merge-base with the PR's
-          # base branch, which needs the full history
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
-      # The crypto-vector tools are an independent project outside the
-      # workspace (bunfig.toml). Installing them here lets steps
-      # 7b/7c/7d share the result — three concurrent installs in the
-      # same directory would race
       - name: Install dependencies
         run: |
           bun install --frozen-lockfile
           (cd packages/crypto/test-vectors/tools && bun install --frozen-lockfile)
 
-      # python3-cryptography (pyca) runs the vector generator in step 7c. It
-      # comes from the Ubuntu archive this step already trusts (no new
-      # package source, no hash list to maintain); the generator's output is
-      # version-independent (packages/crypto/test-vectors/README.md)
       - name: Install apt packages (pyca for 7c)
         run: >-
           sudo apt-get update -qq &&
           sudo apt-get install -y --no-install-recommends python3-cryptography
-      # Keeps the cross-check between the main implementation (WebCrypto /
-      # panva hpke) and the independent implementation line (pyca-generated +
-      # reference verifier scripts) running in CI (consideration 7 — it used to
-      # be manual-only, so a joint degradation of impl and vectors could not be
-      # detected). tools is an independent project outside the workspace
-      # (bunfig.toml) — the prefix's Install dependencies step covers its
-      # install, so this step only runs the verifier
       - name: 7b. Crypto vectors cross-check (independent reference verifier)
         working-directory: packages/crypto/test-vectors/tools
         run: bun run verify
 
-      # The committed vectors must be exactly what the generator in the same
-      # commit produces (formatting ignored). Runs in a scratch copy, so the
-      # checkout stays untouched. Every event, not only PRs: it is as cheap
-      # as 7b (about a second) and also gates releases
       - name: 7c. Crypto vectors regeneration check
         working-directory: packages/crypto/test-vectors/tools
         run: bun run regen-check
 
-      # Review aid for the owner (decision 1): the vector delta, the changed
-      # domain strings and SUPPORTED_* sets, and a conservative risk class
-      # R0–R3 against the merge-base, in the job summary. It approves
-      # nothing and only fails when the tool itself breaks (fail-closed:
-      # a PR is not reviewed without its summary). Classes and usage:
-      # packages/crypto/test-vectors/README.md "Reviewing a crypto change"
       - name: 7d. Crypto change review aid (PR only, job summary)
         if: github.event_name == 'pull_request'
         working-directory: packages/crypto/test-vectors/tools
@@ -444,48 +242,13 @@ jobs:
   e2e:
     name: Builds + e2e (web / site / crypto browser)
     runs-on: ubuntu-26.04
-    # An explicit cap because this also gates releases via workflow_call
-    # (the calling release.yml can't put a timeout on a `uses:` job. The
-    # 360-min default would let a hang block a release for 6 hours)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nimbus's lastUpdated (the site build, and the site e2e's
-          # page-date checks) reads the full history
           fetch-depth: 0
-          # Later steps only read the checked-out local history (no
-          # authenticated git operations). Don't leave a token in a job that
-          # runs dependencies and test code
           persist-credentials: false
 
-      # Browser for the Playwright steps 9 / 9b / 11: the Chrome for Testing
-      # headless shell that the pinned Playwright expects, downloaded on every
-      # run by scripts/install-headless-shell.sh, which holds the version and
-      # SHA-256 pin (the same one the Cursor Cloud setup installs) and checks
-      # the archive before it is unpacked (why not `playwright install`, and
-      # the bump procedure, are in the script). The tests take the binary
-      # through PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH.
-      # Runs as a background step right after checkout — the script is pure
-      # bash + curl, so it needs neither Bun nor installed dependencies, and
-      # its ~3 s of work overlap the whole prefix. Its $GITHUB_ENV write only
-      # becomes visible to steps after the `wait: headless-shell` ahead of
-      # the dependents group, which is why the wait is placed there.
-      # No Actions cache, in this or any workflow: actions/cache restores by
-      # untarring the entry with absolute paths allowed (`tar -P`) and no
-      # member filter, so an entry seeded by any default-branch run can
-      # rewrite node_modules, tests or build output before they run, whatever
-      # the restored file itself is checked against. The miss path this
-      # replaces measured 2.7–3.2 s.
-      # No --with-deps / apt fonts: the old layout (playwright install
-      # --with-deps inside step 9 every run) accounted for the measured
-      # 35s–6m42s variance of step 9, all of it the apt fetch of 9 fonts
-      # (21.1MB) from a slow mirror. The image already ships Chromium's
-      # runtime libraries, and the tests check DOM text and computed style
-      # only, not glyph rendering (if an image update drops a bundled .so,
-      # the launch fails loudly naming it — revisit then).
-      # The headless shell alone is enough for chromium.launch and the vitest
-      # browser provider (both headless), and is about half of full Chromium.
       - name: Install Chrome Headless Shell (pinned SHA-256, no cache)
         id: headless-shell
         background: true
@@ -497,55 +260,21 @@ jobs:
           fi
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${executable}" >> "${GITHUB_ENV}"
 
-      # SHA-256-pinned official zip, no Actions cache (reasoning in the action)
       - uses: ./.github/actions/install-bun
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Builds, in parallel: the dependents below read apps/web/dist
-      # and apps/site/dist
       - parallel:
-          # The web e2e assumes build artifacts (dist/public + _headers), so it is
-          # not in the root vitest.config.ts projects and runs in the dependents group below.
           - name: 8. Web build (vite + CSP headers)
             run: bun run --filter @maruhi/web build
 
-          # apex site (apps/site — Nimbus. LP + docs, DP2; ADR-0008 revision 2).
-          # Runs astro build + scripts/postbuild.ts (style-attribute
-          # externalization, inline-hash CSP, zero-external-reference mechanical
-          # checks, _headers) through the build path. The site deploys via
-          # Alchemy (alchemy.run.ts at the repo root; ADR-0012 revision 1),
-          # so the dependents group below no longer dry-runs its cf config.
           - name: 8d. Site build (Nimbus + CSP headers)
             run: bun run --filter @maruhi/site build
 
-      # Publishes the background install's $GITHUB_ENV write
-      # (PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) to the dependents groups and fails the
-      # job here if the install itself failed
       - wait: headless-shell
 
-      # Dependents of the builds above: the server dry-runs read
-      # apps/web/dist/public (assets.directory in apps/server/wrangler.jsonc),
-      # the site steps read apps/site/dist. 8b/8c stay one step: every
-      # `cf deploy` build writes apps/server/.cloudflare/output, so the two
-      # remaining dry-runs cannot run concurrently with each other (the site
-      # steps touch apps/site/.cloudflare — a different directory — and run
-      # in parallel)
       - parallel:
-          # Config validity check for the combined serving layout (W2 ruling BM —
-          # server bundles the web assets). A credential-free local verification
-          # that follows the same path as a deploy to confirm the assets directory
-          # exists and cloudflare.config.ts is consistent (path-space coverage is
-          # checked by apps/server/test/serving-topology.test.ts in step 7h)
-          #
-          # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): the self-host
-          # and restore workers still deploy through this path. The hosted
-          # worker is an Alchemy declaration (ADR-0012 revision 1): it is
-          # covered by the drift check below (scripts/check-hosted-config.ts
-          # compares alchemy.run.ts against this config), so its cf dry-run
-          # is gone. The environments wrangler's
-          # `--env` selected are cf `--mode`s of one cloudflare.config.ts
           - name: 8b/8c. Server deploy dry-runs + drift check (combined / restore)
             working-directory: apps/server
             run: |
@@ -553,48 +282,18 @@ jobs:
               bunx cf deploy --dry-run --mode restore
               bun scripts/check-hosted-config.ts
 
-          # Prose lint + MDX / frontmatter / internal-link validation
-          # (nimbus-docs lint, with the internal-link and frontmatter-shape
-          # rules at error in astro.config.ts). External URLs are never hit —
-          # "say nothing" applies to CI too
           - name: 8d2. Site content validation (nimbus-docs lint)
             run: bun run --filter @maruhi/site validate
 
-          # No Alchemy plan step here (ADR-0012 revision 1): this workflow
-          # holds no secrets by supply-chain policy
-          # (apps/cli/test/workflows-supply-chain.test.ts), and evaluating
-          # the Alchemy program needs the account credentials plus the four
-          # hosted secret values. The plan is an operator step before deploys
-          # (docs/notes/hosted-ops.md, ops task O9); CI covers the
-          # declaration statically — typecheck, lint, and the drift check
-          # in 8b/8c above
-
-      # e2e: each step spawns its own `cf dev` on an OS-assigned
-      # port, so parallel runs don't collide. A separate group after the
-      # dry-runs above, as in the old layout: 8b/8c's `cf deploy` builds
-      # and step 9's `cf dev` both work in apps/server, so they never
-      # overlap. Per-step timeouts: on a hang
-      # (actual incident on 2026-08-19, run 32217317312), fail fast on the
-      # step limit rather than the job limit (each set to measured
-      # time + headroom)
       - parallel:
           - name: 9. Web e2e (cf dev + Playwright)
             timeout-minutes: 5
             run: bun run --filter @maruhi/web e2e
 
-          # apex site e2e (cf dev + Playwright): every request same-origin,
-          # zero CSP violations, self-hosted fonts, light/dark accent, /docs
-          # reachable, trailing-slash / 404 (assumes the dist from step 8d)
           - name: 9b. Site e2e (cf dev + Playwright)
             timeout-minutes: 5
             run: bun run --filter @maruhi/site e2e
 
-          # crypto's 3-environment runs (CRYPTO_SPEC §11). The root
-          # vitest.config.ts (steps 7e–7h) only picks up node projects via the
-          # packages/*/vitest.config.ts glob. workerd / browser need out-of-build
-          # dependencies (the workerd binary / a Chromium), so they run as their
-          # own step. browser uses the verified headless shell installed by the
-          # headless-shell background step (the same binary as step 9).
           - name: 11. Crypto multi-environment tests (workerd / browser / Bun)
             timeout-minutes: 10
             run: |

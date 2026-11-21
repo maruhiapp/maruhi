@@ -1,48 +1,3 @@
-// Integration tests for rotation-needed detection (AUDIT_SPEC
-// §4.1) + the flag view / dismissals (§6 / §7) + recipient-key
-// consistency (the B1a addendum to AUTH_SPEC §12-6 — a 409 carrying
-// the stored recipient enc public key of the occupied wrap, and the
-// re-add sweep). Verifies the HttpApi and DO SQLite via SELF on
-// @cloudflare/vitest-plugin (the real workerd environment).
-//
-// What this suite pins (mapped to the mutated claims):
-// - the candidate set = the overlap of membership intervals and
-//   existence windows (variables outside the interval are excluded;
-//   deleted variables are included; re-added memberships union
-//   intervals)
-// - the basis rank: var.read inside the membership interval = read;
-//   everything else = readable
-// - the rotation.recommended recording rules (§3.3 — the aggregate
-//   form, Sc-5): one row per environment, actor = system, variable_id
-//   NULL, the chain_seq column is not used, the payload enumerates the
-//   variables with per-variable basis and carries triggerChainSeq, and
-//   the row lands at the seq right after the mirror's same acceptance
-// - resolution derivation (§4.1-5 — the value lineage, 2026-09-27
-//   VH): a fresh push and a dismissal resolve, a re-encryption
-//   (sameValueAs = the previous version) does not, a rollback to a
-//   pre-flag value re-opens a resolved flag (reopenedByVersion)
-//   while a dismissed one stays dismissed, resolution is seq-ordered
-//   (re-detection after a dismissal revives)
-// - the version history (§12-7 — VH): metadata + sameValueAs +
-//   flagsIfCurrent, no var.read; the version value range: ascending
-//   payloads, one var.read enumerating every returned version
-// - visibility (§6): the flag view is class 1 (reader allowed), a
-//   non-member gets 404. Dismissal requires admin or above (member
-//   = 403), no live flag → 404, all-or-nothing, duplicate pairs
-//   fold, empty list = 400
-// - the revoke_server variant: candidates are within the grant
-//   scope only; (a) is an in-interval server.lease_issued (the
-//   active variables at issuance); an expanded re-grant is a
-//   "per-environment disclosure window" (starting at the widening
-//   seq — neither pinned to the first scope nor brought forward to
-//   the interval's start)
-// - recipient-key consistency (the §12-6 B1a addendum): a 409
-//   carries the stored enc public key of the occupied wrap /
-//   accepting add_member sweeps wraps addressed to the old key
-//   (dek.deleted with actor = system + a cause payload; a re-add
-//   under the same key sweeps nothing and other members' wraps are
-//   untouched)
-
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
@@ -110,9 +65,7 @@ interface WireRotationFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
-  /** AUDIT_SPEC §3.3's trigger (2026-09-14 ES — all 3 variants). */
   readonly trigger?: "remove_member" | "change_role" | "revoke_server";
-  /** The restore that re-opened a resolved flag (§4.1-5 / §7 — VH). */
   readonly reopenedByVersion?: number;
 }
 
@@ -122,7 +75,6 @@ async function readFlags(asUserId: string = READER): Promise<readonly WireRotati
   return ((await response.json()) as { flags: readonly WireRotationFlag[] }).flags;
 }
 
-/** Append remove_member to the chain and return its chain seq. */
 async function removeMember(targetUserId: string): Promise<number> {
   await appendOperation(fixture, OWNER, {
     op: "remove_member",
@@ -131,7 +83,6 @@ async function removeMember(targetUserId: string): Promise<number> {
   return fixture.head.seq;
 }
 
-/** Re-add under the vector-pinned keys (re-joining with the same keys). */
 async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"): Promise<void> {
   const keys = vectorKeyOf(targetUserId);
   await appendOperation(fixture, OWNER, {
@@ -147,13 +98,11 @@ async function readdWithSameKeys(targetUserId: string, role: "member" | "reader"
   });
 }
 
-/** A bulk pull as the target member (the var.read recording path — §12-7). */
 async function pullAs(userId: string): Promise<void> {
   const response = await requestJson("GET", `/environments/${ENV}/pull`, token(userId));
   expect(response.status).toBe(200);
 }
 
-/** OWNER creates a variable in an arbitrary environment (since createVariableOk pins writer = MEMBER). */
 async function createVariableAsOwner(input: {
   readonly dek: Uint8Array;
   readonly environmentId: string;
@@ -201,14 +150,11 @@ async function createVariableAsOwner(input: {
   return statement;
 }
 
-/** OWNER's v(N) push on VAR (including the value signature's prev chain). */
 async function pushNextVersion(input: {
   readonly dek: Uint8Array;
   readonly version: number;
   readonly prevValueSigHashHex: string;
-  /** The value-lineage declaration (§12-5 — VH). */
   readonly sameValueAs?: number;
-  /** The current epoch (default 1). */
   readonly epoch?: number;
 }): Promise<WireEncryptedPayload> {
   const value = await encryptValue(
@@ -233,7 +179,6 @@ async function pushNextVersion(input: {
   return value;
 }
 
-/** The mandated rotation after a removal: a new epoch wrapped to the remaining members only. */
 async function rotateTo(
   newEpoch: number,
   recipientUserIds: readonly string[],
@@ -261,8 +206,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
   it("records one aggregate row per environment — read for a variable read inside the interval, readable for unread candidates", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER fetches the ciphertext (records var.read), then a
-    // second, unread variable is created
     await pullAs(MEMBER);
     await createVariableOk(dek, "var-api-key", "API_KEY", "sk-alpha");
     const removalSeq = await removeMember(MEMBER);
@@ -285,9 +228,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       trigger: "remove_member",
     });
 
-    // Recording rules (§3.3 Sc-5 — the aggregate form): one row per
-    // environment, actor = system, variable_id NULL, the chain_seq column
-    // unused (carried in the payload), the basis per enumerated variable
     const events = await readAuditEvents(projectId);
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
     expect(recommended).toHaveLength(1);
@@ -302,13 +242,10 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     const payload = JSON.parse(String(row["payload"])) as Record<string, unknown>;
     expect(payload["triggerChainSeq"]).toBe(removalSeq);
     expect(payload["trigger"]).toBe("remove_member");
-    // Ascending by variableId: the read variable = read, the unread one = readable
     expect(payload["variables"]).toEqual([
       { variableId: "var-api-key", basis: "readable" },
       { variableId: VAR, basis: "read" },
     ]);
-    // The detection row sits at the seq right after the mirror
-    // (chain.member_removed) (a same-acceptance append — §4.1-4)
     const mirror = events.find((event) => event["event"] === "chain.member_removed");
     expect(mirror).toBeDefined();
     expect(Number(row["seq"])).toBe(Number(mirror?.["seq"]) + 1);
@@ -318,16 +255,12 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await pullAs(MEMBER);
-    // Deleting the variable does not erase past readability (the
-    // upstream credential is not revoked)
     expect((await deleteVariableRequest(VAR, OWNER)).status).toBe(204);
     await removeMember(MEMBER);
     const flags = await readFlags();
     expect(flags).toHaveLength(1);
     expect(flags[0]).toMatchObject({ variableId: VAR, basis: "read" });
 
-    // A deleted variable cannot be pushed — the only resolution
-    // path is dismissal (admin)
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });
@@ -343,8 +276,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       variable_id: VAR,
     });
 
-    // Resolution is seq-ordered (§4.1-5): detection on the post-
-    // dismissal re-add → re-remove revives
     await readdWithSameKeys(MEMBER, "member");
     await removeMember(MEMBER);
     expect(await readFlags()).toHaveLength(1);
@@ -355,8 +286,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
 
-    // A variable that existed only during the absence (created by
-    // OWNER, deleted before the re-add)
     const gapVar = "var-gap-secret";
     const gapStatement = await createVariableAsOwner({
       dek,
@@ -395,14 +324,10 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     ).toBe(204);
     fixture.manifests.set(ENV, gapDelete.state);
 
-    // Re-add (same keys) → re-remove
     await readdWithSameKeys(MEMBER, "member");
     await removeMember(MEMBER);
 
     const flags = await readFlags();
-    // VAR is detected at both removals (2 live flag rows on one
-    // pair — the interval union). The gap variable overlaps no
-    // membership interval and is never detected
     expect(flags.filter((flag) => flag.variableId === VAR)).toHaveLength(2);
     expect(flags.filter((flag) => flag.variableId === gapVar)).toHaveLength(0);
   });
@@ -412,14 +337,11 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
     expect(await readFlags()).toHaveLength(1);
-    // The flag row carries its exposure bound (the environment's epoch at detection)
     const recommended = (await readAuditEvents(projectId)).find(
       (event) => event["event"] === "rotation.recommended",
     );
     expect(Number(recommended?.["epoch"])).toBe(1);
 
-    // A new value pushed before the mandated rotation is still encrypted
-    // under a DEK the removed member holds — it does not resolve
     const v2 = await pushNextVersion({
       dek,
       version: 2,
@@ -427,8 +349,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     });
     expect(await readFlags()).toHaveLength(1);
 
-    // The rotation's re-encryption (sameValueAs = the previous version)
-    // carries v2's origin epoch forward — it does not resolve either
     const dek2 = await rotateTo(2, [OWNER, READER]);
     const v3 = await pushNextVersion({
       dek: dek2,
@@ -438,7 +358,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       sameValueAs: 2,
     });
     expect(await readFlags()).toHaveLength(1);
-    // The lineage lands in the audit payload (AUDIT_SPEC §3.3)
     const events = await readAuditEvents(projectId);
     const markedPush = events.find(
       (event) => event["event"] === "var.version_pushed" && Number(event["version"]) === 3,
@@ -447,8 +366,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       sameValueAs: 2,
     });
 
-    // A fresh value at the new epoch (= the upstream credential rotated and
-    // stored under a key the removed member never held) resolves
     await pushNextVersion({
       dek: dek2,
       version: 4,
@@ -462,8 +379,6 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
-    // Readers can see it too (detection's purpose is prompting
-    // everyone — limiting it to admins would not work)
     expect(await readFlags(READER)).toHaveLength(1);
     const stranger = await requestJson("GET", "/rotation/flags", token(STRANGER));
     expect(stranger.status).toBe(404);
@@ -474,20 +389,14 @@ describe("the dismissal operation (AUDIT_SPEC §3.3 / §7)", () => {
   it("denies below admin with 403, rejects any pair without a live flag with 404 and all-or-nothing, and folds duplicate pairs into one row", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Remove READER while keeping MEMBER (the dismissal-permission
-    // check needs a member)
     await removeMember(READER);
     expect(await readFlags(OWNER)).toHaveLength(1);
 
-    // A chain-role member cannot dismiss (admin or above — the same
-    // level as wrap deletion)
     const asMember = await requestJson("POST", "/rotation/dismissals", token(MEMBER), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });
     expect(asMember.status).toBe(403);
 
-    // A request containing a pair with no live flag rejects the
-    // whole thing with 404 (no silent success)
     const mixed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [
         { environmentId: ENV, variableId: VAR },
@@ -499,14 +408,10 @@ describe("the dismissal operation (AUDIT_SPEC §3.3 / §7)", () => {
       _tag: "RotationFlagNotFound",
       variableId: "var-not-flagged",
     });
-    // all-or-nothing: even the live pair is not dismissed and no
-    // audit row is appended
     expect(await readFlags(OWNER)).toHaveLength(1);
     const before = await readAuditEvents(projectId);
     expect(before.filter((event) => event["event"] === "rotation.dismissed")).toHaveLength(0);
 
-    // Duplicate entries of the same pair fold to one row
-    // (idempotent per pair)
     const deduped = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [
         { environmentId: ENV, variableId: VAR },
@@ -518,8 +423,6 @@ describe("the dismissal operation (AUDIT_SPEC §3.3 / §7)", () => {
     expect(after.filter((event) => event["event"] === "rotation.dismissed")).toHaveLength(1);
     expect(await readFlags(OWNER)).toHaveLength(0);
 
-    // An empty list is a Schema-validation 400 (a call shape with
-    // no meaning)
     const empty = await requestJson("POST", "/rotation/dismissals", token(OWNER), { targets: [] });
     expect(empty.status).toBe(400);
   });
@@ -527,7 +430,6 @@ describe("the dismissal operation (AUDIT_SPEC §3.3 / §7)", () => {
 
 describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1)", () => {
   it("candidates stay within the grant scope; the variables active at lease issuance become read", async () => {
-    // Prepare ENV (in scope) and env-out (out of scope)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const outEnv = "env-out-of-scope";
@@ -558,7 +460,6 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       name: "OUT_SECRET",
     });
 
-    // grant (scope = ENV only) + server-bound backfill + lease issuance
     const key = await deploymentKey();
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
@@ -600,12 +501,8 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
     );
     expect(lease.status).toBe(200);
 
-    // A variable created after the lease issuance (nonexistent at
-    // issuance → readable)
     await createVariableOk(dek, "var-after-lease", "AFTER_LEASE", "later-secret");
 
-    // Revocation → detection (the variant): in-scope only, and (a)
-    // is the variables active at lease issuance
     await appendOperation(fixture, OWNER, {
       op: "revoke_server",
       payload: { serverKeyFingerprintHex: key.fingerprintHex },
@@ -626,18 +523,13 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       basis: "readable",
       trigger: "revoke_server",
     });
-    // Variables in the out-of-scope environment are not candidates
-    // (step 2 of the §4.1 variant)
     expect(byVariable.has(outVar)).toBe(false);
-    // The member variant's column (target_user_id) is not used
     expect(flags.every((flag) => flag.targetUserId === undefined)).toBe(true);
   });
 
   it("an environment added by an expanded re-grant is detected under a 'disclosure window from the widening seq' (the §4.1 variant)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Prepare an environment that joins via widening later, and a
-    // variable deleted **before** the widening
     const widenEnv = "env-widened";
     const widenDek = makeDek();
     const widenDeks = await wrapDekForAll({
@@ -683,8 +575,6 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
         leasePolicy,
       },
     });
-    // Delete preVar after the first grant and before the widening
-    // (its existence window closes just short of the window)
     const preDelete = await signMetaStatementAs(OWNER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: widenEnv,
@@ -715,8 +605,6 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
       ).status,
     ).toBe(204);
     fixture.manifests.set(widenEnv, preDeleteManifest.state);
-    // The expanded re-grant (the chain's consensus rule accepts
-    // only a widening to the same key FP — CRYPTO_SPEC §6.2)
     await appendOperation(fixture, OWNER, {
       op: "grant_server",
       payload: {
@@ -726,7 +614,6 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
         leasePolicy,
       },
     });
-    // A variable living inside the window (created after the widening)
     const widenVar = "var-in-window";
     await createVariableAsOwner({
       dek: widenDek,
@@ -741,19 +628,12 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
 
     const flags = await readFlags(OWNER);
     const byVariable = new Map(flags.map((flag) => [flag.variableId, flag]));
-    // A variable in the widened environment is detected (pinning
-    // to the first scope would fail open)
     expect(byVariable.get(widenVar)).toMatchObject({
       environmentId: widenEnv,
       basis: "readable",
       targetServerKeyFingerprintHex: key.fingerprintHex,
     });
-    // The first scope's environment is detected as before
     expect(byVariable.get(VAR)).toMatchObject({ environmentId: ENV, basis: "readable" });
-    // A variable deleted before the widening does not overlap the
-    // window (the window is not brought forward to the interval's
-    // start — doing so would wrongly detect preVar, which existed
-    // between grant #1 and the widening)
     expect(byVariable.has(preVar)).toBe(false);
   });
 });
@@ -761,8 +641,6 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
 describe("recipient-key consistency (AUTH_SPEC §12-6 — the B1a addendum)", () => {
   it("an overwrite-forbidden 409 carries the occupied wrap's stored recipient enc public key", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Appending to the existing slot (ENV, 1, MEMBER) is 409 + the
-    // stored enc public key
     const duplicate = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -794,9 +672,6 @@ describe("recipient-key consistency (AUTH_SPEC §12-6 — the B1a addendum)", ()
     );
     expect(Number(wrapsBefore[0]?.["n"])).toBe(2);
 
-    // A re-add under a different key (re-joining after the
-    // acceptance key changed) — the 2 wraps addressed to the old key
-    // are deleted at acceptance
     await appendOperation(fixture, OWNER, {
       op: "add_member",
       payload: {
@@ -815,8 +690,6 @@ describe("recipient-key consistency (AUTH_SPEC §12-6 — the B1a addendum)", ()
       MEMBER,
     );
     expect(Number(wrapsAfter[0]?.["n"])).toBe(0);
-    // Other members' legitimate wraps are untouched (the
-    // overwrite-forbidden invariant holds)
     const others = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id != ?",
@@ -905,19 +778,14 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     const v3 = await push({ version: 3, prev: v2 });
     expect(await readFlags()).toHaveLength(0);
 
-    // Rollback to v2 (the re-encryption of v1 — origin epoch 1, readable by
-    // the removed member) = re-exposure
     const v4 = await push({ version: 4, prev: v3, sameValueAs: 2 });
     const reopened = await readFlags();
     expect(reopened).toHaveLength(1);
     expect(reopened[0]).toMatchObject({ variableId: VAR, reopenedByVersion: 4 });
 
-    // A re-encryption of the restored value keeps it re-opened (same origin)
     const v5 = await push({ version: 5, prev: v4, sameValueAs: 4 });
     expect(await readFlags()).toEqual([expect.objectContaining({ reopenedByVersion: 4 })]);
 
-    // The history: metadata, the lineage, and the per-version count;
-    // reading it records no var.read (no ciphertext is distributed)
     const readsBefore = await varReadCount();
     const history = await readHistory();
     expect(await varReadCount()).toBe(readsBefore);
@@ -939,10 +807,8 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     expect(history[4]).toMatchObject({ writerUserId: OWNER });
     expect(history.every((entry) => entry.pushedAtMs > 0)).toBe(true);
 
-    // Rollback to v3 (first encrypted after the rotation) resolves it
     const v6 = await push({ version: 6, prev: v5, sameValueAs: 3 });
     expect(await readFlags()).toHaveLength(0);
-    // … and a fresh push after another readable restore resolves again
     const v7 = await push({ version: 7, prev: v6, sameValueAs: 1 });
     expect(await readFlags()).toEqual([expect.objectContaining({ reopenedByVersion: 7 })]);
     await push({ version: 8, prev: v7 });
@@ -954,7 +820,6 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
     const dek2 = await rotateTo(2, [OWNER, READER]);
-    // A fresh value at epoch 2 resolves MEMBER's flag
     const v2 = await pushNextVersion({
       dek: dek2,
       version: 2,
@@ -962,8 +827,6 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
       prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
     });
     expect(await readFlags()).toHaveLength(0);
-    // READER leaves: a new flag (READER could read v1 and v2), then the admin
-    // dismisses the pair — only READER's flag was effective and shown
     await removeMember(READER);
     expect(await readFlags(OWNER)).toEqual([expect.objectContaining({ targetUserId: READER })]);
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
@@ -972,8 +835,6 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     expect(dismissed.status).toBe(204);
     expect(await readFlags(OWNER)).toHaveLength(0);
     const dek3 = await rotateTo(3, [OWNER]);
-    // Restoring v1 re-exposes MEMBER's value: MEMBER's flag (resolved when
-    // the dismissal happened, so never accepted) re-opens; READER's stays dismissed
     await pushNextVersion({
       dek: dek3,
       version: 3,
@@ -993,7 +854,6 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
     await createVariableOk(dek, "var-api-key", "API_KEY", "sk-alpha");
     await pullAs(MEMBER);
     await removeMember(MEMBER);
-    // One aggregate row flags both pairs (§3.3 Sc-5)
     const recommended = (await readAuditEvents(projectId)).filter(
       (event) => event["event"] === "rotation.recommended",
     );
@@ -1007,10 +867,8 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
       expect(response.status).toBe(200);
       return ((await response.json()) as { versions: readonly WireHistoryEntry[] }).versions;
     };
-    // Both flagged while their live value is within the exposure bound (epoch 1)
     expect((await readHistory(OWNER)).at(-1)?.flagsIfCurrent).toBe(1);
     expect((await apiKeyHistory()).at(-1)?.flagsIfCurrent).toBe(1);
-    // Rotate and push a fresh value for VAR only — VAR resolves, var-api-key stays flagged
     const dek2 = await rotateTo(2, [OWNER, READER]);
     await pushNextVersion({
       dek: dek2,
@@ -1101,7 +959,6 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
         `/environments/${ENV}/variables/${VAR}/versions/values?fromVersion=${fromVersion}`,
         token(READER),
       );
-      // 0 fails the query Schema (400); past the latest is the range check (422)
       expect(refused.status).toBe(fromVersion === 0 ? 400 : 422);
     }
     const stranger = await requestJson(

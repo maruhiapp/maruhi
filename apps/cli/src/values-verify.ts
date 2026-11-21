@@ -1,8 +1,3 @@
-// Per-statement verification of distributed values and metadata (CRYPTO_SPEC
-// §6.3): the wire layout interpretation, the failure classification
-// (future / rejected / evidence), the crypto-call wrappers, and the
-// per-statement-set verification loops the pull pipeline in values.ts drives.
-
 import type {
   CheckpointValueSnapshot,
   DistributedEncryptedPayload,
@@ -39,50 +34,32 @@ import type {
   VerifiedVariableStatement,
 } from "./floor-check.ts";
 
-/** One pulled variable whose write signature and statement passed §6.3. */
 export interface VerifiedPulledValue {
   readonly variableId: VariableId;
-  /** The verified statement's name (no other name is trusted — §12-2). */
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
-  /** The signed prev (the signed-bytes hash of the immediately preceding version. Empty for version 1). */
   readonly prevValueSigHashHex: string;
-  /**
-   * Locally recomputed hash of the value's signed bytes — the prev anchor
-   * for pushing the next version (the §4.1 chain) and the comparator for
-   * same-coordinate equivocation evidence (§14.2-5).
-   */
   readonly signedBytesHashHex: string;
-  /** The verified statement's metaVersion (the basis of the rollback / fork checks). */
   readonly metaVersion: number;
-  /** The statement's signed-bytes hash (self-computed — the same-metaVersion difference check). */
   readonly metaSignedBytesHashHex: string;
-  /** The signed prev (the signed-bytes hash of the immediately preceding metaVersion. Empty for metaVersion 1). */
   readonly prevMetaSigHashHex: string;
-  /** The value signature's declared head (included in the fork evidence of a floor check — §6.3 / §14.2-5). */
   readonly valueChainHeadSeq: number;
   readonly valueChainHeadHashHex: string;
-  /** The meta-statement's declared head (same). */
   readonly metaChainHeadSeq: number;
   readonly metaChainHeadHashHex: string;
-  /** The verified value signature and its attribution (self-contained fork evidence — §14.2-5). */
   readonly valueSignatureHex: string;
   readonly writerUserId: UserId;
   readonly writerKeyFingerprintHex: string;
-  /** The verified statement signature and its attribution (same). */
   readonly metaSignatureHex: string;
   readonly authorUserId: UserId;
   readonly authorKeyFingerprintHex: string;
-  /** The statement's wire layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** The schema column of layout v3 (null for v1. The type is a declaration — advisory §14.3-7). */
   readonly schema: VerifiedSchemaFields | null;
 }
 
-/** One pulled variable on the wire (statement + value — AUTH_SPEC §12-7 / §14-2). */
 export interface PulledWire {
   readonly variableId: VariableId;
   readonly statement: DistributedVariableMetaStatement;
@@ -95,18 +72,9 @@ export type VerifyOutcome<T> =
   | {
       readonly kind: "rejected";
       readonly message: string;
-      /**
-       * Whether it is evidence (a contradiction between signed distributed
-       * data and the chain notarization / coordinates — a re-run does not
-       * resolve it). false is only the "honest breaking mode" =
-       * UnsupportedMetaLayout (the client needs an update — CRYPTO_SPEC
-       * §4.2 / ruling CR); never collapsed into the tampering-suspect
-       * classification (same shape as checkpoint-integrity.ts's rejected).
-       */
       readonly evidence: boolean;
     };
 
-/** Whether the claimed AAD's coordinate components match the expected coordinates (verified genesis / requested env / response's outer id) (§6.3-5). */
 function coordinatesMatch(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -120,20 +88,6 @@ function coordinatesMatch(
   );
 }
 
-/**
- * Verification failure reasons → future / rejected. chain-head-future and
- * "a head beyond the own view declared by a new member of an unsynced
- * interval (the writer / author is unknown AND the declared seq > own
- * head)" go to the bounded-resync entry (future). Everything else is a
- * refusal (the classification is shared between value and meta).
- *
- * UnsupportedMetaLayout (a layoutVersion outside the supported range
- * {1, 3} — checked by crypto **before** the signature verification) is an
- * honest breaking mode meaning "the client needs an update", and is not
- * collapsed into the tampering-suspect wording (CRYPTO_SPEC §4.2 — ruling
- * CR).
- */
-/** Whether a failure can be classified as future (the bounded-resync entry) (§6.3-2b). */
 function isFutureFailure(
   verified: VerifiedProject,
   chainHeadSeq: number,
@@ -161,7 +115,6 @@ function failureOutcome<T>(
   if (error instanceof CryptoUnsupportedMetaLayoutError) {
     return {
       kind: "rejected",
-      // An honest breaking mode (the client needs an update) — not evidence of tampering (ruling CR)
       evidence: false,
       message: `${label} uses statement layout version ${error.layoutVersion}, which this CLI does not support (supported: ${SUPPORTED_META_LAYOUT_VERSIONS.join(", ")}). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
@@ -176,13 +129,6 @@ function failureOutcome<T>(
   };
 }
 
-/**
- * Verified statement → the shared evidence-material fields (§14.2-5's
- * self-containedness). The mapping of the 7 fields the floor check and the
- * evidence display use is unified here (a hand-written re-enumeration that
- * drops one field would silently weaken the equivocation evidence without
- * failing a test).
- */
 function metaEvidenceFields(
   statement: DistributedVariableMetaStatement | DistributedEnvironmentMetaStatement,
   metaSigHashHex: string,
@@ -198,18 +144,6 @@ function metaEvidenceFields(
   };
 }
 
-/**
- * Interpreting a variable statement's wire schema-layout fields (§12-2): a
- * v1 has all of them absent, a v3 has all of them present (maxAgeDays null
- * = no declaration). A partial presence is a shape an honest server's
- * response never has (the server guarantees the join of stored rows —
- * §12-2), so it is refused. layoutVersion's wire type is an integer with no
- * fixed upper bound (explicit values ≥ 2), and the supported-range ({1, 3})
- * check happens in the crypto layer (metaContextRejection) before the
- * signature verification — the range is not checked here (the retired 2
- * or a future layout must surface as "unsupported layout", not as a shape
- * error).
- */
 type WireStatementLayout =
   | { readonly layoutVersion: 1; readonly schema: null }
   | { readonly layoutVersion: number; readonly schema: VerifiedSchemaFields };
@@ -248,21 +182,14 @@ function wireStatementLayoutOf(
   };
 }
 
-/**
- * Layout v3 carries maxAgeDays (null = none — §12-2; its absence is the same
- * partial-set refusal). Any other layout is refused later as unsupported
- * (the crypto layer's typed error), so the coupling is only judged for 3.
- */
 function maxAgeCoupled(layoutVersion: number, present: boolean): boolean {
   return layoutVersion !== 3 || present;
 }
 
-/** The refusal message for a distribution carrying a partial schema-layout field set (§12-2's all-or-nothing rule). */
 function partialLayoutMessage(label: string): string {
   return `${label} carries only part of the layout-v3 field set (layoutVersion / varType / required / description / maxAgeDays must be all present or all absent — an inconsistent server response)`;
 }
 
-/** The schema-layout fields passed to crypto's signed context (required and max_age_days in the signature convention's string forms — §4.2). */
 function contextLayoutFields(
   layout: WireStatementLayout | null,
 ): Pick<MetaStatementContext, "layoutVersion" | "schema"> {
@@ -273,18 +200,11 @@ function contextLayoutFields(
     varType: layout.schema.varType,
     required: layout.schema.required ? "true" : "false",
     description: layout.schema.description,
-    // "" = no declaration
     maxAgeDays: layout.schema.maxAgeDays === null ? "" : String(layout.schema.maxAgeDays),
   };
   return { layoutVersion: layout.layoutVersion, schema };
 }
 
-/**
- * The composite verification of a statement (§6.3). The context is
- * assembled locally from the expected coordinates. A variable statement's
- * schema-layout fields are interpreted from the wire by the caller and passed
- * in (an environment meta stays v1 — §4.2 — and carries no layout).
- */
 async function verifyStatement(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -327,12 +247,6 @@ async function verifyStatement(
   );
 }
 
-/**
- * Verifying a variable statement (the entry of verifyStatement with the
- * wire schema-layout interpretation). A partial field set is refused here; on
- * success the layout (for display, carry-over, digest material) is also
- * returned.
- */
 async function verifyVariableStatement(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -366,11 +280,6 @@ async function verifyOne(
 ): Promise<VerifyOutcome<VerifiedPulledValue>> {
   const payload = variable.value;
   const statement = variable.statement;
-  // Coordinate agreement (§6.3-5): verification and decryption run on the
-  // expected coordinates, so a mismatch fails either way — the explicit
-  // check visualizes *which* coordinate disagreed. Since the name cannot be
-  // trusted until the statement verification passes, messages identify by
-  // variableId
   if (!coordinatesMatch(verified, environmentId, variable)) {
     return {
       kind: "rejected",
@@ -385,7 +294,6 @@ async function verifyOne(
       message: `Variable ${displayText(variable.variableId)} has statement coordinates that do not match the requested context (possible renaming or transplantation)`,
     };
   }
-  // The name → variableId mapping must go through a verified statement (§4.2 / §12-7)
   const verifiedStatement = await verifyVariableStatement(
     verified,
     environmentId,
@@ -396,10 +304,6 @@ async function verifyOne(
     return verifiedStatement;
   }
   if (statement.status !== "active") {
-    // deleted = the transport shape of an unauthorized undeletion;
-    // declared = juxtaposing a value onto a valueless declaration (declared
-    // is the only legitimate valueless state — §6.3; bundling a value is
-    // the opposite contradiction)
     return {
       kind: "rejected",
       evidence: true,
@@ -473,34 +377,16 @@ export interface PullWire {
   readonly statement: DistributedEnvironmentMetaStatement;
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
-  /**
-   * The latest statements of declared variables (§12-7 — no value or
-   * version exists). Absent = no declared.
-   */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /**
-   * The latest manifest (§12-7 — required on the wire; the schema
-   * refuses an omission at decode — the same verdict as a dropped
-   * environment statement, §6.3).
-   */
   readonly manifest: DistributedEnvironmentManifest;
-  /**
-   * The enumeration of value snapshots at the checkpoint (§12-7 — rule
-   * 2's material. An omission on an environment with a baseline is refused
-   * by checkpoint-integrity.ts).
-   */
   readonly checkpointSnapshot?: CheckpointValueSnapshot | undefined;
 }
 
-/** Verifying the environment's own statement (including that it is active). Returns the evidence material. */
 export async function verifyEnvironmentStatement(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
   statement: DistributedEnvironmentMetaStatement,
 ): Promise<VerifyOutcome<VerifiedEnvironmentStatement>> {
-  // The verified chain is the authority for deletion (CRYPTO_SPEC §6.3
-  // "Chain-deleted environments"): a server distributing a chain-deleted
-  // environment as live is resurrecting it
   const deletedAtSeq = verified.state.environments.get(environmentId)?.deletedAtSeq ?? null;
   if (deletedAtSeq !== null) {
     return {
@@ -536,16 +422,12 @@ export async function verifyEnvironmentStatement(
   };
 }
 
-/** Verifying a deleted variable's tombstone statement (a juxtaposition with the active / declared side = the transport shape of an unauthorized undeletion, also refused). */
 export async function verifyDeletedStatements(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
   deleted: readonly DistributedVariableMetaStatement[],
   liveIds: ReadonlySet<string>,
 ): Promise<VerifyOutcome<readonly VerifiedTombstone[]>> {
-  // Each statement's signature verification is independent, so they run in
-  // parallel; the checks below then replay in input order and the reported
-  // first failure is unchanged (P-5).
   const outcomes = await Promise.all(
     deleted.map((statement) =>
       verifyVariableStatement(
@@ -587,9 +469,6 @@ export async function verifyDeletedStatements(
     }
     tombstones.push({
       variableId: statement.variableId,
-      // deleted keeps the immediately preceding active name (§4.2) — the
-      // only verified source of a deleted variable's display name (name
-      // resolution for the needs-rotation flag — AUDIT_SPEC §7)
       name: statement.name,
       status: "deleted",
       ...metaEvidenceFields(statement, result.value.signedBytesHashHex),
@@ -598,14 +477,12 @@ export async function verifyDeletedStatements(
   return { kind: "ok", value: tombstones };
 }
 
-/** The name check of the verified live (active + declared) set: a duplicate same name = resolution refusal (§4.2), non-NFC = a warning (SHOULD). */
 export function checkVerifiedNames(
   values: readonly { readonly variableId: VariableId; readonly name: string }[],
   warnings: string[],
 ): string | null {
   const seenNames = new Set<string>();
   for (const value of values) {
-    // Uniqueness is a byte-exact comparison (§12-1. Equivalent to NFC equality when every accepted name is NFC)
     if (seenNames.has(value.name)) {
       return `Multiple live statements with the same name passed verification (server equivocation): ${displayText(value.name)}. Refusing name resolution`;
     }
@@ -619,14 +496,6 @@ export function checkVerifiedNames(
   return null;
 }
 
-/**
- * Verifying the variable statements of a metadata-only pull (§12-7's
- * metadata-only mode). The coordinate-agreement and variableId-duplicate
- * refusal checks follow the same discipline as the value-carrying pull's
- * verifyOne; only the value-signature verification is absent. declared
- * flows mixed into the same list as active (§12-7 — the status field
- * discriminates), so only a deleted's infiltration is refused.
- */
 export async function verifyVariableStatements(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -684,8 +553,6 @@ type StatementVerification = VerifyOutcome<{
   readonly layout: WireStatementLayout;
 }>;
 
-// Parallel signature verifications; the checks replay in input order so
-// the first reported failure is unchanged (P-5).
 async function verifyStatementsInParallel(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -699,11 +566,6 @@ async function verifyStatementsInParallel(
   );
 }
 
-// The coordinate and duplicate refusals shared by the live and declared
-// lists, applied before any per-list judgment: a statement served under
-// coordinates other than the requested context, or a variable ID served
-// twice, is refused. Returns the refusal, or null when the statement
-// passes (its ID is then recorded in seenIds).
 function refuseMismatchedOrDuplicate(
   statement: DistributedVariableMetaStatement,
   environmentId: EnvironmentId,
@@ -729,13 +591,6 @@ function refuseMismatchedOrDuplicate(
   return null;
 }
 
-/**
- * Verifying the declaredVariables (§12-7) of a value-bearing response. The
- * implementation point of CRYPTO_SPEC §6.3's value-distribution
- * requirement: a verified statement with status active appearing in this
- * list is refused as "a value omission" (declared is the only legitimate
- * valueless state).
- */
 export async function verifyDeclaredStatements(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -767,10 +622,6 @@ export async function verifyDeclaredStatements(
       return refusal;
     }
     if (statement.status !== "declared") {
-      // An active appearing here = the value of a verified active
-      // statement is missing from the value-bearing response (a value
-      // omission, G6 — §6.3's value-distribution requirement). An
-      // infiltrating deleted is also refused
       return {
         kind: "rejected",
         evidence: true,
@@ -796,7 +647,6 @@ export async function verifyDeclaredStatements(
   return { kind: "ok", value: { values, ids: seenIds } };
 }
 
-/** Verifying the active variables (including the variableId-duplicate refusal). */
 export async function verifyActiveVariables(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -804,19 +654,12 @@ export async function verifyActiveVariables(
 ): Promise<
   VerifyOutcome<{ readonly values: readonly VerifiedPulledValue[]; readonly ids: Set<string> }>
 > {
-  // Per-variable verification (statement signature + value signature) is
-  // independent, so it runs in parallel; the duplicate-id check and the
-  // outcome replay stay in input order so the first reported failure is
-  // unchanged (P-5).
   const outcomes = await Promise.all(
     variables.map((variable) => verifyOne(verified, environmentId, variable)),
   );
   const seenIds = new Set<string>();
   const values: VerifiedPulledValue[] = [];
   for (const [index, variable] of variables.entries()) {
-    // A duplicate variableId within one response is refused
-    // unconditionally (covers the transport shape of equivocation that
-    // juxtaposes different signed bytes at the same coordinates — ruling G)
     if (seenIds.has(variable.variableId)) {
       return {
         kind: "rejected",

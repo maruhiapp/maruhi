@@ -1,29 +1,3 @@
-// Integration tests for `maruhi audit reconcile` (AUDIT_SPEC §6 — admin audit
-// cross-check).
-//
-// Properties pinned down:
-//  1. Positive case: advancing 2 notarizations — membership (a), non-regression
-//     (b), position floor (c), and the attested head's membership all hold —
-//     exits 0
-//  2. Membership violation (a) = reported as evidence of row tampering
-//     (Row-tampering evidence)
-//  3. Position violations (b)(c) = reported as evidence of a server not
-//     enforcing the acceptance policy (Acceptance-policy violation — a state
-//     where staleness replay is possible)
-//  4. A missing seq = reported as a trace of deletion; stops before emitting
-//     downstream derived false positives
-//  5. The attested value from GET /audit-head is also checked for membership
-//     in the recomputed sequence (session-38 ruling AK)
-//  6. AuditHeadNotReady (503) is absorbed by bounded retries
-//  7. Below effective admin (write scope) fails with a clear error before
-//     fetching any rows
-//
-// The audit rows are the test's constructed "server claims"; the notarized
-// heads are computed with the real computeAuditRowDigest /
-// computeAuditHeadHash (the canonical implementation pinned by
-// audit-head.json) — pins that the check's verdict depends on the real hash
-// chain.
-
 import type { AuditHeadRow, ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -53,20 +27,14 @@ afterEach(async () => {
   servers = [];
 });
 
-/** Deterministic 32-digit hex row id (test-only — the real server assigns randomly). */
 function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
 }
 
-/**
- * Internal key for the mock's ordering (even a negative that drops seq can be
- * recovered from the id — idOf is seq in hex).
- */
 function orderOf(row: Record<string, unknown>): number {
   return typeof row["seq"] === "number" ? row["seq"] : Number.parseInt(String(row["id"]), 16);
 }
 
-/** An audit row the test constructs (shared material for the wire form and the computation-input form). */
 interface SeedRow {
   readonly seq: number;
   readonly event: string;
@@ -74,7 +42,6 @@ interface SeedRow {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
-/** A wire audit row (admin-visible — carries seq). */
 function wireRowOf(row: SeedRow): Record<string, unknown> {
   return {
     id: idOf(row.seq),
@@ -87,7 +54,6 @@ function wireRowOf(row: SeedRow): Record<string, unknown> {
   };
 }
 
-/** The computation-input form (same mapping as the CLI's recomputation — the 17 columns of §5.1). */
 function headRowOf(row: SeedRow): AuditHeadRow {
   return {
     seq: row.seq,
@@ -110,7 +76,6 @@ function headRowOf(row: SeedRow): AuditHeadRow {
   };
 }
 
-/** Computes the cumulative hash sequence h_1..h_N with the canonical implementation (index 0 = h_1). */
 async function headsOf(rows: readonly SeedRow[]): Promise<readonly string[]> {
   const heads: string[] = [];
   let head = "";
@@ -135,11 +100,9 @@ function checkpointOp(auditHeadHashHex: string): ChainOperation {
 
 interface ReconcileServerInput {
   readonly built: BuiltChain;
-  /** Audit rows to distribute (wire form). Default = all of rows. */
   readonly served: readonly Record<string, unknown>[];
   readonly declaredHeadHex: string;
   readonly tokenScopes?: readonly unknown[];
-  /** Per-call override for audit-head (undefined = return the attestation with 200). */
   readonly onAuditHead?: (call: number) => MockResponse | undefined;
 }
 
@@ -149,7 +112,6 @@ interface ReconcileServerState {
   readonly auditHeadCalls: () => number;
 }
 
-/** Every endpoint reconcile needs (chain / auth/me / audit-head / audit/events). */
 function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState {
   const projectId = input.built.projectId;
   let eventCalls = 0;
@@ -213,16 +175,7 @@ async function seededEnv(server: MockServer, projectId: string): Promise<TestEnv
   return env;
 }
 
-/**
- * Standard fixture: chain = genesis (1) → checkpoint (2) → checkpoint (3).
- * Audit rows = mirror rows 1..3 + extra row 4 (㊙ payload — pushed through the
- * real computation including the non-ASCII round-trip). checkpoint 2 notarizes
- * h_1 (first — (c) is vacuously true), checkpoint 3 notarizes h_2 (floor =
- * checkpoint 2's mirror row seq2 ≥, (b) non-regression) = the positive case.
- * Each violation is built by overriding head*.
- */
 async function makeFixture(overrides?: {
-  /** Override for the notarized head (arg = recomputed sequence h_1..h_4 — for building violation cases). */
   readonly headAtChain2?: (heads: readonly string[]) => string;
   readonly headAtChain3?: (heads: readonly string[]) => string;
 }): Promise<{ rows: readonly SeedRow[]; heads: readonly string[]; built: BuiltChain }> {
@@ -258,15 +211,10 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
     const output = env.logs.join("\n");
     expect(output).toContain("Audit reconciliation OK");
     expect(output).toContain("4 audit rows recomputed, 2 notarized checkpoints checked");
-    // §6's explicit residual (outside the notarized prefix is unprotected) is
-    // noted in one line on success (Note — stderr; stdout carries only the
-    // command's output)
     expect(env.errors.join("\n")).toContain("not covered until the next attested checkpoint");
   });
 
   it("the zero-notarization positive case does not print 'checks passed' and states it is vacuously true", async () => {
-    // Chain = genesis only (no notarized checkpoints). Audit rows = its single
-    // mirror row
     const rows: readonly SeedRow[] = [{ seq: 1, event: "chain.genesis", chainSeq: 1 }];
     const heads = await headsOf(rows);
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
@@ -281,8 +229,6 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
 
     expect(await runCli(["audit", "reconcile"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    // What was verified is only no missing seqs + attestation membership —
-    // not claimed: (a)(b)(c) passing
     expect(output).toContain("Audit reconciliation OK (nothing notarized yet)");
     expect(output).toContain("vacuous until an effective admin issues");
     expect(output).not.toContain("checks passed");
@@ -306,16 +252,10 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
       "checkpoint at chain seq 3 notarizes an audit head that does not appear",
     );
     expect(output).toContain("membership check (a)");
-    // The two-category summary wording (§6): a membership violation = rows
-    // altered or deleted after notarization
     expect(output).toContain("rows in the notarized prefix were altered or deleted");
   });
 
   it("position violation (c): consecutive notarizations of a non-advancing head = reported as acceptance-policy non-enforcement evidence", async () => {
-    // checkpoint 3 notarizes the same h_1 as checkpoint 2 (serving an existing
-    // old head forever). (b) passes since it admits equality; (c)'s position
-    // floor (the immediately preceding checkpoint's mirror row seq2) drops it
-    // — the same predicate as the acceptance check
     const { rows, heads, built } = await makeFixture({ headAtChain3: (h) => h[0]! });
     const state = makeReconcileServer({
       built,
@@ -331,8 +271,6 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
     expect(output).toContain("[Acceptance-policy violation (stale-replay risk)]");
     expect(output).toContain("position-floor check (c)");
     expect(output).toContain("the server accepted attestations it must reject");
-    // Not a membership violation (h_1 exists) — the categories aren't
-    // conflated
     expect(output).not.toContain("[Row-tampering evidence]");
   });
 
@@ -360,7 +298,6 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
     const { rows, heads, built } = await makeFixture();
     const state = makeReconcileServer({
       built,
-      // Drop seq 3 (checkpoint 3's mirror row) = trace of deletion
       served: rows.filter((row) => row.seq !== 3).map(wireRowOf),
       declaredHeadHex: heads[3]!,
     });
@@ -372,8 +309,6 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
     const output = env.errors.join("\n");
     expect(output).toContain("audit seq 3 is missing");
     expect(output).toContain("trace of deleted rows");
-    // The chain past the gap disagrees entirely, so it never reaches the
-    // membership check (doesn't mass-produce false attributions)
     expect(output).not.toContain("membership check (a)");
   });
 
@@ -426,8 +361,6 @@ describe("maruhi audit reconcile (AUDIT_SPEC §6 admin cross-check)", () => {
 
     expect(await runCli(["audit", "reconcile"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("requires effective admin permission");
-    // Never starts the cross-check (zero row fetches and zero attestation
-    // fetches)
     expect(state.eventCalls()).toBe(0);
     expect(state.auditHeadCalls()).toBe(0);
   });

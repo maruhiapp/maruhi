@@ -1,25 +1,3 @@
-// The CLI-side shared predicates of a member's environment scope
-// (CRYPTO_SPEC §6.2 / §6.3, AUTH_SPEC §9-2 / §12-3) (2026-09-15 ES
-// K4 — design record es-design.md §10).
-//
-// - Containment (K4-I): derived from `packages/crypto`'s public API
-//   `scopeIncludesEnvironment` (the internal set algebra is not
-//   copied). Equivalent to §6.2's set algebra: `all ⊇ any`,
-//   `listed ⊇ all` is false (all is U, which includes future
-//   environments), `listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X
-// - Pre-communication judgment (K4-C): target environment ∈ my
-//   scope is judged at the earliest shared paths where the
-//   environment is settled (context.ts's openEnvironment /
-//   dek-wrap.ts's requireWritingMember / deks.ts's
-//   environmentKeysFor) plus explicit calls on multi-environment
-//   paths (checkpoint / sync). Does not wait for the server's 403
-//   `insufficient-scope` (§6.3)
-// - The obligation's environment set (K4-J): `all` is concretized
-//   to the environment set that existed at the obligation's seq
-//   (the target cannot hold the DEK of an environment created
-//   later — the same line as rotation-sweep.ts's `createdAtSeq >
-//   seq` exclusion)
-
 import {
   decodeEnvironmentId,
   isEnvironmentId,
@@ -39,7 +17,6 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 
-/** The user-facing scope display (`all` / `no environments` / an enumeration of environment ids. Ids are neutralized). */
 export function describeScope(scope: MemberScope | ScopePayloadFields): string {
   const member = toMemberScope(scope);
   if (member.kind === "all") {
@@ -50,7 +27,6 @@ export function describeScope(scope: MemberScope | ScopePayloadFields): string {
     : member.environmentIds.map((id) => displayText(id)).join(", ");
 }
 
-/** scope equality (compared as sets — generation is ascending SHOULD, verification is set-based. CRYPTO_SPEC §6.2). */
 export function sameScope(
   a: MemberScope | ScopePayloadFields,
   b: MemberScope | ScopePayloadFields,
@@ -67,7 +43,6 @@ export function sameScope(
   );
 }
 
-/** Maps both the wire form (`scopeKind` / `scopeEnvironmentIds`) and the derived form to the derived form. */
 function toMemberScope(scope: MemberScope | ScopePayloadFields): MemberScope {
   if ("kind" in scope) {
     return scope;
@@ -77,12 +52,6 @@ function toMemberScope(scope: MemberScope | ScopePayloadFields): MemberScope {
     : { kind: "listed", environmentIds: [...scope.scopeEnvironmentIds] };
 }
 
-/**
- * Containment `actor ⊇ target` (CRYPTO_SPEC §6.2 principle 1's
- * predicate used for pre-communication guidance). `all` is U
- * including future environments, so a `listed` actor does not
- * contain `all`.
- */
 export function scopeContains(actor: MemberScope, target: MemberScope): boolean {
   if (target.kind === "all") {
     return actor.kind === "all";
@@ -90,22 +59,9 @@ export function scopeContains(actor: MemberScope, target: MemberScope): boolean 
   return target.environmentIds.every((id) => scopeIncludesEnvironment(actor, id));
 }
 
-/**
- * Assembling a scope from `--env <id>` (repeatable) / `--all-envs`
- * / `--no-envs` (shared by `invite create` / `member change-role` /
- * `device approve`). Format check (§12-1), duplicate refusal (§6.2's
- * structural rules), cap 256, code-point ascending (generation is
- * ascending SHOULD). When all are omitted, null (= the caller's
- * default — all for an invite or a device approval, kept as-is for
- * change-role). At most one of them is given: each command refuses a
- * combination with a `Command.validate` rule before its handler runs
- * (commands/flags.ts's rejectCombinedScopeFlags; invite create, which has
- * no --all-envs, checks its one pair inline).
- */
 export function scopeFromFlags(input: {
   readonly env: readonly string[];
   readonly allEnvs: boolean;
-  /** `--no-envs` = `listed{}` (§6.2's empty listed — an admin who only manages, or a member to be admitted later). */
   readonly noEnvs?: boolean;
 }): Effect.Effect<MemberScope | null, CliError> {
   if (input.allEnvs) {
@@ -140,17 +96,10 @@ export function scopeFromFlags(input: {
   });
 }
 
-/** Code-point ascending order (§6.2's generation SHOULD. Locale-independent). */
 export function compareCodePoints(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/**
- * Each id of `listed` exists on the chain and is not deleted there
- * (the pre-communication judgment of the consensus rules
- * `unknown-environment` and `environment-deleted` — stops a typo or a
- * stale ID before issuance / append; §6.2).
- */
 export function requireScopeEnvironmentsExist(
   verified: VerifiedProject,
   scope: MemberScope,
@@ -179,7 +128,6 @@ export function requireScopeEnvironmentsExist(
   return Effect.void;
 }
 
-/** The refusal for operating on an environment the verified chain shows as deleted (§6.3 "Chain-deleted environments"). */
 export function deletedEnvironmentMessage(
   environmentId: EnvironmentId,
   deletedAtSeq: number,
@@ -187,11 +135,6 @@ export function deletedEnvironmentMessage(
   return `Environment ${displayText(environmentId)} is deleted (delete_environment at chain seq ${deletedAtSeq}). Deletion is terminal: a deleted environment cannot be restored, and its ID can never be reused`;
 }
 
-/**
- * Refuses an environment the verified chain shows as deleted, before any
- * request about it (§6.3 "Chain-deleted environments"). An environment the
- * chain does not know is left to each path's own existence check.
- */
 export function refuseChainDeletedEnvironment(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -202,19 +145,13 @@ export function refuseChainDeletedEnvironment(
     : Effect.fail(cliError(deletedEnvironmentMessage(environmentId, deletedAtSeq)));
 }
 
-/** The wording for when I point at an environment outside my scope (K4-C — does not wait for the server's 403). */
 export function outOfScopeMessage(input: {
   readonly member: ChainMember;
-  /** The device that signs / opens (when given, distinguishes the device's scope cap — DK K4-17). */
   readonly device?: DeviceCap | undefined;
   readonly environmentId: EnvironmentId;
-  /** E.g. "pull values from" — interpolated into the form "<operation> environment X". */
   readonly operation: string;
 }): string {
   const environment = displayText(input.environmentId);
-  // When the person's scope contains it but the device's scope cap
-  // excludes it, the party to ask for expansion is different (not
-  // an admin — my own uncapped device, or a `device approve` redo)
   if (
     input.device !== undefined &&
     scopeIncludesEnvironment(input.member.scope, input.environmentId)
@@ -224,16 +161,6 @@ export function outOfScopeMessage(input: {
   return `Cannot ${input.operation} environment ${environment}: it is outside your environment scope on this project's chain (your scope: ${describeScope(input.member.scope)}). Ask a project admin to widen it (\`maruhi member change-role ${displayText(input.member.userId)} --env ${environment} …\`). Metadata-only commands such as \`maruhi schema\` still work`;
 }
 
-/**
- * Target environment ∈ my scope (the pre-communication judgment
- * of AUTH_SPEC §12-3's "environment ∈ scope" row). When I am not a
- * current member it fails saying so. When `device` is given, the
- * judgment uses **the device's effective scope** (person ∩ device
- * — DK K4-17) (a device that opens values does not hold the DEK of
- * environments outside its cap). Environment existence is not
- * checked here (existence is each path's job — chain-derived and
- * known to every member, so ordering is unrelated to leakage).
- */
 export function requireEnvironmentInScope(input: {
   readonly verified: VerifiedProject;
   readonly userId: UserId;
@@ -245,8 +172,6 @@ export function requireEnvironmentInScope(input: {
   if (member === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  // A chain-deleted environment first: the deletion pruned it from every
-  // listed scope, so the scope judgment below would misreport it (§6.2)
   const deletedAtSeq =
     input.verified.state.environments.get(input.environmentId)?.deletedAtSeq ?? null;
   if (deletedAtSeq !== null) {
@@ -269,12 +194,6 @@ export function requireEnvironmentInScope(input: {
   return Effect.succeed(member);
 }
 
-/**
- * Concretizing the obligation's environment set (K4-J): of the
- * environments that existed at `seq` (`createdAtSeq <= seq`),
- * those contained in `scope`. `all` = every environment at that
- * point. Ascending order.
- */
 export function environmentsOfScopeAt(
   verified: VerifiedProject,
   scope: MemberScope,
@@ -289,12 +208,6 @@ export function environmentsOfScopeAt(
   return ids.toSorted(compareCodePoints);
 }
 
-/**
- * Concretizes the diff of a scope replacement old → new onto the
- * environment set at `seq`: the grown part (new \ old — the
- * backfill obligation) and the shrunk part (old \ new — the rotate
- * obligation. CRYPTO_SPEC §7).
- */
 export function scopeChangeAt(
   verified: VerifiedProject,
   previous: MemberScope,

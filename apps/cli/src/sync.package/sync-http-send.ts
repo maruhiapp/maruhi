@@ -1,12 +1,3 @@
-// The send part of `maruhi sync`'s http driver (sync-http.ts): one
-// request carrying the preset's bearer token, retrying transport
-// failures and 429 / 502 / 503 / 504 (upserts and deletes are
-// idempotent, so a re-send is safe) and honoring Retry-After up to a
-// cap, plus the transport-failure description and `scrubbed` — the
-// redaction that turns fragments extracted from a failure response
-// into showable lines. Used by the response readers
-// (sync-http-read.ts) and the run procedures (sync-http-run.ts).
-
 import { Clock, Data, Duration, Effect, Schedule } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
@@ -19,17 +10,11 @@ import type { HttpOutcome, HttpTargetInput, IntegrationToken } from "./sync-http
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503, 504]);
 
-/**
- * One attempt's retryable outcome: the fragment the failure message ends with,
- * and the `Retry-After` the response carried (null for a transport failure or
- * an unreadable header — the schedule then waits out the backoff instead).
- */
 class SendRetryable extends Data.TaggedError("SendRetryable")<{
   readonly failure: string;
   readonly retryAfter: Duration.Duration | null;
 }> {}
 
-/** Interpreting `Retry-After` (seconds or an HTTP date). null if unreadable. */
 function retryAfterOf(header: string | undefined, now: number): Duration.Duration | null {
   if (header === undefined) {
     return null;
@@ -42,12 +27,6 @@ function retryAfterOf(header: string | undefined, now: number): Duration.Duratio
   return Number.isNaN(at) ? null : Duration.millis(Math.max(0, at - now));
 }
 
-/**
- * Sends one request with the preset's bearer token, retrying transport
- * failures and 429 / 502 / 503 / 504 (upserts and deletes are idempotent, so a
- * re-send is safe). The response body is returned whole for the caller to
- * interpret and scrub — never logged here.
- */
 export const send = Effect.fn("sync-http-send.send")(function* (
   input: HttpTargetInput,
   request: HttpClientRequest.HttpClientRequest,
@@ -58,7 +37,6 @@ export const send = Effect.fn("sync-http-send.send")(function* (
     HttpClientRequest.setHeader("accept", "application/json"),
     HttpClientRequest.setHeader("user-agent", `maruhi-cli/${CLI_VERSION}`),
   );
-  // Zero attempts means nothing is ever sent.
   if (input.retry.attempts <= 0) {
     return yield* Effect.fail(
       cliError(` (${input.retry.attempts} attempts). Check the network and retry`),
@@ -66,7 +44,6 @@ export const send = Effect.fn("sync-http-send.send")(function* (
   }
   const once = client.execute(prepared).pipe(
     Effect.flatMap((response) => Effect.map(response.text, (text) => ({ response, text }))),
-    // A transport-layer failure (DNS, connection, TLS). The message is only a description of the destination; no body
     Effect.catch((error) =>
       Effect.fail(new SendRetryable({ failure: describeTransport(error), retryAfter: null })),
     ),
@@ -83,11 +60,6 @@ export const send = Effect.fn("sync-http-send.send")(function* (
         : Effect.succeed({ status: response.status, text } satisfies HttpOutcome),
     ),
   );
-  // Exponential backoff; a response's Retry-After overrides that step's
-  // wait. The schedule output records the step number and the wait it
-  // computed so the fallback can tell an over-cap Retry-After apart from
-  // exhausted attempts (on the last attempt the cap is not evaluated, so
-  // the failure counts toward the attempt total instead).
   const policy = Schedule.exponential(input.retry.baseDelay).pipe(
     Schedule.modifyDelay(
       ({ input: failure, duration }: Schedule.Metadata<Duration.Duration, SendRetryable>) =>
@@ -115,7 +87,6 @@ export const send = Effect.fn("sync-http-send.send")(function* (
   );
 });
 
-/** Describing a transport-layer failure (only the destination host and the error kind. No body or headers). */
 function describeTransport(error: unknown): string {
   const tag = isRecord(error) && typeof error["_tag"] === "string" ? error["_tag"] : "error";
   const description =
@@ -123,7 +94,6 @@ function describeTransport(error: unknown): string {
   return `Could not reach the vendor API (${tag}${displayText(description)})`;
 }
 
-/** Extracts the showable fragments from a response body and redacts them (values, tokens). */
 export function scrubbed(
   lines: readonly string[],
   writes: readonly SyncWrite[],

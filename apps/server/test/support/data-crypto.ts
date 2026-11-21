@@ -1,14 +1,3 @@
-// Real crypto helpers for data-plane integration tests (run inside workerd).
-//
-// Real data is built using only the public API of packages/crypto: chain
-// entries are signed at test time with the test vectors' fixed keys
-// (chain-entries.json's keys), and DEK generation → HPKE wrap → AES-GCM
-// encryption → client-side decryption are all executed for real.
-// Only acceptance-policy tests that rely on "the server cannot verify the
-// contents" use fake ciphertexts (noted in each test).
-// The shared core of chain assembly and wire values lives in
-// @maruhi/crypto/test-support (shared with the cli test support — session-11 §5 ruling).
-
 import type {
   EnvironmentId,
   ChainEntry,
@@ -68,25 +57,10 @@ export {
   testVariableId,
 } from "@maruhi/crypto/test-support";
 
-/**
- * Key borrowing for user IDs not in the fixed vector key set. The data
- * fixture's reader (user-reader-0003) uses the third vector key (nominally
- * user-admin-0003) — binding between a key and a user ID is done by the
- * chain's add_member, so the vector JSON's nominal user and the test user ID
- * may be independent.
- */
 const VECTOR_KEY_ALIASES: Record<string, string> = {
   "user-reader-0003": "user-admin-0003",
 };
 
-/**
- * Device key substitution (2026-09-19 DK — K3 test): overrides, per user_id,
- * "the key currently used for signing" with a vector key name
- * (`user-owner-0001@phone` etc.). Subsequent signEntryAt / signValueAs /
- * signMetaStatementAs / signEnvManifestAs / signWrapAs sign with that device
- * key (the actor FP is also that key's). Pass null to clear. data-scenario's
- * beforeEach clears them all.
- */
 const deviceKeyOverrides = new Map<string, string>();
 
 export function useDeviceKey(userId: string, vectorKeyName: string | null): void {
@@ -101,7 +75,6 @@ export function resetDeviceKeys(): void {
   deviceKeyOverrides.clear();
 }
 
-/** Look up a vector key by name (includes device keys `<user>@<label>`). */
 export function vectorKeyNamed(name: string) {
   const keys = vectorKeys[name];
   if (keys === undefined) {
@@ -110,7 +83,6 @@ export function vectorKeyNamed(name: string) {
   return keys;
 }
 
-/** The fixed vector key users (user-owner-0001 / user-member-0002 / user-admin-0003 + borrowers). */
 export function vectorKeyOf(userId: string) {
   const keys = vectorKeys[deviceKeyOverrides.get(userId) ?? VECTOR_KEY_ALIASES[userId] ?? userId];
   if (keys === undefined) {
@@ -119,18 +91,10 @@ export function vectorKeyOf(userId: string) {
   return keys;
 }
 
-/** Look up a vector key by FP (from all keys including device keys; undefined if none). */
 function vectorKeyByFingerprint(fingerprintHex: string) {
   return Object.values(vectorKeys).find((keys) => keys.key_fingerprint_hex === fingerprintHex);
 }
 
-/**
- * Sign an entry with a vector seed. If the actor block's FP matches any
- * vector key (including device keys), sign with that key (after DK a single
- * user can hold multiple device keys, so "actor.user_id's key" cannot
- * reproduce device signing). Unknown FPs fall back to the user_id's key
- * (preserving the FP-mismatch negative semantics).
- */
 async function signAs(userId: string, unsigned: UnsignedChainEntry): Promise<ChainEntry> {
   const keys = vectorKeyByFingerprint(unsigned.actor.keyFingerprintHex) ?? vectorKeyOf(userId);
   const pair = unwrapResult(
@@ -151,7 +115,6 @@ export interface ChainStep {
   readonly operation: ChainOperation;
 }
 
-/** Build one entry with a test-time signature to follow the tail of an existing chain. */
 export async function signEntryAt(input: {
   readonly seq: number;
   readonly prevHashHex: string;
@@ -174,15 +137,6 @@ export async function signEntryAt(input: {
   return { entry, hash: await computeChainEntryHash(entry) };
 }
 
-/**
- * Re-sign an existing entry (vector main line or negative) keeping its op /
- * payload / actor while renumbering seq / prev. For replaying against the API
- * after the head has drifted from the vector's fixed seq due to a composite
- * boundary checkpoint insertion (AUTH_SPEC §12-4). The actor block keeps the
- * original (preserving the key-FP-mismatch negative semantics). When seq /
- * prev / timestamp match the original, Ed25519 determinism makes the bytes
- * identical to the original.
- */
 export async function resignEntryAt(
   base: ChainEntry,
   seq: number,
@@ -193,16 +147,12 @@ export async function resignEntryAt(
     ...rest,
     seq,
     prevHashHex,
-    // approve's timestamp_ms is an input to the consensus rule (§6.2
-    // `proposal-expired` — the only place this spec uses a timestamp), so keep
-    // the original. Other ops get the deterministic value derived from seq
     timestampMs: base.op === "approve" ? base.timestampMs : BASE_TIME_MS + seq * 1000,
   };
   const entry = await signAs(base.actor.userId, unsigned);
   return { entry, hash: await computeChainEntryHash(entry) };
 }
 
-/** Assemble a valid chain with test-time signatures (seq / prev_hash / timestamp are automatic). */
 export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChain> {
   return buildChainWith(
     steps.map((step) => ({
@@ -216,7 +166,6 @@ export async function buildChain(steps: readonly ChainStep[]): Promise<BuiltChai
   );
 }
 
-/** Payload for genesis (the actor's own public key set). */
 export function genesisOperation(userId: string): ChainOperation {
   const keys = vectorKeyOf(userId);
   return {
@@ -225,13 +174,8 @@ export function genesisOperation(userId: string): ChainOperation {
   };
 }
 
-/**
- * Test representation of a member's scope (CRYPTO_SPEC §6.2 — 2026-09-14 ES):
- * omitted = all, array = listed (empty array = listed{}).
- */
 export type TestScope = readonly string[] | undefined;
 
-/** Map the scope test representation onto the wire's two fields. */
 function scopeFieldsOf(scope: TestScope): {
   readonly scopeKind: "all" | "listed";
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
@@ -241,7 +185,6 @@ function scopeFieldsOf(scope: TestScope): {
     : { scopeKind: "listed", scopeEnvironmentIds: scope.map(testEnvironmentId) };
 }
 
-/** Payload for add_member (the target's vector public key set; scope omitted = all). */
 export function addMemberOperation(
   targetUserId: string,
   role: "owner" | "admin" | "member" | "reader",
@@ -260,7 +203,6 @@ export function addMemberOperation(
   };
 }
 
-/** Payload for change_role (full replacement of (role, scope) — CRYPTO_SPEC §6.2; scope omitted = all). */
 export function changeRoleOperation(
   targetUserId: string,
   newRole: "owner" | "admin" | "member" | "reader",
@@ -272,10 +214,8 @@ export function changeRoleOperation(
   };
 }
 
-/** The §5.2 commitment (hex lowercase, 64 chars — the shared {@link testDekCommitmentHex}). */
 export const commitmentOf = testDekCommitmentHex;
 
-/** Payload for create_environment (with the epoch-1 commitment — §6.2). */
 export function createEnvironmentOperation(
   environmentId: string,
   dekCommitmentHex: string,
@@ -286,16 +226,10 @@ export function createEnvironmentOperation(
   };
 }
 
-/** Canonical computation of values_digest (§6.2 — value-level latest form of active variables; empty set allowed). */
 export async function valuesDigestOf(entries: readonly EnvValuesDigestEntry[]): Promise<string> {
   return unwrapResult(await computeEnvValuesDigest(SUITE_ID, entries), "computeEnvValuesDigest");
 }
 
-/**
- * Operation for a boundary checkpoint (one tuple for the environment +
- * empty audit head — AUTH_SPEC §12-4 / CRYPTO_SPEC §6.3). Overriding the
- * audit head and multiple tuples is allowed for negatives.
- */
 export function checkpointOperation(input: {
   readonly environmentId: string;
   readonly epoch: number;
@@ -321,7 +255,6 @@ export function checkpointOperation(input: {
   };
 }
 
-/** Payload for rotate_epoch (with the new epoch's commitment — §6.2). */
 export function rotateEpochOperation(
   environmentId: string,
   newEpoch: number,
@@ -339,7 +272,6 @@ export function rotateEpochOperation(
   };
 }
 
-/** A new environment epoch DEK (256-bit random). */
 export function makeDek(): Uint8Array {
   return generateDek();
 }
@@ -347,7 +279,6 @@ export function makeDek(): Uint8Array {
 export interface WireWrappedDek {
   readonly suite: string;
   readonly epoch: number;
-  /** Recipient class (AUTH_SPEC §12-6). */
   readonly recipientClass: "member" | "server";
   readonly recipientUserId: string;
   readonly recipientEncPubHex: string;
@@ -356,13 +287,6 @@ export interface WireWrappedDek {
   readonly signatureHex: string;
 }
 
-/**
- * Add a registration signature (CRYPTO_SPEC §5.1) to an unsigned wire
- * representation. The signer is a fixed-vector-key user (= must match the
- * caller of the API — §12-6). Also used by fake-wrap acceptance-policy tests
- * (the server cannot verify the contents but does verify the signature, so
- * even fakes need the caller's signature).
- */
 export async function signWrapAs(
   signerUserId: string,
   projectId: string,
@@ -397,11 +321,6 @@ export async function signWrapAs(
   return { ...wrap, signatureHex };
 }
 
-/**
- * Verify a distributed wrap's registration signature on the client side
- * (CRYPTO_SPEC §5.1). The verification key is "the sig public key bound to
- * the signer user_id on the chain" — tests pull it from the fixed vector keys.
- */
 export async function verifyDistributedWrapSignature(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -439,7 +358,6 @@ export async function verifyDistributedWrapSignature(input: {
   return result.ok;
 }
 
-/** HPKE-wrap a DEK to one recipient and return the wire representation with the signer's registration signature (§12-2). */
 export async function wrapDekTo(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -447,7 +365,6 @@ export async function wrapDekTo(input: {
   readonly dek: Uint8Array;
   readonly recipientUserId: string;
   readonly recipientEncPubHex?: string;
-  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const encPubHex = input.recipientEncPubHex ?? vectorKeyOf(input.recipientUserId).enc_pub_hex;
@@ -479,13 +396,6 @@ export async function wrapDekTo(input: {
   });
 }
 
-/**
- * A wrap with recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9): the
- * server key FP is used in the HPKE info and in the registration signature's
- * recipient position. Wrap and signature assembly take the same path as
- * member (only the recipientUserId position is replaced), and the wire
- * carries recipientClass: "server".
- */
 export async function wrapDekToServer(input: {
   readonly projectId: string;
   readonly environmentId: string;
@@ -493,7 +403,6 @@ export async function wrapDekToServer(input: {
   readonly dek: Uint8Array;
   readonly serverKeyFingerprintHex: string;
   readonly serverEncPubHex: string;
-  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek> {
   const wrap = await wrapDekTo({
@@ -508,14 +417,12 @@ export async function wrapDekToServer(input: {
   return { ...wrap, recipientClass: "server" };
 }
 
-/** Wrap a DEK to multiple recipients (for the complete set on environment creation / rotation). */
 export async function wrapDekForAll(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly epoch: number;
   readonly dek: Uint8Array;
   readonly recipientUserIds: readonly string[];
-  /** The registration-signature signer. Must match the caller of the API (the §12-6 acceptance condition). */
   readonly signerUserId: string;
 }): Promise<WireWrappedDek[]> {
   const wraps: WireWrappedDek[] = [];
@@ -525,19 +432,11 @@ export async function wrapDekForAll(input: {
   return wraps;
 }
 
-/** The declared head of a value signature (the chain head last verified at signing time — §4.1). */
 export interface ValueChainHead {
   readonly seq: number;
   readonly hashHex: string;
 }
 
-/**
- * Add a §4.1 value signature to an unsigned wire value (the signer must
- * match the caller of the API — §12-5). Also used by fake-ciphertext
- * acceptance-policy tests (the server cannot decrypt the contents but does
- * verify the value signature, so even fakes need a correct signature by the
- * caller's real key).
- */
 export async function signValueAs(
   writerUserId: string,
   unsigned: Omit<WireEncryptedPayload, "signatureHex">,
@@ -567,7 +466,6 @@ export async function signValueAs(
   return { ...withHead, signatureHex };
 }
 
-/** Encrypt a variable value with a DEK and return the wire representation with a §4.1 value signature (§12-2). */
 export async function encryptValue(
   dek: Uint8Array,
   context: VariableContext,
@@ -601,15 +499,6 @@ export async function encryptValue(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Test-time signing of metadata statements (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)
-// ---------------------------------------------------------------------------
-
-/**
- * Wire representation of a variable statement (VariableMetaStatement —
- * §12-2). In layout v3, layoutVersion and the schema fields are all
- * present together (in v1 all are absent; required is a wire boolean).
- */
 export interface WireVariableMetaStatement {
   readonly suite: string;
   readonly environmentId: string;
@@ -622,14 +511,12 @@ export interface WireVariableMetaStatement {
   readonly varType?: "" | "string" | "number" | "boolean" | "url";
   readonly required?: boolean;
   readonly description?: string;
-  /** Layout v3 only (null = no declaration). */
   readonly maxAgeDays?: number | null;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
 }
 
-/** Wire representation of an environment statement (EnvironmentMetaStatement — §12-2; stays v1). */
 export type WireEnvironmentMetaStatement = Omit<
   WireVariableMetaStatement,
   "variableId" | "layoutVersion" | "varType" | "required" | "description" | "maxAgeDays"
@@ -655,9 +542,6 @@ function metaContextOf(
     target: metaTargetOf(statement),
     name: statement.name,
     status: statement.status,
-    // Layout-v3 carrier fields → signature target (required is "true"/"false",
-    // max_age_days "" or the decimal — the LP field representations of
-    // CRYPTO_SPEC §4.2)
     layoutVersion: statement.layoutVersion,
     ...(statement.layoutVersion === undefined ||
     statement.varType === undefined ||
@@ -683,11 +567,6 @@ function metaContextOf(
   };
 }
 
-/**
- * Add a §4.2 author signature to an unsigned statement (the signer must
- * match the caller of the API — the §12-5 meta rule). Handles both shapes:
- * variable (with variableId) and environment (without).
- */
 export async function signMetaStatementAs<
   T extends Omit<WireVariableMetaStatement, "signatureHex" | "variableId"> & {
     readonly variableId?: string;
@@ -711,11 +590,6 @@ export async function signMetaStatementAs<
   return { ...unsigned, signatureHex };
 }
 
-/**
- * SHA-256 of meta_signed_bytes (used for the next metaVersion's
- * prevMetaSigHashHex — the §4.2 chain). author does not appear on the wire,
- * so it is specified explicitly.
- */
 export async function metaSignedBytesHashOf(
   projectId: string,
   statement: Omit<WireVariableMetaStatement, "variableId"> & { readonly variableId?: string },
@@ -727,11 +601,6 @@ export async function metaSignedBytesHashOf(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)
-// ---------------------------------------------------------------------------
-
-/** One entry of variables_digest (§4.3 — the latest form of every variable, tombstones included). */
 export interface WireDigestEntry {
   readonly variableId: string;
   readonly status: "active" | "deleted" | "declared";
@@ -739,7 +608,6 @@ export interface WireDigestEntry {
   readonly metaSigHashHex: string;
 }
 
-/** Wire representation of an environment manifest (EnvironmentManifest — §12-2). */
 export interface WireEnvironmentManifest {
   readonly suite: typeof SUITE_ID;
   readonly environmentId: string;
@@ -754,7 +622,6 @@ export interface WireEnvironmentManifest {
   readonly signatureHex: string;
 }
 
-/** Canonical computation of variables_digest (empty set allowed — §4.3). */
 export async function digestOf(entries: readonly WireDigestEntry[]): Promise<string> {
   return unwrapResult(
     await computeVariablesDigest(
@@ -786,10 +653,6 @@ function manifestContextOf(
   };
 }
 
-/**
- * Add a §4.3 issuer signature to an unsigned manifest (the signer must match
- * the caller of the API — §12-5 (1)).
- */
 export async function signEnvManifestAs(
   issuerUserId: string,
   projectId: string,
@@ -813,11 +676,6 @@ export async function signEnvManifestAs(
   return { ...unsigned, signatureHex };
 }
 
-/**
- * SHA-256 of env_manifest_signed_bytes (used for the next manifestVersion's
- * prevManifestSigHashHex — the §4.3 chain). issuer does not appear on the
- * wire, so it is specified explicitly.
- */
 export async function manifestSignedBytesHashOf(
   projectId: string,
   manifest: WireEnvironmentManifest,
@@ -829,7 +687,6 @@ export async function manifestSignedBytesHashOf(
   );
 }
 
-/** Sign and return the statement bundled with variable creation (metaVersion 1, active, empty prev). */
 export async function createVariableStatement(input: {
   readonly authorUserId: string;
   readonly projectId: string;
@@ -851,11 +708,6 @@ export async function createVariableStatement(input: {
   });
 }
 
-/**
- * First half of the client-side receive path: Open the wrapped DEK addressed
- * to oneself with a fixed vector key and return the DEK (material for the
- * §5.2 commitment check and decryption).
- */
 async function unwrapDistributedDek(input: {
   readonly recipientUserId: string;
   readonly wrapped: {
@@ -892,10 +744,6 @@ async function unwrapDistributedDek(input: {
   );
 }
 
-/**
- * Client-side receive path: Open the wrapped DEK addressed to oneself and
- * decrypt the EncryptedPayload with it (push→pull→decrypt round-trip check).
- */
 export async function unwrapAndDecrypt(input: {
   readonly recipientUserId: string;
   readonly wrapped: {

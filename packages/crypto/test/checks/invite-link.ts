@@ -1,13 +1,3 @@
-// Checks for CRYPTO_SPEC §6.5 (IV — link key derivation, issue signature, and
-// the OpenSSH public key line).
-// The issue signature is Ed25519-deterministic, so the sign direction is also
-// verified to match the vector exactly.
-// The negatives pin that "the implementation's canonicalization reproduces the
-// vector's verify_signed_bytes_hex, and on top of that the original signature
-// fails verification". OpenSSH parsing decodes third-party data (GitHub
-// responses), so the acceptance boundary (type, key length, in-blob type,
-// extra bytes, base64) is pinned with vectors.
-
 import {
   buildInviteIssueSignedBytes,
   deriveInviteLinkKeyPair,
@@ -61,7 +51,6 @@ function contextOf(v: VectorContext): InviteIssueContext {
     inviterUserId: testUserId(v.inviter_user_id),
     inviterEncPubHex: v.inviter_enc_pub_hex,
     inviterSigPubHex: v.inviter_sig_pub_hex,
-    // scope (2026-09-14 ES — the last 2 fields of the §6.5 issue text)
     scopeKind: v.scope_kind as ScopeKind,
     scopeEnvironmentIds: v.scope_environments.map((id) => testEnvironmentId(id)),
   };
@@ -77,7 +66,6 @@ async function linkKeyChecks(c: Checks): Promise<void> {
       `invite-link: ${label} derived from seed`,
       derived.ok && toHex(derived.value.publicKeyRaw) === key.pub_hex,
     );
-    // The derived public key object also matches raw (consistency of the two imports)
     if (derived.ok) {
       const exported = new Uint8Array(
         await crypto.subtle.exportKey("raw", derived.value.publicKey),
@@ -139,7 +127,6 @@ async function issuePositiveChecks(c: Checks, signingKey: CryptoKey): Promise<vo
 
 interface IssueNegative {
   readonly name: string;
-  /** "encoding" = a byte string this implementation would never produce (legacy form, flattened). Unspecified = tampering / transplant. */
   readonly kind?: string;
   readonly context: VectorContext;
   readonly signature_hex: string;
@@ -174,13 +161,6 @@ async function issueNegativeChecks(c: Checks): Promise<void> {
   );
 }
 
-/**
- * Encoding-family negatives (the legacy 10-field form lacking scope, the flat
- * scope concatenation): pin that canonicalization **does not produce** the
- * vector's byte string, and that the canonical issue signature fails
- * verification on top of that byte string (README convention 27 — there is no
- * compat-acceptance path; isomorphic to chain-entries' flat-concat)
- */
 async function issueEncodingNegativeCheck(c: Checks, negative: IssueNegative): Promise<void> {
   const context = contextOf(negative.context);
   const differs = toHex(buildInviteIssueSignedBytes(context)) !== negative.verify_signed_bytes_hex;
@@ -221,7 +201,6 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     },
     { name: "short inviter enc pub", context: { ...contextOf(base), inviterEncPubHex: "ab" } },
     { name: "short inviter sig pub", context: { ...contextOf(base), inviterSigPubHex: "ab" } },
-    // The structural rules of scope (same as §6.2 — all ⇒ empty list, no duplicates, closed-set kind, non-empty id)
     {
       name: "all scope with environments",
       context: {
@@ -250,7 +229,6 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
       name: "unknown scope kind",
       context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: [] },
     },
-    // The id bound (1024 bytes in §6.1 — symmetric to add_member on the chain side)
     {
       name: "oversized scope environment id",
       context: {
@@ -295,13 +273,11 @@ async function issueRoundtripChecks(c: Checks): Promise<void> {
   }
   const verified = await verifyInviteIssueSignature({ context, signatureHex: signed.value });
   c.push("invite-issue-sig: roundtrip", verified.ok);
-  // Transplanting to a different invite id fails verification (the server cannot transplant the issue text to another row)
   const transplanted = await verifyInviteIssueSignature({
     context: { ...context, inviteId: "invite-other" },
     signatureHex: signed.value,
   });
   c.push("invite-issue-sig: roundtrip transplanted invite id rejected", !transplanted.ok);
-  // The ghost-adder shape: even setting the declared key to the inviter's public key, a signature by another key does not pass
   const ghost = await generateSigningKeyPair();
   const ghostSigned = await signInviteIssue({ context, signingKey: ghost.privateKey });
   const ghostVerified = ghostSigned.ok
@@ -313,7 +289,6 @@ async function issueRoundtripChecks(c: Checks): Promise<void> {
 function opensshChecks(c: Checks): void {
   opensshVectorChecks(c);
   opensshRoundtripChecks(c);
-  // Parse rejections (convention 21: pinned in the implementation harness — shapes not present in the vector negatives)
   for (const [name, input] of rejectedOpenSshInputs()) {
     const rejectedParse = parseOpenSshEd25519PublicKey(input as string);
     c.push(
@@ -345,7 +320,6 @@ function opensshVectorChecks(c: Checks): void {
 }
 
 function opensshRoundtripChecks(c: Checks): void {
-  // The encode → parse round-trip (generated key), and encode rejection of a wrong key length
   const raw = new Uint8Array(32);
   crypto.getRandomValues(raw);
   const encoded = encodeOpenSshEd25519PublicKey(raw);
@@ -355,7 +329,6 @@ function opensshRoundtripChecks(c: Checks): void {
   c.push("openssh: encode short key rejected", !shortKey.ok);
 }
 
-/** Rejected inputs built from the vector's positive case (type mismatch, length, alphabet, whitespace). */
 function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
   const good = vectors.openssh.parse[0];
   if (good === undefined) {
@@ -365,11 +338,9 @@ function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
   const line = `${type} ${text}`;
   const blob = base64ToBytes(text);
   const withBlob = (bytes: Uint8Array) => `${type} ${bytesToBase64(bytes)}`;
-  // A 33-byte key (the inner length prefix is also set to 33)
   const longKey = new Uint8Array(blob.length + 1);
   longKey.set(blob);
   longKey[4 + 11 + 3] = 33;
-  // Only the inner type length prefix set to 10, keeping the total length
   const badInnerLength = new Uint8Array(blob);
   badInnerLength[3] = 10;
   return [
@@ -377,7 +348,6 @@ function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
     ["non-string input (number)", 42],
     ["33-byte key", withBlob(longKey)],
     ["inner type length mismatch with same total length", withBlob(badInnerLength)],
-    // base64url-only characters (- _) are outside the standard alphabet (length is kept)
     ["base64url alphabet", `${type} -_${text.slice(2)}`],
     ["whitespace inside the base64", `${type} ${text.slice(0, 10)} ${text.slice(10)}`],
     ["leading space", ` ${line}`],

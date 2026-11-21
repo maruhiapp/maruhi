@@ -1,18 +1,3 @@
-// Unit tests for the own-devices record's (own-devices.ts) persistence
-// layer.
-//
-// Properties pinned down:
-//  1. record → load hits (the recorded row is read back verbatim)
-//  2. A missing file reads as `missing`, an undecodable file as `corrupt`
-//  3. An **unreadable** file (EACCES / EISDIR / EIO) reads as `corrupt`,
-//     not a failure — `load` is fail-open: recordedReserves (`key show`)
-//     and staleReserveFingerprints (key recover) treat any non-`loaded`
-//     state as "no records" and degrade rather than abort
-//  4. record refuses to overwrite a corrupt file (strict decode — no
-//     partial rebuilds)
-//  5. The stored entry keeps the wire field order (the stored format is
-//     unchanged by the Schema codec)
-
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,9 +46,6 @@ describe("own-devices record (own-devices.ts)", () => {
     const { path, store } = await makeStore();
     await mkdir(path);
 
-    // recordedReserves / staleReserveFingerprints consume `load` directly
-    // and degrade on any non-`loaded` state — a merely unreadable file
-    // must not fail `key show` / `key recover`
     expect((await Effect.runPromise(store.load(ORIGIN, testUserId(USER_A)))).state).toBe("corrupt");
   });
 
@@ -80,7 +62,6 @@ describe("own-devices record (own-devices.ts)", () => {
       ),
     );
     expect(failed).toContain("Cannot write the own-devices record");
-    // The corrupt content stays as-is (never silently rebuilt)
     expect(await readFile(path, "utf8")).toBe("{ not json");
   });
 

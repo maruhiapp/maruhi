@@ -1,22 +1,3 @@
-// Unit tests for the GitHub API client behind the authentication dance
-// (AUTH_SPEC §3-2).
-//
-// auth.test.ts pins the real path end to end through the worker; this file
-// pins failure shapes that are hard to create on it:
-//   - an endpoint that never answers fails through the typed error once the
-//     per-call timeout elapses (it used to hang forever)
-//   - a body whose shape does not match the schema fails the same way
-//     instead of being trusted via a cast
-//   - /user/emails answering non-ok still degrades to "no email stored"
-//     (§3-3), unlike a malformed body
-//
-// fetch is swapped per run through the FetchHttpClient's `Fetch` context
-// reference (no traffic to the real network, no global mutation). A plain
-// `globalThis.fetch` reassignment would not work: the reference's default
-// is evaluated once per process, so it binds whichever fetch was installed
-// at the first request (oidc.test.ts's per-test swap does not hit this
-// limitation because the JWKS code calls globalThis.fetch directly).
-
 import { Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -36,7 +17,6 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-/** Serves the GitHub endpoints, with the user / emails answers swappable per test. */
 function githubStub(options: {
   readonly user?: Response;
   readonly emails?: () => Promise<Response>;
@@ -53,7 +33,6 @@ function githubStub(options: {
   }) as typeof fetch;
 }
 
-/** Runs an operation against the given fetch implementation, folding the outcome into a tagged value. */
 const run = <A, E>(effect: Effect.Effect<A, E>, fetchImpl: typeof fetch) =>
   Effect.runPromise(
     effect.pipe(
@@ -116,8 +95,6 @@ describe("makeGitHubApi exchangeCode (§3-2)", () => {
   });
 
   it("leaves client_secret out of the body when the secret is unconfigured", async () => {
-    // Unset and empty both reach makeGitHubApi as undefined (worker-env.ts);
-    // the field is omitted and GitHub's rejection is a code-exchange-failed
     const bodies: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       bodies.push(new TextDecoder().decode(await new Request(input, init).arrayBuffer()));
@@ -135,10 +112,6 @@ describe("makeGitHubApi exchangeCode (§3-2)", () => {
   });
 
   it("fails with code-exchange-failed when GitHub never answers", async () => {
-    // The endpoint accepts the connection and never responds: the call now
-    // fails through the typed error once REQUEST_TIMEOUT (5 s, the same
-    // bound as the JWKS fetch) elapses instead of hanging. The clock is
-    // virtual (TestClock), so the 5 s wait is instant
     const fetchImpl = (() => new Promise<Response>(() => {})) as typeof fetch;
     const outcome = await run(
       Effect.gen(function* () {
@@ -191,8 +164,6 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
   });
 
   it("fails with token-invalid when the user answer carries a null login", async () => {
-    // JSON `null` is not an absent key: the schema rejects it where the
-    // cast used to read it as "no login"
     const outcome = await run(
       api().fetchIdentity("gho_test100"),
       githubStub({ user: json({ id: 100, login: null }) }),
@@ -215,8 +186,6 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
   });
 
   it("fails with token-invalid when the emails answer has an unexpected shape", async () => {
-    // A malformed body used to be cast and read as "no email" — it now goes
-    // through the same failure path as an unreachable GitHub
     const outcome = await run(
       api().fetchIdentity("gho_test100"),
       githubStub({ emails: () => Promise.resolve(json({ message: "not an array" })) }),
@@ -228,8 +197,6 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
   });
 
   it("fails with token-invalid when an emails entry has a null email", async () => {
-    // Same edge as a non-array body: the cast used to read `email: null` as
-    // "not a string" and skip the entry; the schema fails the whole call
     const outcome = await run(
       api().fetchIdentity("gho_test100"),
       githubStub({
@@ -243,8 +210,6 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
   });
 
   it("still resolves with verifiedEmail null when the emails endpoint answers non-ok", async () => {
-    // Non-ok is a "not stored" answer (§3-3), not a dance failure — only
-    // transport errors, timeouts, and malformed bodies fold into the error
     const outcome = await run(
       api().fetchIdentity("gho_test100"),
       githubStub({ emails: () => Promise.resolve(json({ message: "Not Found" }, 404)) }),

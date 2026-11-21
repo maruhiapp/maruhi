@@ -1,6 +1,3 @@
-// Checks for CRYPTO_SPEC §3 (key generation, fingerprints, DEK).
-// The fingerprints are pinned by keys / server_key of test-vectors/chain-entries.json.
-
 import {
   computeServerKeyFingerprint,
   computeUserKeyFingerprint,
@@ -35,7 +32,6 @@ interface VectorUserKeys {
 const users = chainVectors.keys as Readonly<Record<string, VectorUserKeys>>;
 
 async function fingerprintChecks(c: Checks): Promise<void> {
-  // User key fingerprint: the first 16 bytes of SHA-256(enc_pub || sig_pub)
   for (const [userId, keys] of Object.entries(users)) {
     const fp = await computeUserKeyFingerprint(
       fromHex(keys.enc_pub_hex),
@@ -47,7 +43,6 @@ async function fingerprintChecks(c: Checks): Promise<void> {
     );
   }
 
-  // Server key fingerprint: the first 16 bytes of SHA-256(server_enc_pub) (enc key only)
   const server = chainVectors.server_key;
   const serverFp = await computeServerKeyFingerprint(fromHex(server.enc_pub_hex));
   c.push(
@@ -55,16 +50,11 @@ async function fingerprintChecks(c: Checks): Promise<void> {
     serverFp.ok && toHex(serverFp.value) === server.key_fingerprint_hex,
   );
 
-  // Length check: anything other than 32 bytes is InvalidInput
   const bad = await computeUserKeyFingerprint(new Uint8Array(31), new Uint8Array(32));
   c.push("keys: fingerprint rejects bad length", !bad.ok && bad.error.kind === "InvalidInput");
 }
 
 async function deriveChecks(c: Checks): Promise<void> {
-  // RFC 9180 DeriveKeyPair: the same public key is derived from the same ikm
-  // as dek-wrap.json's server_keypair (derived with hpke-js) — this pins the
-  // "one secret → keypair" path of the deployment keypair (§9). rfc9180.ts
-  // covers the official RFC vectors
   const serverKeys = dekWrapVectors.server_keypair;
   const derived = await deriveEncryptionKeyPair({ ikm: fromHex(serverKeys.ikmS_hex) });
   if (!derived.ok) {
@@ -77,14 +67,12 @@ async function deriveChecks(c: Checks): Promise<void> {
       "keys: derived server fingerprint",
       fp.ok && toHex(fp.value) === serverKeys.server_key_fingerprint_hex,
     );
-    // Non-extractable is the default (the server-side operational posture): export is KeyExportFailed
     const denied = await exportEncryptionPrivateKey(derived.value.privateKey);
     c.push(
       "keys: derived private key is non-extractable by default",
       !denied.ok && denied.error.kind === "KeyExportFailed",
     );
   }
-  // A wrong-length ikm is InvalidInput (does not throw)
   const badIkm = await deriveEncryptionKeyPair({ ikm: new Uint8Array(31) });
   c.push("keys: derive rejects bad ikm length", !badIkm.ok && badIkm.error.kind === "InvalidInput");
 }
@@ -96,7 +84,6 @@ async function vectorImportChecks(c: Checks): Promise<void> {
     return;
   }
 
-  // The sig key seed → JWK import is consistent with the vector's public key
   const sigPair = await importSigningKeyPair({
     publicKey: fromHex(owner.sig_pub_hex),
     privateSeed: fromHex(owner.sig_sk_seed_hex),
@@ -106,9 +93,6 @@ async function vectorImportChecks(c: Checks): Promise<void> {
     toHex(await exportSigningPublicKey(sigPair.value.publicKey)) === owner.sig_pub_hex;
   c.push("keys: signing key pair import from seed", sigRoundtrip);
 
-  // Raw import of the enc KeyPair (non-extractable) — the precondition for the
-  // KeyPair passing path of HPKE Open.
-  // enc_sk_seed is generated as a raw X25519 private key (from_private_bytes)
   const encPair = await importEncryptionKeyPair({
     publicKey: fromHex(owner.enc_pub_hex),
     privateKey: fromHex(owner.enc_sk_seed_hex),
@@ -121,7 +105,6 @@ async function vectorImportChecks(c: Checks): Promise<void> {
 }
 
 async function generationChecks(c: Checks): Promise<void> {
-  // Key generation: the public keys of enc (X25519) / sig (Ed25519) round-trip as 32-byte raw
   const enc = await generateEncryptionKeyPair();
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
   const encImported = await importEncryptionPublicKey(encPub);
@@ -138,17 +121,12 @@ async function generationChecks(c: Checks): Promise<void> {
     sigPub.length === 32 && sigImported.ok && sig.privateKey.extractable === false,
   );
 
-  // DEK: a 256-bit random. Length and (probabilistically) uniqueness
   const a = generateDek();
   const b = generateDek();
   c.push("keys: DEK is 32 bytes and random", a.length === 32 && toHex(a) !== toHex(b));
 }
 
 async function encExportChecks(c: Checks): Promise<void> {
-  // enc private key: extractable generation → raw export → HPKE Open works
-  // with the re-imported key pair (public key equality is trivial — a restore
-  // of the input — so a functional check pins the correctness of the exported
-  // value — the CLI's OS keychain path, CRYPTO_SPEC §3)
   const enc = await generateEncryptionKeyPair({ extractable: true });
   const encSk = await exportEncryptionPrivateKey(enc.privateKey);
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
@@ -181,9 +159,6 @@ async function encExportChecks(c: Checks): Promise<void> {
 }
 
 async function sigExportChecks(c: Checks): Promise<void> {
-  // sig private key: extractable generation → seed export → a signature by the
-  // re-imported private key verifies under the "original" public key
-  // (functional check)
   const sig = await generateSigningKeyPair({ extractable: true });
   const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
   const sigPub = await exportSigningPublicKey(sig.publicKey);
@@ -210,8 +185,6 @@ async function sigExportChecks(c: Checks): Promise<void> {
 }
 
 async function vectorExportChecks(c: Checks): Promise<void> {
-  // Vector pinning: import the fixed keys of chain-entries.json as extractable
-  // → the export matches the vector's private key hex (deterministic check)
   const ownerKeys = users["user-owner-0001"];
   if (ownerKeys === undefined) {
     c.push("keys: vector user-owner-0001 present for export checks", false);
@@ -248,7 +221,6 @@ async function vectorExportChecks(c: Checks): Promise<void> {
 }
 
 async function lockedExportChecks(c: Checks): Promise<void> {
-  // Exporting a non-extractable key is KeyExportFailed (does not throw)
   const encLocked = await generateEncryptionKeyPair();
   const encDenied = await exportEncryptionPrivateKey(encLocked.privateKey);
   c.push(

@@ -1,9 +1,3 @@
-// The public surface of auth.package (the ImportLint boundary).
-//
-// Only the service constructors, middleware implementation, and cookie names
-// are exposed. Internals such as GitHub API request details and hash
-// computation stay inside the boundary.
-
 export {
   CLI_FLOW_TTL_MS,
   type CliVerifyParams,

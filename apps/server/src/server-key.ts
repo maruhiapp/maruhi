@@ -1,33 +1,3 @@
-// Derivation of the deployment keypair (CRYPTO_SPEC §9), provision of
-// the public info, and at lease time the "unseal the wrap addressed
-// to itself → re-wrap for the workload" step (§9.1).
-//
-// From the `SERVER_ENC_KEY_IKM` secret (32-byte hex — a Workers
-// Secret on self-host, a Secrets Store binding on hosted; CRYPTO_SPEC
-// §9's provisioning note) it derives an X25519 keypair via RFC 9180
-// DeriveKeyPair, and puts the public face (enc public key + the
-// server-key FP = SHA-256(enc_pub)[:16]) on `/auth/config`
-// (AUTH_SPEC §4).
-//
-// **Neither the secret key nor an unsealed DEK leaves this module's
-// closure**. The only published operation is `reseal` (unsealing and
-// re-wrapping fused into one, **returning only the lease wrap**); no
-// interface returns a plaintext DEK — the type guarantees a DEK never
-// appears in a return value, across the RPC boundary, or in logs (the
-// server-side version of §10's API-boundary invariant).
-// The server decrypts down to the DEK only; it never decrypts
-// variable values (§9.1).
-//
-// An unset secret is "a pure E2EE deployment without selective
-// disclosure" (the normal default). A malformed value (not hex,
-// wrong length) is treated as unset too — since
-// serverKeyFingerprintHex disappears from /auth/config, the grant CLI
-// side turns "server key not configured" into an explicit error
-// (troubleshooting in docs/SELF_HOSTING.md). Unlike an unset GitHub
-// OAuth (503 SetupIncomplete) it is not fail-closed, because the
-// server key is an optional feature and there is no reason to block
-// the login path.
-
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import { cryptoEffect, cryptoPromise, serverKeyFingerprintHex } from "@maruhi/core";
 import {
@@ -49,14 +19,11 @@ import { readWorkerSecret, type SecretBindingValue } from "./worker-env.ts";
 
 const IKM_BYTES = 32;
 
-/** The public face of the deployment keypair (distributed by /auth/config — AUTH_SPEC §4). */
 export interface ServerKeyInfo {
   readonly serverEncPubHex: string;
-  /** Computed from the derived public key (the actor FP of `server.*` audit rows — AUDIT_SPEC §3.5). */
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
-/** A stored server-addressed wrap (one row of dek_wraps — §12-6). */
 export interface StoredServerWrap {
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -64,12 +31,6 @@ export interface StoredServerWrap {
   readonly ciphertextHex: string;
 }
 
-/**
- * One lease wrap (response scope; never persisted — §9.1). The suite
- * is inherited from the stored row it was unsealed from: a lease is
- * "a re-wrap of a stored wrap", and material of a different suite is
- * not distributed as v1 (CRYPTO_SPEC §2 design principle 4).
- */
 export interface LeaseWrapOutput {
   readonly suite: WireSuite;
   readonly epoch: number;
@@ -77,21 +38,10 @@ export interface LeaseWrapOutput {
   readonly ciphertextHex: string;
 }
 
-/** reseal failure reasons (all are server-internal inconsistencies; the reason is not exposed in the response). */
 export type ResealFailure = "not-configured" | "unwrap-failed" | "wrap-failed";
 
 export interface ServerKeyShape {
-  /** The public face if configured; null when unset (or malformed). */
   readonly info: Effect.Effect<ServerKeyInfo | null>;
-  /**
-   * Unseals a server-addressed wrap and re-wraps the same epoch DEK
-   * to the workload's ephemeral public key (CRYPTO_SPEC §9.1). The
-   * unsealed DEK stays inside this call, and the return value carries
-   * **only the re-wrapped wrap**.
-   *
-   * A failure returns a reason code only (it carries no fragments of
-   * ciphertext or key material).
-   */
   readonly reseal: (input: {
     readonly projectId: ProjectId;
     readonly environmentId: EnvironmentId;
@@ -103,18 +53,11 @@ export interface ServerKeyShape {
 
 export class ServerKey extends Context.Service<ServerKey, ServerKeyShape>()("ServerKey") {}
 
-/** The derived server key (the public face + the keypair used for unsealing). */
 interface DerivedServerKey {
   readonly info: ServerKeyInfo;
   readonly keyPair: EncryptionKeyPair;
 }
 
-/**
- * The domain error `derive` folds every wrapped crypto error into:
- * an underivable server key is an unconfigured deployment — the same
- * treatment as an unset or malformed ikm (the public face disappears
- * from /auth/config).
- */
 class ServerKeyUnusableError extends Data.TaggedError("ServerKeyUnusable")<object> {}
 const unusable = new ServerKeyUnusableError();
 
@@ -125,16 +68,11 @@ const derive: (
     if (ikmHex === undefined) {
       return null;
     }
-    // The IKM's only unwrap: the hex decodes straight into the
-    // derivation input (worker-env.ts wraps it at the env read)
     const ikm = decodeHex(Redacted.value(ikmHex));
     if (ikm === null || ikm.length !== IKM_BYTES) {
       return null;
     }
     const pair = yield* cryptoEffect(() => deriveEncryptionKeyPair({ ikm }));
-    // A rejection of the bare-Promise export is a platform defect,
-    // not "unusable material" — the same defect the pre-bridge code
-    // let the cached Promise's rejection propagate as
     const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
       exportEncryptionPublicKey(pair.publicKey),
     ).pipe(Effect.orDie);
@@ -151,58 +89,18 @@ const derive: (
   Effect.catchTag("ServerKeyUnusable", () => Effect.succeed(null)),
 );
 
-/**
- * Zero-fills the buffer of an unsealed DEK. In JS a copy made before
- * GC cannot be erased, so this is not a cryptographic boundary — but
- * it shrinks the window in which the DEK sits plainly on a long-lived
- * isolate's heap (defense in depth).
- */
 function zeroize(bytes: Uint8Array): void {
   bytes.fill(0);
 }
 
-/**
- * The env-facing construction: resolves the IKM from whichever
- * binding shape the deployment carries (worker-env.ts — a failed
- * Secrets Store read resolves to undefined, i.e. the unconfigured
- * treatment above) and builds the service from the resolved value.
- * The chain DO's ServerKey layer is built through this (its layer
- * build can run the async resolution); the worker's buildServices
- * resolves all four secrets together through readWorkerSecrets and
- * calls `makeServerKey` directly, and `makeServerKey` itself stays
- * synchronous for its direct callers.
- */
 export function makeServerKeyFromEnv(
   raw: SecretBindingValue | undefined,
 ): Effect.Effect<ServerKeyShape> {
   return readWorkerSecret(raw, "SERVER_ENC_KEY_IKM").pipe(Effect.map(makeServerKey));
 }
 
-/**
- * A service built once at worker / DO startup. Derivation happens
- * once at first reference and is cached inside the isolate thereafter
- * (the ikm and the secret key stay inside the closure). The ikm
- * arrives `Redacted` (undefined = unset or empty — worker-env.ts's
- * readWorkerSecrets).
- */
 export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): ServerKeyShape {
-  // Effect.cached allocates its memo cell synchronously: one
-  // derivation per isolate however many fibers race — the first run's
-  // Exit (a derived key, a null "unconfigured", or a defect) is
-  // replayed to every later call, the same guarantee the hand-made
-  // `cached ??=` Promise gave
   const derived = Effect.runSync(Effect.cached(derive(ikmHex)));
-  // Accesses hold the memo evaluation uninterruptibly, so the one
-  // derivation always completes and is stored even when every caller
-  // waiting on it is interrupted. `cached` itself treats interruption
-  // as abandonment (since effect 4.0.1): an interrupted run is never
-  // stored, so it cannot poison the cell, but without the mask an
-  // abandoned run would be derived again by the next caller. The mask
-  // must wrap the access, not the derivation: the pending interrupt
-  // surfaces when the mask lifts, which inside `cached` would still be
-  // within the run — here the store lands first and the caller's
-  // interrupt only takes effect after it. Waiters wait out the
-  // one-shot derivation before their own interrupt lands
   const shared = Effect.uninterruptible(derived);
   return {
     info: Effect.map(shared, (key) => key?.info ?? null),
@@ -217,12 +115,7 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
       }
       const workloadPublicKey = yield* cryptoEffect(() =>
         importEncryptionPublicKey(workloadPubBytes),
-      ).pipe(
-        // Import can fail even through the wire Schema (32-byte
-        // hex) — an X25519 public key that is invalid as a point.
-        // The caller maps it to a 400-equivalent
-        Effect.mapError(() => "wrap-failed" as const),
-      );
+      ).pipe(Effect.mapError(() => "wrap-failed" as const));
       const leases: LeaseWrapOutput[] = [];
       for (const wrap of input.wraps) {
         const enc = decodeHex(wrap.encHex);
@@ -236,12 +129,6 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
           epoch: wrap.epoch,
           claimsDigestHex: input.claimsDigestHex,
         };
-        // The unsealed DEK is a resource: the unwrap is the acquire
-        // (run uninterruptibly by acquireUseRelease, so a DEK it
-        // produces always reaches the release) and zeroize is the
-        // release. The DEK is zero-filled on every exit once the
-        // unwrap succeeds — success, wrap failure, defect, and
-        // interruption alike
         const leased = yield* Effect.acquireUseRelease(
           cryptoEffect(() =>
             unwrapDek({
@@ -251,17 +138,10 @@ export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): Se
                 projectId: input.projectId,
                 environmentId: input.environmentId,
                 epoch: wrap.epoch,
-                // §9: a server-addressed wrap carries the server-key
-                // FP in the recipient position of its info
                 recipientUserId: key.info.serverKeyFingerprintHex,
               },
             }),
-          ).pipe(
-            // An undecryptable poisoned wrap (a target of §12-6's
-            // repair path). No DEK was obtained, so there is
-            // nothing to release
-            Effect.mapError(() => "unwrap-failed" as const),
-          ),
+          ).pipe(Effect.mapError(() => "unwrap-failed" as const)),
           (dek) =>
             cryptoEffect(() => wrapLeaseDek({ workloadPublicKey, dek, context })).pipe(
               Effect.mapError(() => "wrap-failed" as const),

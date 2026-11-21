@@ -1,11 +1,3 @@
-// Integration tests for the per-environment current-ciphertext cap
-// (AUTH_SPEC §12-8 — 2026-10-11 Sc-3): the latest version of every active
-// variable of one environment sums to at most 8 MiB, judged on push,
-// creation with a value and activation (grow-only), and a full
-// environment's pull and lease fit the DO RPC frame.
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment). The fixture lives in support/data-scenario.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -53,10 +45,8 @@ registerDataScenario();
 
 const CAP = MAX_ENVIRONMENT_CIPHERTEXT_BYTES;
 const FILLER = "var-filler-0001";
-/** workerd refuses a DO RPC result serialized above this (the reason for the cap). */
 const RPC_FRAME_BYTES = 32 * 1024 * 1024;
 
-/** Sets the metered size of a variable's latest version (the values themselves stay small). */
 async function setLatestBytes(variableId: string, bytes: number, environmentId = ENV) {
   await queryProjectDo(
     projectId,
@@ -82,7 +72,6 @@ async function latestVersionOf(variableId: string): Promise<number> {
   return Number(rows[0]?.["latest_version"]);
 }
 
-/** Pushes the next version of VAR with a fake ciphertext of the given size. */
 async function pushVar(input: {
   readonly version: number;
   readonly prev: WireEncryptedPayload;
@@ -115,10 +104,8 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
   it("the judgment: the replaced latest leaves the sum, and only growth past the cap is refused", () => {
     expect(environmentBytesExceeded(CAP - 10, 0, 10)).toBe(false);
     expect(environmentBytesExceeded(CAP - 10, 0, 11)).toBe(true);
-    // A replacement counts the difference, not the whole new value
     expect(environmentBytesExceeded(CAP, 100, 100)).toBe(false);
     expect(environmentBytesExceeded(CAP, 100, 101)).toBe(true);
-    // Above the cap (a lowered constant, an import): non-growing writes land
     expect(environmentBytesExceeded(CAP + 1_000, 100, 100)).toBe(false);
     expect(environmentBytesExceeded(CAP + 1_000, 100, 16)).toBe(false);
     expect(environmentBytesExceeded(CAP + 1_000, 16, 17)).toBe(true);
@@ -165,7 +152,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
     await setLatestBytes(FILLER, CAP - 8);
 
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      // The 16-byte tag alone exceeds the 8 bytes left
       ...(await creationBody(dek)),
     });
     await expectEnvironmentLimit(created);
@@ -194,7 +180,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const v2 = await pushVar({ version: 2, prev: v1, bytes: 48 });
     expect(v2.response.status).toBe(200);
-    // History: VAR's version 1
     await queryProjectDo(
       projectId,
       `UPDATE variable_versions SET ciphertext_bytes = ?
@@ -203,9 +188,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
       ENV,
       VAR,
     );
-    // A tombstoned variable whose version row is kept (inserted by SQL, since
-    // the delete API removes the version rows): the meter must skip it via
-    // `deleted_at IS NULL`, not merely because the rows are gone
     await queryProjectDo(
       projectId,
       `INSERT INTO variables SELECT environment_id, ?, 'TOMBSTONE', latest_meta_version,
@@ -225,7 +207,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
       ENV,
       VAR,
     );
-    // Another environment's current value (rows only — the meter reads no environment row)
     await queryProjectDo(
       projectId,
       `INSERT INTO variables SELECT 'env-other-0001', 'var-other-0001', name, latest_meta_version,
@@ -267,7 +248,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
       "signature-invalid",
     );
 
-    // Both caps exceeded (the project's through VAR's history): the environment's answers
     await queryProjectDo(
       projectId,
       `UPDATE variable_versions SET ciphertext_bytes = ?
@@ -283,7 +263,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
 
   it("an environment at the cap answers its pull and lease in half the RPC frame, and a read is never refused for the cap", async () => {
     await readyProject();
-    // VAR's own value puts the environment just above the cap: reads still answer
     await cloneVariableRows({
       source: VAR,
       count: CAP / MAX_VALUE_CIPHERTEXT_BYTES,
@@ -309,7 +288,6 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
   });
 });
 
-/** A creation request whose value is the 16-byte tag plus one byte (a real signature). */
 async function creationBody(dek: Uint8Array) {
   const variableId = "var-created-01";
   const value = await encryptValue(

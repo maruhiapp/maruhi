@@ -1,7 +1,3 @@
-// Tests for the client-side sync check (§6.3): verifyChain delegation,
-// genesis-hash = project-ID verification, head consistency, and the key
-// history index (including removed members).
-
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -93,18 +89,13 @@ describe("syncProject (§6.3)", () => {
       return;
     }
     const verified = exit.value;
-    // The only live member is owner (member is removed)
     expect([...verified.state.members.keys()]).toEqual([owner.userId]);
-    // The environment set is chain-derived (§6.2): current epoch,
-    // creation seq, epoch-start seq, and per-epoch commitments
     const prod = verified.state.environments.get(testEnvironmentId("prod"));
     expect(prod?.currentEpoch).toBe(2);
     expect(prod?.createdAtSeq).toBe(3);
     expect(prod?.epochStartSeqs.get(1)).toBe(3);
     expect(prod?.epochStartSeqs.get(2)).toBe(4);
     expect(prod?.dekCommitments.get(2)).toMatch(/^[0-9a-f]{64}$/);
-    // The §5.1 key history: a removed member's key-at-the-time resolves
-    // (append-only)
     const bindings = verified.keyHistory.get(member.userId);
     expect(bindings).toHaveLength(1);
     expect(bindings?.[0]?.sigPubHex).toBe(member.sigPubHex);
@@ -147,9 +138,6 @@ describe("syncProject (§6.3)", () => {
 
   it("rejects a substitution whose genesis hash doesn't match the project ID (§6.4)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // Serving a valid but different project's chain (member is the
-    // creator's genesis) under the requested project ID = a server-side
-    // substitution
     const other = await buildChain([{ actor: member, operation: genesisOp(member) }]);
     expect(other.projectId).not.toBe(built.projectId);
     const server = await startServer([

@@ -1,6 +1,3 @@
-// Aggregation of all checks. Shared entry point for vitest (node / workerd / browser)
-// and direct Bun execution. Add checks here as each layer's implementation progresses.
-
 import { auditHeadChecks } from "./checks/audit-head.ts";
 import { chainHistoryChecks } from "./checks/chain-history.ts";
 import { chainNegativeChecks } from "./checks/chain-negative.ts";
@@ -30,21 +27,10 @@ import { valueSignatureChecks } from "./checks/value-signature.ts";
 import { variableChecks } from "./checks/variable.ts";
 import { vectorInventoryChecks } from "./checks/vector-inventory.ts";
 
-// Lower bound on the total check count (effectiveness of the tests): detects check
-// groups silently dropping out (removed from all-checks, early-returned, etc.) as an
-// explicit failure rather than a shrinking population. A change that deliberately
-// reduces checks lowers this value in the same change
 const MIN_TOTAL_CHECKS = 2870;
-// The floor must stay close to the population, or a dropped group hides in the slack
-// (it once sat at 1699 against 2774 checks). When the count outgrows the floor by more
-// than this fraction, the second meta check fails and the change raises the floor to
-// the reported count
 const MAX_FLOOR_SLACK = 0.05;
 
 export async function runAllChecks(): Promise<CheckResult[]> {
-  // Each layer's checks are mutually independent — they only read shared fixed
-  // vectors — but are run serially so that concurrent WebCrypto calls do not
-  // obscure which one failed
   const groups: CheckResult[][] = [];
   groups.push(vectorInventoryChecks());
   groups.push(await encodingChecks());

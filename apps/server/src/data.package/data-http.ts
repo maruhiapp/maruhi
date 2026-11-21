@@ -1,12 +1,3 @@
-// Common parts of the data-plane handlers (AUTH_SPEC §12).
-//
-// - Mapping of the DO's DataRejection onto api-schema typed errors
-// - Consistency check between the declared AAD's components and the
-//   destination coordinates (§12-2 — depends only on the request's
-//   contents and carries no existence information)
-// - Preliminary value-size check (§12-8 — resource protection precedes
-//   semantic checks; §12-3)
-
 import type { EncryptedPayload, EnvironmentManifest } from "@maruhi/api-schema";
 import {
   ActivationRequiredError,
@@ -76,14 +67,8 @@ import type {
 } from "./data-plane.ts";
 import type { DataOutcome, DataRejection } from "./data-rejection.ts";
 
-/** The 204 response (shared by write endpoints). */
 export const noContent = HttpServerResponse.empty({ status: 204 });
 
-/**
- * EncryptedPayload → the store input handed to the DO (carries verified
- * coordinates, the state-dependent part, and the signature block —
- * CRYPTO_SPEC §4.1).
- */
 export function toValueInput(payload: EncryptedPayload): ValueInput {
   return {
     suite: payload.suite,
@@ -98,7 +83,6 @@ export function toValueInput(payload: EncryptedPayload): ValueInput {
   };
 }
 
-/** §12-8: preliminary check of the value's ciphertext size (hex: 1 byte = 2 chars). */
 export function checkValueSize(payload: EncryptedPayload): Effect.Effect<void, ValueTooLargeError> {
   return payload.ciphertextHex.length / 2 > MAX_VALUE_CIPHERTEXT_BYTES
     ? Effect.fail(new ValueTooLargeError({ limitBytes: MAX_VALUE_CIPHERTEXT_BYTES }))
@@ -124,11 +108,6 @@ function aadMismatchField(payload: EncryptedPayload, coordinates: AadCoordinates
   return null;
 }
 
-/**
- * §12-2: match check between the declared AAD's coordinate components
- * (project / environment / variable) and the request's destination
- * coordinates. epoch / version are state-dependent, so the DO checks them.
- */
 export function checkAadCoordinates(
   payload: EncryptedPayload,
   coordinates: AadCoordinates,
@@ -137,15 +116,6 @@ export function checkAadCoordinates(
   return field === null ? Effect.void : Effect.fail(new PayloadMismatchError({ field }));
 }
 
-/**
- * Match check between a statement's declared coordinates and the
- * request's destination coordinates (a premise of §12-5's coordinate
- * reconstruction). Since the DO reconstructs the signed content from the
- * URL / destination, a mismatched declaration fails signature
- * verification anyway — but like the AAD coordinate check (§12-2 step
- * 1a), the worker rejects early as a self-consistency check that depends
- * only on the request's contents, surfacing the disagreeing coordinates.
- */
 export function checkStatementCoordinates(
   statement: { readonly environmentId: EnvironmentId; readonly variableId?: VariableId },
   coordinates: { readonly environmentId: EnvironmentId; readonly variableId?: VariableId },
@@ -159,12 +129,6 @@ export function checkStatementCoordinates(
   return Effect.void;
 }
 
-/**
- * Match check between a manifest's declared coordinates and the request's
- * destination coordinates (the manifest version of
- * checkStatementCoordinates — §12-5, where the DO reconstructs the signed
- * content from the URL / destination).
- */
 export function checkManifestCoordinates(
   manifest: { readonly environmentId: EnvironmentId },
   environmentId: EnvironmentId,
@@ -174,11 +138,6 @@ export function checkManifestCoordinates(
     : Effect.fail(new PayloadMismatchError({ field: "manifestEnvironmentId" }));
 }
 
-/**
- * Wire manifest → the store input handed to the DO (coordinates already
- * verified — §12-5). The creation composite's narrower wire form
- * (CreateEnvironmentManifestSchema) is assignable to the general one.
- */
 export function toManifestInput(manifest: EnvironmentManifest): EnvManifestInput {
   return {
     suite: manifest.suite,
@@ -194,21 +153,6 @@ export function toManifestInput(manifest: EnvironmentManifest): EnvManifestInput
   };
 }
 
-/**
- * Wire statement → the store input handed to the DO (coordinates already
- * verified). The runtime object is the wider request struct — it still carries
- * the wire-declared coordinates (environmentId / variableId), which are not in
- * the WireMetaStatement type — so the fields are copied by explicit name rather
- * than by rest-spread: that is what keeps those coordinates (and any future
- * request-only field) out of the stored input, since the DO reconstructs the
- * signed target from the storage coordinates and never from the wire's
- * declared values (§12-5). The `satisfies` pins `base` to the non-schema wire
- * fields, so a new required wire field is a compile error here rather than a
- * silent omission. In layout v3 (§12-2) layoutVersion and the schema fields are
- * present as a set — the wire Schema forces the coupling, so the branch tests
- * their presence directly (missing schema fields fall earlier as a Schema 400;
- * a missing maxAgeDays is verify-meta.ts's 422).
- */
 export function toMetaStatementInput(statement: WireMetaStatement): MetaStatementInput {
   const base = {
     suite: statement.suite,
@@ -236,25 +180,11 @@ export function toMetaStatementInput(statement: WireMetaStatement): MetaStatemen
       varType,
       required,
       description,
-      // maxAgeDays rides only when the wire carries it (its absence on
-      // layout 3 is verify-meta.ts's 422 payload-mismatch, after the layout
-      // support-range check)
       ...(maxAgeDays === undefined ? {} : { maxAgeDays }),
     },
   };
 }
 
-/**
- * DO stored row → the wire's DistributedEncryptedPayload (§12-2 / §12-7).
- * The AAD is reconstructed from the stored coordinates (a self-describing
- * representation equivalent to what was coordinate-checked at store
- * time). suite returns the stored row's value (CRYPTO_SPEC §2 design
- * principle 4). The signature block and writer / statement + author (the
- * user_id + key FP at acceptance time) are returned as stored — not
- * re-derived from the current member set (verifiability of past data from
- * removed writers / authors). The server-recomputed signed_bytes hash is
- * distributed for neither values nor statements.
- */
 export function toWireVariable(
   projectId: ProjectId,
   environmentId: EnvironmentId,
@@ -267,7 +197,6 @@ export function toWireVariable(
   };
 }
 
-/** A stored value → the distributed wire form (§12-2 — the AAD is rebuilt from the coordinates). */
 export function toWireValue(
   projectId: ProjectId,
   environmentId: EnvironmentId,
@@ -292,10 +221,6 @@ export function toWireValue(
     writerKeyFingerprintHex: row.writerKeyFingerprintHex,
   };
 }
-
-// ---------------------------------------------------------------------------
-// DataRejection → typed errors
-// ---------------------------------------------------------------------------
 
 type DataApiError =
   | ProjectNotFoundError
@@ -340,16 +265,10 @@ type DataApiError =
   | RotationProposalRejectedError
   | DataLimitExceededError;
 
-// A small mapping per kind (§11-2: uninitialized and non-member are not
-// distinguished; both fold to 404). satisfies enforces exhaustiveness
-// while keeping a precise return type per kind (so callers of
-// dataRejectionError — the chain-side mapping in handlers-membership.ts —
-// receive a precise error union)
 const rejectionErrors = {
   "not-initialized": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "not-member": (_rejection, projectId) => new ProjectNotFoundError({ projectId }),
   "insufficient-role": () => new ForbiddenError({ reason: "insufficient-role" }),
-  // Environment ∉ the caller's scope (§9-2 / §12-3 — same layer, same type as insufficient role)
   "insufficient-scope": () => new ForbiddenError({ reason: "insufficient-scope" }),
   "environment-not-found": (rejection) =>
     new EnvironmentNotFoundError({ environmentId: rejection.environmentId }),
@@ -358,24 +277,16 @@ const rejectionErrors = {
       environmentId: rejection.environmentId,
       reason: rejection.reason,
     }),
-  // Chain-acceptance kinds (shared by the composite request §12-4 and the generic chain API)
   "composite-required": (rejection) => new CompositeRequiredError({ op: rejection.op }),
-  // Device-count acceptance policy (AUTH_SPEC §12-8 — 2026-09-19 DK K3)
   "device-limit": (rejection) => new DeviceLimitError({ limit: rejection.limit }),
-  // Acceptance policy for the four-eyes propose (AUTH_SPEC §12-8 — K5)
   "proposal-limit": (rejection) =>
     new ProposalLimitError({ reason: rejection.reason, limit: rejection.limit }),
   "checkpoint-state-mismatch": (rejection) =>
     new CheckpointStateMismatchError({ reason: rejection.reason }),
-  // Bounded extension of the audit-head derived column not yet complete
-  // (retryable 503 — AUDIT_SPEC §5.1 / AUTH_SPEC §16-2; empty body —
-  // no count leak)
   "audit-head-not-ready": () => new AuditHeadNotReadyError(),
-  // Project export (AUTH_SPEC §11-6 — PF3)
   "export-changed": () => new ExportChangedError({ reason: "project-changed" }),
   "export-rate-limited": (rejection) =>
     new ExportRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
-  // Mirrors (AUTH_SPEC §11-7 — PF2)
   "mirror-read-only": () => new ForbiddenError({ reason: "mirror-read-only" }),
   "mirror-state": (rejection) => new MirrorStateError({ reason: rejection.reason }),
   "mirror-sync-rejected": (rejection) => new MirrorSyncRejectedError({ reason: rejection.reason }),
@@ -403,13 +314,10 @@ const rejectionErrors = {
   "epoch-conflict": (rejection) => new EpochConflictError({ currentEpoch: rejection.currentEpoch }),
   "value-rejected": (rejection) => new ValueSignatureRejectedError({ reason: rejection.reason }),
   "meta-rejected": (rejection) => new MetaStatementRejectedError({ reason: rejection.reason }),
-  // The schemaPolicy acceptance gate (AUTH_SPEC §12-11 / §12-5)
   "schema-policy-rejected": (rejection) =>
     new SchemaPolicyRejectedError({ reason: rejection.reason }),
-  // A normal push to a declared variable (§12-5 — requires the activation composite)
   "activation-required": (rejection) =>
     new ActivationRequiredError({ variableId: rejection.variableId }),
-  // Acceptance check of a schema description (§12-8)
   "description-rejected": (rejection) =>
     new SchemaDescriptionRejectedError({ reason: rejection.reason }),
   "meta-version-conflict": (rejection) =>
@@ -423,7 +331,6 @@ const rejectionErrors = {
     new DekWrapExistsError({
       epoch: rejection.epoch,
       recipientUserId: rejection.recipientUserId,
-      // The occupying wrap's stored recipient enc public key (AUTH_SPEC §12-6)
       storedRecipientEncPubHex: rejection.storedRecipientEncPubHex,
     }),
   "dek-wrap-not-found": (rejection) =>
@@ -442,7 +349,6 @@ const rejectionErrors = {
     new RotationProposalRejectedError({ reason: rejection.reason }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
-  // Head attestation (AUTH_SPEC §16-1)
 
   "attestation-rejected": (rejection) => new AttestationRejectedError({ reason: rejection.reason }),
   "attestation-regression": (rejection) =>
@@ -456,12 +362,6 @@ const rejectionErrors = {
   ) => DataApiError;
 };
 
-/**
- * DataRejection → api-schema typed errors (the single home of the
- * per-kind mapping). The chain API handlers (handlers-membership.ts)
- * also align their RPC outcome kind to the DataRejection kind and pass
- * through here (no dual maintenance of mappings).
- */
 export function dataRejectionError<K extends DataRejection["kind"]>(
   rejection: Extract<DataRejection, { kind: K }>,
   projectId: ProjectId,
@@ -471,22 +371,11 @@ export function dataRejectionError<K extends DataRejection["kind"]>(
   >;
 }
 
-/**
- * Among the endpoint contract (HttpApiEndpoint's error declaration), the
- * error types that can appear as a mapping of a DO rejection
- * (rejectionErrors). Errors dedicated to the worker's preliminary checks
- * in the contract declaration (ValueTooLarge etc.) are excluded since
- * they are not generated from a DataRejection.
- */
 type ContractDataError<Endpoint extends HttpApiEndpoint.Top> = Extract<
   HttpApiEndpoint.Error<Endpoint>["Type"],
   DataApiError
 >;
 
-// The predicate list "is this error value in the contract?", built from
-// endpoint.error (the set of declared Schemas; a public property of
-// HttpApiEndpoint). An endpoint is a value fixed at build time, so this
-// needs to be built only once per endpoint
 const contractFilters = new WeakMap<object, ReadonlyArray<(error: DataApiError) => boolean>>();
 
 function contractFilterOf(
@@ -500,15 +389,6 @@ function contractFilterOf(
   return filters;
 }
 
-/**
- * Maps a DO outcome to the handler's success value / typed error. Since
- * the set of returnable errors is derived from the endpoint's contract
- * declaration itself (api-schema's error: [...]) on both the runtime
- * (Schema check on endpoint.error) and type (the Error type argument)
- * sides, the declaration and the mapping cannot drift apart. A rejection
- * outside the contract is dropped to a defect (500) as a program-side
- * invariant violation. Exported so tests can verify it directly.
- */
 export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
   outcome: DataOutcome<T>,
   projectId: ProjectId,
@@ -523,19 +403,6 @@ export function unwrapDataOutcome<T, Endpoint extends HttpApiEndpoint.Top>(
     : Effect.die(error);
 }
 
-/**
- * The shared path of the data-plane handlers (the §12-3 check order):
- * resolve the authenticated principal → token scope (out of scope 404 /
- * insufficient level 403) → DO RPC → map the outcome. Handler-specific
- * preliminary checks (value size, AAD coordinates) are performed by the
- * caller before this.
- *
- * `endpoint` receives the handler's endpoint argument (the endpoint being
- * processed itself). The errors returnable under the contract are derived
- * from it, so there is no hand-written enumeration. The curried shape
- * reconciles "T (the RPC's value type) is explicit while Endpoint is
- * inferred" (TS does not allow partial type-argument application).
- */
 export const callProjectData =
   <T>() =>
   <Endpoint extends HttpApiEndpoint.Top>(options: {
@@ -557,14 +424,6 @@ export const callProjectData =
       return yield* unwrapDataOutcome(outcome, options.projectId, options.endpoint);
     });
 
-/**
- * The common leading stage of the D1-backed per-project endpoints (shared
- * by the invite API — AUTH_SPEC §15-2 — and the invite.* audit read —
- * AUDIT_SPEC §7): token scope admin (out of scope 404 — §11-2) → the
- * DO's memberRoleFor (non-member 404) → chain role admin or higher (below
- * is 403). On pass, returns the caller and the role (for owner-only
- * checks).
- */
 export const requireProjectChainAdmin = Effect.fn("data-http.requireProjectChainAdmin")(function* <
   Endpoint extends HttpApiEndpoint.Top,
 >(projectId: ProjectId, endpoint: Endpoint) {

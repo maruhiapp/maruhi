@@ -1,22 +1,3 @@
-// Tripwire evaluation and notification — docs/notes/hosted-ops.md
-// §2-B / §3.
-//
-// Called from the hourly cron (index.ts). Inputs stay inside D1 (ops
-// counters, evacuation records, and windowed aggregation over the
-// existing audit rows). Outputs are only "static signal name +
-// aggregate + threshold + state" — they contain no identifiers
-// (project IDs, user IDs, etc.).
-//
-// The destination is the Workers Secret `OPS_ALERT_WEBHOOK_URL`
-// (unset = do not send — disabled by default; carried as Redacted
-// through worker-env.ts). Notifications fire on state transitions
-// (inactive → active / active → inactive); while a signal stays
-// active it re-notifies every OPS_ALERT_RENOTIFY_MS. A send failure
-// is not swallowed: a static 1-line log is left and the state is not
-// updated (the next evaluation re-sends). Even without a webhook
-// configured, an active signal leaves a static 1-line entry in
-// Workers Logs (the self-hosted hook).
-
 import { egressHttpClientLayer } from "@maruhi/core";
 import { Context, Duration, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -31,7 +12,6 @@ import {
 
 const ALERT_STATE_KEY = "alerts";
 
-/** Signal names (fixed vocabulary — hosted-ops §3). */
 export type OpsSignalName =
   | "github_token_requests_per_hour"
   | "cli_flow_capacity_reached"
@@ -58,7 +38,6 @@ export interface OpsAlertEvent {
   readonly threshold: number;
 }
 
-/** The payload sent to the webhook (no identifiers). */
 export interface OpsAlertPayload {
   readonly service: "maruhi";
   readonly at: string;
@@ -74,22 +53,14 @@ interface AlertState {
 
 type AlertStates = Partial<Record<OpsSignalName, AlertState>>;
 
-/** The notification sink (tests plug in a capturing implementation). true = sent / nowhere to send. */
 export interface OpsNotifierShape {
   readonly notify: (payload: OpsAlertPayload) => Effect.Effect<boolean>;
 }
 
 export class OpsNotifier extends Context.Service<OpsNotifier, OpsNotifierShape>()("OpsNotifier") {}
 
-/**
- * Timeout of one webhook POST — the same bound as github.ts's
- * REQUEST_TIMEOUT and jwks.ts's FETCH_TIMEOUT_MS: the scheduled run
- * must not hang on a peer that accepts the connection and never
- * answers.
- */
 const WEBHOOK_REQUEST_TIMEOUT = Duration.seconds(5);
 
-/** The outbound client: no header of its own (packages/core/src/egress.ts). */
 const webhookHttpClient = egressHttpClientLayer();
 
 const webhookRequestFailedWith = (kind: string) =>
@@ -97,17 +68,9 @@ const webhookRequestFailedWith = (kind: string) =>
     Effect.as(false),
   );
 
-/**
- * A webhook send failure folds into the static line + `false` (kind
- * name only — never the URL or the body). HttpClientError carries the
- * underlying failure (the fetch rejection, the URL-parse TypeError)
- * in `.cause` — its name is the same transport kind the raw-fetch
- * implementation logged.
- */
 const webhookRequestFailed = (error: Error) =>
   webhookRequestFailedWith(error.cause instanceof Error ? error.cause.name : "unknown");
 
-/** The production implementation: POSTs JSON when a webhook URL is configured. */
 export function makeWebhookNotifier(
   webhookUrl: Redacted.Redacted<string> | undefined,
 ): OpsNotifierShape {
@@ -117,7 +80,6 @@ export function makeWebhookNotifier(
         return Effect.forEach(
           payload.events,
           (event) =>
-            // Static signal name + aggregates only
             Effect.logWarning(
               `ops signal ${event.state}: ${event.signal} (value ${event.value}, threshold ${event.threshold})`,
             ),
@@ -126,8 +88,6 @@ export function makeWebhookNotifier(
       }
       return Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient;
-        // The URL's only unwrap: the request build (a Workers Secret).
-        // It appears in no log line or error
         const request = yield* HttpClientRequest.post(Redacted.value(webhookUrl)).pipe(
           HttpClientRequest.setHeaders({ "user-agent": "maruhi" }),
           HttpClientRequest.bodyJson(payload),
@@ -145,7 +105,6 @@ export function makeWebhookNotifier(
         Effect.catchTags({
           HttpClientError: webhookRequestFailed,
           HttpBodyError: webhookRequestFailed,
-          // The new timeout has no transport underneath — its own name
           TimeoutError: () => webhookRequestFailedWith("TimeoutError"),
         }),
         Effect.provide(webhookHttpClient),
@@ -169,7 +128,6 @@ const makeSignal = (name: OpsSignalName, value: number, threshold: number): OpsS
   firing: value >= threshold,
 });
 
-/** Signal evaluation (does not notify — pure aggregation). */
 export const evaluateOpsSignals = Effect.fn("ops-alerts.evaluateOpsSignals")(function* (
   nowMs: number,
 ): Effect.fn.Return<readonly OpsSignal[], never, OpsRepo> {
@@ -206,14 +164,12 @@ export const evaluateOpsSignals = Effect.fn("ops-alerts.evaluateOpsSignals")(fun
   ];
 });
 
-/** The stored state row's entry shape (decoded, not cast — a malformed value restarts from empty). */
 const AlertStateSchema = Schema.Struct({
   active: Schema.Boolean,
   since: Schema.Number,
   lastNotifiedAt: Schema.Number,
 });
 
-/** The stored row: a JSON object of per-signal entries (unknown keys carry over to the next save). */
 const AlertStatesSchema = Schema.fromJsonString(Schema.Record(Schema.String, AlertStateSchema));
 
 function parseStates(raw: string | null): Effect.Effect<AlertStates> {
@@ -222,8 +178,6 @@ function parseStates(raw: string | null): Effect.Effect<AlertStates> {
   }
   return Schema.decodeUnknownEffect(AlertStatesSchema)(raw).pipe(
     Effect.catchTag("SchemaError", () =>
-      // A corrupted state row restarts from "all inactive" (operational
-      // state only — not audit)
       Effect.logWarning("ops alert state row is not valid JSON; starting from an empty state").pipe(
         Effect.as<AlertStates>({}),
       ),
@@ -231,7 +185,6 @@ function parseStates(raw: string | null): Effect.Effect<AlertStates> {
   );
 }
 
-/** Derivation of transitions (and re-notifications) — a pure function (pinned by tests). */
 export function deriveAlertEvents(
   signals: readonly OpsSignal[],
   states: AlertStates,
@@ -279,11 +232,6 @@ function describe(events: readonly OpsAlertEvent[]): string {
     .join("; ");
 }
 
-/**
- * Evaluate → derive transitions → notify → save state. If
- * notification fails, the state is not saved (the next evaluation
- * re-derives the same transition and re-sends).
- */
 export const runOpsAlerts = Effect.fn("ops-alerts.runOpsAlerts")(function* (
   nowMs: number,
 ): Effect.fn.Return<readonly OpsAlertEvent[], never, OpsRepo | OpsNotifier> {

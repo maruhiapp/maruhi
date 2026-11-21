@@ -1,18 +1,3 @@
-// Integration tests for the invite API (AUTH_SPEC §15).
-//
-// - Pins per reason code: authorization (token scope admin x chain role admin
-//   or above / role=admin is owner-only), existence hiding (404 for
-//   non-members), and the order of acceptance decisions (404 -> 410 -> 422 ->
-//   CAS)
-// - Acceptance signatures (CRYPTO_SPEC §6.5) are real signatures produced via
-//   the @maruhi/crypto implementation. Since the server reconstructs
-//   signed_bytes from the stored row + the calling principal, real data
-//   verifies that link tampering (a different project or token), key
-//   substitution, and someone else's signature all land on 422
-// - Verifies by reading D1 directly that invite.* audits (AUDIT_SPEC §3.2)
-//   are written in the same batch as the record operation, and that no audit
-//   row is added on CAS loss (the changes() guard)
-
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -59,7 +44,6 @@ describe("invite issue", () => {
     const row = mustRow(await inviteRow(issued.id));
     expect(row.status).toBe("pending");
     expect(row.role).toBe("member");
-    // The issuance statement (public values) is stored as-is. The server does not verify it
     expect(row.link_pub).toBe(issued.linkPubHex);
     expect(row.head_hash).toBe(issued.headHashHex);
     expect(row.head_seq).toBe(issued.headSeq);
@@ -71,14 +55,11 @@ describe("invite issue", () => {
     expect(created.actor_user_id).toBe(OWNER);
     expect(created.actor_api_token_id).not.toBeNull();
     expect(created.project_id).toBe(projectId);
-    // invite.* does not belong to the org axis (AUDIT_SPEC §7)
     expect(created.org_id).toBeNull();
     expect(payloadOf(created)).toMatchObject({
       inviteId: issued.id,
       role: "member",
     });
-    // The issuance statement / link public key is not copied into the audit
-    // (AUDIT_SPEC §3.2 — payload invariant)
     expect(String(created.payload)).not.toContain(issued.linkPubHex);
   });
 
@@ -97,7 +78,6 @@ describe("invite issue", () => {
     const linkConflict = await issueInviteRequest(inviteFixture, OWNER, "member", sameLink);
     expect(linkConflict.status).toBe(409);
     expect((await linkConflict.json()) as object).toMatchObject({ field: "linkPub" });
-    // A conflict writes no audit (nothing was admitted)
     expect((await inviteAuditRows()).filter((row) => row.event === "invite.created")).toHaveLength(
       1,
     );
@@ -124,9 +104,7 @@ describe("invite issue", () => {
   });
 
   it("role=admin invites are owner-only (admin can issue member invites)", async () => {
-    // The owner can issue admin invites
     await issueInvite(inviteFixture, OWNER, "admin");
-    // Promote member to admin (change_role is an owner operation)
     await appendOperation(inviteFixture, OWNER, {
       op: "change_role",
       payload: {
@@ -136,7 +114,6 @@ describe("invite issue", () => {
         scopeEnvironmentIds: [],
       },
     });
-    // An admin can issue member invites but an admin invite is 403
     await issueInvite(inviteFixture, MEMBER, "member");
     const denied = await issueInviteRequest(inviteFixture, MEMBER, "admin");
     expect(denied.status).toBe(403);
@@ -181,9 +158,6 @@ describe("invite issue", () => {
   it("pending cap precedes the window limit (order listed in §15-2)", async () => {
     const now = Date.now();
     const oldCreated = now - 2 * 60 * 60 * 1000;
-    // Fill the cap with in-period pending rows (created_at outside the
-    // issue window) plus 30 rows inside the window — pins that the pending
-    // limit is judged first when both conditions hold
     for (let index = 0; index < MAX_PENDING_INVITES_PER_PROJECT - 30; index += 1) {
       await seedInvitation({
         id: `seed-old-${index}`,

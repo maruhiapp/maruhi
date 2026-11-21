@@ -1,9 +1,6 @@
 ---
 import "../styles/globals.css";
 import "../styles/prose.css";
-// The maruhi brand layer: generated `--nb-*` token overrides (vermilion
-// accent, warm neutrals) + @font-face for the self-hosted Archivo /
-// Martian Mono woff2 in public/fonts. Imported last so its tokens win.
 import "../styles/brand.css";
 import { ClientRouter } from "astro:transitions";
 import { config } from "virtual:nimbus/config";
@@ -38,22 +35,13 @@ const {
   coordinate,
 } = Astro.props;
 
-// The page's language, or the site's; `dir="rtl"` for a right-to-left one.
 const { lang, dir } = await getPageLanguage(locale);
-// Per-page agent-index pointer. For pages in non-primary or version
-// collections, this resolves to `/<prefix>/llms.txt` (e.g. `/v0/llms.txt`
-// for a v0 docs page, `/blog/llms.txt` for a blog post). Falls back to
-// the root `/llms.txt` when no collection is provided.
-// Hidden-version pages don't advertise an agent index (the per-version
-// llms.txt isn't emitted for them); suppress the AgentDirective entirely.
 const versionStatusKey =
   apiVersion && collection ? `${collection}@${apiVersion}` : collection;
 const versionStatus = versionStatusKey
   ? await getVersionStatus(versionStatusKey)
   : null;
 const isHiddenVersion = versionStatus?.isHidden === true;
-// `null` when no route of the site serves an index; the directive then
-// names only the page's Markdown, or nothing.
 const llmsIndexPath = await getPublishedLlmsUrl(collection ?? undefined);
 const baseUrl = import.meta.env.BASE_URL;
 const basedLlmsUrl = llmsIndexPath ? withBase(llmsIndexPath, baseUrl) : null;
@@ -80,7 +68,6 @@ const resolvedMarkdownUrl =
       (() => {
         const KEY = "ui-mode";
         const media = window.matchMedia("(prefers-color-scheme: dark)");
-        // A choice storage refused, kept until the page unloads.
         let unsaved = null;
 
         const readPref = () => {
@@ -116,7 +103,6 @@ const resolvedMarkdownUrl =
           if (e.key === KEY) applyTheme();
         });
 
-        // The toggle passes a mode only when storage refused it.
         window.nbApplyTheme = (mode) => {
           if (mode === "dark" || mode === "light") unsaved = mode;
           applyTheme();

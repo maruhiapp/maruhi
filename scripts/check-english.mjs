@@ -22,9 +22,6 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ALL = process.argv.includes("--all");
 
-// Hiragana, katakana, halfwidth katakana, CJK ext-A, unified + compat
-// ideographs, CJK punctuation, and fullwidth ASCII forms (U+FF00-FF60).
-// U+3299 (the maruhi mark glyph) is intentionally out of range.
 const CJK = /[　-〿぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿＀-｠]/;
 
 function git(args) {
@@ -65,7 +62,6 @@ function mergeBase() {
   process.exit(2);
 }
 
-// Every line of a file as {path, line, text}; empty for unreadable/binary files.
 function fileLines(path) {
   let text;
   try {
@@ -77,15 +73,10 @@ function fileLines(path) {
   return text.split("\n").map((line, i) => ({ path, line: i + 1, text: line }));
 }
 
-// Lines added by the working-tree diff vs the merge base (covers committed
-// branch changes and not-yet-committed local edits), plus whole contents of
-// untracked files, which the diff never mentions.
 function addedLines() {
   const out = [];
   let path = null;
   let line = 0;
-  // `+++ ` and `--- ` are file headers only before a block's first hunk; inside
-  // a hunk an added line whose text starts with `++` also reads `+++ …`.
   let inHunk = false;
   for (const raw of git(`diff -U0 --no-color ${mergeBase()}`).split("\n")) {
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
@@ -118,8 +109,6 @@ function allLines() {
 const lines = ALL ? allLines() : addedLines();
 const exemptions = exemptPaths();
 
-// Regression guard: --all scanning zero lines means fileLines() silently
-// dropped every file (e.g. an over-broad binary guard), not a clean repo.
 if (ALL && lines.length === 0) {
   console.error("check-english: --all scanned 0 lines — file collection is broken");
   process.exit(2);

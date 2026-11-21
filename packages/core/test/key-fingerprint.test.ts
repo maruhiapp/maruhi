@@ -38,9 +38,7 @@ import {
 
 const fp: KeyFingerprintHex = decodeKeyFingerprintHex("ab".repeat(16));
 const userId: UserId = decodeUserId("01J9Z3K4M5N6P7Q8R9S0T1V2W3");
-/** A plain string of the right format: the brand still refuses it (provenance, not only format). */
 const unminted = "cd".repeat(16);
-/** GitHub's numeric id (AUTH_SPEC §3-2) and the display login. */
 const providerSubject = decodeProviderUserId("583231");
 const providerLogin = "octocat";
 
@@ -81,12 +79,10 @@ describe("KeyFingerprintHex brand — chain positions (CRYPTO_SPEC §6.1 / §6.2
     expectTypeOf<ApprovalVote["keyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
     expectTypeOf<PendingProposal["proposerKeyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
     expectTypeOf<ServerGrant["serverKeyFingerprintHex"]>().toEqualTypeOf<KeyFingerprintHex>();
-    // The four-eyes recount a client reuses (#337) carries both identity brands
     expectTypeOf<
       ReturnType<typeof approvalSignersOf>[number]["keyFingerprintHex"]
     >().toEqualTypeOf<KeyFingerprintHex>();
     expectTypeOf<ReturnType<typeof ownerVotersOf>>().toEqualTypeOf<ReadonlySet<UserId>>();
-    // A minted fingerprint reads as a string everywhere a string is enough
     expectTypeOf<KeyFingerprintHex>().toExtend<string>();
     expectTypeOf<string>().not.toExtend<KeyFingerprintHex>();
     expectTypeOf<KeyFingerprintHex>().not.toExtend<UserId>();
@@ -125,10 +121,10 @@ describe("minting a KeyFingerprintHex", () => {
   it("refuses anything that is not 16 bytes of lowercase hex", () => {
     const decode = Schema.decodeUnknownSync(KeyFingerprintHexSchema);
     for (const bad of [
-      "AB".repeat(16), // uppercase: string equality would no longer be fingerprint equality
+      "AB".repeat(16),
       "ab".repeat(15),
       "ab".repeat(17),
-      "ab".repeat(32), // a public key / hash width
+      "ab".repeat(32),
       "zz".repeat(16),
       "583231",
       "",

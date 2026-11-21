@@ -45,15 +45,6 @@ import {
   type ValueEnvironmentState,
 } from "./support/value-env.ts";
 
-// ---------------------------------------------------------------------------
-// `--config`: advancing the sync receipt (SY2 stage 2 2b — M1). The rotated
-// environment (dev — makeServer models the rotation's composite acceptance
-// and the re-encryption pushes) and the receipt environment (ops —
-// makeValueEnvironmentServer, a stateful value environment pinned at epoch
-// 1) are combined into one mock server, running rotate → receipt write →
-// `sync plan` / `sync apply` on the same state.
-// ---------------------------------------------------------------------------
-
 const RECEIPTS_ENV = "ops";
 
 function vercelTarget(environment: string, variables: readonly string[]): Record<string, unknown> {
@@ -66,7 +57,6 @@ function output(env: TestEnv): string {
 
 describe("maruhi env rotate --config (advancing the sync receipt — M1)", () => {
   let dekReceipts: Uint8Array;
-  /** genesis + create dev (epoch 1, dek1) + create ops (epoch 1, dekReceipts). */
   let chainWithReceipts: BuiltChain;
   let receiptsStatement: WireDistributedEnvironmentStatement;
   let wrapReceipts: WireRecipientDek;
@@ -95,7 +85,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     });
   });
 
-  /** The rotated environment's 2 variables (DATABASE_URL v1 / API_KEY takes a version). */
   async function sourceVariables(built: BuiltChain, apiKeyVersion = 1): Promise<PulledVariable[]> {
     return [
       await variableAt({
@@ -121,7 +110,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     ];
   }
 
-  /** The existing receipt placed in the receipt environment (the previous sync's result). */
   async function storedReceipt(input: {
     readonly target: string;
     readonly variables: Readonly<Record<string, number>>;
@@ -161,7 +149,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     return { variableId, statement, value };
   }
 
-  /** The default config: a Vercel target `web` synced from dev; the receipt is ops. */
   function defaultConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       version: 1,
@@ -182,7 +169,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     readonly server: Omit<ServerOptions, "built"> & { readonly built?: BuiltChain };
     readonly receipts?: readonly StoredVariable[];
     readonly config?: Record<string, unknown>;
-    /** Handlers injected at the front (e.g. injecting a receipt-environment write failure). */
     readonly before?: readonly MockHandler[];
   }): Promise<ReceiptFixture> {
     const built = input.server.built ?? chainWithReceipts;
@@ -195,7 +181,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       wrap: wrapReceipts,
       initialVariables: input.receipts ?? [],
     });
-    // The rotated environment's handlers go first (the chain follows makeServer's mutable current form)
     const env = await startEnv(
       [...(input.before ?? []), ...state.handlers, ...receipts.handlers],
       owner,
@@ -221,7 +206,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     });
   }
 
-  /** Decrypts the receipt environment's latest receipt and returns the variable mapping. */
   async function receiptVariablesOf(
     fixture: ReceiptFixture,
     target: string,
@@ -251,7 +235,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     });
 
     expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
-    // Re-encryption = the 2 variables' new versions (values unchanged). The receipt is written as a new version exactly once
     expect(fixture.state.pushes.map((push) => push.variableId).toSorted()).toEqual(["vaa", "vbb"]);
     expect(fixture.receipts.writes.map((write) => write.kind)).toEqual(["version"]);
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 2 });
@@ -259,11 +242,9 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       "Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as version 2 of sync-receipt:web in environment ops)",
     );
     expect(output(fixture.env)).not.toContain("left as delivered");
-    // No plaintext appears in the output (the receipt carries only names and versions)
     expect(output(fixture.env)).not.toContain("postgres://example");
     expect(output(fixture.env)).not.toContain("key-abc");
 
-    // The plan after that is all unchanged; apply has nothing to write (never writes twice)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -293,7 +274,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       ],
     });
     const receiptsPulls: string[] = [];
-    // Since it cannot be injected after startFixture, receipt-environment reads are counted via the server's records
     expect(await rotate(fixture, "--reason", "scheduled")).toBe(0);
     for (const server of servers) {
       receiptsPulls.push(
@@ -305,7 +285,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     expect(receiptsPulls).toEqual([]);
     expect(fixture.receipts.writes).toEqual([]);
     expect(output(fixture.env)).not.toContain("receipt");
-    // Since nothing advanced, the plan is all changed (harmless — the next apply rewrites the same plaintext)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -317,7 +296,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
   it("a variable whose receipt lagged is not advanced (what reached the sync destination is old plaintext)", async () => {
     const fixture = await startFixture({
       server: {
-        // API_KEY was pushed once more after the sync to version 2 (the receipt stays at 1)
         variables: await sourceVariables(chainWithReceipts, 2),
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
@@ -328,8 +306,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     });
 
     expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
-    // DATABASE_URL: 1 → 2 (it pointed at the immediately prior one). API_KEY:
-    // stays at 1 (advancing to 3 would hide version 2's unsynced diff)
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
     expect(fixture.env.logs.join("\n")).toContain(
       "Advanced the receipt for target web to the re-encrypted versions of 1 variable (saved as version 2 of sync-receipt:web in environment ops); 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)",
@@ -350,7 +326,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // DATABASE_URL has not reached the sync destination (absent from the receipt). API_KEY is lagging
       receipts: [await storedReceipt({ target: "web", variables: { API_KEY: 1 } })],
     });
 
@@ -376,7 +351,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     ]);
     const [staleA, staleB] = await sourceVariables(built);
     if (staleA === undefined || staleB === undefined) throw new Error("fixture");
-    // The "winner another member wrote on the new epoch" visible on the re-fetch after the 409 (the plaintext differs)
     const winner = await variableAt({
       built,
       variableId: "vbb",
@@ -408,7 +382,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       ],
     });
 
-    // The resume path (unfinished against epoch 2): only DATABASE_URL is re-encrypted by us
     expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
     expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["vaa"]);
     expect(fixture.env.logs.join("\n")).toContain(
@@ -416,7 +389,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     );
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 2, API_KEY: 1 });
     expect(output(fixture.env)).not.toContain("left as delivered");
-    // The winner's plaintext was never synced = plan shows update (never hidden)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -449,7 +421,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         variables: await sourceVariables(chainWithReceipts),
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
-        // Only vbb keeps failing throughout run 1 (never recovers even on in-pass retries)
         onPush: (call, variableId) =>
           variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
       },
@@ -458,13 +429,8 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       ],
     });
 
-    // Run 1 has no --config (the receipt is untouched)
     expect(await rotate(fixture, "--reason", "first run")).toBe(1);
     expect(fixture.receipts.writes).toEqual([]);
-    // Run 2 = resume + --config: only API_KEY, which this run re-encrypted,
-    // advances. DATABASE_URL (version 2), which advanced on run 1, has no
-    // "unchanged" evidence on this run = left untouched (the next plan shows
-    // update and apply rewrites the same plaintext — the harmless side)
     expect(await rotate(fixture, "--config", fixture.configPath)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("resumed re-encryption");
     expect(await receiptVariablesOf(fixture, "web")).toEqual({ DATABASE_URL: 1, API_KEY: 2 });
@@ -480,7 +446,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
   });
 
   it("rotating the receipt environment itself only re-encrypts the receipt variable — no target is advanced (the following plan still passes)", async () => {
-    // The receipt sits on dev, and the sync source is ops (the value environment — pinned at epoch 1)
     const sourceInOps = await statementFor({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
@@ -521,12 +486,10 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     });
 
     expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(0);
-    // The receipt variable itself is re-encrypted (same as a normal variable). No receipt is written
     expect(fixture.state.pushes.map((push) => push.variableId)).toEqual(["receipt-web"]);
     expect(fixture.env.logs.join("\n")).toContain(
       "No sync target in the config is synced from environment dev, so no receipt was advanced",
     );
-    // The new-version receipt's contents are unchanged = plan is unchanged
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -566,7 +529,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           worker: vercelTarget(ENV_ID, ["DATABASE_URL"]),
         },
       }),
-      // Only web's receipt write is failed
       before: [
         (request) =>
           request.method === "POST" && request.path === `${base}/variables/receipt-web/versions`
@@ -600,7 +562,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           pushed.push(variableId);
           return undefined;
         },
-        // Only the chain fetch after re-encryption finished (= the cleanup resync) is failed
         onChain: () => (pushed.length === 2 ? { status: 503, bodyText: "unavailable" } : undefined),
       },
       receipts: [
@@ -614,7 +575,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       "the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (",
     );
     expect(fixture.receipts.writes).toEqual([]);
-    // The guidance after the cleanup (the anchor update) also comes out
     expect(fixture.env.errors.join("\n")).toContain(
       "a committed repository anchor (if any) is now stale",
     );
@@ -666,22 +626,18 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       },
       receipts: [newer],
     });
-    // First establish the receipt environment's floor via plan (records version 2 as verified)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
-    // The server redistributes an old version (a rollback)
     const stored = fixture.receipts.variables[0];
     if (stored === undefined) throw new Error("receipt missing");
     stored.value = older.value;
 
     expect(await rotate(fixture, "--reason", "scheduled", "--config", fixture.configPath)).toBe(1);
-    // The rotation itself is done (its report comes out first). The evidence never morphs into "re-run apply"
     expect(fixture.env.logs.join("\n")).toContain("Done: rotated environment dev");
     expect(fixture.env.errors.join("\n")).toContain("value-version rollback");
     expect(fixture.env.errors.join("\n")).not.toContain("could not be advanced");
     expect(fixture.receipts.writes).toEqual([]);
-    // Since the epoch advanced, the anchor-update guidance comes out ahead of the evidence
     expect(fixture.env.errors.join("\n")).toContain(
       "a committed repository anchor (if any) is now stale",
     );
@@ -698,9 +654,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           pushed.push(variableId);
           return undefined;
         },
-        // After re-encryption finished, it serves a **shorter** chain on the
-        // same genesis (a different consistent chain without the rotate) =
-        // verifies, yet is not an extension of the verified view
         onChain: () =>
           pushed.length === 2
             ? {
@@ -741,7 +694,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // Serves a value with a broken signature (models a forged distribution)
       receipts: [{ ...receipt, value: { ...receipt.value, signatureHex: "00".repeat(64) } }],
     });
 
@@ -765,8 +717,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
       },
-      // A layoutVersion this CLI does not know (a statement written by a
-      // future CLI — the v3 fields are all present). Rejected before signature verification
       receipts: [
         {
           ...receipt,
@@ -782,9 +732,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       ],
     });
 
-    // The mock's manifest is built from the original statement (so the mock's
-    // own assembly does not trip on the unknown layout). The CLI rejects it at
-    // the verification stage before the manifest stage
     fixture.receipts.manifest = await manifestFor({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,

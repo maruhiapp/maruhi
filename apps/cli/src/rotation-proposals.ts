@@ -1,18 +1,3 @@
-// `maruhi rotation proposals | accept | reject`: the member side of sealed
-// value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5 — PF7b).
-//
-// A proposal is a value a CI job minted at the issuer and sealed to the
-// devices of the members who may accept it (ci-rotate.ts). Accepting is
-// an ordinary push: this device opens its own wrap with its enc key,
-// checks that the proposal still targets the verified current version,
-// shows the connector's facts and which workload identity minted it, and
-// pushes the plaintext signed as this member — then tells the server the
-// proposal is resolved. Rejecting only tells the server; the credential
-// that exists at the issuer is named so a human can retire it.
-//
-// Values are never displayed (the report names variables, versions, and
-// the facts).
-
 import type { RotationProposal } from "@maruhi/api-schema";
 import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core";
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
@@ -38,7 +23,6 @@ import type { VerifiedPulledValue } from "./values-verify.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { ensureConfirmed } from "./var.package/index.ts";
 
-/** A proposal's variables for display: the verified name when known, else the identifier. */
 function describeVariables(proposal: RotationProposal, states: StateIndex | undefined): string {
   return proposal.variables
     .map((variable) => {
@@ -52,7 +36,6 @@ function describeVariables(proposal: RotationProposal, states: StateIndex | unde
     .join(", ");
 }
 
-/** `maruhi rotation proposals [--env]`: the pending proposals with their next step (no value is opened). */
 export const rotationProposalsOp = Effect.fn("rotation-proposals.rotationProposalsOp")(function* (
   context: ProjectContextBase,
   options: { readonly environmentId?: EnvironmentId | undefined } = {},
@@ -97,7 +80,6 @@ export const rotationProposalsOp = Effect.fn("rotation-proposals.rotationProposa
   }
 });
 
-/** Finds the pending proposal with the given id (a full id; a unique prefix of at least 8 characters is accepted). */
 export function findProposal(
   proposals: readonly RotationProposal[],
   proposalId: string,
@@ -126,14 +108,12 @@ export function findProposal(
 interface AcceptInput {
   readonly context: EnvironmentContext;
   readonly proposal: RotationProposal;
-  /** true = skip the confirmation (the only non-interactive path). */
   readonly yes: boolean;
 }
 
 export interface AcceptResult {
   readonly proposalId: string;
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
-  /** The proposed values an earlier accept had already pushed (resolved now, not pushed again). */
   readonly stored: readonly { readonly name: string; readonly version: number }[];
   readonly warnings: readonly string[];
 }
@@ -142,28 +122,11 @@ interface OpenedValue {
   readonly variableId: VariableId;
   readonly name: string;
   readonly value: Redacted.Redacted<Uint8Array>;
-  /**
-   * The version that already holds this value (an earlier accept pushed
-   * it but did not get to resolve) — nothing to push; null = to push on
-   * top of the base version.
-   */
   readonly storedAs: number | null;
-  /** The opened value's shape, for the report (D-8) — computed where the value was opened, so the report unwraps nothing. */
   readonly shape: ValueShape;
-  /** The verified current value's shape, opened on this device for the report's comparison (D-18). */
   readonly currentShape: ValueShape;
 }
 
-/**
- * The verified current value, decrypted on this device: its shape stands
- * beside the proposed value's in the acceptance (D-18 — the acceptor is
- * the pusher, so the comparison is made where the decision is), and its
- * bytes tell whether an earlier `accept` already pushed the proposed value
- * (a push that succeeded while the resolution, or a later variable's push,
- * failed leaves exactly that state). Decrypts the current
- * value with this device's DEK and compares the bytes; a different value
- * means the variable moved.
- */
 const storedValue = Effect.fn("rotation-proposals.storedValue")(function* (
   context: EnvironmentContext,
   pulled: VerifiedEnvironmentPull,
@@ -183,11 +146,6 @@ const storedValue = Effect.fn("rotation-proposals.storedValue")(function* (
     deksByEpoch: keys.deksByEpoch,
     chainEpoch: keys.currentEpoch,
   }).pipe(
-    // The device cannot open the current value (no wrap for its epoch —
-    // the post-add_device backfill is missing — or the environment is
-    // outside this device's scope): the same remedy as a missing proposal
-    // wrap, since a blind push by a device whose key reach is incomplete
-    // is not an acceptance (round 9)
     Effect.mapError((error) =>
       cliError(
         `The current value of ${displayText(current.name)} cannot be opened on this device (${error.message}); the acceptance compares the proposed value with it before the push. Accept from a device that can read the environment (the one that approved this device's registration backfills its wraps — \`maruhi key device approve\`), or reject the proposal`,
@@ -200,7 +158,6 @@ function sameBytes(stored: Uint8Array, proposed: Uint8Array): boolean {
   return stored.length === proposed.length && stored.every((byte, i) => byte === proposed[i]);
 }
 
-/** The verified current value a proposed variable targets (missing or behind the base = refused). */
 function currentOf(
   input: AcceptInput,
   pulled: VerifiedEnvironmentPull,
@@ -225,7 +182,6 @@ function currentOf(
   return Effect.succeed(current);
 }
 
-/** Opens the wrap sealed to this device (by its enc key) under the §5.3 info of the proposed variable. */
 const openOwnWrap = Effect.fn("rotation-proposals.openOwnWrap")(function* (
   input: AcceptInput,
   variable: RotationProposal["variables"][number],
@@ -270,7 +226,6 @@ const openOwnWrap = Effect.fn("rotation-proposals.openOwnWrap")(function* (
   return opened;
 });
 
-/** Opens this device's wrap of one proposed variable after checking the target still is the verified current version. */
 const openOne = Effect.fnUntraced(function* (
   input: AcceptInput,
   pulled: VerifiedEnvironmentPull,
@@ -279,11 +234,7 @@ const openOne = Effect.fnUntraced(function* (
   const { context, proposal } = input;
   const current = yield* currentOf(input, pulled, variable);
   const value = yield* openOwnWrap(input, variable, current.name);
-  // Reason for unwrapping: the shape and the byte comparison (both values are this device's to know)
   const stored = Redacted.value(yield* storedValue(context, pulled, current));
-  // A current version past the base is either an earlier accept's own
-  // push (the same bytes — nothing to push, only to resolve) or a
-  // move, which makes the proposal stale
   const moved = current.version > variable.baseVersion;
   if (moved && !sameBytes(stored, value)) {
     return yield* Effect.fail(
@@ -302,11 +253,6 @@ const openOne = Effect.fnUntraced(function* (
   };
 });
 
-/**
- * `maruhi rotation accept <id>`: opens this device's wraps, confirms, pushes
- * every proposed value as an ordinary signed version (companions first —
- * the server's variable order), then resolves the proposal.
- */
 export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")(function* (
   input: AcceptInput,
 ): Effect.fn.Return<AcceptResult, CliError, CliServices> {
@@ -325,13 +271,10 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
     resync: context.resync,
     floor: context.floorHandle,
   });
-  // The server's variable order is the minted order (companions first)
   const opened = yield* Effect.forEach(proposal.variables, (variable) =>
     openOne(input, pulled, variable),
   );
   const toPush = opened.filter((entry) => entry.storedAs === null);
-  // A line count that changed is worth a look before the push, here
-  // where the decision is made (D-18; the CI job's report already showed it)
   yield* logWarnings(
     toPush.flatMap((entry) => {
       const warning = lineCountWarning(
@@ -369,7 +312,6 @@ export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")
   };
 });
 
-/** The confirmation's lines: what is pushed, what is already stored, who minted it, and the connector's facts. */
 function acceptanceFacts(
   proposal: RotationProposal,
   environmentId: EnvironmentId,
@@ -384,10 +326,6 @@ function acceptanceFacts(
     toPush.length === 0
       ? `Accepting proposal ${proposal.proposalId}: every proposed value is already stored in environment ${displayText(environmentId)} (${already.join(", ")} — an earlier accept pushed it); nothing is pushed, the proposal is resolved as accepted. ${minter}`
       : `Accepting proposal ${proposal.proposalId} pushes ${toPush.map((entry) => displayText(entry.name)).join(", ")} in environment ${displayText(environmentId)} as new versions signed by you${already.length === 0 ? "" : ` (already stored: ${already.join(", ")})`}. ${minter}`;
-  // The shape of each value to push, from the opened plaintext on this
-  // device (D-8), beside the current value's (D-18): a job that produced
-  // chatter instead of a credential shows here, verified, before anything
-  // is pushed — the server never saw it
   const shapes = toPush.map(
     (entry) =>
       `  ${displayText(entry.name)}: ${describeShape(entry.shape)} (opened on this device; the current value: ${describeShape(entry.currentShape)})`,
@@ -395,7 +333,6 @@ function acceptanceFacts(
   return [head, ...proposal.facts.map((fact) => `  ${displayText(fact)}`), ...shapes];
 }
 
-/** Pushes the opened values that are not stored yet, in the proposal's order, as ordinary signed versions. */
 const pushProposed = Effect.fn("rotation-proposals.pushProposed")(function* (
   context: EnvironmentContext,
   proposal: RotationProposal,
@@ -430,7 +367,6 @@ const pushProposed = Effect.fn("rotation-proposals.pushProposed")(function* (
   return pushed;
 });
 
-/** Tells the server the proposal is accepted, naming the versions that hold its values (a failure says how to finish). */
 function resolveAccepted(
   context: EnvironmentContext,
   proposal: RotationProposal,
@@ -457,7 +393,6 @@ function resolveAccepted(
     );
 }
 
-/** The report lines of an acceptance (values never appear). */
 export function describeAcceptance(result: AcceptResult, environmentId: EnvironmentId): string[] {
   const versions = [
     ...result.pushed.map(
@@ -474,7 +409,6 @@ export function describeAcceptance(result: AcceptResult, environmentId: Environm
   ];
 }
 
-/** `maruhi rotation reject <id>`: drops the proposal; the credential it created at the issuer is named for retirement. */
 export const rotationRejectOp = Effect.fn("rotation-proposals.rotationRejectOp")(function* (input: {
   readonly context: ProjectContextBase;
   readonly proposal: RotationProposal;

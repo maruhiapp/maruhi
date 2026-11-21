@@ -1,31 +1,7 @@
 #!/usr/bin/env bash
-# install-jactionlint.sh — installs the pinned jactionlint binary into the
-# directory named by the second argument.
-#
-# jactionlint (https://jactionlint.jdx.dev) is the maintained actionlint fork
-# and the only workflow linter that parses the step-level
-# `parallel:` / `background:` / `wait:` / `cancel:` syntax this repository's
-# ci.yml uses. The `static` job in ci.yml lints .github/workflows/*.yml with
-# it on every run; the config is .github/jactionlint.yaml.
-#
-# The release archive is verified before anything in it runs: byte size,
-# archive SHA-256 and extracted-binary SHA-256 are all pinned below — version
-# alone cannot catch a re-tagged release asset, and the binary pin catches a
-# corrupted unpack. Bumping jactionlint changes the three values per
-# platform; the hashes come from the release's jactionlint_<ver>_checksums.txt
-# (curl -fsSL https://github.com/jdx/jactionlint/releases/download/v<ver>/jactionlint_<ver>_checksums.txt),
-# and each archive's build provenance is checked before pinning with
-# `gh attestation verify <archive> --repo jdx/jactionlint`.
-#
-# linux-x64 is what CI runs (ubuntu-26.04); darwin-arm64 is for local use on
-# the maintainer's Mac. Another platform is refused rather than guessed: add
-# its verified line if one is ever needed.
-#
-# Usage: scripts/install-jactionlint.sh <linux-x64|darwin-arm64> <destination>
 set -euo pipefail
 
 die() {
-  # A workflow command, so the reason is annotated on the GitHub Actions run
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "::error::install-jactionlint: $*" >&2
   else
@@ -40,7 +16,6 @@ fi
 
 readonly platform="$1"
 readonly destination="$2"
-# The destination is wiped before the unpack, so an empty one is refused
 [ -n "$destination" ] || die "the destination must not be empty"
 readonly release_base="https://github.com/jdx/jactionlint/releases/download/v2.2.0"
 

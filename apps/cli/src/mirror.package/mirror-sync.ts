@@ -1,17 +1,3 @@
-// `maruhi mirror sync` (AUTH_SPEC §11-7 — PF2, docs/notes/pf2-design.md
-// rulings D / H): a member replicates the project from the server to a
-// mirror by paging the owner's export and uploading the pages in order;
-// the mirror commits when the page carrying the trailer arrives, and only
-// if the replica extends what it already holds.
-//
-// Two sessions take part: the server's (the export needs the owner role)
-// and the mirror's (the pages need admin or above there). From a cron
-// they are MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN and MARUHI_MIRROR_TOKEN.
-//
-// TCB discipline: what is reported is heads and counts, cross-checked
-// against the verified view of the server (the same note as `project
-// export`); row content never reaches the output.
-
 import type { MirrorStatus, MirrorSyncRecord } from "@maruhi/api-schema";
 import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -32,41 +18,19 @@ import {
   verifiedViewOf,
 } from "./mirror-target.ts";
 
-/** How many times a changed project restarts the replication before giving up. */
 const MAX_RESTARTS = 3;
 
-/** The bound on pages of one replication (far above any project the storage guard admits). */
 const MAX_PAGES = 100_000;
 
 interface MirrorSyncInput<R = never> {
-  /** The server (the source of the export). */
   readonly source: MaruhiClient;
-  /** The mirror (its status). */
   readonly mirror: MaruhiClient;
-  /**
-   * The client the pages go through (the mirror under the body bound on
-   * its headers — a full page on a slow uplink is not "did not answer");
-   * defaults to `mirror`. Opened by the caller; used on the replicating
-   * path only (ruling H revision, round 5).
-   */
   readonly pages?: MaruhiClient;
   readonly projectId: ProjectId;
-  /** The server's origin: the mirror's recorded source must be it, else the sync is refused (`force` overrides — ruling H revision, round 6). */
   readonly sourceOrigin: string;
-  /** The mirror's origin: a server that is itself a mirror of another origin, or a frozen former primary that already synced back, is no source for it (`force` overrides — ruling H revision, round 8). */
   readonly mirrorOrigin: string;
   readonly force?: boolean;
-  /**
-   * The local floor's chain head (null = none): a source whose reported
-   * head is behind it is never "current" — the replicating path's floor
-   * check decides, with its evidence (ruling H revision, round 5).
-   */
   readonly floorHead: { readonly seq: number; readonly hashHex: string } | null;
-  /**
-   * The server's verified view, built only when something is uploaded
-   * (ruling H revision, round 4): a "current" tick costs the two status
-   * reads and no chain download.
-   */
   readonly verified: Effect.Effect<VerifiedProject, CliError, R>;
 }
 
@@ -77,23 +41,12 @@ type MirrorSyncResult =
       readonly lines: number;
       readonly restarts: number;
       readonly committed: MirrorSyncRecord;
-      /** The mirror's status before the replication (the previous position). */
       readonly before: MirrorStatus;
-      /** The server's verified view the replica is compared with: the one taken before the export, or taken again after the commit when the replica's head is past it (ruling H revision, round 9). */
       readonly verified: VerifiedProject;
-      /** The view taken before the export (the one the replica cannot honestly be behind). */
       readonly viewBefore: VerifiedProject;
     }
-  /** The source's three marks are the last replication's: nothing to upload (ruling H revision). */
   | { readonly kind: "current"; readonly before: MirrorStatus };
 
-/**
- * `maruhi mirror sync`: the export's pages uploaded to the mirror in
- * order. The two sessions are opened first (the server's for the export,
- * the mirror's for the pages); the server's chain is fetched and verified
- * only when something is uploaded — a cron's "current" tick is the two
- * status reads (ruling H revision, round 4).
- */
 export const mirrorSyncOp = Effect.fn("mirror-sync.mirrorSyncOp")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -103,9 +56,6 @@ export const mirrorSyncOp = Effect.fn("mirror-sync.mirrorSyncOp")(function* (fla
   const io = yield* CliIo;
   const target = yield* openMirrorTarget(flags);
   const source = yield* openSession(flags.server);
-  // The pages go through the mirror under the body bound on their
-  // headers (a full page on a slow uplink is not "did not answer" — H-10);
-  // the status reads keep the usual bound (H-12)
   const pages = yield* makeApiClient({
     baseUrl: target.mirrorOrigin,
     token: target.mirror.session.token,
@@ -126,10 +76,6 @@ export const mirrorSyncOp = Effect.fn("mirror-sync.mirrorSyncOp")(function* (fla
   for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
     yield* io.log(line);
   }
-  // A replica behind the view taken before the export, past the one
-  // taken after the commit, or off either's chain is evidence against
-  // the server, reported above; the sync fails so a cron notices (ruling
-  // H revision, rounds 8 and 9)
   const verdict =
     result.kind === "replicated"
       ? replicaVerdict(result.committed, result.viewBefore, result.verified)
@@ -152,7 +98,6 @@ type Attempt =
     }
   | { readonly kind: "changed" };
 
-/** One pass over the export's pages into the mirror; "changed" = the project moved (the caller restarts at sequence 0). */
 const replicateOnce = Effect.fn("mirror-sync.replicateOnce")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<Attempt, CliError> {
@@ -180,8 +125,6 @@ const replicateOnce = Effect.fn("mirror-sync.replicateOnce")(function* (
         payload: {
           sequence,
           lines: exported.lines,
-          // The source's counter rides with every page; the mirror records
-          // the trailer page's with the replica (the no-change check)
           sourceMutationSeq: exported.head.mutationSeq,
         },
       })
@@ -214,7 +157,6 @@ const replicateOnce = Effect.fn("mirror-sync.replicateOnce")(function* (
   );
 });
 
-/** Replicates the whole project (restarting when it changes) into a mirror that is marked. */
 const replicateProject = Effect.fn("mirror-sync.replicateProject")(function* <R>(
   input: MirrorSyncInput<R>,
 ): Effect.fn.Return<MirrorSyncResult, CliError, R> {
@@ -228,7 +170,6 @@ const replicateProject = Effect.fn("mirror-sync.replicateProject")(function* <R>
   return { kind: "replicated", ...replicated, before } as const;
 });
 
-/** The mirror's status: it must be marked, and marked as a mirror of the server the sync exports from (H-15). */
 const markedMirrorStatus = Effect.fn("mirror-sync.markedMirrorStatus")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<MirrorStatus, CliError> {
@@ -240,9 +181,6 @@ const markedMirrorStatus = Effect.fn("mirror-sync.markedMirrorStatus")(function*
       ),
     );
   }
-  // A cron left at the former primary after a failover elsewhere would
-  // export a frozen copy into a mirror of another source (an equal-head
-  // replica commits): the recorded source must be this server
   if (
     before.sourceOrigin !== undefined &&
     before.sourceOrigin !== input.sourceOrigin &&
@@ -257,15 +195,6 @@ const markedMirrorStatus = Effect.fn("mirror-sync.markedMirrorStatus")(function*
   return before;
 });
 
-/**
- * The server's own mark (its status, read with the owner's session): mirrors
- * sync from the primary — a star (AUTH_SPEC §11-7). A server that is itself
- * a mirror of another origin is refused before anything is exported (a
- * replica of it would commit once and be refused after its next sync, when
- * its own rows are renumbered). A server frozen as a mirror of this mirror
- * (the planned failover's last sync, or a sibling re-pointed here) goes
- * through. `force` overrides (ruling H revision, rounds 8 and 9).
- */
 const starSource = Effect.fn("mirror-sync.starSource")(function* (
   input: MirrorSyncInput<unknown>,
 ): Effect.fn.Return<MirrorStatus, CliError> {
@@ -282,25 +211,9 @@ const starSource = Effect.fn("mirror-sync.starSource")(function* (
       ),
     );
   }
-  // A server frozen for this mirror is a source whatever it replicated
-  // from it before (ruling H revision, round 9): the pair stays
-  // consistent — this mirror's rows up to its position travel in the
-  // server's log verbatim, and its own rows are carried by row id. The
-  // renumbering hurts a third mirror of that server only, which the
-  // refusal above covers
   return source;
 });
 
-/**
- * Nothing to upload when the source's chain head, audit seq and mutation
- * counter are the ones the last replication brought (the source's status,
- * read with the owner's session — the marks are shown to admins and
- * owners). A cron then costs the status reads, not an export. A floor
- * below the source's head cannot be checked from the two statuses: the
- * verdict then waits for the view, whose floor check proves the floor's
- * entry is on the source's chain (H-14); the view is handed on to the
- * replication otherwise.
- */
 const syncVerdict = Effect.fn("mirror-sync.syncVerdict")(function* <R>(
   input: MirrorSyncInput<R>,
   before: MirrorStatus,
@@ -317,7 +230,6 @@ const syncVerdict = Effect.fn("mirror-sync.syncVerdict")(function* <R>(
     : { verified };
 });
 
-/** The passes over the export (restarting when the project changed, the view rebuilt before each — H-13). */
 const replicateWithRestarts = Effect.fn("mirror-sync.replicateWithRestarts")(function* <R>(
   input: MirrorSyncInput<R>,
   firstView: VerifiedProject,
@@ -342,8 +254,6 @@ const replicateWithRestarts = Effect.fn("mirror-sync.replicateWithRestarts")(fun
     attempt = yield* replicateOnce(input);
   }
   if (attempt.kind === "changed") {
-    // The export's own renderer names `project export`; this is a sync
-    // (round 11)
     return yield* Effect.fail(
       cliError(
         `The project changed on ${input.sourceOrigin} while it was being exported, ${countNoun(MAX_RESTARTS + 1, "time")} in a row: re-run \`maruhi mirror sync\` when the writes settle (the mirror keeps the replication in progress, which the next run restarts at sequence 0)`,
@@ -351,24 +261,15 @@ const replicateWithRestarts = Effect.fn("mirror-sync.replicateWithRestarts")(fun
     );
   }
   const { pages, lines, committed } = attempt;
-  // A replica past the view taken before the export is the one honest
-  // race (a write landed in between) — or a server that serves one chain
-  // and exports another: the view is taken again, and its floor check
-  // (against the floor the first view advanced) proves it extends the
-  // first; the replica must be on it (ruling H revision, round 9)
   const verified =
     committed.chainHeadSeq > viewBefore.state.headSeq
       ? yield* input.verified.pipe(
-          // The strongest evidence gets the most specific report (round
-          // 10) — and a server that merely stopped answering, or refused
-          // the session, is not one that failed verification (round 11)
           Effect.mapError((error) => secondViewFailure(error, committed, viewBefore)),
         )
       : viewBefore;
   return { pages, lines, committed, restarts, verified, viewBefore };
 });
 
-/** What the failure of the view taken after the commit means for the replica the mirror now holds (its flags are kept). */
 function secondViewFailure(
   error: CliError,
   committed: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
@@ -388,14 +289,6 @@ function secondViewFailure(
   });
 }
 
-/**
- * Why a committed replica fails the sync (null = it stands): behind the
- * view taken before the export is a rollback at the server, never a race
- * (the view precedes every export); past the view taken again after the
- * commit, the server exported entries it no longer serves; off either
- * view's chain is a fork. Only an equivocating server produces any of
- * them, so a cron must see exit 1 (ruling H revision, rounds 8 and 9).
- */
 function replicaVerdict(
   committed: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   viewBefore: VerifiedProject,
@@ -417,10 +310,6 @@ function sourceUnchanged(
   before: MirrorStatus,
   source: MirrorStatus,
 ): Unchanged {
-  // A source behind this machine's floor (rebuilt from a backup taken
-  // at the last synced head) is not current: the replicating path's
-  // floor check says so with evidence (H-11). A floor below the
-  // source's head is checked by the view before the verdict (H-14)
   if (!marksUnchanged(before, source) || floorAhead(input.floorHead, source.head)) {
     return "changed";
   }
@@ -429,7 +318,6 @@ function sourceUnchanged(
     : "current";
 }
 
-/** The three marks the last replication brought are the source's current ones, and the mirror still holds that head. */
 function marksUnchanged(before: MirrorStatus, source: MirrorStatus): boolean {
   const last = before.lastSync;
   if (last === undefined) {
@@ -454,7 +342,6 @@ function floorAhead(
   );
 }
 
-/** The sync's own note on the committed head: on the sync path an "ahead" past the view taken after the commit has one cause (rounds 11 and 12 — the replica and the view are of the same server). */
 function syncHeadNote(
   head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   verified: VerifiedProject,
@@ -464,7 +351,6 @@ function syncHeadNote(
     : headNote(head, verified);
 }
 
-/** The report of a replication (heads and counts only). */
 function describeMirrorSync(
   result: MirrorSyncResult,
   projectId: ProjectId,

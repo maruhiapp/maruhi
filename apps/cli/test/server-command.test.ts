@@ -1,7 +1,3 @@
-// The argument layer of `maruhi server` (server.package/command.ts): its
-// nested subcommands (ADR-0016 decision 6), driven through the real runCli
-// as in effect-cli.test.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -62,8 +58,6 @@ describe("server's nested subcommands (ADR-0016 decision 6 — stage 2 ②)", ()
     expect(missing.env.errors.join("\n")).toContain("grant requires --environments");
     expect(missing.server.requests).toHaveLength(0);
 
-    // The FP format check is the shared parser (fingerprint-flag.ts), run
-    // after the declaration (NonBlank) passes. The typed value itself never appears in the diagnostic
     const badFp = await startEnv();
     expect(
       await runCli(
@@ -95,7 +89,6 @@ describe("server's nested subcommands (ADR-0016 decision 6 — stage 2 ②)", ()
 
   it("server takes no positional args", async () => {
     const { env, server } = await startEnv();
-    // `server grant extra` = an extra positional arg at the grant level
     expect(await runCli(["server", "grant", "extra", "--environments", "dev"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Unexpected extra arguments (1;");

@@ -1,8 +1,3 @@
-// The evacuation's write-out (DO → R2 — docs/notes/hosted-ops.md §2-D /
-// §4-2): every table read under the DO's permit and written as gzipped
-// NDJSON lines (do-snapshot.ts's format), uploaded to R2 in equal-size
-// parts. Run by do-ops.ts's backupProgram.
-
 import { Effect } from "effect";
 
 import { OPS_SNAPSHOT_PART_BYTES, OPS_SNAPSHOT_ROW_PAGE } from "../ops/ops-policy.ts";
@@ -20,13 +15,6 @@ import {
   snapshotTableOrder,
 } from "./do-snapshot.ts";
 
-/**
- * A sink that writes to R2 while gzip-compressing. Each time one part's
- * worth of compressed output accumulates it is sent as a multipart part;
- * when the total is under the part length, a single put finishes it. On
- * failure the multipart upload is aborted (the bucket lifecycle rule also
- * cleans up incomplete uploads).
- */
 class GzipObjectWriter {
   readonly #encoder = new TextEncoder();
   readonly #compressor = new CompressionStream("gzip");
@@ -67,8 +55,6 @@ class GzipObjectWriter {
     if (this.#upload === null) {
       await this.bucket.put(this.key, last);
     } else {
-      // When the compressed total is an exact multiple of partBytes, the
-      // remainder is 0 bytes — R2 rejects an empty part, so don't send it
       if (last.byteLength > 0) {
         this.#parts.push(await this.#upload.uploadPart(this.#parts.length + 1, last));
       }
@@ -93,9 +79,6 @@ class GzipObjectWriter {
       this.#pending.push(value);
       this.#pendingBytes += value.byteLength;
       this.#totalBytes += value.byteLength;
-      // R2 multipart requires **the same size** for every part except the
-      // last (r2/api/workers/workers-multipart-usage), so carve out exactly
-      // partBytes each time
       while (this.#pendingBytes >= this.partBytes) {
         this.#upload ??= await this.bucket.createMultipartUpload(this.key);
         this.#parts.push(
@@ -109,7 +92,6 @@ class GzipObjectWriter {
     return this.#takeExact(this.#pendingBytes);
   }
 
-  /** Carve out n bytes from the front (the remainder goes back to pending). */
   #takeExact(n: number): Uint8Array {
     const merged = new Uint8Array(this.#pendingBytes);
     let offset = 0;
@@ -133,7 +115,6 @@ export interface WriteSnapshotInput {
   readonly takenAtMs: number;
   readonly bucket: R2Bucket;
   readonly key: string;
-  /** For tests (default is policy's 16 MiB). */
   readonly partBytes?: number;
 }
 
@@ -142,20 +123,11 @@ export interface WriteSnapshotResult {
   readonly trailer: SnapshotTrailer;
 }
 
-/** The evacuation's key (contains no project ID — image of the DO id + taken-at time). */
 export function snapshotObjectKey(prefix: string, doIdHex: string, takenAtMs: number): string {
   const stamp = new Date(takenAtMs).toISOString().replaceAll(":", "-");
   return `${prefix}/${doIdHex}/${stamp}.ndjson.gz`;
 }
 
-/**
- * Reads out all tables and writes to R2 (the caller must hold the
- * permit). Reads one page at a time, synchronously, per table via a
- * rowid keyset (no cursor is held across awaits). Every failure is a
- * defect (a rejected write, a failed upload); the in-flight multipart
- * upload is aborted on it (the bucket lifecycle rule also cleans up
- * incomplete uploads).
- */
 export function writeSnapshot(input: WriteSnapshotInput): Effect.Effect<WriteSnapshotResult> {
   const { sql } = input;
   const writer = new GzipObjectWriter(

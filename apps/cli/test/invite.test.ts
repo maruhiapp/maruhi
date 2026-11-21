@@ -1,17 +1,3 @@
-// `maruhi invite create|accept|list|revoke`(AUTH_SPEC §15 / CRYPTO_SPEC §6.5 —
-// 2026-09-13 IV revision / v2 links).
-//
-// Properties pinned here:
-//  1. Link assembly / parsing (§15-3): parameter order, optional il; broken
-//     links / old versions (v=1) / raw tokens are all rejected (no compat path)
-//  2. create: client-numbered id + issuance signature (own chain sig key) +
-//     issuance pin (link_pub / role) saved + role=admin is owner-only + refusal on key mismatch
-//  3. accept: issuance-signature verification (mechanical) → ceremony (last-word
-//     re-entry / --inviter-fingerprint / agent refusal) → key guard →
-//     co-signature (verifiable) → response match (p / r are signed, so mismatch = refusal) → anchor pinning (only after acceptance succeeds)
-//  4. list: §6.5 independent verification of the issuance signature / acceptance block + issuance-pin match (mismatch = exit 1)
-//  5. revoke: revocation and the 410 wording
-
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -98,25 +84,21 @@ function chainHandler(built: {
   }));
 }
 
-/** Seeds a logged-in state (no device key) — for key-generation-path tests. */
 function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   const token: StoredToken = {
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
     tokenId: "tok_0001",
-    // 2100-01-01 (outside the near-expiry warning window)
     expiresAtMs: 4_102_444_800_000,
   };
   env.keychain.set(tokenEntryName(origin), serializeStoredToken(token));
 }
 
-/** Reads the accepter-side pins file (anchors). */
 async function readPins(env: TestEnv, projectId: string): Promise<Record<string, unknown>> {
   const json = await readFile(join(env.pinsDir, `${projectId}.json`), "utf8");
   return JSON.parse(json) as Record<string, unknown>;
 }
 
-/** The issuance POST body (wire form). */
 interface IssueBody {
   readonly id: string;
   readonly role: string;
@@ -128,7 +110,6 @@ interface IssueBody {
   readonly issueSignatureHex: string;
 }
 
-/** The acceptance POST body (wire form). */
 interface AcceptBody {
   readonly linkPubHex: string;
   readonly encPubHex: string;
@@ -158,9 +139,6 @@ describe("invite link(§15-3 v2)", () => {
     );
     const parsed = parseInviteAcceptInput(Redacted.make(link));
     if (parsed.kind !== "link") throw new Error(`expected link, got ${parsed.kind}`);
-    // The seed is compared unwrapped: toEqual does not inspect Redacted's
-    // contents (no own properties — two different values compare equal), so
-    // comparing while wrapped is a vacuous "any seed passes" assertion
     expect(Redacted.value(parsed.link.linkSeedHex)).toBe(LINK_SEED_HEX);
     expect({ ...parsed.link, linkSeedHex: undefined }).toEqual({
       ...issued.link,
@@ -250,7 +228,6 @@ describe("maruhi invite create", () => {
     expect(body.scopeEnvironmentIds).toEqual([]);
     expect(body.headSeq).toBe(1);
     expect(body.headHashHex).toBe(built.hashes[0]);
-    // The issuance signature verifies with the inviter's chain key (CRYPTO_SPEC §6.5)
     const verified = await verifyInviteIssueSignature({
       context: {
         suite: SUITE_ID,
@@ -263,14 +240,12 @@ describe("maruhi invite create", () => {
         inviterUserId: inviter.userId,
         inviterEncPubHex: inviter.encPubHex,
         inviterSigPubHex: inviter.sigPubHex,
-        // The K2 CLI issues only scope = all (carried on both the issuance body and the issuance signature)
         scopeKind: body.scopeKind,
         scopeEnvironmentIds: body.scopeEnvironmentIds.map(testEnvironmentId),
       },
       signatureHex: body.issueSignatureHex,
     });
     expect(verified.ok).toBe(true);
-    // The seed is never sent to the server (only the public key and issuance text)
     expect(JSON.stringify(body)).not.toContain("k=");
     expect(Object.keys(body).toSorted()).toEqual([
       "headHashHex",
@@ -283,7 +258,6 @@ describe("maruhi invite create", () => {
       "scopeKind",
     ]);
 
-    // The displayed link parses and matches the issuance text (the public key derived from the seed = the link_pub that was sent)
     const shown = env.logs.find((line) => line.startsWith(`${server.origin}/invite#v=2&`));
     if (shown === undefined) throw new Error("link not shown");
     const parsed = parseInviteAcceptInput(Redacted.make(shown));
@@ -302,7 +276,6 @@ describe("maruhi invite create", () => {
     });
     expect(reissued.linkPubHex).toBe(body.linkPubHex);
 
-    // The issuance pin (the inviter-side counterpart of §6.5 — SHOULD): link_pub and role to non-secret local storage
     const pins = await readPins(env, built.projectId);
     expect(pins["issued"]).toEqual({
       [body.id]: {
@@ -341,16 +314,13 @@ describe("maruhi invite create", () => {
     const pins = await readPins(env, built.projectId);
     const issued = pins["issued"] as Record<string, { expectedGithubLogin: string | null }>;
     expect(issued[parsed.link.inviteId]?.expectedGithubLogin).toBe("bob");
-    // The destination login is never sent to the server (only into the issuance pin) — the guidance mentions the GitHub match
     expect(env.errors.join("\n")).toContain("github.com/bob's signing keys");
 
-    // A malformed login form fails before issuance (usage)
     expect(
       await runCli(["invite", "create", "--role", "member", "--github", "bad--login"], env.layer),
     ).toBe(2);
     expect(env.errors.join("\n")).toContain("--github must be a GitHub login");
 
-    // With identityBacking = none, il is not built (an environment that does not use the backing source)
     const env2 = await makeTestEnv();
     seedSession(env2, server.origin, inviter);
     await seedConfig(env2, {
@@ -422,7 +392,6 @@ describe("maruhi invite create", () => {
     if (body === undefined) throw new Error("no issue body");
     expect(body.scopeKind).toBe("listed");
     expect(body.scopeEnvironmentIds).toEqual(["env-dev", "env-staging"]);
-    // The issuance signature covers the scope (CRYPTO_SPEC §6.5)
     const verified = await verifyInviteIssueSignature({
       context: {
         suite: SUITE_ID,
@@ -452,7 +421,6 @@ describe("maruhi invite create", () => {
     expect(pin?.["scopeEnvironmentIds"]).toEqual(["env-dev", "env-staging"]);
     expect(env.errors.join("\n")).toContain("scope=env-dev, env-staging");
 
-    // A duplicate flag is usage (2). An environment absent from the chain is refused before communication (the unknown-environment pre-check)
     const dup = await makeTestEnv();
     seedSession(dup, server.origin, inviter);
     await seedConfig(dup, { server: server.origin, defaultProject: built.projectId });
@@ -496,12 +464,10 @@ describe("maruhi invite create", () => {
     const prod = await run(["invite", "create", "--role", "reader", "--env", "env-prod"]);
     expect(prod.code).toBe(1);
     expect(prod.errors).toContain("does not contain the invite's scope");
-    // Omitted = all is not contained for a listed admin (all is U, including future environments)
     const all = await run(["invite", "create", "--role", "reader"]);
     expect(all.code).toBe(1);
     expect(all.errors).toContain("does not contain the invite's scope");
     expect(issued).toHaveLength(0);
-    // Issuance is allowed within one's own scope
     const dev = await run(["invite", "create", "--role", "reader", "--env", "env-dev"]);
     expect(dev.code).toBe(0);
     expect(issued).toHaveLength(1);
@@ -542,7 +508,6 @@ describe("maruhi invite create", () => {
 
   it("does not issue when the local device key differs from one's own key on the chain (never produces an unverifiable issuance text)", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    // The same user_id with a different key (the shape of regenerating on another device)
     const otherKeys = await makeTestUser(inviter.userId);
     const issueCalls: IssueBody[] = [];
     const server = await start([
@@ -574,7 +539,6 @@ describe("maruhi invite create", () => {
 
     expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("the invite was not issued");
-    // Refuses before the issuance POST (no pending is created server-side)
     expect(issueCalls).toHaveLength(0);
   });
 
@@ -611,15 +575,12 @@ describe("maruhi invite create", () => {
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // A corrupt pins file (merge refuses to overwrite — the pins.ts rule)
     await mkdir(env.pinsDir, { recursive: true });
     await writeFile(join(env.pinsDir, `${built.projectId}.json`), "{ broken");
 
-    // The link is displayed exactly once: a pin-save failure must not fail the already-succeeded issuance
     expect(await runCli(["invite", "create", "--role", "member"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("/invite#v=2&i=");
     expect(env.errors.join("\n")).toContain("could not save the issuance pin");
-    // The corrupt file is not overwritten (preserving detectability)
     expect(await readFile(join(env.pinsDir, `${built.projectId}.json`), "utf8")).toBe("{ broken");
   });
 
@@ -683,7 +644,6 @@ describe("maruhi invite accept", () => {
     });
   }
 
-  /** Independently verifies both signatures on the acceptance POST body per §6.5. */
   async function verifyBody(body: AcceptBody, linkPubHex: string): Promise<void> {
     const context = {
       suite: SUITE_ID,
@@ -719,8 +679,6 @@ describe("maruhi invite accept", () => {
       await runCli(["invite", "accept", inviteLinkText(server.origin, issued)], env.layer),
     ).toBe(0);
 
-    // The acceptance / link signatures verify per §6.5 (bound to project /
-    // link_pub / the parties / the declared keys). The seed is never sent to the server
     expect(bodies).toHaveLength(1);
     const body = bodies[0];
     if (body === undefined) throw new Error("no accept body");
@@ -729,7 +687,6 @@ describe("maruhi invite accept", () => {
     expect(JSON.stringify(body)).not.toContain(LINK_SEED_HEX);
     await verifyBody(body, issued.linkPubHex);
 
-    // Pinning the anchor (§6.3 (a)) (unmatched = verifiedAtSeq null; also keeps the inviter's sig key)
     const pins = await readPins(env, PROJECT_ID);
     expect(pins["anchor"]).toEqual({
       headSeq: 3,
@@ -754,14 +711,11 @@ describe("maruhi invite accept", () => {
     const bodies: AcceptBody[] = [];
     const server = await start([acceptHandler((body) => bodies.push(body))]);
     for (const tampered of [
-      // tampering with the signature itself
       inviteLinkText(server.origin, {
         ...issued,
         link: { ...issued.link, issueSignatureHex: flipHex(issued.link.issueSignatureHex) },
       }),
-      // tampering with the signed target (role)
       inviteLinkText(server.origin, { ...issued, link: { ...issued.link, role: "admin" } }),
-      // seed substitution (link_pub does not match the issuance text)
       inviteLinkText(server.origin, {
         ...issued,
         link: { ...issued.link, linkSeedHex: Redacted.make("d8".repeat(32)) },
@@ -838,7 +792,6 @@ describe("maruhi invite accept", () => {
     );
     expect(bodies).toHaveLength(0);
 
-    // An explicit flag allows acceptance (the line drawn: never stand in for the ceremony's out-of-band match)
     env.errors.length = 0;
     expect(
       await runCli(
@@ -856,7 +809,6 @@ describe("maruhi invite accept", () => {
     seedSession(env, server.origin, acceptor);
     await seedConfig(env, { server: server.origin });
 
-    // Run 1: the ceremony (last-word re-entry) → the success is recorded to the book
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
@@ -869,9 +821,6 @@ describe("maruhi invite accept", () => {
     ]);
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
-    // Run 2 (equivalent to another invite from the same inviter): a book hit
-    // exempts the 12-word read-out re-run, but the explicit confirmation (yes)
-    // of the acceptance itself remains. The two read-out-match instruction lines are not printed on a hit (no exemption note right after the instruction)
     const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
@@ -882,8 +831,6 @@ describe("maruhi invite accept", () => {
     expect(secondRunLogs).not.toContain("reads to you out of band");
     expect(bodies).toHaveLength(2);
 
-    // Run 3 (agent environment): a book hit does not allow standing in (the flag
-    // is required — pinned symmetrically with the member-add side)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
     expect(env.prompts).toHaveLength(2);
@@ -892,9 +839,6 @@ describe("maruhi invite accept", () => {
     );
     expect(bodies).toHaveLength(2);
 
-    // Run 4 (non-interactive — stdin is a pipe): a book hit does not advance to
-    // the yes confirmation; it returns to the full ceremony (last-word re-entry)
-    // — a blind `printf yes |` cannot pass (the primary boundary is the terminal)
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdin: false });
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
@@ -922,7 +866,6 @@ describe("maruhi invite accept", () => {
     env.setPromptResponses([
       inviterWords[inviterWords.length - 1] ?? "",
       "yes",
-      // Recovery-code save verification (reads the last group from the displayed stderr)
       () => {
         const line = env.errors.find((item) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4})+$/.test(item));
         const groups = (line ?? "").trim().split("-");
@@ -936,7 +879,6 @@ describe("maruhi invite accept", () => {
     expect(bodies).toHaveLength(1);
     const body = bodies[0];
     if (body === undefined) throw new Error("no accept body");
-    // The self-bound signature with the generated key passes verification (declared key = verification key)
     await verifyBody(body, issued.linkPubHex);
     expect(env.logs.join("\n")).toContain("Generated this device's key");
   });
@@ -960,7 +902,6 @@ describe("maruhi invite accept", () => {
       "add this machine as a device instead (`maruhi device add` here, `maruhi device approve` on a device you have), or `maruhi key recover` if no device of yours is left, then re-run",
     );
     expect(bodies).toHaveLength(0);
-    // No key was generated (the keychain holds only the token entry)
     expect(env.keychain.size).toBe(1);
   });
 
@@ -1064,7 +1005,6 @@ describe("maruhi invite accept", () => {
       expect(env.prompts[0]).toContain("Type yes to accept this invite from github.com/alice");
       expect(bodies).toHaveLength(1);
 
-      // Anything but yes is not accepted
       const second = await backedEnv([sshLineOf(inviter)]);
       second.env.setPromptResponses(["no"]);
       expect(
@@ -1087,7 +1027,6 @@ describe("maruhi invite accept", () => {
     });
 
     it("unregistered / unreachable listings return to the ceremony (with a note). An agent environment refuses without --from and passes with it", async () => {
-      // Unregistered (only other keys are listed)
       const { env, bodies, origin } = await backedEnv([sshLineOf(acceptor)]);
       env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
       expect(await runCli(["invite", "accept", await backedLink(origin)], env.layer)).toBe(0);
@@ -1097,7 +1036,6 @@ describe("maruhi invite accept", () => {
       expect(env.prompts[0]).toContain("type the last of the 12 words");
       expect(bodies).toHaveLength(1);
 
-      // Unreachable (cap)
       const limited = await backedEnv([], 403);
       limited.env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
       expect(
@@ -1106,7 +1044,6 @@ describe("maruhi invite accept", () => {
       expect(limited.env.errors.join("\n")).toContain("could not be fetched");
       expect(limited.bodies).toHaveLength(1);
 
-      // Agent environment: even when registered, yes is never stood in for — only an explicit --from is the path
       const agent = await backedEnv([sshLineOf(inviter)]);
       agent.env.setAgent({ isAgent: true, name: "test-agent" });
       expect(
@@ -1160,8 +1097,6 @@ describe("maruhi invite accept", () => {
   });
 
   it("does not pin the anchor when acceptance fails (no pins file on 410)", async () => {
-    // Pinning before acceptance would let a crafted-link submission carrying a
-    // failing acceptance (revoked / fake link) replace an existing anchor (self-DoS / substitution)
     const server = await start([
       onRequest("POST", "/invites/accept", () => ({
         status: 410,
@@ -1174,7 +1109,7 @@ describe("maruhi invite accept", () => {
     env.setPromptResponses([inviterWords[inviterWords.length - 1] ?? ""]);
 
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(1);
-    await expect(readPins(env, PROJECT_ID)).rejects.toThrow(); // no pins file
+    await expect(readPins(env, PROJECT_ID)).rejects.toThrow();
   });
 
   it("a machine-matched anchor is not overwritten by re-acceptance; an unmatched anchor is replaced by the latest acceptance", async () => {
@@ -1201,7 +1136,6 @@ describe("maruhi invite accept", () => {
     expect((await readPins(env, PROJECT_ID))["anchor"]).toEqual(verifiedAnchor);
     expect(env.logs.join("\n")).toContain("keeping the existing anchor");
 
-    // For an unmatched anchor (verifiedAtSeq: null), the last proper acceptance wins
     const env2 = await makeTestEnv();
     seedSession(env2, server.origin, acceptor);
     await seedConfig(env2, { server: server.origin });
@@ -1221,15 +1155,12 @@ describe("maruhi invite accept", () => {
       inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
     });
-    // Replacement leaves a trace (substitution via a fake link = auditability of the DoS path)
     expect(env2.logs.join("\n")).toContain(
       "Replacing the unverified existing anchor with this acceptance's link anchor",
     );
   });
 
   it("warns while keeping the acceptance successful on a corrupt pins file, and does not overwrite the corrupt file", async () => {
-    // The acceptance already succeeded server-side (the link is consumed) —
-    // treating a pin failure as a failure would misguide: the "re-run" path leads to 410 (accepted)
     const server = await start([acceptHandler(() => undefined)]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
@@ -1241,7 +1172,6 @@ describe("maruhi invite accept", () => {
     expect(await runCli(["invite", "accept", await linkFor()], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("could not pin the invite link anchor");
     expect(await readFile(join(env.pinsDir, `${PROJECT_ID}.json`), "utf8")).toBe("{ broken");
-    // The completion report does not contradict the warning: it makes no machine-match promise and guides the degradation
     const logs = env.logs.join("\n");
     expect(logs).not.toContain(
       "the link anchor (genesis, head, inviter key) is machine-checked automatically",
@@ -1250,7 +1180,6 @@ describe("maruhi invite accept", () => {
   });
 
   it("rejects a mismatch between the signed link's r / p and the response (server self-contradiction / row substitution)", async () => {
-    // A link signed r=admin, the response's role is member → refuse (contradicts the issuance signature)
     const server = await start([acceptHandler(() => undefined, "member")]);
     const env = await makeTestEnv();
     seedSession(env, server.origin, acceptor);
@@ -1261,7 +1190,6 @@ describe("maruhi invite accept", () => {
       "The role declared in the signed link (admin) does not match the role the server reports (member)",
     );
 
-    // The response's projectId differs from the signed target = server self-contradiction → refuse
     const server2 = await start([
       onRequest("POST", "/invites/accept", () => ({
         status: 200,
@@ -1355,17 +1283,14 @@ describe("maruhi invite list / revoke", () => {
       invitee: acceptor,
     });
     for (const [row, fragment] of [
-      // role tampering in the issuance text (covered by the issuance signature)
       [
         listRow(built.projectId, issued, acceptance, "admin"),
         "issue signature that does not verify",
       ],
-      // reassignment to another user_id (breaks both signatures' invitee_user_id binding — the link signature is reported first)
       [
         listRow(built.projectId, issued, { ...acceptance, inviteeUserId: "user-attacker-99" }),
         "the link signature failed verification",
       ],
-      // tampering of the acceptance signature only
       [
         listRow(built.projectId, issued, {
           ...acceptance,
@@ -1403,7 +1328,6 @@ describe("maruhi invite list / revoke", () => {
     const env = await makeTestEnv();
     seedSession(env, server.origin, inviter);
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // Prepare a local issuance-time pin (a different link key) — the shape where the server's row was substituted
     await mkdir(env.pinsDir, { recursive: true });
     await writeFile(
       join(env.pinsDir, `${built.projectId}.json`),
@@ -1456,7 +1380,6 @@ describe("maruhi invite list / revoke", () => {
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
     await mkdir(env.pinsDir, { recursive: true });
     const pinPath = join(env.pinsDir, `${built.projectId}.json`);
-    // The link key and role match; only the scope differs (the row is all)
     await writeFile(pinPath, pinWith({ scopeKind: "listed", scopeEnvironmentIds: ["prod"] }));
     expect(await runCli(["invite", "list"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("does not match the local record from issuance");
@@ -1502,9 +1425,6 @@ describe("maruhi invite list / revoke", () => {
 });
 
 describe("verifyAcceptanceBlock (CRYPTO_SPEC §6.5)", () => {
-  // A crypto failure other than the signature itself (here a link key that
-  // is not hex) also means the block does not verify: a rejection, never a
-  // defect
   it("rejects a block whose link key is not hex as a link-signature failure", async () => {
     const verdict = await Effect.runPromise(
       verifyAcceptanceBlock({

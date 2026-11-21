@@ -1,37 +1,7 @@
 import { correctness, presets } from "@effect/tsgo/oxlint-presets";
 import { defineConfig } from "vite-plus";
 
-// The repository's lint configuration (oxlint, driven by vite-plus). It
-// replaces the two .oxlintrc.json files (root + apps/web) that nested
-// oxlint configs used to provide: vite-plus reads the lint block of the
-// workspace root's vite.config.ts only, and every glob below is written
-// from the repository root.
-//
-// The Effect diagnostics gate lives here too. Its rules are the
-// effecttsgo correctness preset shipped by @effect/tsgo (the package is
-// a dependency only as the supplier of this preset and of the patched
-// tsrs its CLI runs the lint gate through — the root `lint` and
-// `typecheck` scripts run `vp` through
-// `effect-tsgo --tsrs-lint=<version>`, which runs oxlint's
-// type-aware rules, the Effect ones included, on the Effect-patched
-// tsrs; it is not used as an editor language server). Severities match the standalone
-// gate this replaces (scripts/effect-diagnostics.mjs): every correctness
-// rule at error, except unstableApiUsage (off: effect v4's http modules
-// are marked unstable and the repo pins effect exactly),
-// schemaClassMissingBrand (off: CLAUDE.md brands a type only where it
-// carries an invariant), and anyUnknownInErrorContext (excluded: it
-// flags deliberate `unknown` error channels — test helpers, the CLI's
-// API client seam). preferSchemaOverJson is off too (deprecated,
-// superseded by globalJson and globalJsonInEffect); it appears in no
-// preset, so it is pinned by name below — the pin set must cover the
-// package's whole rule registry, or a rule a future @effect/tsgo
-// release ships outside the presets would switch on by category with
-// no config diff. The coverage is pinned by
-// packages/core/test/effect-tsgo-rules.test.ts, which derives the
-// registry from the installed package's oxlint schema.
-// Enabling the effecttsgo plugin also switches some of its rules on by
-// category, so every rule the package ships is pinned explicitly: the
-// correctness set at error, everything else off.
+// See ADR-0028.
 const effectTsgoRules: Record<string, string> = {};
 for (const preset of Object.values(presets)) {
   for (const rule of Object.keys(preset.rules ?? {})) {
@@ -47,8 +17,6 @@ effectTsgoRules["effecttsgo/schema-class-missing-brand"] = "off";
 effectTsgoRules["effecttsgo/unstable-api-usage"] = "off";
 
 export default defineConfig({
-  // The formatter configuration, formerly .oxfmtrc.json: import sorting
-  // is part of the format, and prose / generated files stay unformatted.
   fmt: {
     sortImports: true,
     ignorePatterns: [
@@ -63,48 +31,11 @@ export default defineConfig({
   },
   lint: {
     jsPlugins: [{ name: "eslint-js", specifier: "oxlint-plugin-eslint" }],
-    // "effecttsgo" is supplied at runtime by the effect-tsgo wrapper
-    // above, not by vite-plus itself: vite-plus's lint schema type does
-    // not list it (hence the cast), and a bare `vp lint` fails to parse
-    // this config — loudly, rather than linting without the Effect
-    // rules.
     plugins: ["effecttsgo" as never],
     categories: {
       correctness: "error",
       suspicious: "error",
     },
-    // Type-aware rules (tsrs). The categories above would
-    // pull in the type-aware correctness / suspicious rules, but
-    // the typescript-eslint ports among them are inert under tsrs
-    // (see the next paragraph); the ones listed "off" below had
-    // findings when type-aware linting was introduced and are
-    // enabled one by one as their findings are fixed
-    // (consistent-return and the two type-assertion rules flag Effect
-    // idioms; no-unnecessary-type-assertion was not deterministic
-    // under the previous tsgolint backend).
-    // The ten typescript-eslint ports heading the list below
-    // (await-thenable through restrict-plus-operands) are wanted at
-    // error, but the tsrs backend the gate runs on
-    // (--tsrs-lint=0.25.0-ts7.1.0-beta) does not execute the
-    // typescript-eslint type-aware ports at all — probe-verified
-    // 2026-11-20: planted violations fired nothing, while plain TS
-    // and effecttsgo diagnostics fired in the same runs. They are
-    // pinned off so the config states what the gate actually does.
-    // When the --tsrs-lint pin is bumped, flip them back to error
-    // and re-probe before trusting them.
-    // Effect values are not thenables, so dropped Effects are guarded
-    // by the effecttsgo rules above, not by no-floating-promises.
-    // typeCheck makes `vp check` run the full typecheck as well.
-    // Strictness: severities default to error (the two categories above
-    // are the only ones enabled, both at error; no rule in this config
-    // sits at warn), and denyWarnings makes any warning-level finding
-    // fail the gate — the pass bar is zero warnings, matching the old
-    // Effect gate's --strict. The `lint` script passes --deny-warnings
-    // as well, so the flag shows at the call site too. Every rule left
-    // off below or in an override is listed in PR #451's "Lint
-    // strictness" section with its reason (all are carryovers from the
-    // two .oxlintrc.json files or the Effect gate, each with the reason
-    // recorded where it was introduced).
     options: { typeAware: true, typeCheck: true, denyWarnings: true },
     rules: {
       "typescript/await-thenable": "off",
@@ -146,25 +77,10 @@ export default defineConfig({
     ],
     overrides: [
       {
-        // Promoted to correctness by oxlint 1.85. Moving helper
-        // functions out of tests is a large-scale migration and whether
-        // a capture exists varies per call site. Keep the locality.
         files: ["**/test/**", "**/*.test.ts"],
         rules: { "unicorn/consistent-function-scoping": "off" },
       },
       {
-        // Outbound HTTP goes through one client
-        // (packages/core/src/egress.ts): effect's own clients add trace
-        // headers (traceparent / b3) to every request, which the "say
-        // nothing" principle rules out. Tests may build plain clients
-        // for their local stub servers. This override does not reach
-        // apps/web/src, and the web needs no copy: the bundle tripwires
-        // in apps/web/test/unit/endpoints.test.ts refuse a value import
-        // of effect, @effect/* or @maruhi/core (static or dynamic), and
-        // any @maruhi/crypto specifier, in every source file there.
-        // (With the former nested configs the root `apps/*/src/**` glob
-        // never matched web files; the enumeration below preserves
-        // exactly that reach.)
         files: ["apps/cli/src/**", "apps/server/src/**", "apps/site/src/**", "packages/*/src/**"],
         rules: {
           "no-restricted-imports": [
@@ -215,24 +131,10 @@ export default defineConfig({
         },
       },
       {
-        // The one place allowed to wrap effect's fetch client
         files: ["packages/core/src/egress.ts"],
         rules: { "no-restricted-imports": "off" },
       },
       {
-        // The identity mint sites (packages/core/src/identity.ts,
-        // project.ts, auth.ts): the wire schemas and decode* mints may
-        // be imported only at trust boundaries — api-schema's wire
-        // definitions, the CLI's flag / config / record parsers, the
-        // server's row mapping (Drizzle columns and the data store's
-        // branded reads), handler decoding, generation, and the provider
-        // API's subject. The `is*` guards are NOT restricted: every
-        // exported one (isProjectId / isEnvironmentId / isVariableId /
-        // isKeyFingerprintHex) is a non-narrowing format check, and a
-        // guard that cannot mint needs no boundary. The actual mint next
-        // to them (decode* / a schema) is what this list pins. The
-        // egress and test-support bans above are restated because an
-        // override replaces the rule's options
         files: [
           "packages/api-schema/src/**",
           "apps/cli/src/commands/flags.ts",
@@ -310,17 +212,6 @@ export default defineConfig({
         },
       },
       {
-        // Effect fence (CLAUDE.md "Architecture"): packages/crypto is
-        // one of the two trusted leaves and is Effect-free by contract,
-        // so it imports nothing from effect — values, types, subpaths
-        // and re-exports alike. The other leaf (the web bundle,
-        // apps/web/src) is held by the value-import tripwire in
-        // apps/web/test/unit/endpoints.test.ts (rulings BR / CD); types
-        // stay allowed there because they are erased from the bundle,
-        // while crypto has no reason to see Effect types at all (core
-        // and api-schema build on crypto, not the other way round).
-        // This override replaces the outbound-HTTP one above for these
-        // files; that ban is subsumed here
         files: ["packages/crypto/**"],
         rules: {
           "no-restricted-imports": [
@@ -338,13 +229,6 @@ export default defineConfig({
         },
       },
       {
-        // Vocabulary since the device-key separation (DK K7-5 / K7-13).
-        // User-facing text (strings and templates) says "device key" /
-        // "reserve key"; "master key" remains only in persisted names
-        // (`master::` / `MasterKeys` — K4-12) and in comments. The help
-        // golden and docs are pinned by
-        // apps/site/test/unit/cli-vocabulary.test.ts, and runtime text
-        // is pinned by this rule
         files: ["apps/cli/src/**/*.ts"],
         rules: {
           "eslint-js/no-restricted-syntax": [
@@ -363,14 +247,6 @@ export default defineConfig({
         },
       },
       {
-        // HttpApi response envelopes are named (DK K9-4 / K9-5 / K9-7).
-        // Do not write an inline `Schema.Struct` as the `success` value
-        // in the options of `HttpApiEndpoint.*(…)` — wrapped forms
-        // (`.annotate` / `.pipe` / `Schema.Array(...)`) are also caught
-        // by descendant combination. Excluded: `payload` / `params` /
-        // `error` Structs, `HttpApiSchema.NoContent`, and a field
-        // literally named `success` on a data Schema. Endpoints are
-        // defined only in this package (apps only reference the types)
         files: ["packages/api-schema/src/**/*.ts"],
         rules: {
           "eslint-js/no-restricted-syntax": [
@@ -385,10 +261,6 @@ export default defineConfig({
         },
       },
       {
-        // Astryx styling discipline (ADR-0013, B2 operation; from
-        // apps/web/.oxlintrc.json). Details: the styling-discipline
-        // section of CLAUDE.md. The stylex plugin validates xstyle
-        // values (ESLint plugins work via oxlint's jsPlugins)
         files: ["apps/web/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"],
         jsPlugins: [{ name: "stylex", specifier: "@stylexjs/eslint-plugin" }],
         rules: {
@@ -414,9 +286,6 @@ export default defineConfig({
         },
       },
       {
-        // src/ui.package is where new visual patterns live, so the
-        // styling restrictions are lifted there, and in no other
-        // ui.package directory
         files: ["apps/web/src/ui.package/**"],
         rules: {
           "eslint-js/no-restricted-syntax": "off",

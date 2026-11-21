@@ -1,7 +1,3 @@
-// Tests for non-sensitive config (config.ts) and what `maruhi config get`
-// and `set` do. The config command's argument layer is pinned in
-// config-command.test.ts.
-
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -29,9 +25,6 @@ describe("maruhi config", () => {
   it("set → get round-trips, and only known keys are persisted to the file", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
-    // The report names the **config key** (blocks the shape where a
-    // declaration-object mix-up prints Effect's internal representation to
-    // stdout)
     expect(env.logs).toContain("Set server");
     expect(env.logs.join("\n")).not.toContain("_id");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
@@ -42,7 +35,6 @@ describe("maruhi config", () => {
 
   it("rejects set of an unknown key as a usage error (2)", async () => {
     const env = await makeTestEnv();
-    // A typo is distinguished from an execution failure (1)
     expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown config key");
   });
@@ -57,7 +49,6 @@ describe("maruhi config", () => {
     expect(env.errors).toEqual([
       `maruhi: Cannot read the config file (it is corrupt): ${env.configPath}`,
     ]);
-    // set can discard and rebuild it (a non-sensitive-only file)
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
     expect(env.errors).toEqual([
       `maruhi: Cannot read the config file (it is corrupt): ${env.configPath}`,
@@ -70,15 +61,11 @@ describe("maruhi config", () => {
   it("a read failure other than ENOENT is not folded into empty config — it is reported as a typed error", async () => {
     const env = await makeTestEnv();
     const { mkdir } = await import("node:fs/promises");
-    // Place a directory where the config file goes (EISDIR: a read failure
-    // that is not ENOENT)
     await mkdir(env.configPath, { recursive: true });
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
     expect(env.errors).toEqual([
       `maruhi: Cannot read the config file (EISDIR). Fix the file's permissions or move it out of the way, then retry: ${env.configPath}`,
     ]);
-    // set likewise must not silently replace an existing (unreadable)
-    // config — it fails for the same reason
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(1);
     expect(env.errors).toEqual([
       `maruhi: Cannot read the config file (EISDIR). Fix the file's permissions or move it out of the way, then retry: ${env.configPath}`,
@@ -99,17 +86,11 @@ describe("maruhi config", () => {
   });
 
   it("with no subcommand shows usage (exit 0, output to stderr)", async () => {
-    // Bare `maruhi` is treated as a help request (exit 0; the destination is
-    // stderr per decision 9). The list is drawn from the command definitions
-    // (hand-written help would go stale when commands are added)
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
     expect(env.logs).toEqual([]);
     const help = env.errors.join("\n");
     expect(help).toContain("maruhi <subcommand>");
-    // A substring match would be satisfied by other commands' description
-    // text ("run the command…" etc.) and could not detect a missing entry.
-    // Check that they appear **as lines** in the SUBCOMMANDS section
     const section = help.slice(help.indexOf("SUBCOMMANDS"));
     expect(section).toContain("SUBCOMMANDS");
     for (const command of [

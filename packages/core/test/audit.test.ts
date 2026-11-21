@@ -1,16 +1,3 @@
-// The chain-mirror mapping (AUDIT_SPEC §3.4) — the proposal index's
-// completion derivation and the four-eyes rows (K5).
-//
-// The rule being pinned: `indexProposals`' completion judgement "a
-// proposal that is neither pending nor withdrawn in the final state was
-// completed by the last approve naming it" depends on crypto's
-// verifier removing an element from the pending set in exactly two
-// places — reaching quorum and withdraw — so **an expired proposal
-// stays pending**. Here, each branch of the derivation (still pending /
-// withdrawn / completed / one pre-completion vote) is pinned directly
-// with a minimal, signature-less entry list (independent review
-// should-fix 3).
-
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
@@ -30,7 +17,6 @@ const INNER: ProposableOperation = {
   payload: { targetUserId: testUserId("user-member-0002") },
 };
 
-/** Dummy hash of a seq (deterministic — used as the index's reference target). */
 const hashOf = (seq: number): string => seq.toString(16).padStart(64, "0");
 
 function entry(seq: number, actor: typeof PROPOSER, operation: ChainOperation): ChainEntry {
@@ -58,7 +44,6 @@ const index = (entries: readonly ChainEntry[], pendingSeqs: readonly number[]) =
 describe("indexProposals (completion-judgement derivation)", () => {
   it("keeps a proposal with one vote uncompleted while it is still pending (expired or not)", () => {
     const entries = [propose(1), approve(2, 1)];
-    // Stays pending even when expired (the verifier does not remove it from pending on expiry)
     const proposal = index(entries, [1]).get(hashOf(1));
     expect(proposal?.entry.seq).toBe(1);
     expect(proposal?.completedAtSeq).toBeNull();
@@ -97,7 +82,6 @@ describe("chainMirrorEvents (four-eyes rows — AUDIT_SPEC §3.4)", () => {
     const completing = chainMirrorEvents(approve(3, 1), 9_000, built);
     expect(completing.map((row) => row.event)).toEqual(["chain.approved", "chain.member_removed"]);
     expect(completing[0]?.payload).toEqual({ proposalChainSeq: 1, completed: true });
-    // The applied row: actor = the proposer; chain_seq / client_ts = the approve's; viaProposalSeq
     expect(completing[1]).toEqual({
       event: "chain.member_removed",
       serverTs: 9_000,

@@ -1,6 +1,3 @@
-// Helpers that convert the chain-entries.json vectors into @maruhi/crypto
-// typed entries.
-
 import {
   type ApprovalPolicy,
   type ApprovalTargetOp,
@@ -52,12 +49,10 @@ interface VectorNegative {
   readonly expected_prev_hash_hex?: string;
   readonly entry?: VectorEntry;
   readonly expected_reason?: string;
-  /** Prerequisite chain for an authorization negative (an extended_chains key; unset = the canonical chain). */
   readonly chain?: string;
   readonly must_fail: boolean;
 }
 
-/** Vector representation of a grant_server payload / derived-state lease_policy (§6.2). */
 interface VectorLeasePolicyIssuer {
   readonly issuer_url: string;
   readonly audience: string;
@@ -72,11 +67,9 @@ interface VectorServerGrant {
   readonly server_enc_pub_hex: string;
   readonly scope_environments: readonly string[];
   readonly lease_policy: readonly VectorLeasePolicyIssuer[];
-  /** seq of the entry that established the active grant (advances on re-grant — §6.3 / AUDIT_SPEC §3.5). */
   readonly grant_seq: number;
 }
 
-/** Expected latest checkpoint per environment after acceptance (§6.2 checkpoint). */
 export interface VectorCheckpointState {
   readonly seq: number;
   readonly epoch: string;
@@ -85,37 +78,28 @@ export interface VectorCheckpointState {
   readonly values_digest_hex: string;
 }
 
-/** Expected scope (all / listed). */
 interface VectorScope {
   readonly kind: string;
   readonly environments?: readonly string[];
 }
 
-/** Expected state of a single device (FP → cap + added seq — the §6.2 verification state. 2026-09-19 DK). */
 export interface VectorDeviceState {
   readonly role_cap: string;
   readonly scope: VectorScope;
   readonly added_seq: number;
 }
 
-/**
- * Expected member state (role + scope — the §6.2 verification state.
- * 2026-09-14 ES). Omitting `devices` means "only the first key (cap (owner,
- * all))" (convention 28 — existing expectations are unchanged)
- */
 export interface VectorMemberState {
   readonly role: string;
   readonly scope: VectorScope;
   readonly devices?: Readonly<Record<string, VectorDeviceState>>;
 }
 
-/** Expected four-eyes policy (null = off). */
 export interface VectorApprovalPolicy {
   readonly ops: readonly string[];
   readonly required_approvals: string;
 }
 
-/** Expected pending proposals (proposal entry hash → proposal). */
 export interface VectorPendingProposal {
   readonly proposal_seq: number;
   readonly proposer_user_id: string;
@@ -124,42 +108,32 @@ export interface VectorPendingProposal {
   readonly inner_op: string;
   readonly inner_payload: Readonly<Record<string, unknown>>;
   readonly expires_at_ms: string;
-  /** Signatures of accepted approve votes (user_id, key FP) — 2026-09-15 ruling (5) (key binding of votes). */
   readonly approvals: readonly { readonly user_id: string; readonly key_fingerprint_hex: string }[];
 }
 
 interface VectorValidAppend {
   readonly name: string;
   readonly entry: VectorEntry;
-  /** Attach point (an extended_chains key; unset = the canonical chain up to entry.seq - 1). */
   readonly chain?: string;
   readonly expected_members: Readonly<Record<string, VectorMemberState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
   readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
-  /** Current epoch per environment after acceptance (§6.2 environment lifecycle). */
   readonly expected_environments: Readonly<Record<string, string>>;
-  /** Active grant set after acceptance (§6.2 two-layer re-grant). */
   readonly expected_server_grants: readonly VectorServerGrant[];
-  /** Latest checkpoint per environment after acceptance (valid appends of checkpoint only). */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
-  /** Deleted environments → the delete_environment seq (§6.2 — 2026-10-07; absent = none deleted). */
   readonly expected_deleted_environments?: Readonly<Record<string, number>>;
   readonly note?: string;
 }
 
-/** Derived chain appended onto a mid-canonical-chain head (the prerequisite state for authorization negatives). */
 interface VectorExtendedChain {
   readonly description: string;
   readonly base_seq: number;
   readonly entries: readonly VectorEntry[];
   readonly expected_members: Readonly<Record<string, VectorMemberState>>;
-  /** Keys used only by the derived chain (re-added new keys, second devices — same shape as the top-level keys). */
   readonly keys?: Readonly<Record<string, VectorKey>>;
-  /** Latest checkpoint per environment after verifying the derived chain (checkpoint-baseline). */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
   readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
-  /** Environment deletion chains (§6.2 — 2026-10-07): the environment set, deletions and grants after the chain. */
   readonly expected_environments?: Readonly<Record<string, string>>;
   readonly expected_deleted_environments?: Readonly<Record<string, number>>;
   readonly expected_server_grants?: readonly VectorServerGrant[];
@@ -193,11 +167,6 @@ function scopeMatchesVector(actual: MemberScope, expected: VectorScope): boolean
   );
 }
 
-/**
- * Device-set match (§6.2 — 2026-09-19 DK). If the expectation has no
- * `devices`, only "one device, cap (owner, all)" is required (the added seq
- * is not checked — existing expectations carry no seq)
- */
 function devicesMatchVector(
   actual: ReadonlyMap<string, ChainDevice>,
   expected: Readonly<Record<string, VectorDeviceState>> | undefined,
@@ -221,7 +190,6 @@ function devicesMatchVector(
   );
 }
 
-/** Whether the derived-state member set matches the vector expectation (role + scope + device set) (compared as sets). */
 export function membersMatchVector(
   members: ReadonlyMap<string, ChainMember>,
   expected: Readonly<Record<string, VectorMemberState>>,
@@ -240,7 +208,6 @@ export function membersMatchVector(
   );
 }
 
-/** Whether the derived-state policy matches the vector expectation (ops compared as a set; unspecified is not checked). */
 export function policyMatchesVector(
   policy: ApprovalPolicy | null,
   expected: VectorApprovalPolicy | null | undefined,
@@ -259,7 +226,6 @@ export function policyMatchesVector(
   );
 }
 
-/** Canonical form for comparing a single pending proposal (JSON with normalized order and types — the inner payload is the canonical bytes). */
 function pendingProposalKey(input: {
   readonly hash: string;
   readonly proposalSeq: number;
@@ -283,7 +249,6 @@ function pendingProposalKey(input: {
   ]);
 }
 
-/** Whether the derived-state pending-proposal set matches the vector expectation (unspecified is not checked). */
 export function pendingMatchesVector(
   pending: ReadonlyMap<string, PendingProposal>,
   expected: Readonly<Record<string, VectorPendingProposal>> | undefined,
@@ -312,11 +277,6 @@ export function pendingMatchesVector(
   return expectedKeys.toSorted().join("\n") === actualKeys.toSorted().join("\n");
 }
 
-/**
- * Whether the derived-state active grant set matches the vector expectation
- * (snake_case) (§6.2 — including scope + lease_policy. Shared by chain.ts /
- * chain-negative.ts).
- */
 export function serverGrantsMatchVector(
   serverGrants: ReadonlyMap<string, ServerGrant>,
   expected: readonly VectorServerGrant[],
@@ -330,8 +290,6 @@ export function serverGrantsMatchVector(
         actual.serverEncPubHex === grant.server_enc_pub_hex &&
         actual.grantSeq === grant.grant_seq &&
         actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
-        // lease_policy (§6.2) is part of the derived state too (match
-        // including order — as-signed order)
         JSON.stringify(
           actual.leasePolicy.map((element) => ({
             issuer_url: element.issuerUrl,
@@ -356,11 +314,6 @@ export const vectorValidAppends =
 export const vectorExtendedChains = chainVectors.extended_chains as unknown as Readonly<
   Record<string, VectorExtendedChain>
 >;
-/**
- * Key record. A `keys` key is a member's user_id or, for a device key,
- * `"<user_id>@<label>"` (2026-09-19 DK — convention 28. A device key carries
- * `user_id` / `label`). The signer is selected by (user_id, FP)
- */
 export interface VectorKey {
   readonly user_id?: string;
   readonly label?: string;
@@ -368,17 +321,11 @@ export interface VectorKey {
   readonly sig_sk_seed_hex: string;
   readonly enc_pub_hex: string;
   readonly sig_pub_hex: string;
-  /** Computed by the reference generator from the two public keys (the vectors are the tests' trust boundary). */
   readonly key_fingerprint_hex: KeyFingerprintHex;
 }
 
 export const vectorKeys = chainVectors.keys as unknown as Readonly<Record<string, VectorKey>>;
 
-/**
- * Select the signing key by (user_id, key FP) (§6.2 — signers are identified
- * per device). Consults both the top-level keys and the derived chains'
- * keys. Returns undefined when not found
- */
 export function vectorKeyFor(userId: string, keyFingerprintHex: string): VectorKey | undefined {
   const pools: readonly Readonly<Record<string, VectorKey>>[] = [
     vectorKeys,
@@ -396,7 +343,6 @@ export function vectorKeyFor(userId: string, keyFingerprintHex: string): VectorK
   }
   return undefined;
 }
-/** Standalone vectors for the checkpoint values_digest canonical form (§6.2). */
 export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly name: string;
   readonly entries: readonly {
@@ -407,7 +353,6 @@ export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly values_digest_hex: string;
   readonly note?: string;
 }[];
-/** Dummy DEK and §5.2 commitment per (environment, epoch) (actually computed values). */
 export const vectorEnvironmentDeks = chainVectors.environment_deks as Readonly<
   Record<
     string,
@@ -422,7 +367,6 @@ function str(payload: Readonly<Record<string, unknown>>, key: string): string {
   return value;
 }
 
-/** The two scope fields (§6.2 — the last two fields of add_member / change_role). */
 function scopeFields(payload: Readonly<Record<string, unknown>>): {
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
@@ -435,9 +379,6 @@ function scopeFields(payload: Readonly<Record<string, unknown>>): {
   };
 }
 
-// Per-op snake_case → typed payload conversion table (a table replaces a
-// high-cyclomatic switch — same shape as the implementation's
-// PAYLOAD_SHAPES / OPERATION_APPLIERS)
 const OPERATION_DECODERS: Readonly<
   Record<string, (payload: Readonly<Record<string, unknown>>) => ChainOperation>
 > = {
@@ -530,8 +471,6 @@ const OPERATION_DECODERS: Readonly<
       },
     };
   },
-  // Four-eyes (§6.2 — PF1). A propose's inner op is decoded recursively via
-  // the same conversion table
   set_approval_policy: (payload) => ({
     op: "set_approval_policy",
     payload: {
@@ -557,8 +496,6 @@ const OPERATION_DECODERS: Readonly<
     op: "withdraw",
     payload: { proposalHashHex: str(payload, "proposal_hash_hex") },
   }),
-  // Device keys (§6.2 — 2026-09-19 DK). revoke_device's FP list is carried
-  // in signature order
   add_device: (payload) => ({
     op: "add_device",
     payload: {
@@ -579,13 +516,6 @@ const OPERATION_DECODERS: Readonly<
   }),
 };
 
-/**
- * Decodes a propose's inner op. A structural negative (unknown op, nesting,
- * missing field) cannot be decoded by the conversion table, so in that case
- * the raw payload is carried as-is and the subject under test is that the
- * implementation's structural check lands it on invalid-payload (does not
- * stop the check by throwing)
- */
 function decodeInner(op: string, payload: Readonly<Record<string, unknown>>): ProposableOperation {
   try {
     return toOperation(op, payload) as ProposableOperation;
@@ -602,7 +532,6 @@ function toOperation(op: string, payload: Readonly<Record<string, unknown>>): Ch
   return decode(payload);
 }
 
-/** Convert a vector entry into a typed ChainEntry */
 export function toTypedEntry(vector: VectorEntry): ChainEntry {
   return {
     ...toOperation(vector.op, vector.payload),
@@ -620,12 +549,6 @@ export function toTypedEntry(vector: VectorEntry): ChainEntry {
 
 export const typedEntries: readonly ChainEntry[] = vectorEntries.map(toTypedEntry);
 
-/**
- * Imports the signing key of (user_id, key FP) into WebCrypto from the
- * vector's seed (the shared preamble of deterministic re-signing and raw
- * signature verification — the 4 harnesses value / meta / manifest /
- * attestation). Returns null when the key is missing or the import fails
- */
 export async function importVectorSigner(
   userId: string,
   keyFingerprintHex: string,

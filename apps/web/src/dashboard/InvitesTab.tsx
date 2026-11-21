@@ -1,22 +1,5 @@
 "use client";
 
-// S8 invite management (listing + revocation — design document §3 S8 /
-// ADR-0018 amendment 2).
-//
-// - The audience is chain role admin or above — the source of truth is
-//   server authorization, and the tab is not hidden in advance by role
-//   (ruling CP round 3 — a 403 is displayed with role wording. Same
-//   "do not replicate the pre-judgment onto the client" as ruling BQ)
-// - **No issuing here** (ADR-0018 amendment 2 — no out-of-band anchor +
-//   capability minting). Only static guidance pointing at the CLI
-//   `maruhi invite create`
-// - Revocation is confirmed in a modal dialog (ruling CO's state
-//   machine, with the confirm DP3 amendment 4 moved out of the row —
-//   revocation.tsx) + a server re-fetch after completion. Revoke exists
-//   only on rows whose status is pending | accepted (a copy of the
-//   server's acceptance conditions — which also allow cleaning up an
-//   expired pending)
-
 import { Code } from "@astryxdesign/core/Code";
 import { pixel, proportional, type TableColumn } from "@astryxdesign/core/Table";
 import { Token } from "@astryxdesign/core/Token";
@@ -57,12 +40,6 @@ const STATUS_TOKEN_COLOR: Record<InviteStatus, "blue" | "orange" | "green" | "gr
   revoked: "gray",
 };
 
-/**
- * Displays the server-reported value of an invite's status.
- * Object.hasOwn: an unexpected status string (including prototype-chain
- * key names) falls back to the default color (same self-defense as
- * RoleToken).
- */
 function InviteStatusToken({ status }: { status: string }): ReactNode {
   const color = Object.hasOwn(STATUS_TOKEN_COLOR, status)
     ? STATUS_TOKEN_COLOR[status as InviteStatus]
@@ -70,13 +47,6 @@ function InviteStatusToken({ status }: { status: string }): ReactNode {
   return <Token label={status} size="sm" color={color} />;
 }
 
-/**
- * A copy of the server's revocation-acceptance condition (pending |
- * accepted) — it only switches what is displayed and is not a defense.
- * The literals are type-bound to the closed enumeration (same shape as
- * ruling CC — renaming a status fails at compile time, not as a
- * silently vanishing button).
- */
 const REVOCABLE_STATUSES: ReadonlyArray<string> = [
   "pending",
   "accepted",
@@ -86,16 +56,10 @@ function isRevocable(row: InviteRow): boolean {
   return REVOCABLE_STATUSES.includes(row.status);
 }
 
-/**
- * The accessible name of an invite row's Revoke. Identifies the row by
- * the columns visible in the table (state, role, inviter, expiry)
- * (the invite id is not in the table, so it is not used).
- */
 function inviteRevokeName(row: InviteRow): string {
   return `Revoke ${row.status} ${row.role} invitation from ${row.inviterUserId}, expires ${formatServerTime(row.expiresAtMs)}`;
 }
 
-/** The data columns (revocable-list.tsx appends the Actions column). */
 const INVITE_COLUMNS: TableColumn<InviteRow>[] = [
   {
     key: "status",
@@ -130,7 +94,6 @@ const INVITE_COLUMNS: TableColumn<InviteRow>[] = [
   },
 ];
 
-/** Static guidance on issuing (no issue UI here — ADR-0018 amendment 2) + a note on the consequence of revoking. */
 function InviteNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={3} testId="invite-notes">
@@ -142,9 +105,6 @@ function InviteNotes(): ReactNode {
 }
 
 export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
-  // The revocation state lives outside the list resource (directly
-  // under the tab) — the latest failure display must not disappear on
-  // an unmount mid-refetch (the header comment of use-revocation.ts)
   const revokePath = useCallback((id: string) => apiPaths.inviteRevoke(projectId, id), [projectId]);
   const list = useRevocableList<InvitationList>(apiPaths.invites(projectId), revokePath);
   return (

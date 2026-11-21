@@ -1,6 +1,3 @@
-// Shared helpers for the audit read API (AUDIT_SPEC §6 / §7) integration
-// tests. Assumes the fixture of data-scenario.ts (registerDataScenario).
-
 import type { TokenScope } from "@maruhi/core";
 import { expect } from "vite-plus/test";
 
@@ -48,8 +45,6 @@ export async function fetchEvents(
   return { status: 200, events: body.events };
 }
 
-/** The standard scenario progressed through environment + variable + reads
- * (pull by READER / MEMBER). */
 export async function seedProjectActivity(): Promise<void> {
   const dek = await createEnvironmentOk(fixture, ENV, "App");
   await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

@@ -1,31 +1,3 @@
-// `maruhi server grant` (CRYPTO_SPEC §9 / AUTH_SPEC §12-6).
-//
-// Appends a grant_server to the chain, then back-fills a server-
-// addressed wrap for every environment in the disclosure scope × every
-// epoch (the grant's executor = the owner is the wraps' executor —
-// CRYPTO_SPEC §7). The flow:
-//   1. Early checks: the owner check, the environment-existence check,
-//      the two layers of duplicate-server-key / re-grant checks
-//   2. Fetch the server key's public face from `/auth/config` and
-//      recompute-and-verify FP = SHA-256(enc_pub)[:16] (machine
-//      detection of transport corruption / config drift)
-//   3. The server-key confirmation ceremony (§9): the FP's BIP39
-//      12-word display + explicit confirmation (interactive = re-typing
-//      the last word, non-interactive = matching the out-of-band value
-//      of --expect-fingerprint)
-//   4. The grant_server append (parent-head CAS retry)
-//   5. Backfill: bulk-register every epoch's server-addressed wrap per
-//      environment, and keep going past a 409 (already registered) at
-//      epoch granularity — **a re-run always converges** (no progress
-//      file. The distributed state is the resumption state — the same
-//      discipline as env rotate)
-//
-// Interrupted recovery: even if the process dies after the grant lands
-// on the chain, a re-run converges through "detect a valid grant of
-// identical content → skip the append → backfill (409 = already
-// registered)". A lease in shortage falls to 503 `server-wraps-missing`
-// (AUTH_SPEC §14-3).
-
 import {
   type EnvironmentId,
   type KeyFingerprintHex,
@@ -58,26 +30,20 @@ import { toCliError } from "../failure.ts";
 import { confirmByLastWord, fingerprintWords, formatWordList } from "../fp-words.ts";
 import { CliIo } from "../io.ts";
 
-/** The server key's public face (`/auth/config` — AUTH_SPEC §4). */
 interface ServerKeyConfig {
   readonly serverEncPubHex: string;
-  /** Recomputed from serverEncPubHex (equal to what `/auth/config` declared — checked on fetch). */
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
 interface GrantSummary {
-  /** Whether it appended to the chain (false = detected a valid grant of identical content and skipped). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string;
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
   readonly leasePolicyCount: number;
-  /** The count of wraps newly registered by the backfill. */
   readonly registered: number;
-  /** The count of wraps already registered (the re-run's convergence). */
   readonly alreadyRegistered: number;
 }
 
-/** Whether every environment in the scope exists on the chain (the reason's string when not). */
 function scopeExistsRejection(
   verified: VerifiedProject,
   scope: readonly EnvironmentId[],
@@ -90,16 +56,10 @@ function scopeExistsRejection(
   return null;
 }
 
-/**
- * The early check of duplicate-server-key (§6.2): a grant whose server
- * enc public key equals a current member's enc public key is invalid
- * under the consensus rule.
- */
 function duplicateServerKeyRejection(
   verified: VerifiedProject,
   serverEncPubHex: string,
 ): string | null {
-  // The comparison target is every device key of the current member set (§6.2 — 2026-09-19 DK)
   for (const chainMember of verified.state.members.values()) {
     for (const device of chainMember.devices.values()) {
       if (device.encPubHex === serverEncPubHex) {
@@ -110,11 +70,6 @@ function duplicateServerKeyRejection(
   return null;
 }
 
-/**
- * The re-grant layer (§6.3): scope may only grow. A narrowing is guided
- * toward revoke_server (carrying the all-environment rotation mandate).
- * lease_policy is freely revised.
- */
 function scopeNarrowedRejection(
   existing: ServerGrant | null,
   scope: readonly EnvironmentId[],
@@ -129,7 +84,6 @@ function scopeNarrowedRejection(
   return `The disclosure scope can only grow (re-grant rule — CRYPTO_SPEC §6.3). Environments in the existing grant's scope are missing from this invocation: ${missing.join(", ")}. To narrow the scope, run \`maruhi server revoke\` (which rotates every environment — §7) and grant again`;
 }
 
-/** The check set before running grant_server (a retry after resync goes through the same checks). */
 function ensureGrantable(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -149,7 +103,6 @@ function ensureGrantable(input: {
   return rejection !== null ? Effect.fail(cliError(rejection)) : Effect.succeed({ existing });
 }
 
-/** Compared via a canonical form (array form) independent of the object's key order. */
 function canonicalPolicyKey(policy: readonly LeasePolicyIssuer[]): string {
   return JSON.stringify(
     policy.map((element) => [
@@ -168,13 +121,6 @@ function sameScope(a: readonly EnvironmentId[], b: readonly EnvironmentId[]): bo
   return a.length === b.length && a.every((id, index) => b[index] === id);
 }
 
-/**
- * Fetches `/auth/config`'s server-key public face and recomputes-and-
- * verifies the FP. What the FP is checked **against** is the out-of-band
- * record (the ceremony — §9); the recomputation here is the response's
- * self-consistency check (machine detection of transport corruption /
- * a mix-up of sources).
- */
 const fetchServerKeyConfig = Effect.fn("server-grant.fetchServerKeyConfig")(function* (
   client: MaruhiClient,
 ): Effect.fn.Return<ServerKeyConfig, CliError> {
@@ -202,21 +148,6 @@ const fetchServerKeyConfig = Effect.fn("server-grant.fetchServerKeyConfig")(func
   return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: computed };
 });
 
-/**
- * The server-key confirmation ceremony (§9): the FP's word display and
- * the explicit confirmation of matching against the deployment's public
- * configuration. The authenticity confirmation imposed on member keys
- * (§6.5) is not waived for the server key alone — a grant is the
- * operation that makes the server "member N+1".
- *
- * The confirmation comes in two forms:
- * - `--expect-fingerprint <hex>`: supplies the out-of-band FP as an
- *   argument (the non-interactive explicit confirmation. An immediate
- *   error unless it matches the record from deploy time)
- * - Interactive: shows the 12 words and demands **re-typing the last
- *   word** (the same ceremony as the recovery code's save confirmation —
- *   recovery.ts. Blocks the shape of typing y without reading)
- */
 const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (input: {
   readonly fingerprintHex: string;
   readonly expectFingerprintHex: string | null;
@@ -248,10 +179,6 @@ const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (i
     );
     return;
   }
-  // Never let an AI-agent environment perform the ceremony on the
-  // user's behalf (the matching is a human's out-of-band
-  // confirmation — §9 / ADR-0014. The grant version of the same posture
-  // as the value-display refusal — agent.ts)
   if (io.agentProfile().isAgent) {
     return yield* Effect.fail(
       cliError(
@@ -268,14 +195,6 @@ const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (i
   });
 });
 
-/**
- * Registers the server-addressed wraps for every epoch (1..current
- * epoch) of one environment (the shared core = backfill.ts). A per-epoch
- * 409 is absorbed as "already registered" (there is no list API for
- * server-addressed wraps — distribution is to-the-principal only §12-6 —
- * so "treat a 409 as done" is the only and sufficient means of
- * reconciliation).
- */
 function backfillEnvironment(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -297,7 +216,6 @@ function backfillEnvironment(input: {
   });
 }
 
-/** Whether a valid grant of identical content (scope and lease_policy) already exists (the skip-append / skip-proposal judgment). */
 function grantUnchanged(
   existing: ServerGrant | null,
   scope: readonly EnvironmentId[],
@@ -310,18 +228,10 @@ function grantUnchanged(
   );
 }
 
-/** The grant's outcome: a proposal (four-eyes — K6) or an application. */
 type ServerGrantOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: GrantSummary };
 
-/**
- * The post-grant-application server-addressed backfill (every
- * environment in the disclosure scope × every epoch — AUTH_SPEC §12-6).
- * Shared by a directly-appended grant and the fulfillment of an approver
- * who completed the application under four-eyes (approval-approve.ts —
- * §12-6's fifth path).
- */
 export const backfillServerGrant = Effect.fn("server-grant.backfillServerGrant")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -353,12 +263,6 @@ export const backfillServerGrant = Effect.fn("server-grant.backfillServerGrant")
 
 export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (input: {
   readonly client: MaruhiClient;
-  /**
-   * The deployment whose server key is granted (`--key-from <mirror url>`
-   * — AUTH_SPEC §11-7 ruling F: a mirror's key is granted on the server,
-   * the only place that accepts appends; the grant and the wraps reach
-   * the mirror by replication). Default: the server itself.
-   */
   readonly keySource?: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentIds: readonly EnvironmentId[];
@@ -371,7 +275,6 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
   readonly proposal: ProposalInput;
 }): Effect.fn.Return<ServerGrantOutcome, CliError, CliIo> {
   const io = yield* CliIo;
-  // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
   const scope = [...new Set(input.environmentIds)].toSorted();
   const serverConfig = yield* fetchServerKeyConfig(input.keySource ?? input.client);
   const { existing } = yield* ensureGrantable({
@@ -383,9 +286,6 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
 
   const unchanged = grantUnchanged(existing, scope, input.leasePolicy);
 
-  // The ceremony (§9) runs whether or not an append happens (even on a
-  // backfill-only re-run, never skip matching the key that will
-  // continue to receive disclosure)
   yield* confirmServerKey({
     fingerprintHex: serverConfig.serverKeyFingerprintHex,
     expectFingerprintHex: input.expectFingerprintHex,
@@ -400,12 +300,7 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
       leasePolicy: input.leasePolicy,
     },
   };
-  // Four-eyes (K6-A): when the policy targets grant_server, propose and
-  // stop (the server-addressed backfill is performed by the approver
-  // who completes the application — approval item 22). The proposer has
-  // already done the ceremony
   if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-    // Never propose when a grant of identical content is already valid after resync (Cursor Bugbot finding — a redundant proposal)
     const proposal = yield* proposeOperation(
       input,
       inner,
@@ -430,7 +325,6 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
       "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
     );
   } else {
-    // The entry's operation is `inner` itself (the one a proposal would carry)
     const outcome = yield* appendOperationWithRetry(input, {
       operation: inner,
       initial: { verified },
@@ -446,7 +340,6 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
           return { verified: resynced };
         }),
     });
-    // Confirm the grant's listing via the post-acceptance resync (never make the server's claim the source of truth)
     verified = yield* resyncExtended(input.resync, outcome.state.verified);
     const granted = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
     if (granted === undefined) {
@@ -468,7 +361,6 @@ export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (
     );
   }
 
-  // The backfill (every environment in the disclosure scope × every epoch — AUTH_SPEC §12-6)
   const { registered, alreadyRegistered } = yield* backfillServerGrant({
     client: input.client,
     verified,

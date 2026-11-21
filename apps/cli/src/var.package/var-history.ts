@@ -1,30 +1,3 @@
-// `maruhi var history <NAME>` / `maruhi var rollback <NAME> --to <VERSION>`
-// (2026-09-27 VH — design record docs/notes/vh-design.md rulings V3 / V4).
-//
-//   - history is metadata only (AUTH_SPEC §12-7): version, epoch, writer,
-//     acceptance time, the lineage declaration (sameValueAs) and the
-//     server-derived flagsIfCurrent. No value is fetched, decrypted, or shown,
-//     so the agent gate does not apply (the permissive side — same as
-//     `member list` / `schema export`). The rows are **server-declared** (a
-//     value signature cannot be verified without its ciphertext), which the
-//     output says
-//   - rollback never trusts that metadata for the write. It fetches the value
-//     range from the target to the verified latest and accepts the target only
-//     as an **ancestor of the verified latest**: every version passes the full
-//     value-signature verification (CRYPTO_SPEC §6.3), consecutive versions
-//     satisfy the prev-hash link and epoch monotonicity (§4.1), and the chain
-//     ends at the latest the bulk pull verified. A version that verifies alone
-//     but does not chain into it (e.g. signed by a removed member's key with a
-//     head inside their interval) is refused as evidence
-//   - the restore is an ordinary push of the old plaintext re-encrypted under
-//     the current epoch, declaring `sameValueAs` (AUTH_SPEC §12-5) so
-//     rotation-needed detection sees the lineage (a restore of a value from
-//     before a flag re-opens it — AUDIT_SPEC §4.1-5). The plaintext lives only
-//     in memory as a Redacted and is never displayed
-//   - confirmation: interactive y/N; non-interactive requires --force
-//     (fail-closed — the `var rm` shape). Not a ceremony, so an agent with
-//     --force may run it
-
 import type { DistributedEncryptedPayload, VariableVersionHistoryEntry } from "@maruhi/api-schema";
 import { type EnvironmentId, type UserId, type VariableId, cryptoEffect } from "@maruhi/core";
 import { verifyDistributedValue } from "@maruhi/crypto";
@@ -45,12 +18,10 @@ import { resolveSchemaTarget } from "../schema.package/index.ts";
 import type { VerifiedPulledValue } from "../values-verify.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 
-/** The shared input of both commands (the environment prologue's pieces). */
 interface VarHistoryBase {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  /** The variable name (NFC normalization is done here — §12-1). */
   readonly name: string;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
@@ -60,16 +31,10 @@ export interface VarHistoryResult {
   readonly name: string;
   readonly variableId: VariableId;
   readonly status: "active" | "declared";
-  /** Ascending by version (server-declared metadata). */
   readonly versions: readonly VariableVersionHistoryEntry[];
   readonly warnings: readonly string[];
 }
 
-/**
- * Resolves the name through a verified metadata-only pull (§12-7 — no
- * var.read). Deleted and unknown names are explicit errors; duplicate live
- * statements are equivocation.
- */
 const resolveLiveVariable = Effect.fn("var-history.resolveLiveVariable")(function* (
   input: VarHistoryBase,
   name: string,
@@ -81,8 +46,6 @@ const resolveLiveVariable = Effect.fn("var-history.resolveLiveVariable")(functio
   },
   CliError
 > {
-  // The same verified name resolution as `schema set` / `var rm`
-  // (duplicate live statements = equivocation, refused there)
   const state = yield* resolveSchemaTarget(input, input.verified, name);
   const target = state.target;
   if (target === null) {
@@ -97,7 +60,6 @@ const resolveLiveVariable = Effect.fn("var-history.resolveLiveVariable")(functio
   return { verified: state.verified, target, warnings: state.warnings };
 });
 
-/** The server-declared version history of one variable, ascending (display metadata — never a write or invalidation target). */
 const fetchHistory = Effect.fn("var-history.fetchHistory")(function* (
   client: MaruhiClient,
   verified: VerifiedProject,
@@ -123,7 +85,6 @@ export const varHistoryOp = Effect.fn("var-history.varHistoryOp")(function* (
   const name = input.name.normalize("NFC");
   const resolved = yield* resolveLiveVariable(input, name);
   const status = resolved.target.status === "declared" ? "declared" : "active";
-  // A declared variable has no version (§4.2) — nothing to ask for
   const versions =
     status === "declared"
       ? []
@@ -142,7 +103,6 @@ export const varHistoryOp = Effect.fn("var-history.varHistoryOp")(function* (
   };
 });
 
-/** The note column: the lineage kind (derived, never declared — AUTH_SPEC §12-5) and the flag count. */
 function describeEntry(entry: VariableVersionHistoryEntry, latestVersion: number): string {
   const notes: string[] = [];
   if (entry.version === latestVersion) {
@@ -163,7 +123,6 @@ function describeEntry(entry: VariableVersionHistoryEntry, latestVersion: number
   return notes.join("; ");
 }
 
-/** The human-readable listing (newest first). */
 export function formatVarHistory(result: VarHistoryResult, environmentId: EnvironmentId): string[] {
   const header = `History of ${displayText(result.name)} (${displayText(result.variableId)}) in environment ${displayText(environmentId)}`;
   if (result.versions.length === 0) {
@@ -188,7 +147,6 @@ export function formatVarHistory(result: VarHistoryResult, environmentId: Enviro
   return lines;
 }
 
-/** One `--json` document (machine-readable. Zero values). */
 export function varHistoryJson(result: VarHistoryResult, environmentId: EnvironmentId): string {
   return JSON.stringify(
     {
@@ -196,7 +154,6 @@ export function varHistoryJson(result: VarHistoryResult, environmentId: Environm
       name: result.name,
       variableId: result.variableId,
       status: result.status,
-      // Server-declared (§12-7) — carried so a consumer never mistakes it for verified data
       serverDeclared: true,
       versions: result.versions,
     },
@@ -205,19 +162,12 @@ export function varHistoryJson(result: VarHistoryResult, environmentId: Environm
   );
 }
 
-// ---------------------------------------------------------------------------
-// rollback
-// ---------------------------------------------------------------------------
-
-/** The input of a verified-ancestor lookup (the environment prologue's pieces plus the version asked for). */
 interface AncestorInput extends VarHistoryBase {
   readonly recipient: DekRecipient;
-  /** The version whose value is wanted (an ancestor of the verified latest). */
   readonly toVersion: number;
 }
 
 interface VarRollbackInput extends AncestorInput {
-  /** true = skip the confirmation (the only non-interactive path). */
   readonly force: boolean;
   readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
@@ -225,20 +175,13 @@ interface VarRollbackInput extends AncestorInput {
 
 interface VarRollbackResult {
   readonly name: string;
-  /** The version that was current before the rollback. */
   readonly fromVersion: number;
   readonly toVersion: number;
   readonly pushed: PushedVersion;
-  /** The server-derived count of flags effective while the restored value is current (advisory). */
   readonly flagsIfCurrent: number;
   readonly warnings: readonly string[];
 }
 
-/**
- * Appends one page of the value range, stopping at the verified latest (a
- * version pushed after our verified pull is outside the chain we verify
- * against). Returns the next version to ask for.
- */
 function appendPage(
   collected: DistributedEncryptedPayload[],
   page: readonly DistributedEncryptedPayload[],
@@ -263,7 +206,6 @@ function appendPage(
   return Effect.succeed(expected);
 }
 
-/** The page loop of the version value range, up to the verified latest (§12-7). */
 const fetchVersionRange = Effect.fn("var-history.fetchVersionRange")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -295,7 +237,6 @@ const fetchVersionRange = Effect.fn("var-history.fetchVersionRange")(function* (
   return collected;
 });
 
-/** One version of the range through the full value verification, chained to its predecessor. */
 const verifyVersion = Effect.fnUntraced(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -348,15 +289,6 @@ const verifyVersion = Effect.fnUntraced(function* (input: {
   return result.signedBytesHashHex;
 });
 
-/**
- * Verifies the fetched range as an ancestry of the verified latest
- * (CRYPTO_SPEC §4.1 / §6.3 — AUTH_SPEC §12-7's client rule): coordinates,
- * every value signature, the prev-hash link and epoch monotonicity between
- * consecutive versions, and the last version being byte-identical (same
- * signed-bytes hash) to the latest the bulk pull verified. Returns the
- * verified target (the first version) as a pulled-value record whose meta
- * fields are the latest statement's (only the value part is old).
- */
 function verifyAncestry(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -366,20 +298,12 @@ function verifyAncestry(input: {
   return Effect.map(verifiedRange(input), (versions) => {
     const first = versions[0];
     if (first === undefined) {
-      // Unreachable: verifiedRange refuses an empty range
       throw new Error("verified range is empty");
     }
     return first;
   });
 }
 
-/**
- * Verifies the whole fetched range as the ancestry of the verified latest
- * and returns every version as a pulled-value record (ascending), each
- * one's meta fields being the latest statement's. The caller that needs
- * one version takes the first; `var rotate --finalize` takes them all
- * (the key ids earlier versions held).
- */
 const verifiedRange = Effect.fn("var-history.verifiedRange")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -421,13 +345,6 @@ const verifiedRange = Effect.fn("var-history.verifiedRange")(function* (input: {
   return versions;
 });
 
-/**
- * The explicit confirmation (fail-closed): --force proceeds with the facts
- * still stated; a non-interactive run without --force refuses; an interactive
- * one asks y/N (a rollback is reversible — history stays append-only — so no
- * name retyping as for `var rm`). Judgment material comes via the Stdio
- * service (never process.* directly).
- */
 const ensureRollbackConfirmed = Effect.fn("var-history.ensureRollbackConfirmed")(function* (input: {
   readonly name: string;
   readonly fromVersion: number;
@@ -458,7 +375,6 @@ const ensureRollbackConfirmed = Effect.fn("var-history.ensureRollbackConfirmed")
   }
 });
 
-/** What the confirmation states: the move, then (when any) the exposure of the restored value. */
 function rollbackFacts(input: {
   readonly name: string;
   readonly fromVersion: number;
@@ -477,7 +393,6 @@ function rollbackFacts(input: {
   ];
 }
 
-/** The verified pieces a rollback pushes from (the latest, the verified target, the pull's view and wraps). */
 interface RollbackPlan {
   readonly name: string;
   readonly variableId: VariableId;
@@ -487,7 +402,6 @@ interface RollbackPlan {
   readonly warnings: readonly string[];
 }
 
-/** The refusal of a `--to` that names the current version or no version at all (before any value fetch). */
 function checkToVersion(name: string, toVersion: number, latestVersion: number) {
   if (toVersion < latestVersion) {
     return Effect.void;
@@ -501,12 +415,6 @@ function checkToVersion(name: string, toVersion: number, latestVersion: number) 
   );
 }
 
-/**
- * The verified latest value of a live variable: the name resolved through
- * the metadata-only pull, then the with-values pull `maruhi push` uses to
- * find its prev anchor (+ the all-epoch wraps). A declared variable has no
- * value; a rename or delete in between is refused.
- */
 const resolveLatestValue = Effect.fn("var-history.resolveLatestValue")(function* (
   input: VarHistoryBase,
   name: string,
@@ -536,18 +444,13 @@ const resolveLatestValue = Effect.fn("var-history.resolveLatestValue")(function*
   return { pulled, latest, warnings: [...resolved.warnings, ...pulled.warnings] };
 });
 
-/** Resolve → verified pull of the latest → the value range verified as its ancestry. */
 const planRollback = Effect.fn("var-history.planRollback")(function* (
   input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
   name: string,
-  /** The refusal for a declared (valueless) variable, in the calling command's words. */
   noValueMessage: string = `Variable ${displayText(name)} is declared but has no value yet — there is nothing to roll back to`,
 ): Effect.fn.Return<RollbackPlan, CliError> {
   const { pulled, latest, warnings } = yield* resolveLatestValue(input, name, noValueMessage);
   const variableId = latest.variableId;
-  // The default (the version right before the latest) is derived from the
-  // verified latest, never from the server-declared history: which
-  // credential a finalize destroys must not be the server's to steer
   if (input.toVersion === null && latest.version < 2) {
     return yield* Effect.fail(
       cliError(
@@ -581,12 +484,6 @@ const planRollback = Effect.fn("var-history.planRollback")(function* (
   };
 });
 
-/**
- * Decrypts the target in memory with its own epoch's DEK and refuses a no-op
- * (the current value already equal — it would only burn a version). Returns
- * the restored plaintext, still wrapped.
- */
-/** Both plaintexts of a plan (the ancestor and the latest), each decrypted with its own epoch's DEK. */
 const decryptPair = Effect.fn("var-history.decryptPair")(function* (
   input: Omit<AncestorInput, "toVersion">,
   plan: RollbackPlan,
@@ -615,7 +512,6 @@ const decryptPair = Effect.fn("var-history.decryptPair")(function* (
   return { target: yield* decrypt(plan.target), latest: yield* decrypt(plan.latest) };
 });
 
-/** A verified ancestor version and the verified latest, decrypted (`maruhi var rotate --finalize` reads the previous credential this way). */
 interface VerifiedAncestorValues {
   readonly name: string;
   readonly variableId: VariableId;
@@ -626,12 +522,6 @@ interface VerifiedAncestorValues {
   readonly warnings: readonly string[];
 }
 
-/**
- * Resolves the name, verifies the latest and the version range down to
- * `toVersion` as its ancestry (the rollback's evidence rule — V4 step 3),
- * and decrypts both. `toVersion` null = the version right before the latest
- * (refused when the variable has only one version).
- */
 export const verifiedAncestorValues = Effect.fn("var-history.verifiedAncestorValues")(function* (
   input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
 ): Effect.fn.Return<VerifiedAncestorValues, CliError> {
@@ -653,12 +543,10 @@ export const verifiedAncestorValues = Effect.fn("var-history.verifiedAncestorVal
   };
 });
 
-/** Every version before the verified latest of one variable, lineage-verified and decrypted (newest first). */
 interface VerifiedAncestorRange {
   readonly name: string;
   readonly variableId: VariableId;
   readonly latestVersion: number;
-  /** Newest first (version latest−1 … 1). Empty when the variable has one version. */
   readonly ancestors: readonly {
     readonly version: number;
     readonly value: Redacted.Redacted<Uint8Array>;
@@ -666,14 +554,6 @@ interface VerifiedAncestorRange {
   readonly warnings: readonly string[];
 }
 
-/**
- * The values every earlier version held, each verified as an ancestor of
- * the verified latest (the same evidence rule as a rollback) and decrypted
- * with its epoch's DEK. `var rotate --finalize` uses it for the AWS key id
- * variable: a key the issuer lists is deactivated only when one of these
- * versions held its id — the server's history metadata never picks the
- * target.
- */
 export const verifiedAncestorRange = Effect.fn("var-history.verifiedAncestorRange")(function* (
   input: Omit<AncestorInput, "toVersion">,
 ): Effect.fn.Return<VerifiedAncestorRange, CliError> {
@@ -713,11 +593,6 @@ export const verifiedAncestorRange = Effect.fn("var-history.verifiedAncestorRang
   const ancestors: { readonly version: number; readonly value: Redacted.Redacted<Uint8Array> }[] =
     [];
   for (const variable of versions.filter((entry) => entry.version < latest.version)) {
-    // An ancestor this device cannot decrypt is skipped with a warning,
-    // not fatal — whatever the reason (an old-epoch wrap it never received
-    // [device-gaps.ts], the epoch-cap defense, an AEAD failure): the set
-    // of ids it feeds can only shrink, which never widens what a finalize
-    // invalidates. Its signature and lineage were verified above
     const value = yield* decryptVerifiedValue({
       verified: pulled.verified,
       environmentId: input.environmentId,
@@ -757,8 +632,6 @@ export const varRollbackOp = Effect.fn("var-history.varRollbackOp")(function* (
 ): Effect.fn.Return<VarRollbackResult, CliError, CliIo | Stdio.Stdio> {
   const plan = yield* planRollback(input, input.name.normalize("NFC"));
   const restored = yield* decryptTarget(input, plan);
-  // The advisory exposure count for the confirmation (server-derived —
-  // it compares audit seqs, which never reach the client)
   const history = yield* fetchHistory(
     input.client,
     plan.pulled.verified,

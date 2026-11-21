@@ -1,35 +1,3 @@
-// Checks the workflow templates of docs/github-actions.mdx
-// (docs/notes/integration-options.md §3 "rulings recorded while
-// implementing SY3", ruling H) **verbatim as cut from the page body**
-// (same discipline as recipes.test.ts: make "the written wording" and
-// "the checked target" coincide, preventing doc drift structurally). YAML
-// is parsed by `Bun.YAML` bundled with Bun 1.4.0 (the runtime the repo
-// requires via `.bun-version`; no added dependency) invoked as a
-// subprocess — vitest runs on Node. What is pinned:
-//   1. the invocation contract (`workflow_dispatch` + `target` input)
-//      matches the deploy-targets.mdx fragment (the third-tier contract)
-//   2. jobs that run maruhi have only `permissions: id-token: write` +
-//      `contents: read` (no other write)
-//   3. installation pins setup-maruhi to a tag (`@<tag>` +
-//      `version: <tag>`), every other action to a 40-hex commit SHA,
-//      checkout has `persist-credentials: false`, and nothing is fetched
-//      via `npx` / `curl`
-//   4. plaintext stays inside CI: no `secrets.` reference (the only
-//      exception = the sync step's `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN
-//      }}` in standard shape ② — the bootstrap token of the
-//      github-actions target that writes GitHub secrets; SY5 ruling F),
-//      and a step running maruhi has no `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
-//      `echo "$…"` / `set -x` / `printenv` / `--value`, and no `${{ }}`
-//      expanded directly in `run:` (env-mediated)
-//   5. `maruhi ci sync` carries `--yes` / `--server` / `--project` /
-//      `--anchor .maruhi/anchor.json`
-//   6. standard shape ②: has `schedule`; the `sync` job has Environment =
-//      target name, per-target concurrency (cancel-in-progress: false),
-//      fail-fast: false, and an empty-list guard. The `targets` job's
-//      script is actually run under sh (dispatch with a real / missing
-//      target, the schedule's list)
-//   7. standard shape ①: Environment `production`, `ci sync` before
-//      deploy, deploy is `maruhi ci run … -- <wrangler>`
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,12 +12,10 @@ const deployTargetsPage = readFileSync(
   "utf8",
 );
 
-/** The ```yaml blocks of a page, in document order. */
 function yamlBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/```yaml\n([\s\S]*?)```/g)].map((m) => m[1] ?? "");
 }
 
-/** Parses YAML with Bun's built-in parser (a subprocess: vitest runs on Node). */
 function parseYaml(text: string): unknown {
   const result = spawnSync(
     "bun",
@@ -105,7 +71,6 @@ const SETUP_MARUHI = "maruhiapp/maruhi/actions/setup-maruhi@<tag>";
 
 const stepsOf = (workflow: Workflow) => Object.values(workflow.jobs).flatMap((job) => job.steps);
 
-/** setup-maruhi = `@<tag>` + `version: <tag>`; every other action = a 40-hex commit; checkout keeps no token. */
 function expectPinned(step: Step): void {
   if (step.uses === SETUP_MARUHI) {
     expect(step.with).toEqual({ version: "<tag>" });
@@ -123,11 +88,6 @@ const withoutComments = (yaml: string) =>
     .filter((line) => !line.trimStart().startsWith("#"))
     .join("\n");
 
-/**
- * The one GitHub secret the templates reference: the bootstrap token `gh` signs in with when a
- * `github-actions` target writes GitHub secrets (the single exception to "GitHub secrets can be
- * empty"). It is passed to the sync step as `GH_TOKEN`, and nowhere else.
- */
 const BOOTSTRAP_ENV = ["GH_TOKEN", "${{ secrets.GH_SECRETS_TOKEN }}"] as const;
 
 interface BootstrapCarrier {
@@ -135,17 +95,14 @@ interface BootstrapCarrier {
   readonly runsMaruhi: boolean;
 }
 
-/** The steps whose env carries the bootstrap token: what they pass, and whether they run maruhi. */
 function bootstrapCarriers(workflow: Workflow): BootstrapCarrier[] {
   return stepsOf(workflow)
     .filter((step) => step.env?.[BOOTSTRAP_ENV[0]] !== undefined)
     .map((step) => ({ value: step.env?.[BOOTSTRAP_ENV[0]], runsMaruhi: runsMaruhi(step) }));
 }
 
-/** Every `secrets.<name>` reference in a workflow source. */
 const secretReferences = (source: string): string[] => source.match(/secrets\.\w+/g) ?? [];
 
-/** What a workflow may reference from `secrets`: the bootstrap token in the sync shape, nothing elsewhere. */
 function expectedBootstrap(workflow: Workflow): {
   readonly refs: string[];
   readonly carriers: BootstrapCarrier[];
@@ -158,12 +115,6 @@ function expectedBootstrap(workflow: Workflow): {
     : { refs: [], carriers: [] };
 }
 
-/**
- * A step that runs maruhi writes nothing to the runner's files and echoes nothing; its env holds
- * only the target name and the bootstrap token (the values go to maruhi's child process or request
- * body, nowhere else).
- */
-/** Every `maruhi ci` invocation names its coordinates and the anchor; each subcommand carries its own required flags. */
 function expectCiInvocation(run: string): void {
   expect(run).toMatch(/--server "\$MARUHI_SERVER"/);
   expect(run).toMatch(/--project "\$MARUHI_PROJECT"/);
@@ -232,8 +183,6 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       .workflow_dispatch;
     const contractDispatch = (contract.on as { workflow_dispatch: Record_ }).workflow_dispatch;
     const inputOf = (d: Record_) => (d["inputs"] as Record<string, Record_>)["target"];
-    // Assert existence first so the check does not silently pass if the
-    // contract's input disappears or is renamed
     expect(inputOf(contractDispatch)).toBeDefined();
     expect(inputOf(dispatch)).toMatchObject(inputOf(contractDispatch) ?? {});
     expect(inputOf(dispatch)).toMatchObject({ required: true, type: "string" });
@@ -262,23 +211,14 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(uses.some((s) => s.uses === SETUP_MARUHI)).toBe(true);
         for (const step of uses) expectPinned(step);
         expect(source).not.toMatch(/npx|bunx|curl|wget|\| *sh\b/);
-        // The action's ref and version share one placeholder (same
-        // promise as the README: a single kind of substitution point).
-        // Comment lines (substitution guidance) do not count
         expect(withoutComments(source).match(/<tag>/g)?.length).toBe(2);
       });
 
       it("keeps the values inside the job: no GitHub secrets (except the one bootstrap token, in the sync step's env), no expression in run:, no echo / GITHUB_ENV / xtrace around maruhi", () => {
-        // `secrets.` appears only once: the sync step's `GH_TOKEN: ${{
-        // secrets.GH_SECRETS_TOKEN }}` in standard shape ② (the bootstrap
-        // of the github-actions target — SY5 ruling F). Nowhere else, in
-        // no other workflow
         const bootstrap = expectedBootstrap(workflow);
         expect(secretReferences(source)).toEqual(bootstrap.refs);
         expect(bootstrapCarriers(workflow)).toEqual(bootstrap.carriers);
         expect(source).not.toMatch(/GITHUB_ENV/);
-        // Expressions reach the shell only via env (GitHub script-
-        // injection hardening)
         for (const step of stepsOf(workflow)) expect(step.run ?? "").not.toMatch(/\$\{\{/);
         for (const step of stepsOf(workflow).filter(runsMaruhi)) expectMaruhiStepKeepsValues(step);
       });
@@ -320,7 +260,6 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       expect(deployIndex).toBeGreaterThan(syncIndex);
       expect(runs[deployIndex]).toMatch(/--env tokens/);
       expect(runs[deployIndex]).toMatch(/ -- \.\/node_modules\/\.bin\/wrangler deploy$/);
-      // The vendor CLI comes in as a project dependency (never fetched)
       expect(runs.slice(0, syncIndex).some((r) => /^npm ci$/.test(r.trim()))).toBe(true);
     });
   });
@@ -331,8 +270,6 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
 
     it("runs on a schedule and on dispatch, one rotation at a time, and mints through maruhi ci rotate", () => {
       expect(Object.keys(workflow.on)).toEqual(["schedule", "workflow_dispatch"]);
-      // Two overlapping runs would both create a credential at the issuer
-      // while only one proposal per variable can be pending (PF7b ruling O-8)
       expect(workflow.concurrency).toEqual({
         group: "maruhi-rotate-prod",
         "cancel-in-progress": false,
@@ -361,8 +298,6 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
 
     it("runs one target per matrix leg, in the Environment named after it, one run per target at a time", () => {
       expect(sync.needs).toBe("targets");
-      // A custom `if` may replace the implicit success(), so state it
-      // explicitly (do not start sync when targets failed)
       expect(sync.if).toBe("success() && needs.targets.outputs.list != '[]'");
       expect(sync.strategy).toEqual({
         "fail-fast": false,
@@ -435,8 +370,6 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web  preview " }).output).toBe(
           'list=["web","preview"]\n',
         );
-        // The check's loop and the JSON rendering come from the same
-        // split (tab/newline separators do not collapse into one element)
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web\tpreview\n" }).output).toBe(
           'list=["web","preview"]\n',
         );

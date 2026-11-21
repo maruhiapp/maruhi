@@ -1,16 +1,3 @@
-// @maruhi/crypto — the E2EE core (WebCrypto + HPKE).
-// docs/CRYPTO_SPEC.md is the sole source of truth for the crypto spec. Changes to
-// this package require human review.
-// Implementations must pass every vector in test-vectors/.
-//
-// Runs in every environment (browser / Bun / workerd): no primitives other than
-// WebCrypto + panva hpke.
-// Errors are returned as typed error values (CryptoResult); Effect wrapping is
-// done on the packages/core side.
-//
-// Exports are grouped by CRYPTO_SPEC section (the grouping does not change the set).
-
-// §1-§2: common — suite identifier, encoding conventions (§2.1), result types
 export {
   type AeadOperation,
   type CryptoError,
@@ -22,11 +9,6 @@ export {
   SUITE_ID,
 } from "./internal.package/index.ts";
 
-// §3: key hierarchy — master key pair / DEK generation, key import/export,
-// user key fingerprints, FP word rendering (BIP39 English 12 words — the
-// display encoding for out-of-band reconciliation. The dictionary is
-// published as §3's fixed dictionary — completeness is pinned by a test
-// against a known upstream hash)
 export {
   BIP39_ENGLISH_WORDS,
   computeUserKeyFingerprint,
@@ -49,7 +31,6 @@ export {
   type SigningKeyPair,
 } from "./internal.package/index.ts";
 
-// §4: variable encryption — AES-GCM with coordinate-bound AAD
 export {
   buildVariableAad,
   decryptVariable,
@@ -58,7 +39,6 @@ export {
   type VariableContext,
 } from "./internal.package/index.ts";
 
-// §4.1: value write signatures
 export {
   buildValueSignedBytes,
   computeValueSignedBytesHash,
@@ -71,8 +51,6 @@ export {
   verifyValueSignature,
 } from "./internal.package/index.ts";
 
-// §4.2: signed statements of variable / environment metadata (including
-// layout v3 — schema columns, declared, max age, layout selection)
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,
@@ -93,9 +71,6 @@ export {
   verifyMetaStatementSignature,
 } from "./internal.package/index.ts";
 
-// §4.3: environment manifest (the freshness anchor of the meta layer —
-// epoch baking + variable-set digest. The canonical implementation lives
-// exactly here, shared by server / CLI)
 export {
   buildEnvManifestSignedBytes,
   computeEnvManifestSignedBytesHash,
@@ -112,7 +87,6 @@ export {
   verifyEnvManifestSignature,
 } from "./internal.package/index.ts";
 
-// §5: key wrap (HPKE)
 export {
   buildDekWrapInfo,
   type DekWrapContext,
@@ -121,7 +95,6 @@ export {
   type WrappedDek,
 } from "./internal.package/index.ts";
 
-// §5.1: registration signature of DEK wraps
 export {
   buildDekWrapSignatureBytes,
   type DekWrapSignatureContext,
@@ -129,7 +102,6 @@ export {
   verifyDekWrapSignature,
 } from "./internal.package/index.ts";
 
-// §5.2: the epoch DEK commitment (authenticity bound by the chain)
 export {
   buildDekCommitmentBytes,
   computeDekCommitment,
@@ -137,9 +109,6 @@ export {
   verifyDekCommitment,
 } from "./internal.package/index.ts";
 
-// §6: membership log (signed hash chain) — entry format (§6.1), roles and
-// operation kinds (§6.2 — including 2026-09-14 ES's environment scope and
-// PF1's four-eyes), verification (§6.3 / §6.4), derived state
 export {
   type AddDevicePayload,
   type AddMemberPayload,
@@ -218,10 +187,6 @@ export {
   type WithdrawPayload,
 } from "./internal.package/index.ts";
 
-// §6.2 / §5.3: the recipient sets of an environment — R(E), the destinations
-// of its DEK wraps (the device axis), and W(E), the recipients of its sealed
-// value proposals. The one definition behind the CLI's wrap sets and
-// proposals and the server's checks of both
 export {
   deviceReceivesEnvironment,
   type MemberDevice,
@@ -230,21 +195,12 @@ export {
   type WrapRecipient,
   wrapRecipientsOf,
 } from "./internal.package/index.ts";
-// AUDIT_SPEC §5.1: the audit-head rolling hash (the input of checkpoint's
-// audit_head_hash — §6.2). Generation = the project DO's acceptance side;
-// verification = the admin cross-check (AUDIT_SPEC §6) share this one
-// implementation
 export {
   type AuditHeadRow,
   computeAuditHeadHash,
   computeAuditRowDigest,
 } from "./internal.package/index.ts";
 
-// §6.5: the crypto side of invites (2026-09-13 IV) — link keys, issuance
-// signatures, acceptance co-signatures, the OpenSSH public-key line
-// (interoperability with the backing source; additional evidence outside the
-// chain. Mutual-confirmation display uses §3's fingerprintToWords, the link
-// anchor §6.3 — both existing exports)
 export {
   buildInviteAcceptSignedBytes,
   buildInviteIssueSignedBytes,
@@ -264,9 +220,6 @@ export {
   verifyInviteLinkSignature,
 } from "./internal.package/index.ts";
 
-// §6.6: head attestation (the attestation form of §6.3 head gossip — a
-// signed declaration outside the chain. Submission side = AUTH_SPEC §16-1,
-// server verification = §6.4, reconciliation rules = §6.3)
 export {
   type AttestationInvalidReason,
   buildHeadAttestationSignedBytes,
@@ -278,9 +231,6 @@ export {
   verifyHeadAttestationSignature,
 } from "./internal.package/index.ts";
 
-// §7: epoch and membership changes — no export surface (workflow rules only)
-
-// §8: master-key wrap ledger — the recovery-code path (unchanged)
 export {
   generateRecoverySecret,
   unwrapMasterSecret,
@@ -288,10 +238,6 @@ export {
   wrapMasterSecret,
 } from "./internal.package/index.ts";
 
-// §8.1-8.4 (0.9-draft / KL3): the ledger's new recipient classes —
-// passkey-prf KEK derivation, wrapping B under the master-wrap AAD,
-// guardian groups (XOR split + HPKE Seal of shares), handoff (Seal to an
-// ephemeral key, request_id, handoff code)
 export {
   buildGuardianWrapInfo,
   buildHandoffWrapInfo,
@@ -316,9 +262,6 @@ export {
   wrapMasterBlob,
 } from "./internal.package/index.ts";
 
-// §5.3: sealed value proposals (the same primitive as §5; the info binds
-// the proposal and variable ids — a workload's proposed value, stored
-// sealed to the accepting members' device keys)
 export {
   buildSealedValueInfo,
   isProposalId,
@@ -330,11 +273,8 @@ export {
   sealProposedValue,
 } from "./internal.package/index.ts";
 
-// §9: selective disclosure (server keys)
 export { computeServerKeyFingerprint } from "./internal.package/index.ts";
 
-// §9.1: workload leases — the lease wrap (the same primitive as §5; the
-// info binds claims_digest). Wraps are response-scoped and never persisted
 export {
   buildLeaseClaimsBytes,
   buildLeaseWrapInfo,

@@ -1,15 +1,3 @@
-// An "honest in-memory environment" with values (for tests): accepts pulls
-// with values, metadata-only pulls, variable creation (value attached), and
-// new-version pushes to existing variables, advancing the state each time.
-// Lets `maruhi sync` tests exercise the pull from the source environment and
-// the push to the receipt environment (create, then new versions after that)
-// without hand-editing responses per acceptance.
-//
-// Same stance as meta-server.ts (meta ops only): the client-signed statements,
-// values, and manifests are stored verbatim and distributed with author /
-// writer / issuer attribution attached. Verification (§6.3) is done by the
-// client implementation (this mock only keeps the wire shape consistent).
-
 import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import {
   type BuiltChain,
@@ -25,25 +13,17 @@ import {
 } from "./crypto.ts";
 import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
 
-/** One distributed variable (statement + latest version's value). */
 export interface StoredVariable {
   readonly variableId: string;
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
 }
 
-/** The environment state the mock advances (exposed for assertions). */
 export interface ValueEnvironmentState {
   variables: StoredVariable[];
-  /** Valueless declarations (declared — in §12-7 they're distributed separately as declaredVariables). */
   declared: WireDistributedVariableStatement[];
   manifest: WireDistributedManifest | null;
-  /** Accepted writes (for assertions — with kind). */
   writes: { kind: "create" | "version"; request: MockRequest }[];
-  /**
-   * Every stored version per variable, ascending (the version history /
-   * value range — AUTH_SPEC §12-7, VH), with the lineage each push declared.
-   */
   history: Map<string, { value: WireDistributedValue; sameValueAs?: number }[]>;
 }
 
@@ -52,23 +32,13 @@ export interface ValueEnvironmentServerInput {
   readonly owner: TestUser;
   readonly environmentId: string;
   readonly envStatement: WireDistributedEnvironmentStatement;
-  /** Self-addressed DEK wrap of the current epoch (epoch 1 unless `currentEpoch` says otherwise). */
   readonly wrap: WireRecipientDek;
-  /** The environment's current epoch (default 1 — the chain must carry the matching rotations). */
   readonly currentEpoch?: number;
-  /** Every wrap addressed to the device (default: `wrap` alone — a device missing an older epoch's wrap lists only the current one). */
   readonly wraps?: readonly WireRecipientDek[];
   readonly initialVariables?: readonly StoredVariable[];
   readonly initialDeclared?: readonly WireDistributedVariableStatement[];
-  /**
-   * The full version chain of some variables (ascending — the last entry
-   * must be that variable's `initialVariables` value). Without it a
-   * variable's history is just its current value.
-   */
   readonly initialHistory?: ReadonlyMap<string, readonly WireDistributedValue[]>;
-  /** The server-derived flagsIfCurrent per (variable, version) (default 0). */
   readonly flagsIfCurrent?: (variableId: string, version: number) => number;
-  /** Rewrites a value-range response before it is sent (forgery tests). */
   readonly tamperRange?: (values: readonly WireDistributedValue[]) => WireDistributedValue[];
 }
 
@@ -83,11 +53,6 @@ interface VersionBody {
   readonly sameValueAs?: number;
 }
 
-/**
- * Builds a stateful mock environment serving values: pulls reflect every
- * accepted create and every accepted new version, so a command that reads,
- * writes, and reads again (sync's receipt) verifies end to end.
- */
 export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): {
   readonly state: ValueEnvironmentState;
   readonly handlers: readonly MockHandler[];
@@ -128,8 +93,6 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       statements: [...state.variables.map((entry) => entry.statement), ...state.declared],
     });
 
-  // The GET side of the version resource (VH): the matched variable's
-  // stored versions, a 404 for an unknown one, or null for another route
   type Found = {
     readonly variableId: string;
     readonly versions: readonly { value: WireDistributedValue; sameValueAs?: number }[];

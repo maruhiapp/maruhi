@@ -1,5 +1,3 @@
-// `maruhi mirror` (discipline: see commands/index.ts).
-
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 

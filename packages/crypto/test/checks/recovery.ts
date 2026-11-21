@@ -1,9 +1,3 @@
-// Checks for CRYPTO_SPEC §8 (the recovery wrap).
-// Vector: test-vectors/recovery-wrap.json. The KEK derivation (salt = empty) is
-// implicitly pinned by the successful decryption of the vector ciphertext.
-// wrong-salt checks via WebCrypto that decryption fails with the vector's
-// decrypt_kek_hex (a KEK derived from a non-empty salt).
-
 import {
   encodeLengthPrefixed,
   generateRecoverySecret,
@@ -21,13 +15,11 @@ if (baseVector === undefined) {
 const base = baseVector;
 
 async function vectorChecks(c: Checks): Promise<void> {
-  // AAD construction (LP("maruhi/v1/recovery-wrap", user_id)) matches the vector
   c.push(
     "recovery: aad construction",
     toHex(encodeLengthPrefixed(["maruhi/v1/recovery-wrap", base.user_id])) === base.aad_hex,
   );
 
-  // unwrap of the fixed vector (implicitly pins KEK derivation with salt=empty)
   const blob = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
     userId: testUserId(base.user_id),
@@ -40,7 +32,6 @@ async function vectorChecks(c: Checks): Promise<void> {
 }
 
 async function negativeChecks(c: Checks): Promise<void> {
-  // aad-user-mismatch: transplant to another user's key blob
   const otherUser = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
     userId: testUserId("user-member-0002"),
@@ -62,9 +53,6 @@ async function negativeChecks(c: Checks): Promise<void> {
   });
   c.push("recovery negative: ciphertext-bit-flip", !tampered.ok);
 
-  // wrong-salt: a KEK derived from a non-empty salt (bundled with the vector)
-  // cannot decrypt. The implementation API cannot inject a salt (a good
-  // thing), so this is checked directly with WebCrypto
   const wrongSalt = recoveryVectors.negative.find((n) => n.name === "wrong-salt");
   if (wrongSalt?.decrypt_kek_hex === undefined) {
     c.push("recovery negative: wrong-salt", false, "vector missing");

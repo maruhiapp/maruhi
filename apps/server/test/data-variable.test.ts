@@ -1,10 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — variable
-// push→pull→client-side decrypt and the metadata-only mode (AUTH_SPEC
-// §12-5 / §12-7).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
@@ -99,7 +92,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(body.currentEpoch).toBe(1);
     expect(body.variables.length).toBe(1);
     expect(body.deks.length).toBe(1);
-    // pull carries the statement + author info, not a bare name (§12-2 / §12-7)
     expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
     expect(body.deletedVariables).toEqual([]);
     const [variable] = body.variables;
@@ -115,7 +107,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       authorKeyFingerprintHex: vectorKeyOf(MEMBER).key_fingerprint_hex,
     });
 
-    // The reader's client-side decryption (the E2EE round trip)
     const plaintext = await unwrapAndDecrypt({
       recipientUserId: READER,
       wrapped: wrappedDek,
@@ -125,8 +116,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     });
     expect(plaintext).toBe("postgres://alpha");
 
-    // Pushing a new version makes pull return only the latest (prev
-    // chains to v1's signed_bytes hash — §4.1)
     const v1 = variable.value;
     const v2 = await encryptValue(
       dek,
@@ -193,8 +182,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
   });
 
   it("rejects a rename, delete or activation whose declared coordinates mismatch the URL (422 §12-2 / §12-5)", async () => {
-    // The worker checks the coordinates before the token scope and the DO,
-    // so unsigned bodies that pass the Schema reach the checks
     const variablePath = `/environments/${ENV}/variables/${VAR}`;
     const routes = [
       ["PATCH", variablePath, "active"],
@@ -211,7 +198,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       [{ statement: { variableId: "var-other" } }, "statementVariableId"],
       [{ manifest: { environmentId: "env-app-0002" } }, "manifestEnvironmentId"],
     ];
-    // Only the activation carries a value
     const aadCases: readonly [Override, string][] = [
       [{ aad: { environmentId: "env-app-0002" } }, "environmentId"],
       [{ aad: { variableId: "var-other" } }, "variableId"],
@@ -242,7 +228,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // Re-attesting a known version (1) → 409 currentVersion 1
     const stale = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -250,14 +235,10 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       { value: await fakePayload(MEMBER, aadFor(1, 1)) },
     );
     expect(stale.status).toBe(409);
-    // The 409 returns only currentVersion (the number) — the winner's
-    // signed_bytes hash is not carried (no chain-signing onto an
-    // unverified value — §12-5)
     const staleBody = (await stale.json()) as Record<string, unknown>;
     expect(staleBody).toMatchObject({ currentVersion: 1 });
     expect(Object.keys(staleBody).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
 
-    // A skipped number (3) is also rejected
     const skipped = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -314,7 +295,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       await expect(response.json()).resolves.toMatchObject({ currentVersion: 2 });
     }
 
-    // No gaps or interleaving: version rows are only 1,2; latest is 2; the winner's ciphertext is stored
     const rows = await queryProjectDo(
       projectId,
       "SELECT version, ciphertext_hex FROM variable_versions WHERE environment_id = ? AND variable_id = ? ORDER BY version",
@@ -390,7 +370,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // A member's read scope: pull allowed, push denied (403 insufficient-permission)
     const readScope: readonly TokenScope[] = [
       { project: testProjectId(projectId), permission: "read" },
     ];
@@ -405,8 +384,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     );
     expect(push.status).toBe(403);
     expect(((await push.json()) as { reason: string }).reason).toBe("insufficient-permission");
-    // Rename and delete are writes too: correctly signed, they are still
-    // denied under the read scope
     for (const [method, name, status] of [
       ["PATCH", "DB_URL", "active"],
       ["DELETE", "DATABASE_URL", "deleted"],
@@ -430,7 +407,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       );
     }
 
-    // A reader's write scope: even with sufficient scope the chain role binds (403 insufficient-role)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const readerWrite = await cliToken(9003, writeScope);
     const readerPush = await requestJson(
@@ -442,7 +418,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(readerPush.status).toBe(403);
     expect(((await readerPush.json()) as { reason: string }).reason).toBe("insufficient-role");
 
-    // An out-of-scope project is existence-hidden (404)
     const otherScope: readonly TokenScope[] = [
       { project: testProjectId("ff".repeat(32)), permission: "admin" },
     ];
@@ -450,9 +425,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     const concealed = await requestJson("GET", `/environments/${ENV}/pull`, scoped);
     expect(concealed.status).toBe(404);
 
-    // Environment deletion requires the admin scope (403 under write.
-    // The scope check precedes signature verification — §12-3 — so an
-    // unsigned dummy entry suffices)
     const memberWrite = await cliToken(9001, writeScope);
     const removal = await requestJson(
       "DELETE",
@@ -484,7 +456,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(sameName.status).toBe(409);
     expect(((await sameName.json()) as { reason: string }).reason).toBe("duplicate-name");
 
-    // AAD mismatch on the attestation at creation (§12-2): a mismatch between the statement's variableId and the aad is a 422
     const createMismatch = await requestJson(
       "POST",
       `/environments/${ENV}/variables`,
@@ -498,7 +469,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(createMismatch.status).toBe(422);
     expect(((await createMismatch.json()) as { field: string }).field).toBe("variableId");
 
-    // Rename is also subject to name uniqueness (§12-1)
     await createVariableOk(dek, "var-other", "OTHER", "other-value");
     const renameConflict = await renameVariableRequest("var-other", "DATABASE_URL", MEMBER);
     expect(renameConflict.status).toBe(409);
@@ -517,7 +487,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     );
     expect(versions.length).toBe(0);
 
-    // Reuse of a deleted ID is rejected (§12-1)
     const retired = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "REBORN"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -526,7 +495,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(retired.status).toBe(409);
     expect(((await retired.json()) as { reason: string }).reason).toBe("retired");
 
-    // A push to a deleted variable is a 404
     const pushDeleted = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -554,11 +522,6 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
   it("caps versions per variable (422 §12-8)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Since 1,000 real pushes are unrealistic, raise latest_version
-    // directly and seed a version row just below the cap (the
-    // predecessor the prev check needs) (the quantity policy sits after
-    // the value signature — ruling D — so a shape that passes signature
-    // verification is required)
     const seededHash = "aa".repeat(32);
     await queryProjectDo(
       projectId,
@@ -604,13 +567,11 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
   });
 
   it("caps cumulative project ciphertext bytes (422 §12-8, unit + plumbing)", async () => {
-    // The pure-function judgment (do not actually generate 1 GiB)
     expect(projectBytesExceeded(MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES, 1)).toBe(true);
     expect(projectBytesExceeded(MAX_PROJECT_CIPHERTEXT_TOTAL_BYTES - 10, 10)).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Verify the plumbing by raising only the stored byte count to the cap's level
     await queryProjectDo(
       projectId,
       "UPDATE variable_versions SET ciphertext_bytes = ? WHERE environment_id = ? AND variable_id = ?",
@@ -670,9 +631,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     expect(body.environmentId).toBe(ENV);
     expect(body.currentEpoch).toBe(1);
     expect(body.statement).toMatchObject({ name: "App", status: "active", authorUserId: OWNER });
-    // Active variables carry only the latest statement (after the
-    // rename = metaVersion 2). No fragment of a value (ciphertext) is
-    // bundled anywhere
     expect(body.variables).toEqual([
       expect.objectContaining({
         variableId: VAR,
@@ -692,9 +650,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
       expect(raw).not.toContain(forbidden);
     }
 
-    // The distributed statement passes the §6.3 client-side
-    // verification (the obligation to bundle verification material is
-    // the same as the valued pull — §12-7)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -726,7 +681,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // Obtainable with reader (chain role) + read scope (the same row as pull — §12-3)
     const readScope: readonly TokenScope[] = [
       { project: testProjectId(projectId), permission: "read" },
     ];
@@ -734,7 +688,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     const allowed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
     expect(allowed.status).toBe(200);
 
-    // Non-members get a 404 (existence hiding — §11-2)
     const stranger = await requestJson(
       "GET",
       `/environments/${ENV}/pull/metadata`,
@@ -742,7 +695,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     );
     expect(stranger.status).toBe(404);
 
-    // An out-of-scope project is also 404 (existence hiding precedes via the scope check)
     const otherScope: readonly TokenScope[] = [
       { project: testProjectId("ff".repeat(32)), permission: "admin" },
     ];
@@ -750,9 +702,6 @@ describe("metadata-only mode (§12-7 — returns no values or DEKs)", () => {
     const concealed = await requestJson("GET", `/environments/${ENV}/pull/metadata`, scoped);
     expect(concealed.status).toBe(404);
 
-    // A deleted environment is a 404 (same as pull). Since READER's
-    // token was replaced by readToken's re-issuance, readToken is used
-    // from here on
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
     const gone = await requestJson("GET", `/environments/${ENV}/pull/metadata`, readToken);
@@ -767,11 +716,6 @@ describe("rejection of session-principal valued bulk pulls (the §5 capability r
     const session = await loginSession(9001);
     const headers = sessionHeaders(session);
 
-    // A valued bulk pull is §5's explicit rejection surface (W2b —
-    // audit-trail contamination via a session = eliminate the very
-    // surface SECURITY_REVIEW L-1 occurs on). Since the capability
-    // judgment precedes the CSRF check, it is uniformly
-    // session-not-allowed even without a CSRF header
     const withoutCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });
@@ -779,24 +723,18 @@ describe("rejection of session-principal valued bulk pulls (the §5 capability r
     const body = (await withoutCsrf.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("session-not-allowed");
 
-    // Attaching a CSRF header yourself gives the same (same-origin XSS
-    // can attach headers — design document §6. Closing this surface is
-    // W2b's purpose)
     const withCsrf = await SELF.fetch(dataUrl(`/environments/${ENV}/pull`), { headers });
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as Record<string, unknown>)["reason"]).toBe(
       "session-not-allowed",
     );
 
-    // A rejected pull records not a single var.read row (do not record
-    // as read what was not read — AUDIT_SPEC §3.3)
     const reads = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
     );
     expect(reads[0]?.["n"]).toBe(0);
 
-    // Bearer (token principal) is unaffected (§5 — the CLI and maruhi ui are token principals)
     const bearerPull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(bearerPull.status).toBe(200);
     const readsAfter = await queryProjectDo(
@@ -805,9 +743,6 @@ describe("rejection of session-principal valued bulk pulls (the §5 capability r
     );
     expect(readsAfter[0]?.["n"]).toBe(1);
 
-    // Metadata-only mode is in §5's allowed enumeration (reads) and
-    // records no var.read, so no CSRF header is needed either (session
-    // + headerless is a 200)
     const metadata = await SELF.fetch(dataUrl(`/environments/${ENV}/pull/metadata`), {
       headers: { cookie: headers["cookie"] ?? "" },
     });

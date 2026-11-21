@@ -1,21 +1,3 @@
-// `maruhi sync init <target>`: generating the repository config
-// (`maruhi.sync.json`) (SY2 stage 2 — ruling F).
-//
-// The precedent is `maruhi project anchor` (anchor.ts): emit the
-// non-secret config **as JSON to stdout** and let the user redirect
-// and commit it. No file is written (the CLI is not given the
-// overwrite/merge judgment on an existing file — a second target is
-// added by hand. The docs table explains the keys). It does not go
-// to the network either: every input is a flag, and before emitting
-// it confirms the product passes sync-config.ts's strict parser
-// **unchanged** (if it does not, the write-up error is reported
-// with a reason = 2).
-//
-// Value defaults: `variables` is `"all"` when omitted (+ a Note
-// guiding to exclude public-config / platform-owned resources —
-// supplement 13 W3), and `production` defers to the preset's
-// judgment (the explicit form is `--production`).
-
 import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -26,30 +8,22 @@ import { parseSyncConfig } from "./sync-config.ts";
 import { defaultDriverOf, isUnavailable, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId } from "./sync-types.ts";
 
-/** `maruhi sync init`'s input (all from explicit flags). */
 interface SyncInitInput {
   readonly target: string;
   readonly preset: string;
   readonly driver: string | undefined;
-  /** The source maruhi environment ID (`--env`). */
   readonly environment: string;
-  /** The receipt environment ID (`--receipts`). */
   readonly receipts: string;
   readonly project: ProjectId | undefined;
-  /** Comma-separated variable names (omitted = "all"). */
   readonly variables: string | undefined;
-  /** Comma-separated exclusion names (only when `variables` is omitted). */
   readonly exclude: string | undefined;
   readonly production: boolean;
   readonly cwd: string | undefined;
   readonly command: string | undefined;
   readonly tokenEnvironment: string | undefined;
   readonly tokenName: string | undefined;
-  /** The post-push sync (`--on-push apply|workflow` — stage 3). */
   readonly onPush: string | undefined;
-  /** The workflow filename for `--on-push workflow` (`--workflow`). */
   readonly workflow: string | undefined;
-  /** A list of `key=value` (`--option`). Boolean options are true / false. */
   readonly options: readonly string[];
 }
 
@@ -63,7 +37,6 @@ function splitList(value: string | undefined): string[] | undefined {
     .filter((entry) => entry.length > 0);
 }
 
-/** Interprets `--option key=value` (maps to boolean per the declaration's type). */
 function parseOptionFlags(
   given: readonly string[],
   declared: Readonly<Record<string, OptionSpec>>,
@@ -96,12 +69,10 @@ function parseOptionFlags(
   return options;
 }
 
-/** Omitted keys do not appear in the JSON (drops `undefined` values). */
 function compact(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
-/** One target's JSON object (key order matches the docs table). */
 function targetObjectOf(
   input: SyncInitInput,
   driver: DriverKind,
@@ -114,7 +85,6 @@ function targetObjectOf(
       : { environment: input.tokenEnvironment, name: input.tokenName };
   return compact({
     preset: input.preset,
-    // exec is the default for omitting. http is written explicitly even on a preset that only has it (a form where the plaintext's destination is readable)
     driver: driver === "exec" ? undefined : driver,
     environment: input.environment,
     variables: variables === undefined || variables.length === 0 ? "all" : variables,
@@ -129,7 +99,6 @@ function targetObjectOf(
   });
 }
 
-/** Assembles the config object, validates it through the strict parser, then serializes it to a JSON string. */
 const buildSyncConfigJson = Effect.fn("sync-init.buildSyncConfigJson")(function* (
   input: SyncInitInput,
 ): Effect.fn.Return<string, CliError> {
@@ -164,7 +133,6 @@ const buildSyncConfigJson = Effect.fn("sync-init.buildSyncConfigJson")(function*
     targets: { [input.target]: targetObjectOf(input, driver, options) },
   });
   const json = `${JSON.stringify(config, null, 2)}\n`;
-  // The product passes the strict parser unchanged (if it does not, report the write-up error with a reason)
   const parsed = parseSyncConfig(json, ".");
   if (typeof parsed === "string") {
     return yield* Effect.fail(usageError(`The config would be invalid: ${parsed}`));
@@ -172,7 +140,6 @@ const buildSyncConfigJson = Effect.fn("sync-init.buildSyncConfigJson")(function*
   return json;
 });
 
-/** `maruhi sync init`: emits the config JSON to stdout (the command's output — decision 9). */
 export const syncInitOp = Effect.fn("sync-init.syncInitOp")(function* (
   input: SyncInitInput,
 ): Effect.fn.Return<void, CliError, CliIo> {

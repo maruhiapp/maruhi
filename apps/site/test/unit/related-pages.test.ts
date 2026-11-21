@@ -1,12 +1,3 @@
-// Pins the "Related pages" cards (`related:` frontmatter) at the foot of
-// every docs page. The docs route (src/pages/docs/[...slug].astro) renders
-// cards only for the links a page lists — it generates none — so a new page
-// that forgets the field silently ships without them. Every page but the
-// index (which opens with its own cards) names 2–4 other docs pages, each
-// in the `/docs/<slug>` form the body links use. Whether a target page
-// exists is `nimbus-docs lint`'s job (CI 8d2); this check also pins that
-// the slug names a page in this directory, so a renamed page fails here
-// first.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,7 +8,6 @@ const slugs = readdirSync(docsDir)
   .filter((name) => name.endsWith(".mdx"))
   .map((name) => name.slice(0, -".mdx".length));
 
-/** The `related:` list of a page's frontmatter (empty when the field is absent). */
 function relatedOf(slug: string): string[] {
   const source = readFileSync(join(docsDir, `${slug}.mdx`), "utf8");
   const frontmatter = `${source.split("\n---\n", 1)[0]}\n`;
@@ -37,7 +27,6 @@ describe("docs related pages (related: frontmatter)", () => {
       ).toBeGreaterThanOrEqual(2);
       expect(related.length).toBeLessThanOrEqual(4);
       const targets = related.map((link) => link.replace(/^\/docs\//, ""));
-      // Every entry is a /docs/<slug> link to another page in this directory
       expect(related).toEqual(targets.map((target) => `/docs/${target}`));
       expect(slugs).toEqual(expect.arrayContaining(targets));
       expect(targets).not.toContain(slug);

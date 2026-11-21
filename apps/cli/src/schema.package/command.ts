@@ -1,5 +1,3 @@
-// `maruhi schema` (discipline: see commands/index.ts).
-
 import { readFile } from "node:fs/promises";
 
 import { MAX_META_MAX_AGE_DAYS, type MetaVarType } from "@maruhi/crypto";
@@ -21,12 +19,9 @@ import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import type { FieldUpdate, SchemaFieldUpdates, SchemaSetSummary } from "./schema.ts";
 
-/** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit).
- * @public
- */
+/** @public */
 export const schemaShowConfig = { ...commonFlags() };
 
-/** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 /** @public */
 export const schemaSetConfig = {
@@ -64,9 +59,7 @@ export const schemaSetConfig = {
   ),
 };
 
-/** `maruhi schema import <file>` (bootstrap — design doc §1-3).
- * @public
- */
+/** @public */
 export const schemaImportConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -77,14 +70,10 @@ export const schemaImportConfig = {
   ),
 };
 
-/** `maruhi schema export` (producing the derived snapshot — design doc §1-6).
- * @public
- */
+/** @public */
 export const schemaExportConfig = { ...commonFlags() };
 
-/** `maruhi schema verify-snapshot <file>` (the CI divergence check — design doc §1-6).
- * @public
- */
+/** @public */
 export const schemaVerifySnapshotConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -95,9 +84,7 @@ export const schemaVerifySnapshotConfig = {
   ),
 };
 
-/** `maruhi schema lint <path...>` (matching against the code contract — design doc §1-7).
- * @public
- */
+/** @public */
 export const schemaLintConfig = {
   ...commonFlags(),
   ignore: Flag.String("ignore").pipe(
@@ -105,7 +92,6 @@ export const schemaLintConfig = {
       "Environment-variable name to exclude from the undeclared check (repeatable; for runtime variables not managed by maruhi, e.g. NODE_ENV)",
     ),
     Flag.withSchema(NonBlank),
-    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly string[])
     Flag.atLeast(0),
   ),
   path: Argument.String("path").pipe(
@@ -114,16 +100,6 @@ export const schemaLintConfig = {
   ),
 };
 
-/**
- * `maruhi schema` (display)'s body (shared between bare `maruhi schema`
- * and the parent handler — same shape as audit). **The keyless class**
- * (openMetadataEnvironment — a metadata-only pull) and **agent-gate does
- * not apply (the permissive side — design doc §1-1)**: the output carries
- * zero values (names, types, descriptions, required, status only), and
- * ADR-0016 decision 7's two-layer gate applies only to "value-displaying"
- * commands. Running as-is in an agent environment is this feature's main
- * use (not being on the deny-list is pinned by a test).
- */
 const runSchemaShow = Effect.fn("schema-command.runSchemaShow")(function* (values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -143,7 +119,6 @@ const runSchemaShow = Effect.fn("schema-command.runSchemaShow")(function* (value
   });
 });
 
-/** Interpreting `--type` (unspecified = keep, `none` = an explicit clear. **The given value itself never appears in the error**). */
 function parseSchemaTypeFlag(
   value: string | undefined,
 ): Effect.Effect<FieldUpdate<MetaVarType>, CliError> {
@@ -161,7 +136,6 @@ function parseSchemaTypeFlag(
   );
 }
 
-/** Interpreting `--max-age` (unspecified = keep, `none` = clear, else a day count 1..3650). The given text never appears in the error. */
 function parseMaxAgeFlag(
   value: string | undefined,
 ): Effect.Effect<FieldUpdate<number | null>, CliError> {
@@ -181,12 +155,6 @@ function parseMaxAgeFlag(
       );
 }
 
-/**
- * `schema set`'s contradictory specifications (--required with --optional,
- * --description with --clear-description). Run by `Command.validate` before
- * the handler, so they are reported like a parse error: the usage line plus
- * the message, exit 2. The messages are fixed text (no typed value).
- */
 function rejectContradictorySchemaFlags(values: {
   readonly required: boolean;
   readonly optional: boolean;
@@ -204,12 +172,6 @@ function rejectContradictorySchemaFlags(values: {
   return Effect.void;
 }
 
-/**
- * Interpreting `schema set`'s column specifications (partial update §1-2
- * — unspecified = keep, only an explicit flag returns to empty). The
- * contradictory pairs were already rejected by
- * {@link rejectContradictorySchemaFlags}.
- */
 const parseSchemaFieldUpdates = Effect.fn("schema-command.parseSchemaFieldUpdates")(
   function* (values: {
     readonly type?: string | undefined;
@@ -235,7 +197,6 @@ const parseSchemaFieldUpdates = Effect.fn("schema-command.parseSchemaFieldUpdate
   },
 );
 
-/** `schema set`'s success report (the type is displayed as a declaration — the word "verified" is never used, §14.3). */
 function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   const typeShown = summary.schema.varType === "" ? "-" : summary.schema.varType;
   const maxAge =
@@ -259,11 +220,7 @@ export function makeSchemaCommands() {
       );
 
       const io = yield* CliIo;
-      // Interpreting the column specifications precedes the network
-      // (partial update §1-2 — unspecified = keep, only an explicit flag
-      // returns to empty)
       const updates = yield* parseSchemaFieldUpdates(values);
-      // The entropy warning (ruling CW — fail-closed) is judged before communication / signing
       yield* ensureEntropyAcknowledged({
         fields: [
           { field: "name", text: values.name },
@@ -306,18 +263,8 @@ export function makeSchemaCommands() {
         })),
       );
 
-      // The ceremony gate (the ceremony-family deny archetype of ADR-0016
-      // decision 7) is judged **before any communication or file read**:
-      // the per-variable interactive approval is the ceremony's core, and
-      // no bulk --yes exists. Both layers — known-agent detection and the
-      // non-interactive terminal — stop here (the judgment material goes
-      // through the Stdio / AgentProfileRef services)
       yield* ensureImportCeremonyAllowed;
       const { file, ...flags } = values;
-      // The file is read only on the client side (a value is wrapped in
-      // Redacted right after parseEnvFile reads it — env-file.ts). When
-      // unreadable, only the path is reported — never the content or the
-      // OS error detail
       const content = yield* Effect.tryPromise({
         try: () => readFile(file, "utf8"),
         catch: () =>
@@ -348,11 +295,6 @@ export function makeSchemaCommands() {
     ),
   );
 
-  // export / verify-snapshot / lint share schema (display)'s
-  // read-only, zero-value, keyless class (openMetadataEnvironment — works
-  // under a MARUHI_TOKEN session = runnable from a user's CI). The
-  // agent-gate does not apply (the permissive side — ADR-0016 decision
-  // 7's scope is "value-displaying" commands only. Pinned by a test)
   const schemaExport = Command.make(
     "export",
     schemaExportConfig,
@@ -387,9 +329,6 @@ export function makeSchemaCommands() {
       );
 
       const { file, ...flags } = values;
-      // The file is read before any network (a wrong path drops before a
-      // round trip). Only the path is reported — never the content or
-      // the OS error detail (same discipline as schema import)
       const fileContent = yield* Effect.tryPromise({
         try: () => readFile(file, "utf8"),
         catch: () =>
@@ -423,7 +362,6 @@ export function makeSchemaCommands() {
         })),
       );
 
-      // The scan precedes the network (a wrong path / an unreadable tree drops before a round trip)
       const scan = yield* scanPaths(values.path);
       const context = yield* openMetadataEnvironment(values);
       yield* schemaLintOp({
@@ -442,7 +380,6 @@ export function makeSchemaCommands() {
     ),
   );
 
-  // **bare `maruhi schema` = display** (design doc §1-1 — a handler-carrying parent like audit)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
       "Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes",

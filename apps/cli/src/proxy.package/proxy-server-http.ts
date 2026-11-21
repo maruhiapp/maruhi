@@ -1,11 +1,5 @@
-// HTTP-message helpers shared by the proxy's layers (proxy-server.ts):
-// reading a request body with a cap, the incoming headers as single
-// strings, a plain-text response, and the hop-by-hop header set both the
-// upstream request build and the response scrub drop.
-
 import http from "node:http";
 
-// Headers that describe one hop and must not be forwarded (RFC 9110 §7.6.1)
 export const HOP_BY_HOP = new Set([
   "connection",
   "proxy-connection",
@@ -35,7 +29,6 @@ export async function readBody(
   return Buffer.concat(chunks);
 }
 
-/** Headers of the incoming request as single strings (repeated headers joined as Node does). */
 export function flattenHeaders(req: http.IncomingMessage): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(req.headers)) {

@@ -1,29 +1,3 @@
-// Tests for `maruhi var history` / `maruhi var rollback` (2026-09-27 VH —
-// docs/notes/vh-design.md rulings V3 / V4).
-//
-// Invariants pinned down:
-//  1. history is metadata only: newest first, the lineage kind derived
-//     (re-encryption / rollback), the flagsIfCurrent warning, labeled
-//     server-declared; it never fetches a value (no value-range request) and
-//     runs in an agent environment (zero values)
-//  2. rollback restores the old plaintext as a new version declaring
-//     `sameValueAs` (AUTH_SPEC §12-5), re-encrypted under the current epoch,
-//     and never prints any value
-//  3. the target is trusted only as an ancestor of the verified latest: a
-//     substituted old version (validly signed, but not the one the chain
-//     links to) is refused as evidence and nothing is pushed
-//  4. confirmation: non-interactive needs --force; interactive asks y/N; the
-//     exposure count is part of the confirmation
-//  5. refusals before any send: the current version, a missing version, an
-//     identical value, a declared variable, a missing --to
-//  6. a push by someone else after the rollback was verified is never
-//     silently overwritten with the restored value
-//  7. `maruhi push` of a value identical to the latest declares the lineage
-//     (sameValueAs = the latest) — re-pushing the same value is not a new value
-//  8. rollback reads its sync config and decides the sync before the write,
-//     as push does: an explicit config of another project stops it, and one
-//     that copies nothing from the environment gets a note after the write
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,7 +82,6 @@ afterEach(async () => {
   servers = [];
 });
 
-/** A correctly chained version sequence (v1 … vN) of the given plaintexts. */
 async function versionChain(plaintexts: readonly string[]): Promise<WireDistributedValue[]> {
   const values: WireDistributedValue[] = [];
   for (const [index, plaintext] of plaintexts.entries()) {
@@ -216,7 +189,6 @@ function expectNoValueShown(env: TestEnv): void {
 const rangeRequests = (server: MockServer) =>
   server.requests.filter((request) => request.path.endsWith("/versions/values"));
 
-/** Writes a sync config for `project` whose one onPush target copies NAME from `environment`. */
 async function writeSyncConfig(project: string, environment: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "maruhi-var-history-test-"));
   const path = join(dir, "maruhi.sync.json");
@@ -246,7 +218,6 @@ describe("maruhi var history (metadata only — AUTH_SPEC §12-7)", () => {
       plaintexts: ["alpha-secret-1", "beta-secret-2", "beta-secret-2", "alpha-secret-1"],
       flagsIfCurrent: (_variableId, version) => (version === 1 || version === 4 ? 2 : 0),
     });
-    // Lineage as the pushes declared it (v3 = re-encryption of v2, v4 = rollback to v1)
     const history = state.history.get(VARIABLE_ID) ?? [];
     state.history.set(
       VARIABLE_ID,
@@ -258,7 +229,6 @@ describe("maruhi var history (metadata only — AUTH_SPEC §12-7)", () => {
             : entry,
       ),
     );
-    // A zero-value command runs under an agent too (no gate)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["var", "history", NAME], env.layer)).toBe(0);
     const lines = env.logs.filter((line) => line.startsWith("  v"));
@@ -320,7 +290,6 @@ describe("maruhi var rollback (AUTH_SPEC §12-5 / §12-7)", () => {
     expect(
       await decryptWire({ ...body.value, writerUserId: "", writerKeyFingerprintHex: "" }),
     ).toBe(PLAINTEXTS[0]);
-    // The new version chains onto the verified latest (v3)
     const v3 = state.history.get(VARIABLE_ID)?.[2]?.value;
     if (v3 === undefined) throw new Error("v3 missing");
     expect(body.value.prevValueSigHashHex).toBe(await valueHashOf(v3, owner.userId));
@@ -418,8 +387,6 @@ describe("maruhi var rollback under a concurrent push", () => {
       initialVariables: [{ variableId: VARIABLE_ID, statement, value: v3 }],
       initialHistory: new Map([[VARIABLE_ID, [v1, v2, v3]]]),
     });
-    // Another member's v4 lands right after the rollback fetched and
-    // verified its range (before its own push resolves the target again)
     let injected = false;
     const concurrentPush = (request: { readonly path: string }) => {
       if (!injected && request.path.endsWith("/versions/values")) {

@@ -1,18 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — DEK
-// distribution, backfill for new members, and the repair path
-// (AUTH_SPEC §12-6 / CRYPTO_SPEC §7).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-//
-// How the suite is split (for the split's motivation see the top of
-// support/membership-scenario.ts):
-// - This file: DEK distribution and the backfill / repair paths for new members
-// - data-dek-signature.test.ts: the registration signature on DEK wraps
-//   (§12-6 / CRYPTO_SPEC §5.1)
-// - data-dek-server.test.ts: recipient class server (§12-6 / CRYPTO_SPEC
-//   §9) and expectedWrapRecipientCount
-
 import type { TokenScope } from "@maruhi/core";
 import {
   decryptVariable,
@@ -84,7 +69,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE environment_id = ?",
       ENV,
     );
-    // There are 3 recipients in total, but the response contains only the caller's
     expect(rows[0]?.["n"]).toBe(3);
   });
 
@@ -92,7 +76,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const payload = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // Add a new member (real keys generated at test time) to the chain via add_member
     const encPair = await generateEncryptionKeyPair();
     const sigPair = await generateSigningKeyPair();
     const encPubHex = encodeHex(await exportEncryptionPublicKey(encPair.publicKey));
@@ -109,7 +92,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       },
     });
 
-    // The inviter (owner) wraps the existing epoch's DEK for the new member and registers it (§7)
     const backfill = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -124,7 +106,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     });
     expect(registered.status).toBe(204);
 
-    // The new member can pull → decrypt with their own key
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(STRANGER));
     expect(pull.status).toBe(200);
     const body = (await pull.json()) as {
@@ -188,7 +169,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       name: "App",
       head: fixture.head,
     });
-    // The manifest bundled into the creation composite (manifestVersion 1, empty variable set, epoch 1 — §12-4)
     const manifest = await signEnvManifestAs(OWNER, projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
@@ -201,7 +181,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
-    // The boundary checkpoint (H+2 — mandatory bundling per §12-4)
     const { entry: checkpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
@@ -222,10 +201,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       manifest,
       checkpoint,
     });
-    // Environment creation (§12-4) is on §5's explicit-deny surface (all
-    // environment / variable mutations): uniformly 403 session-not-allowed
-    // regardless of the CSRF header's presence (capability judgment comes
-    // first)
     const headers = sessionHeaders(session);
     const withoutCsrf = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
@@ -241,7 +216,6 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     });
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
-    // The same body is accepted for a token principal (proving the rejection stems from the session principal)
     const accepted = await SELF.fetch(dataUrl("/environments"), {
       method: "POST",
       headers: { ...JSON_HEADERS, ...bearer(token(OWNER)) },
@@ -256,7 +230,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const payload = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
 
-    // The owner (admin scope × chain role owner ≥ admin) deletes the READER-directed wrap
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -277,7 +250,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     const emptied = await requestJson("GET", `/environments/${ENV}/deks`, token(READER));
     await expect(emptied.json()).resolves.toEqual({ deks: [] });
 
-    // Re-register the correct wrap via the shortfall-append path (§12-6) → READER can decrypt again
     const reWrap = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -313,7 +285,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
 
   it("requires admin token scope and chain role admin (§12-3: same level as environment deletion)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A member's default PAT has admin scope but chain role member → 403
     const asMember = await requestJson("DELETE", `/environments/${ENV}/deks`, token(MEMBER), {
       wraps: [
         {
@@ -326,7 +297,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     });
     expect(asMember.status).toBe(403);
     expect(((await asMember.json()) as { reason: string }).reason).toBe("insufficient-role");
-    // Even the owner with a write token scope gets a 403 (insufficient-permission)
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const ownerWrite = await cliToken(9001, writeScope);
     const scoped = await requestJson("DELETE", `/environments/${ENV}/deks`, ownerWrite, {
@@ -341,7 +311,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     });
     expect(scoped.status).toBe(403);
     expect(((await scoped.json()) as { reason: string }).reason).toBe("insufficient-permission");
-    // The project itself is hidden from non-members (404 — §11-2)
     const concealed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(STRANGER), {
       wraps: [
         {
@@ -358,7 +327,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
 
   it("rejects missing tuples with 404 atomically and duplicate refs with 422", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // The first ref exists, the second does not → 404 (DekWrapNotFound), and nothing is deleted
     const partial = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -386,13 +354,11 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
       ENV,
     );
     expect(rows[0]?.["n"]).toBe(3);
-    // A rejected deletion leaves no audit row (dek.deleted) at all (separation of verification and writing)
     const audits = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
     );
     expect(audits[0]?.["n"]).toBe(0);
-    // Listing the same tuple twice is a 422 (duplicate-recipient)
     const duplicated = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -416,7 +382,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
   it("treats re-registration after a full epoch deletion as an initial registration (§12-6)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Delete all epoch-1 wraps → re-registration requires a complete match as an initial registration
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: ALL_MEMBERS.map((recipientUserId) => ({
         epoch: 1,
@@ -440,7 +405,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     });
     expect(partial.status).toBe(422);
     expect(((await partial.json()) as { reason: string }).reason).toBe("recipient-missing");
-    // With the complete set it is accepted, and the recipients can decrypt again
     const complete = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: await wrapDekForAll({
         projectId,
@@ -473,12 +437,10 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
 
   it("rejects deletion requests for missing environments, empty lists and oversized lists", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // An empty list is a 400 (Schema — destructive call shapes leaving zero audit trace are not allowed — §12-6)
     const empty = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [],
     });
     expect(empty.status).toBe(400);
-    // The count cap is the same MAX_DEK_WRAPS_PER_REQUEST as the registration side (judged before existence checks)
     const oversized = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
         epoch: 1,
@@ -492,7 +454,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
       resource: "dek-wraps-per-request",
       limit: MAX_DEK_WRAPS_PER_REQUEST,
     });
-    // Deletion against a tombstoned environment (wraps are physically deleted) is a 404 EnvironmentNotFound
     const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
@@ -506,7 +467,6 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
       ],
     });
     expect(gone.status).toBe(404);
-    // EnvironmentNotFound({environmentId}), not DekWrapNotFound({epoch, recipientUserId})
     const goneBody = (await gone.json()) as { environmentId?: string; epoch?: number };
     expect(goneBody.environmentId).toBe(ENV);
     expect(goneBody.epoch).toBeUndefined();

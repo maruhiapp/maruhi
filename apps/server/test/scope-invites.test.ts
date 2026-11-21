@@ -1,12 +1,3 @@
-// ES K3 — scope on invite rows (AUTH_SPEC §15 — format checking only; pins
-// behavior already implemented in K2. Item 4 of the design record
-// docs/notes/es-design.md §9).
-//   - scope on an issue body gets format checking only (no existence check —
-//   a not-yet-existing environment id still returns 200)
-//   - list rows and the acceptance response carry scope
-//   - Containment checking is a consensus rule at add_member admission (not
-//   added here)
-
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -69,9 +60,6 @@ describe("scope on invite rows (§15 — format checking only)", () => {
   });
 
   it("attaching a non-empty scopeEnvironmentIds to an `all` issuance is a 400 format check (the §15 kind rule — before signature verification)", async () => {
-    // The issue-signature producer side (@maruhi/crypto) rejects `all` +
-    // non-empty as malformed, so build a valid `all` issuance first and then
-    // mutate only the wire body
     const payload = await makeIssuePayload(inviteFixture, OWNER, "member");
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",

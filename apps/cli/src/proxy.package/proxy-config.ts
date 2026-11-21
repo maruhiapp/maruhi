@@ -1,31 +1,3 @@
-// The repository config of `maruhi proxy run` (PF4 — pf4-design.md
-// ruling P5 "where the brokering rules live"): `maruhi.proxy.json`.
-//
-// The rules say, per variable, what the child process gets: a
-// **placeholder** that the proxy swaps for the real value only toward the
-// listed hosts (`broker`), a short-lived credential minted by a connector
-// from other variables the child never sees (`connector`), the real value
-// (`passthrough` — values a proxy cannot substitute, such as a database
-// URL), or nothing (`withhold`). Variables the config does not name follow
-// `unlisted` (default `withhold` — fail closed); hosts no rule names
-// follow `unmatched` (default `allow` — tunnelled untouched, never
-// inspected).
-//
-// Nothing in the file is a secret: it names variables and hosts, the same
-// class of non-secret repository config as `maruhi.sync.json` (CLAUDE.md:
-// non-secret configuration may be persisted). It does decide which host
-// receives which value, so the docs say to review edits like a CI
-// workflow, and `proxy run` prints the rules it loaded before starting
-// the child. Same discipline as sync-config.ts: one JSON file (default
-// `maruhi.proxy.json`, `--config` overrides), a version field, unknown
-// keys refused, and validation wording that names the key and the rule
-// but never echoes the value typed.
-//
-// The JSON is read in one pass of steps over Schema-decoded leaves
-// (String / Literals / Record / Array), in the sequence the hand-written
-// checks ran (the first reason wins, like before); config-schema.ts renders
-// the failing issue as the same path-and-reason wording.
-
 import { type ProjectId } from "@maruhi/core";
 import { Effect, Result, Schema } from "effect";
 
@@ -50,40 +22,28 @@ import { type CliError, usageError } from "../errors.ts";
 import { loadIfPresent } from "../json-record.ts";
 import { SAFE_ENV_NAME } from "../run.ts";
 
-/** Default location of the proxy config, relative to the working directory. */
 export const DEFAULT_PROXY_CONFIG_PATH = "maruhi.proxy.json";
 
-/** Where in a request a placeholder is substituted (RFC 9110 vocabulary). */
 export type Surface = "header" | "path" | "query" | "body";
 
 const SURFACES: readonly Surface[] = ["header", "path", "query", "body"];
 
-/** The default surfaces (headers only — a token in a stored body could be published by the API; opt in per rule). */
 const DEFAULT_SURFACES: readonly Surface[] = ["header"];
 
-/**
- * One destination a rule allows: scheme (`https` unless written `http://`),
- * a host name (exact, or a `*.` prefix matching one or more labels) or an
- * IPv4 literal, and a port (the scheme's default unless written).
- */
 export interface HostPattern {
   readonly scheme: "https" | "http";
-  /** Lower-cased. For a wildcard, the part after `*.`. */
   readonly host: string;
   readonly wildcard: boolean;
   readonly port: number;
 }
 
-/** The connectors that mint a short-lived credential (proxy-connector.ts implements them). */
 export type ConnectorKind = "github-app";
 
 const CONNECTOR_KINDS: readonly ConnectorKind[] = ["github-app"];
 
-/** The brokering settings shared by `broker` and `connector` rules. */
 export interface BrokerSettings {
   readonly hosts: readonly HostPattern[];
   readonly surfaces: readonly Surface[];
-  /** A fixed placeholder (for clients that validate the credential's format); undefined = a random one per run. */
   readonly placeholder: string | undefined;
 }
 
@@ -92,7 +52,6 @@ export type VariableRule =
   | ({
       readonly mode: "connector";
       readonly connector: ConnectorKind;
-      /** Connector input name → the maruhi variable that supplies it (consumed by the proxy, never injected). */
       readonly inputs: Readonly<Record<string, string>>;
     } & BrokerSettings)
   | { readonly mode: "passthrough" }
@@ -100,13 +59,9 @@ export type VariableRule =
 
 export interface ProxyConfig {
   readonly version: 1;
-  /** The project the config belongs to (optional; checked against the resolved project when present). */
   readonly projectId: ProjectId | undefined;
-  /** Destinations no rule names: tunnelled as they are, or refused. */
   readonly unmatched: "allow" | "block";
-  /** Variables the config does not name. */
   readonly unlisted: "withhold" | "passthrough";
-  /** Env-var name → rule. */
   readonly variables: ReadonlyMap<string, VariableRule>;
 }
 
@@ -115,24 +70,13 @@ const BROKER_KEYS = ["mode", "hosts", "surfaces", "placeholder"] as const;
 const CONNECTOR_KEYS = ["mode", "connector", "inputs", "hosts", "surfaces", "placeholder"] as const;
 const BARE_KEYS = ["mode"] as const;
 
-/** The inputs each connector requires (names are the connector's vocabulary; values are variable names). */
 const CONNECTOR_INPUTS: Readonly<Record<ConnectorKind, readonly string[]>> = {
   "github-app": ["appId", "privateKey", "installationId"],
 };
 
-// A DNS label sequence (lower-cased on parse). IPv4 literals also pass this shape
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
-// Printable ASCII without spaces (a value that survives headers, URLs, and
-// shells), long enough not to occur in ordinary traffic by accident (a
-// short word as a placeholder would be rewritten wherever it appears —
-// review finding §19 C-12)
 const PLACEHOLDER = /^[\x21-\x7E]{16,256}$/;
 
-/**
- * `localhost`, any name under `.localhost` (RFC 6761 — with or without a
- * wildcard: `*.localhost`, `app.localhost`, `*.app.localhost`), or a
- * 127.0.0.0/8 literal (never a wildcard).
- */
 function isLoopbackHost(host: string, wildcard: boolean): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) {
     return true;
@@ -140,11 +84,6 @@ function isLoopbackHost(host: string, wildcard: boolean): boolean {
   return !wildcard && /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
-/**
- * Parses one host entry: `[scheme://]host[:port]`, `*.` wildcard allowed
- * (`http://` only toward the loopback). Exported for tests.
- */
-/** `[scheme://]rest` → the scheme and what follows it. */
 function splitScheme(
   text: string,
 ): { readonly scheme: HostPattern["scheme"]; readonly rest: string } | Invalid {
@@ -159,7 +98,6 @@ function splitScheme(
     : { scheme: "https", rest: text };
 }
 
-/** `host[:port]` → the host and the port (the scheme's default when absent). */
 function splitPort(
   text: string,
   defaultPort: number,
@@ -198,31 +136,24 @@ export function parseHostPattern(text: string): HostPattern | Invalid {
   if (rest.length === 0 || rest.length > 253 || !HOST_NAME.test(rest)) {
     return "the host must be a DNS name (letters, digits, `-`, `.`), optionally prefixed with `*.`, or an IPv4 address";
   }
-  // `*.localhost` is the one single-label wildcard (every name under it is
-  // the loopback — RFC 6761); `*.com` would name the public suffix
   if (wildcard && !rest.includes(".") && rest !== "localhost") {
     return "a wildcard needs at least two labels after `*.` (for example `*.example.com`; `*.localhost` is the exception)";
   }
-  // A value substituted into plain HTTP travels in cleartext; only the
-  // loopback is acceptable for that (a local development server)
   if (scheme === "http" && !isLoopbackHost(rest, wildcard)) {
     return "plain http:// is accepted only for loopback hosts (localhost, *.localhost, 127.0.0.0/8); a value toward any other host must travel over https";
   }
   return { scheme, host: rest, wildcard, port };
 }
 
-/** The `hosts` array: non-empty (each entry is then read in order by {@link parseHostPattern}). */
 const HOSTS_MESSAGE = " must be a non-empty array of host entries";
 const HOSTS = Schema.Array(Schema.Unknown)
   .annotate({ message: HOSTS_MESSAGE })
   .check(Schema.isMinLength(1, { message: HOSTS_MESSAGE }));
 
-/** One `hosts` entry before it is read as a pattern. */
 const HOST_ENTRY = Schema.String.annotate({
   message: " entries must be strings (host[:port], optionally with http:// or https://)",
 });
 
-/** The `surfaces` array: non-empty, each entry one of the RFC 9110 surfaces (deduped on success). */
 const SURFACES_MESSAGE = ` must be a non-empty array of ${SURFACES.join(" | ")}`;
 const SURFACES_FIELD = undefinedOr(
   SURFACES_MESSAGE,
@@ -233,24 +164,20 @@ const SURFACES_FIELD = undefinedOr(
     .check(Schema.isMinLength(1, { message: SURFACES_MESSAGE })),
 );
 
-/** The `placeholder` string (16–256 printable ASCII without spaces — review finding §19 C-12). */
 const PLACEHOLDER_MESSAGE = " must be 16 to 256 printable ASCII characters without spaces";
 const PLACEHOLDER_FIELD = undefinedOr(
   PLACEHOLDER_MESSAGE,
   stringLeaf(PLACEHOLDER_MESSAGE, (value) => PLACEHOLDER.test(value)),
 );
 
-/** The rule `mode` word. */
 const MODE = Schema.Literals(["broker", "connector", "passthrough", "withhold"]).annotate({
   message: " must be broker, connector, passthrough, or withhold",
 });
 
-/** The `connector` kind word. */
 const CONNECTOR = Schema.Literals(CONNECTOR_KINDS).annotate({
   message: ` must be one of ${CONNECTOR_KINDS.join(", ")}`,
 });
 
-/** A connector input's value: the maruhi variable that supplies it. */
 const INPUT_VARIABLE = envNameLeaf(" must name a maruhi variable (letters, digits, _)");
 
 function parseHosts(record: Record<string, unknown>): Parsed<readonly HostPattern[]> {
@@ -258,7 +185,6 @@ function parseHosts(record: Record<string, unknown>): Parsed<readonly HostPatter
     const entries = yield* field(record, "hosts", HOSTS);
     const hosts: HostPattern[] = [];
     for (const entry of entries) {
-      // Entry by entry, like before: the first bad entry decides the reason
       const parsed = parseHostPattern(yield* at(["hosts"], decode(HOST_ENTRY, entry)));
       if (typeof parsed === "string") {
         return yield* refuse(` has an invalid entry: ${parsed}`, ["hosts"]);
@@ -338,7 +264,6 @@ const RULE_RECORD = objectLeaf(
 );
 
 function parseRule(value: unknown): Parsed<VariableRule> {
-  // Shorthands: an array = broker toward these hosts; a bare mode word
   if (Array.isArray(value)) {
     return parseRule({ mode: "broker", hosts: value });
   }
@@ -360,7 +285,6 @@ function parseRule(value: unknown): Parsed<VariableRule> {
   });
 }
 
-/** The top-level `unmatched` / `unlisted` words (null = absent = the default). */
 const UNMATCHED_MESSAGE = ' must be "allow" (tunnel hosts no rule names, untouched) or "block"';
 const UNMATCHED = nullishOr(
   UNMATCHED_MESSAGE,
@@ -375,7 +299,6 @@ const UNLISTED = nullishOr(
 
 const VARIABLES_RECORD = objectLeaf(" must be an object (env-var name → rule); it may be empty");
 
-/** The `variables` object: every rule, unique placeholders, and no injection of a consumed input. */
 function parseVariables(
   record: Record<string, unknown>,
 ): Parsed<ReadonlyMap<string, VariableRule>> {
@@ -400,7 +323,6 @@ function parseVariables(
   return at(["variables"], variables);
 }
 
-/** Tracks a rule's placeholder (unique across rules) and the inputs its connector consumes. */
 function registerRule(
   name: string,
   rule: VariableRule,
@@ -408,8 +330,6 @@ function registerRule(
   consumed: Map<string, string>,
 ): Parsed<void> {
   if ((rule.mode === "broker" || rule.mode === "connector") && rule.placeholder !== undefined) {
-    // One placeholder inside another would make the longer one's substitution
-    // rewrite the shorter one's — refused, like a duplicate
     for (const other of placeholders) {
       if (other.includes(rule.placeholder) || rule.placeholder.includes(other)) {
         return refuse(
@@ -427,7 +347,6 @@ function registerRule(
   return Result.succeed(undefined);
 }
 
-/** A variable a connector consumes is never injected, so a rule that would inject it contradicts the connector. */
 function checkConsumed(
   variables: ReadonlyMap<string, VariableRule>,
   consumed: ReadonlyMap<string, string>,
@@ -443,10 +362,6 @@ function checkConsumed(
   return Result.succeed(undefined);
 }
 
-/**
- * The document in one pass: the header fields, then the rules — the same
- * order the reasons ran in before (the first one wins).
- */
 function parseProxyDocument(record: Record<string, unknown>): Parsed<ProxyConfig> {
   return Result.gen(function* () {
     const header = yield* configHeader(record, ROOT_KEYS);
@@ -464,18 +379,15 @@ function parseProxyDocument(record: Record<string, unknown>): Parsed<ProxyConfig
   });
 }
 
-/** Interpreting the config JSON (the reason's string when invalid). Exported for tests. */
 export function parseProxyConfig(content: string): ProxyConfig | Invalid {
   return parseConfigDocument(content, parseProxyDocument);
 }
 
-/** A config as read from disk: the rules, and the exact content a person accepts (proxy-accept.ts). */
 export interface LoadedProxyConfig {
   readonly config: ProxyConfig;
   readonly content: string;
 }
 
-/** Loading and verifying `--config <file>` (default `maruhi.proxy.json`). */
 export function loadProxyConfig(path: string): Effect.Effect<LoadedProxyConfig, CliError> {
   return loadConfig(
     path,
@@ -485,13 +397,6 @@ export function loadProxyConfig(path: string): Effect.Effect<LoadedProxyConfig, 
   ).pipe(Effect.map(({ parsed, content }) => ({ config: parsed, content })));
 }
 
-/**
- * The default config when it exists in the working directory (`maruhi run`
- * applies it without being told — ADR-0016 decision 7 revision 2): null
- * when the file is absent, and the same errors as {@link loadProxyConfig}
- * when it exists but cannot be read or is invalid — a broken config is
- * reported, never skipped (skipping would silently inject real values).
- */
 export function loadProxyConfigIfPresent(
   path: string,
 ): Effect.Effect<LoadedProxyConfig | null, CliError> {
@@ -502,7 +407,6 @@ export function loadProxyConfigIfPresent(
   );
 }
 
-/** Matching the config's `project` against the flag (a mismatch is a writing mistake = 2). */
 export function checkProxyConfigProject(
   config: ProxyConfig,
   projectFlag: string | undefined,

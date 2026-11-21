@@ -1,13 +1,3 @@
-// Integration tests for `maruhi device add / approve / list / revoke` and the
-// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
-// — 2026-09-19 DK K4. Design doc dk-design.md §9).
-// Device ops are signed / verified with real crypto; the server is a wire-level mock.
-//
-// Pinned properties:
-//  5. `device add` refuses by default on a device that already has a key
-//     (rebuild with `--replace` — K4-18); the signal of approval is the
-//     registry, confirmation of completion is the chain (K4-5)
-
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -63,12 +53,10 @@ describe("maruhi device add", () => {
     expect(env.logs.join("\n")).toContain(
       "This key is registered on 1 project (verified on each project's chain)",
     );
-    // An existing key never goes to create a request (never spends the server's 5-per-hour window)
     expect(state.paths().filter((path) => path.startsWith("POST /auth/devices/requests"))).toEqual(
       [],
     );
 
-    // --replace: show the discarded key's standing → generate a new key → request → swap → signal → confirm on the chain
     const before = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
     expect(
       await runCli(["device", "add", "--label", "phone", "--replace"], env.layer),
@@ -90,18 +78,13 @@ describe("maruhi device add", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("This device's key fingerprint:");
     expect(logs).toContain("fp words:");
-    // The chain is the truth: sync after the signal and count the projects it has not landed on yet
     expect(logs).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain)",
     );
-    // The shortfall guidance (K7-2): the approver's work is done · the request
-    // is spent · registration happens on the next keyed command of a device
-    // the cap covers (never says "re-run the approval" or "still working")
     const missingNote = env.errors.find((line) => line.includes("not registered yet on"));
     expect(missingNote).toContain(`not registered yet on ${built.projectId}`);
     expect(missingNote).toContain("skipped or failed on them");
     expect(missingNote).toContain("The request is used up");
-    // The prelude is one command per project, so it is "a keyed command aimed at that project" (DK K10-5)
     expect(missingNote).toContain(
       "when it runs a keyed command on that project at a terminal (`maruhi pull --project <id>`, for instance)",
     );
@@ -122,7 +105,6 @@ describe("maruhi device add", () => {
       ],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // The default mock returns 404 for GET /auth/devices/requests/:fp
     expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("expired before this machine saw the completion signal");
@@ -153,11 +135,9 @@ describe("maruhi device add", () => {
     expect(logs).not.toContain("The request expires at");
     expect(logs).not.toContain("Waiting for approval");
     expect(env.errors.join("\n")).not.toContain("still waiting (");
-    // The new key is on no chain — it says 'nothing is lost' with the scope attached
     expect(env.errors.join("\n")).toContain(
       "has no pending device-add request and is on no project the server lists for you (1 listed), each chain synced and verified, so replacing it loses nothing there",
     );
-    // Never goes to look up the request (the new key has no live request)
     expect(
       state.paths().some((path) => /^GET \/auth\/devices\/requests\/[0-9a-f]{32}$/.test(path)),
     ).toBe(false);
@@ -165,7 +145,6 @@ describe("maruhi device add", () => {
 
   it("when a third of the TTL has passed since the request's creation with no signal, emits 'check the approver's output' exactly once (K7-3)", async () => {
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    // Pretend the request was created 6 minutes ago (deadline = creation + 15 min). No signal yet
     const requestedAtMs = Date.now() - DEVICE_ADD_WAIT_HINT_AFTER_MS - 60 * 1000;
     const { server, state } = await makeServer({
       built,
@@ -183,12 +162,8 @@ describe("maruhi device add", () => {
       }),
     );
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
-    // The clock is anchored at wall time, so the 6-minutes-old request's
-    // elapsed crosses the hint threshold on the first registry fetch —
-    // emitted before the first wait, with no clock advance needed
     const { layer, testClock } = await withTestClock(env.layer, { at: Date.now() });
     const run = runCli(["device", "add", "--label", "phone"], layer);
-    // After round 1 (no signal → guidance), place a row equivalent to the approver's PUT: round 2 picks up the signal
     const { stored } = await waitFor(() => {
       const key = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
       const hinted = env.errors.some((line) => line.includes("still waiting ("));
@@ -207,11 +182,9 @@ describe("maruhi device add", () => {
       label: "phone",
       createdAtMs: Date.now(),
     });
-    // The run is parked in the 3-second poll wait — fast-forward it
     expect(await advanceUntilSettled(testClock, run), env.errors.join("\n")).toBe(0);
     const hints = env.errors.filter((line) => line.includes("still waiting ("));
     expect(hints).toHaveLength(1);
-    // Elapsed is measured for real (a resumed wait exceeds the threshold) — here threshold + 1 minute
     expect(hints[0]).toBe(
       `Note: still waiting (6 minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, or could not list this device in your device registry, the cause is in its output and this request stays valid until ${formatUtcMinutes(requestedAtMs + DEVICE_ADD_REQUEST_TTL_MS)} — fix it there and re-run it. Otherwise nothing is needed here`,
     );
@@ -241,35 +214,20 @@ describe("maruhi device add", () => {
     expect(expired).toContain(
       "The device-add request expired before this machine saw the completion signal (requests live 15 minutes)",
     );
-    // The guidance matches the implementation (K7-1): re-running is refused
-    // (K4-21), so it guides toward `--replace` conditioned on the approver
-    // having registered nothing. Never says "rebuild with the same key"
     expect(expired).toContain("if it registered nothing, run `maruhi device add --replace`");
     expect(expired).not.toContain("it reuses this key");
-    // K9-3's T3: when the approver registered but could not get onto the
-    // registry and nobody re-ran before the deadline, the key is on the chain
-    // — carrying the branch that never lets `--replace` discard it
     expect(expired).toContain(
       "If it registered this device but could not list it in your device registry, keep this key",
     );
-    // The chain's fact at this point (K13-4 — appended while keeping the conditions)
     expect(expired).toContain(
       "On the project chains right now, this key is on no project the server lists for you (1 listed). If the approving device is still working, re-running `maruhi device add` on this machine later shows whether it registered this key, without a new request",
     );
-    // The key stays generated (it is discarded only when a human types `--replace`)
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeDefined();
   });
 });
 
-/**
- * Scaffolding for the new device dev2's `device add` re-run (the registry row
- * is the signal — no request): the chain is genesis → environment (epoch 1) →
- * rotate (epoch 2) → dev2's `add_device` (cap is an argument).
- * The key at hand is dev2. The response of the GET for DEKs addressed to self is `listMine` (DK K12).
- */
 async function deviceAddReachFixture(input: {
   readonly cap?: Parameters<typeof addDeviceOp>[1];
-  /** Places dev2's live request (the resume-wait → signal → "Approved" path — DK K13-2). */
   readonly pending?: boolean;
   readonly listMine: (
     projectId: string,
@@ -295,10 +253,8 @@ async function deviceAddReachFixture(input: {
   return { env, state, built };
 }
 
-/** The DEK of each epoch of `deviceAddReachFixture`'s chain (per project). */
 const reachDeks = new Map<string, readonly Uint8Array[]>();
 
-/** A device-addressed distribution row (the new server's shape — with `recipientEncPubHex`, owner's registration signature). */
 async function deviceRowsOf(
   projectId: string,
   device: TestUser,
@@ -328,9 +284,6 @@ function listMineGets(state: ServerState, projectId: string): number {
 
 describe("maruhi device add — key arrival and revocation after the signal (DK K12)", () => {
   it("if an epoch addressed to this device is missing, emits pull's same warning with the real-id path, exits 0, and registers nothing", async () => {
-    // Only epoch 1 is addressed to dev2 (the sibling's owner gets 1 and 2 —
-    // rows addressed to other devices are not counted). Resume waiting on the
-    // live request (no request is created), and check after the signal (the registry row)
     const { env, state, built } = await deviceAddReachFixture({
       pending: true,
       listMine: async (projectId) => ({
@@ -354,7 +307,6 @@ describe("maruhi device add — key arrival and revocation after the signal (DK 
     expect(warning).toContain(
       `A registered device of yours whose cap covers environment ${ENV_ID} and that holds its keys fills the missing epochs when it runs \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\``,
     );
-    // The new device lacks the missing DEKs, so it does not fill them (the sibling device's pull fills them — K11)
     expect(state.registered).toEqual([]);
     expect(env.errors.join("\n")).toContain("resuming the wait for its approval");
     expect(state.paths().filter((path) => path.startsWith("POST /auth/devices/requests"))).toEqual(
@@ -381,7 +333,6 @@ describe("maruhi device add — key arrival and revocation after the signal (DK 
     });
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
     expect(listMineGets(state, built.projectId)).toBe(0);
-    // Called neither missing nor a check failure (outside the cap, cannot be opened) — never enters the enumeration
     const errors = env.errors.join("\n");
     expect(errors).not.toContain("no DEK wraps for you exist");
     expect(errors).not.toContain("could not check");
@@ -416,7 +367,6 @@ describe("maruhi device add — key arrival and revocation after the signal (DK 
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
-    // "Approved: … 0 projects" can structurally never appear (there is no path that waits on the registry row as the signal)
     expect(env.logs.join("\n")).not.toContain("Approved:");
     const errors = env.errors.join("\n");
     expect(errors).toContain(
@@ -436,7 +386,6 @@ describe("maruhi device add — key arrival and revocation after the signal (DK 
       { actor: owner, operation: addDeviceOp(dev2) },
       { actor: owner, operation: revokeDeviceOp(owner, [dev2]) },
     ]);
-    // On another project (its genesis key differs → a different id — same person), dev2 is valid
     const other = await buildChain([
       { actor: reserve, operation: genesisOp(reserve) },
       { actor: reserve, operation: addDeviceOp(dev2) },
@@ -450,8 +399,6 @@ describe("maruhi device add — key arrival and revocation after the signal (DK 
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
-    // A valid project exists, and there the provenance is add_device → a
-    // usable key (exit 0 — K13-2). No approval happened, so it never says "Approved" (K13-3)
     const logs = env.logs.join("\n");
     expect(logs).toContain(
       "This key is registered on 1 project (verified on each project's chain)",
@@ -489,7 +436,6 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
     );
     expect(requestPosts(state)).toEqual([]);
 
-    // No note when the registry has a row (the note is only for a missing row)
     const withRow = await makeServer({
       built,
       withEnvironment: false,
@@ -541,7 +487,6 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
     const unlisted = "ab".repeat(32);
     await mkdir(env.floorDir, { recursive: true });
     await writeFile(join(env.floorDir, `${unlisted}.jsonl`), "");
-    // Things that are not ID-shaped and sidecar files are not counted
     await writeFile(join(env.floorDir, `${"cd".repeat(32)}.attested.json`), "{}");
     await writeFile(join(env.floorDir, "notes.jsonl"), "");
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
@@ -624,7 +569,6 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
     );
     expect(errors).not.toContain("not registered yet");
     expect(errors).not.toContain("Warning:");
-    // Resuming a live request never creates a request (never spends the window — and no hole-5 path exists)
     expect(requestPosts(state)).toEqual([]);
 
     const listDown = await makeServer({
@@ -657,7 +601,6 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       brokenProjects: [{ built, mode: "unavailable" }],
     });
     const env = await startEnv(server.origin, built.projectId, dev2);
-    // The list's first entry (genesis is reserve) syncs and dev2 is absent; the second cannot be synced
     expect(await runCli(["device", "add"], env.layer), env.errors.join("\n")).toBe(0);
     expect(env.logs.join("\n")).toContain(
       "Approved: this device is registered on 0 projects (verified on each project's chain), and 1 project could not be checked",
@@ -672,7 +615,6 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
     ]);
-    // The registry row stays missing (T3 — the approver's PUT dropped), and the request has expired
     const { server } = await makeServer({
       built,
       withEnvironment: false,
@@ -775,14 +717,12 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     let env: TestEnv | null = null;
     let entry = "";
-    // A value written by another process (the guard only compares the value)
     const intruder = "written-by-another-process";
     const { server } = await makeServer({
       built,
       withEnvironment: false,
       extra: [
         onRequest("POST", "/auth/devices/requests", () => {
-          // Another process rewrites the keychain while the request is being created
           env?.keychain.set(entry, intruder);
           return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
         }),

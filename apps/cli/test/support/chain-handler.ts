@@ -1,18 +1,8 @@
-// Mock handlers for chain distribution (full length) and self-addressed DEKs.
-// The appendable project (`appendableProjectHandlers`) is shared by
-// support/device.ts and the restore path tests (passkey / handoff — DK K14).
-// The append injection (`injectedAppendResponse`) and the accepted append
-// (`acceptAppendedEntry`) are used together by support/device.ts,
-// four-eyes-server.ts and the member add / member remove / server revoke
-// tests' servers; meta-server.ts and mirror-server-grant.test.ts accept
-// appends through `acceptAppendedEntry` alone.
-
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
 
 import type { BuiltChain, WireRecipientDek } from "./crypto.ts";
 import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
 
-/** Returns self-addressed wraps for `GET /projects/:id/environments/:env/deks`. */
 export function deksHandlerOf(
   projectId: string,
   environmentId: string,
@@ -23,7 +13,6 @@ export function deksHandlerOf(
     request.method === "GET" && request.path === path ? { status: 200, json: { deks } } : null;
 }
 
-/** Returns the assembled chain verbatim for `GET /projects/:id/chain`. */
 export function chainHandlerOf(chain: BuiltChain): MockHandler {
   return (request) =>
     request.method === "GET" && request.path === `/projects/${chain.projectId}/chain`
@@ -40,7 +29,6 @@ export function chainHandlerOf(chain: BuiltChain): MockHandler {
       : null;
 }
 
-/** The `GET /projects/:id/chain` response of a chain reflecting appends. */
 export function servedChainResponse(
   projectId: string,
   entries: readonly ChainEntry[],
@@ -58,7 +46,6 @@ export function servedChainResponse(
   };
 }
 
-/** Accepts an append, extends the entries and hashes, and returns the new head. */
 export async function acceptAppendedEntry(
   projectId: string,
   entries: ChainEntry[],
@@ -73,15 +60,11 @@ export async function acceptAppendedEntry(
   };
 }
 
-/** A test's injection into a mock's chain appends (e.g. a 409 head conflict). */
 interface AppendInjection {
-  /** The injected response for an append, by call (from 0). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend injects, the served chain is replaced with this one first (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
 }
 
-/** The response `injection` makes for an append's call (undefined = accept), replacing the entries and hashes first when it says to. */
 export function injectedAppendResponse(
   injection: AppendInjection,
   call: number,
@@ -96,10 +79,6 @@ export function injectedAppendResponse(
   return injected;
 }
 
-/**
- * An appendable project: chain GET (reflecting appends), append POST, and an
- * empty environment list. `onAppend` receives accepted entries in call order.
- */
 export function appendableProjectHandlers(
   built: BuiltChain,
   onAppend: (entry: ChainEntry) => void = () => undefined,
@@ -126,7 +105,6 @@ export function appendableProjectHandlers(
   ];
 }
 
-/** `GET /projects` (AUTH_SPEC §11-5) — lists the assembled chains' projects with the caller as owner. */
 export function projectListHandlerOf(projects: readonly BuiltChain[]): MockHandler {
   return onRequest("GET", "/projects", () => ({
     status: 200,

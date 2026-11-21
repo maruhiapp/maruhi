@@ -1,28 +1,12 @@
-// Independent verification script for the test vectors (a disposable tool,
-// not product code). Verifies every vector with an implementation family
-// separate from the generators (pyca/cryptography, hpke-js):
-//   - encoding / variable-encryption / chain-entries / recovery-wrap → WebCrypto(Bun)
-//   - dek-wrap → panva hpke (the library the product implementation will adopt) for Open
-// This confirms both "the expected values are correct" and "they
-// reproduce on the implementation stack we plan to ship".
-// Run: bun run verify_reference.mjs (run in this directory. exit 0 = all
-// checks passed)
 import { readFileSync } from "node:fs";
 
 import * as HPKE from "hpke";
 
 const read = (name) => JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"));
-// 2026-09-20 DK: a chain-dependent vector's reference chain is `chain`
-// (omitted / "canonical" = the canonical chain; anything else = a name in
-// chain-entries.json's extended_chains — canonical prefix + derived
-// entries). The signing key is selected by (user_id, FP) (the FP points at
-// a device — device entries in `keys` carry a user_id field)
 const chainHeadHash = (chain, chainName, seq) => {
   if (chainName === undefined || chainName === "canonical") {
     return chain.entries[seq - 1].entry_hash_hex;
   }
-  // A derived chain shares the canonical prefix only up to its base_seq
-  // (environment-deleted branches at 19, inside the canonical 24)
   const ext = chain.extended_chains[chainName];
   return seq <= ext.base_seq
     ? chain.entries[seq - 1].entry_hash_hex
@@ -61,17 +45,8 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures += 1;
 };
 
-// The canonicalization / signing field order is authoritative as
-// hardcoded from the spec, and the vector JSON's declaration is checked
-// for agreement with it (verifying in a JSON-derived order would pass
-// whenever the declaration is modified and could not pin the order
-// independently — session-15 review (3)).
-// Canonical field order of chain payloads (CRYPTO_SPEC §6.1 / §6.2)
 const PAYLOAD_FIELD_ORDER = {
   genesis: ["enc_pub_hex", "sig_pub_hex"],
-  // 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — ES): the canonical form
-  // appends scope_kind / scope_environments_lp_hex at the end (the old
-  // 4 / 2-field form has no compatibility path)
   add_member: [
     "target_user_id",
     "enc_pub_hex",
@@ -84,8 +59,6 @@ const PAYLOAD_FIELD_ORDER = {
   change_role: ["target_user_id", "new_role", "scope_kind", "scope_environments_lp_hex"],
   create_environment: ["environment_id", "dek_commitment_hex"],
   rotate_epoch: ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
-  // 2026-08-12 (CRYPTO_SPEC 0.5-draft §6.2): the canonical form is the
-  // 4 fields with lease_policy_lp_hex appended at the end
   grant_server: [
     "server_enc_pub_hex",
     "server_key_fingerprint_hex",
@@ -93,38 +66,20 @@ const PAYLOAD_FIELD_ORDER = {
     "lease_policy_lp_hex",
   ],
   revoke_server: ["server_key_fingerprint_hex"],
-  // 2026-08-27 (CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): the
-  // environment entry list is one hex-string field of the same nested LP
-  // as scope_environments
   checkpoint: ["environments_lp_hex", "audit_head_hash_hex"],
-  // 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — PF1 four-eyes): 4 ops
   set_approval_policy: ["ops_lp_hex", "required_approvals"],
   propose: ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
   approve: ["proposal_hash_hex"],
   withdraw: ["proposal_hash_hex"],
-  // 2026-09-20 (CRYPTO_SPEC 0.12-draft §6.2 — DK device keys): add_device's
-  // scope is the same nested LP as member_scope; revoke_device's
-  // device_fingerprints_lp_hex is a nested LP of the FP list
   add_device: ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind", "scope_environments_lp_hex"],
   revoke_device: ["target_user_id", "device_fingerprints_lp_hex"],
-  // 2026-10-07 (CRYPTO_SPEC 0.17-draft §6.2 — environment deletion on the
-  // chain): one field. Domain separation is the op name inside
-  // signed_bytes (no separate domain string)
   delete_environment: ["environment_id"],
 };
 
-// Nested LP for member scopes / policy ops (§6.2 — same shape as
-// grant_server's scope_environments): lowercase hex of an LP of the
-// string list. An inner payload (propose) is hex of the inner op's
-// payload_bytes
 const stringListLp = (items) => lpEncode(items);
 const innerPayloadLp = (innerOp, innerPayload) =>
   lpEncode(PAYLOAD_FIELD_ORDER[innerOp].map((k) => innerPayload[k]));
 
-// Nested LP for checkpoint's environment entries (§6.2 — same definition
-// as generate_reference.py):
-//   entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
-//              values_digest_hex), environments_lp_hex = lower_hex(LP(entry...))
 function checkpointEnvironmentsLp(environments) {
   return lpEncode(
     environments.map((e) =>
@@ -139,9 +94,6 @@ function checkpointEnvironmentsLp(environments) {
   );
 }
 
-// checkpoint's values_digest (§6.2): v_j = LP(variable_id, version,
-// value_sig_hash_hex) ordered by variable_id UTF-8 byte order, then
-// SHA-256 of LP("maruhi/v1/env-values-digest", v_1, …, v_m)
 function envValuesDigestInput(entries) {
   const enc = new TextEncoder();
   const ordered = entries.toSorted((a, b) => {
@@ -160,8 +112,6 @@ function envValuesDigestInput(entries) {
   ]);
 }
 
-// Nested LP for grant_server's lease_policy (§6.2 — 3 levels. Same
-// definition as generate_reference.py)
 function leasePolicyLp(policy) {
   return lpEncode(
     policy.map((element) =>
@@ -173,8 +123,6 @@ function leasePolicyLp(policy) {
     ),
   );
 }
-// Signed field order for meta statements (CRYPTO_SPEC §4.2's LP argument
-// list)
 const VAR_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -189,9 +137,6 @@ const VAR_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const ENV_SIGNED_FIELDS_ORDER = VAR_SIGNED_FIELDS_ORDER.filter((f) => f !== "variable_id");
-// The retired layout v2 (CRYPTO_SPEC §4.2's 0.15-draft — the v3 sequence
-// without max_age_days). Not a valid layout; kept only to cross-check the
-// v2-layout-unsupported negative's signature over the retired encoding
 const RETIRED_VAR_V2_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -208,8 +153,6 @@ const RETIRED_VAR_V2_SIGNED_FIELDS_ORDER = [
   "chain_head_hash_hex",
   "chain_head_seq",
 ];
-// Layout v3 (CRYPTO_SPEC §4.2 — the schema layout: var_type / required /
-// description / max_age_days inserted immediately after status)
 const VAR_V3_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -228,8 +171,6 @@ const VAR_V3_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// Meta-statement domain string (§4.2): binds the suite, var vs env
-// distinction, and layout version
 const expectedMetaDomain = (ctx) => {
   const layout = ctx.layout_version ?? 1;
   if (layout === 3) {
@@ -238,7 +179,6 @@ const expectedMetaDomain = (ctx) => {
   return `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
 };
 
-// --- encoding.json -----------------------------------------------------------
 {
   const doc = read("encoding.json");
   for (const c of doc.cases) {
@@ -246,7 +186,6 @@ const expectedMetaDomain = (ctx) => {
   }
 }
 
-// --- variable-encryption.json ------------------------------------------------
 async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const key = await crypto.subtle.importKey("raw", fromHex(keyHex), "AES-GCM", false, ["decrypt"]);
   return new Uint8Array(
@@ -288,11 +227,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- chain-entries.json ------------------------------------------------------
 {
   const doc = read("chain-entries.json");
-  // Verification runs in the spec-hardcoded order; the JSON declaration is
-  // checked for agreement with it
   const declared = doc.canonicalization.payload_field_order;
   check(
     "chain: payload_field_order matches spec",
@@ -304,11 +240,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // The signing key is selected by the actor's (user_id, FP) (2026-09-20
-  // DK — the FP points at a device: §1 principle 7). Look up device entries
-  // in `keys` ("<user_id>@<label>" — they carry a user_id field) and
-  // derived-chain-specific `keys` (a member re-added under a different key)
-  // by the same rule, falling back to the person's first key
   const keyRecords = (extKeys) =>
     [...Object.entries(doc.keys), ...Object.entries(extKeys ?? {})].map(([id, k]) => ({
       userId: k.user_id ?? id,
@@ -357,17 +288,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     check(`chain seq ${e.seq}: entry hash`, hash === e.entry_hash_hex);
     prevHash = hash;
   }
-  // Key fingerprint: first 16 bytes of SHA-256(enc_pub || sig_pub) (raw
-  // concatenation)
   for (const [uid, k] of Object.entries(doc.keys)) {
     const cat = new Uint8Array([...fromHex(k.enc_pub_hex), ...fromHex(k.sig_pub_hex)]);
     const fp = (await sha256(cat)).slice(0, 32);
     check(`chain: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
   }
-  // Derived-chain-specific keys (`keys` — the new key of a member re-added
-  // under a different key) pass through the same derivation check. Picking
-  // the signing key on the declared FP alone would let a crafted override
-  // pass a forged signature
   for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
     for (const [uid, k] of Object.entries(ext.keys ?? {})) {
       const cat = new Uint8Array([...fromHex(k.enc_pub_hex), ...fromHex(k.sig_pub_hex)]);
@@ -375,33 +300,22 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       check(`chain extended ${chainName}: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
     }
   }
-  // Server key fingerprint: first 16 bytes of SHA-256(server_enc_pub)
-  // (the enc key only. §9)
   {
     const fp = (await sha256(fromHex(doc.server_key.enc_pub_hex))).slice(0, 32);
     check("chain: server key fingerprint", fp === doc.server_key.key_fingerprint_hex);
   }
-  // grant_server's scope_environments: a nested LP (hex string of an LP
-  // of the environment ID list)
   {
     const e7 = doc.entries.find((e) => e.op === "grant_server");
     check(
       "chain: grant_server scope nested LP",
       toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
     );
-    // lease_policy: a 3-level nested LP (§6.2). Reconstruction from the
-    // structured representation matches lp_hex
     check(
       "chain: grant_server lease_policy nested LP",
       toHex(leasePolicyLp(e7.payload.lease_policy)) === e7.payload.lease_policy_lp_hex,
     );
-    // An empty policy is the hex of an empty byte string = the empty
-    // string (the form regrant-lease-policy-revised uses)
     check("chain: empty lease_policy encodes to empty hex", toHex(leasePolicyLp([])) === "");
   }
-  // ES / PF1 (2026-09-14 §6.2): nested-LP reconstruction from the
-  // structured representation matches *_lp_hex. Targets every entry of
-  // the canonical chain + extended_chains / valid_appends / negative
   {
     const allEntries = [
       ...doc.entries,
@@ -409,9 +323,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ...doc.valid_appends.map((a) => a.entry),
       ...doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
     ];
-    // The closed kind set {all, listed} is asserted only on positives
-    // (canonical chain / derived chains / valid_appends) — negatives
-    // (scope-kind-unknown carries "some") are out of scope
     const negativeEntries = new Set(
       doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
     );
@@ -429,9 +340,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
             (negativeEntries.has(e) || p.scope_kind === "all" || p.scope_kind === "listed"),
         );
       } else if (e.op === "add_device") {
-        // 2026-09-20 DK: the device scope is the same nested LP as
-        // member_scope. role_cap is a closed set (the
-        // add-device-role-cap-unknown negative is out of scope)
         scoped += 1;
         const p = e.payload;
         check(
@@ -442,8 +350,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
                 (p.scope_kind === "all" || p.scope_kind === "listed"))),
         );
       } else if (e.op === "revoke_device") {
-        // 2026-09-20 DK: nested LP of the revoked-FP list. Positives have
-        // 1+ elements, no duplicates, 32 lowercase hex chars
         const p = e.payload;
         check(
           `${label}: device fingerprints nested LP`,
@@ -462,8 +368,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       } else if (e.op === "propose") {
         proposals += 1;
         const p = e.payload;
-        // Unknown inner ops / inner-payload shape violations (structural
-        // negatives) carry an empty LP (hex empty string)
         const decodable =
           Object.hasOwn(PAYLOAD_FIELD_ORDER, p.inner_op) &&
           PAYLOAD_FIELD_ORDER[p.inner_op].every((k) => Object.hasOwn(p.inner_payload, k));
@@ -476,17 +380,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       }
     }
     check("chain: scoped member vectors exist", scoped > 0 && policies > 0 && proposals > 0);
-    // scope_kind = all carries the empty list (hex empty string) — the
-    // canonical chain's add_member / change_role
     check(
       "chain: canonical all-scope entries carry the empty list",
       doc.entries
         .filter((e) => e.op === "add_member" || e.op === "change_role")
         .every((e) => e.payload.scope_kind !== "all" || e.payload.scope_environments_lp_hex === ""),
     );
-    // approve / withdraw reference the entry_hash of a proposal entry (a
-    // propose on the same chain). Pins that canonical seq 22 / 24 point at
-    // seq 21 / 23
     const propose21 = doc.entries[20];
     check(
       "chain: approve 22 references propose 21 / withdraw 24 references propose 23",
@@ -496,11 +395,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         doc.entries[23].payload.proposal_hash_hex === doc.entries[22].entry_hash_hex,
     );
   }
-  // DK (2026-09-20): the prefixes of the derived chains based on
-  // device-ops (device-added / device-dead-vote / device-revote-applied /
-  // device-recovered) have entry byte strings identical to device-ops, and
-  // the public keys add_device carries correspond to device entries in
-  // `keys` (matching the actor's user_id)
   {
     const full = doc.extended_chains["device-ops"];
     check("chain: device-ops derived chain exists", full !== undefined && full.base_seq === 24);
@@ -527,8 +421,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         registered !== undefined && registered.userId === e.actor.user_id,
       );
     }
-    // A revoke_device FP points at a device carried earlier on the same
-    // chain (or the person's first key)
     const canonicalFps = new Set(Object.values(doc.keys).map((k) => k.key_fingerprint_hex));
     for (const e of full.entries.filter((x) => x.op === "revoke_device")) {
       check(
@@ -537,11 +429,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // Environment deletion (2026-10-07 — §6.2): every positive
-  // delete_environment (derived chains / valid_appends) names an
-  // environment created earlier on its own chain, and at most once. The
-  // consensus judgment itself is the implementation tests' job; this pins
-  // that the positive column is internally consistent
   {
     const positives = [
       ...Object.entries(doc.extended_chains ?? {}).map(([name, ext]) => ({
@@ -579,10 +466,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     }
     check("chain: delete_environment positives exist", deletions > 0);
   }
-  // checkpoint (§6.2 — PR-F3a): nested-LP reconstruction from the
-  // structured representation (environments) matches environments_lp_hex.
-  // Targets every entry containing a checkpoint op (extended_chains /
-  // valid_appends / negative's entry)
   {
     const checkpointEntries = [
       ...Object.values(doc.extended_chains ?? {}).flatMap((ext) => ext.entries),
@@ -596,27 +479,19 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         toHex(checkpointEnvironmentsLp(e.payload.environments)) === e.payload.environments_lp_hex,
       );
     }
-    // Zero environment entries = the hex of an empty byte string = the
-    // empty string (checkpoint-empty-environments)
     check(
       "chain: empty checkpoint environments encode to empty hex",
       toHex(checkpointEnvironmentsLp([])) === "",
     );
   }
-  // The checkpoint values_digest canonical form (the values_digests
-  // section): recomputation in byte order from non-canonically-ordered
-  // entries matches the expected digest
   for (const digestCase of doc.values_digests ?? []) {
     check(
       `chain values-digest ${digestCase.name}`,
       (await sha256(envValuesDigestInput(digestCase.entries))) === digestCase.values_digest_hex,
     );
   }
-  // The §5.2 DEK commitment: recomputation from the dummy DEKs in
-  // environment_deks matches the published values, and the
-  // create_environment / rotate_epoch payloads carry it
   {
-    const projectId = doc.entries[0].entry_hash_hex; // = the genesis hash (§6.4)
+    const projectId = doc.entries[0].entry_hash_hex;
     for (const [environmentId, perEnv] of Object.entries(doc.environment_deks)) {
       for (const [epoch, info] of Object.entries(perEnv)) {
         const computed = await sha256(
@@ -644,11 +519,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       }
     }
   }
-  // valid_appends: the permissive-side boundary of the consensus rules
-  // (§6.2's forbidden range = the current member set only). Confirms the
-  // signature, canonicalization, and prev_hash (= the hash of the canonical
-  // chain's last entry) are valid. Checking that they are actually
-  // accepted is the implementation tests' job
   for (const a of doc.valid_appends) {
     const e = a.entry;
     const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
@@ -668,10 +538,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       fromHex(e.signature_hex),
       signed,
     );
-    // entry_bytes / entry_hash, which become meaningful as the head once
-    // accepted, are checked to the same standard as canonical-chain
-    // entries (so a third-party implementation chaining an append onto
-    // this hash never silently passes a stale value — review loop 2)
     const entryBytes = lpEncode([
       e.suite,
       e.seq,
@@ -683,11 +549,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       e.timestamp_ms,
       e.signature_hex,
     ]);
-    // An append connects immediately after the canonical entry its seq
-    // points at (seq 13 = head 12, seq 10 = a re-grant appended onto the
-    // seq 9 head, …). A chain-qualified append connects to the tail of the
-    // derived chain (extended_chains) (2026-09-14 ES / PF1 — carried the
-    // same way as negative's chain qualifier)
     const expectedPrev =
       a.chain === undefined
         ? doc.entries[e.seq - 2].entry_hash_hex
@@ -702,10 +563,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         (await sha256(entryBytes)) === e.entry_hash_hex,
     );
   }
-  // extended_chains: derived chains appended onto a mid-canonical-chain
-  // head (the precondition state for authorization negatives). Each
-  // entry's canonicalization, signature, and connection point are checked
-  // to the same standard as the canonical chain
   for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
     let prev = doc.entries[ext.base_seq - 1].entry_hash_hex;
     let seq = ext.base_seq;
@@ -722,11 +579,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         payloadBytes,
         e.timestamp_ms,
       ]);
-      // The signing key is selected by the actor's (user_id, declared
-      // FP): derived-chain-specific keys (`keys` — the device keys of
-      // readded-approver-revote / reader-second-device, signed by a member
-      // re-added under a different key) and canonical `keys` (persons'
-      // first keys, device keys) are searched by the same rule
       const signerKey = signerKeyFor(e, ext.keys);
       const sigOk = await crypto.subtle.verify(
         "Ed25519",
@@ -745,9 +597,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         e.timestamp_ms,
         e.signature_hex,
       ]);
-      // approve / withdraw references must point at a propose entry on
-      // the same derived chain (or the canonical prefix) (bogus
-      // references appear only in negatives)
       const referenced =
         e.op === "approve" || e.op === "withdraw"
           ? [...doc.entries.slice(0, ext.base_seq), ...ext.entries].find(
@@ -774,10 +623,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       continue;
     }
     if (n.kind === "authorization") {
-      // For the authorization kind, confirm it is "cryptographically
-      // valid (signature, canonicalization, prev_hash are correct)".
-      // Rejection comes from §6.2's authorization rules; that check is
-      // the implementation tests' job
       const e = n.entry;
       const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
       const signed = lpEncode([
@@ -796,9 +641,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         fromHex(e.signature_hex),
         signed,
       );
-      // A chain-qualified negative connects to the tail of the derived
-      // chain (extended_chains). Also pins that the connection point's
-      // prev matches the derived chain's last entry
       const expectedPrev =
         n.chain === undefined ? null : doc.extended_chains[n.chain].entries.at(-1).entry_hash_hex;
       check(
@@ -819,7 +661,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- dek-wrap-signature.json --------------------------------------------------
 {
   const doc = read("dek-wrap-signature.json");
   const dekWrap = read("dek-wrap.json");
@@ -838,17 +679,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.signer_user_id,
     ]);
   const base = doc.vectors[0];
-  // The wrap body is identical to dek-wrap.json's basic vector (one
-  // continuous run of real data)
   check(
     "dek-wrap-sig: wrap body matches dek-wrap.json",
     base.enc_hex === dekWrap.vectors[0].enc_hex &&
       base.ciphertext_hex === dekWrap.vectors[0].ciphertext_hex &&
       base.recipient_enc_pub_hex === dekWrap.recipient_keypair.pkRm_hex,
   );
-  // Recipient class server (§9 / §12-6): the recipient position = the
-  // server key FP, recipient_enc_pub = the server's enc public key, and
-  // the wrap body is identical to server-basic
   const serverVector = doc.vectors.find((v) => v.name === "server-basic");
   const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
   check(
@@ -887,13 +723,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- invite-accept-signature.json (v2 — joint signature of acceptance) ---
 {
   const doc = read("invite-accept-signature.json");
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // The signed field order is authoritative as hardcoded from the spec
-  // (same discipline as dek-wrap-sig)
   const signedBytes = (ctx) =>
     lpEncode([
       ctx.domain,
@@ -904,18 +737,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.invitee_sig_pub_hex,
     ]);
   const base = doc.vectors[0];
-  // The accepter's declared keys match the invitee block (signer =
-  // invitee self-binding)
   check(
     "invite-accept-sig: invitee keys bound",
     base.invitee_enc_pub_hex === doc.invitee.enc_pub_hex &&
       base.invitee_sig_pub_hex === doc.invitee.sig_pub_hex &&
       base.invitee_user_id === doc.invitee.user_id,
   );
-  // The link public key matches the link_key block and is derivable from
-  // the seed (via PKCS8 — WebCrypto has no standalone Ed25519 seed
-  // import, so import the RFC 8410 OneAsymmetricKey fixed prefix + seed
-  // as pkcs8 and read jwk's x)
   const pkcs8Prefix = fromHex("302e020100300506032b657004220420");
   const derivePub = async (seedHex) => {
     const der = new Uint8Array(48);
@@ -964,8 +791,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     for (const n of list) {
       const reconstructed = signedBytes(n.context);
       const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
-      // Pins that the verification key is always the declared key inside
-      // the signed payload (§6.5's self-binding)
       const selfBound = n.verify_key_hex === n.context[keyField];
       const verified = await crypto.subtle.verify(
         "Ed25519",
@@ -974,9 +799,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         reconstructed,
       );
       if (n.name === "legacy-domain") {
-        // Pins both: it is a valid signature in the old format (passes
-        // over the v1 byte string) + it does not pass over a byte string
-        // rebuilt with the v2 domain
         const v2Bytes = signedBytes({
           ...n.context,
           domain: `${n.context.suite}/invite-accept-v2`,
@@ -1000,7 +822,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   await runNegatives(doc.link_negative, "link_pub_hex", "invite-link-sig");
 }
 
-// --- invite-link.json (issuance signature + OpenSSH encoding) -------------
 {
   const doc = read("invite-link.json");
   const chain = read("chain-entries.json");
@@ -1018,8 +839,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.inviter_user_id,
       ctx.inviter_enc_pub_hex,
       ctx.inviter_sig_pub_hex,
-      // 2026-09-14 ES: the scope to be granted (same encoding as §6.2)
-      // is appended at the end
       ctx.scope_kind,
       ctx.scope_environments_lp_hex,
     ]);
@@ -1067,10 +886,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   for (const n of doc.issue.negative) {
     const selfBound = n.verify_key_hex === n.context.inviter_sig_pub_hex;
     if (n.kind === "encoding") {
-      // The encoding kind (old 10-field form, flat concatenation):
-      // canonicalization never produces this byte string, and a canonical
-      // signature fails verification over it (same shape as
-      // chain-entries's flat-concat)
       const differs = toHex(signedBytes(n.context)) !== n.verify_signed_bytes_hex;
       const verified = await crypto.subtle.verify(
         "Ed25519",
@@ -1091,7 +906,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`invite-issue-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
   }
-  // OpenSSH public key line (RFC 4253 §6.6 / RFC 8709): "ssh-ed25519 " + base64(LP("ssh-ed25519") ‖ LP(key))
   const encodeLine = (pubHex) => {
     const blob = lpEncode([new TextEncoder().encode("ssh-ed25519"), fromHex(pubHex)]);
     return `ssh-ed25519 ${btoa(String.fromCharCode(...blob))}`;
@@ -1125,7 +939,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- dek-commitment.json -------------------------------------------------------
 {
   const doc = read("dek-commitment.json");
   const dekWrap = read("dek-wrap.json");
@@ -1140,8 +953,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
   const basic = doc.vectors[0];
   const wrapBase = dekWrap.vectors[0];
-  // The DEK and coordinates are identical to dek-wrap.json's basic
-  // (wrap → §5.2 comparison is one continuous run of real data)
   check(
     "dek-commitment: coordinates match dek-wrap.json",
     basic.dek_hex === wrapBase.dek_hex &&
@@ -1165,7 +976,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- value-signature.json ------------------------------------------------------
 {
   const doc = read("value-signature.json");
   const chain = read("chain-entries.json");
@@ -1199,15 +1009,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
     );
     check(`value-sig ${v.name}: domain embeds suite`, ctx.domain === `${ctx.suite}/value-sig`);
-    // Chain-reference consistency: project_id = the genesis hash, head =
-    // the hash of entries[seq-1]
     check(`value-sig ${v.name}: project id is genesis hash`, ctx.project_id === projectId);
     check(
       `value-sig ${v.name}: head hash matches chain`,
       ctx.chain_head_hash_hex === chainHeadHash(chain, v.chain, ctx.chain_head_seq),
     );
-    // Ed25519 verify with the writer key (chain-entries's keys — device
-    // keys are selected by (user_id, FP))
     const writerKeys = chainKeyFor(chain, ctx.writer_user_id, v.writer_key_fingerprint_hex);
     check(
       `value-sig ${v.name}: writer fingerprint matches chain keys`,
@@ -1220,8 +1026,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       bytes,
     );
     check(`value-sig ${v.name}: Ed25519 signature`, ok);
-    // prev linkage: a vector with prev_base chains to the signed_bytes
-    // hash of the immediately preceding version
     if (v.prev_base !== undefined) {
       check(
         `value-sig ${v.name}: prev links to ${v.prev_base}`,
@@ -1230,8 +1034,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     } else {
       check(`value-sig ${v.name}: version 1 has empty prev`, ctx.prev_value_sig_hash_hex === "");
     }
-    // The ciphertext is a real AES-GCM ciphertext under the
-    // environment_deks DEK (AAD = §4's LP)
     const aad = lpEncode([
       ctx.suite,
       ctx.project_id,
@@ -1250,8 +1052,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // fork-same-version: both branches have valid signatures, identical
-  // coordinates, identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.fork_same_version.branches;
     for (const branch of [a, b]) {
@@ -1280,8 +1080,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // tenure-extension: the derived chain's seq 13 entry itself is valid
-  // (canonicalization, signature, prev linkage)
   {
     const e = doc.tenure_extension.entry;
     const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
@@ -1321,8 +1119,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         toHex(entryBytes) === e.entry_bytes_hex &&
         (await sha256hex(entryBytes)) === e.entry_hash_hex,
     );
-    // re-add uses a new key (different from the old key = a different
-    // tenure's key binding)
     check(
       "value-sig tenure-extension: rejoined member key differs from tenure 1",
       e.payload.sig_pub_hex !== chain.keys["user-member-0002"].sig_pub_hex &&
@@ -1332,9 +1128,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const n of doc.negative) {
     if (n.kind === "authorization") {
-      // For the verification-rule kind, confirm it is "cryptographically
-      // valid (the signature is correct)". Rejection via expected_reason
-      // is the implementation tests' job (§6.3 history verification)
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1360,7 +1153,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- metadata-signature.json ---------------------------------------------------
 {
   const doc = read("metadata-signature.json");
   const chain = read("chain-entries.json");
@@ -1368,8 +1160,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // Verification runs in the spec-hardcoded order; the JSON declaration is
-  // checked for agreement with it
   check(
     "meta-sig: var_signed_fields_order matches spec",
     sameOrder(doc.var_signed_fields_order, VAR_SIGNED_FIELDS_ORDER),
@@ -1386,22 +1176,16 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     "meta-sig: retired_var_v2_signed_fields_order matches the retired layout",
     sameOrder(doc.retired_var_v2_signed_fields_order, RETIRED_VAR_V2_SIGNED_FIELDS_ORDER),
   );
-  // The context's layout_version (omitted = 1) carries the layout
-  // selection (§4.2 ruling CR)
   const orderOf = (ctx) => {
     const layout = ctx.layout_version ?? 1;
     if (layout === 3) {
       return VAR_V3_SIGNED_FIELDS_ORDER;
     }
     if (layout === 2) {
-      // The retired layout (the v2-layout-unsupported negative only)
       return RETIRED_VAR_V2_SIGNED_FIELDS_ORDER;
     }
     return ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER;
   };
-  // A v3 context missing max_age_days (the v3-missing-max-age structural
-  // negative) is signed as the empty declaration: the bytes are a legitimate
-  // v3 statement and the rejection is the context's shape, not the signature
   const signedBytes = (ctx) =>
     lpEncode(orderOf(ctx).map((key) => (key === "max_age_days" ? (ctx[key] ?? "") : ctx[key])));
   const byName = new Map(doc.vectors.map((v) => [v.name, v]));
@@ -1436,14 +1220,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const v of doc.vectors) {
     await verifyStatement(v, v.name);
-    // Chain-reference consistency (positives only — rule negatives carry
-    // bogus heads)
     check(
       `meta-sig ${v.name}: head hash matches chain`,
       v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
-    // prev linkage: a vector with prev_base chains to the signed_bytes
-    // hash of the immediately preceding metaVersion
     if (v.prev_base !== undefined) {
       check(
         `meta-sig ${v.name}: prev links to ${v.prev_base}`,
@@ -1456,10 +1236,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // An environment statement is active only (2026-10-07 — §4.2: the
-  // environment's deletion is the chain op delete_environment). No
-  // positive carries an environment deletion statement, and the retired
-  // form is pinned as an invalid-input negative
   check(
     "meta-sig: no positive environment statement is deleted",
     doc.vectors.every((v) => v.context.kind !== "environment" || v.context.status === "active"),
@@ -1474,8 +1250,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         n.context.status === "deleted",
     ),
   );
-  // A deletion statement retains the name of the immediately preceding
-  // active (§4.2 — deletion does not empty name)
   {
     const del = byName.get("var-delete");
     const rename = byName.get("var-rename");
@@ -1485,8 +1259,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // rename-fork: both branches have valid signatures, identical
-  // coordinates, identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.rename_fork.branches;
     for (const branch of [a, b]) {
@@ -1503,8 +1275,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // name-swap: the two canonical statements are valid; a byte string
-  // with only the name field swapped fails signature
   {
     for (const statement of doc.name_swap.statements) {
       await verifyStatement(statement, `swap ${statement.name}`);
@@ -1522,8 +1292,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     }
   }
 
-  // tenure-extension: the derived chain's seq 13 entry itself is valid
-  // (same content as value-signature)
   {
     const e = doc.tenure_extension.entry;
     const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
@@ -1571,13 +1339,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       n.kind === "invalid-input" ||
       n.kind === "unsupported-layout"
     ) {
-      // For the verification-rule, structural-violation, and
-      // unsupported-layout kinds, confirm it is "cryptographically valid
-      // (the signature is correct)". Rejection via expected_reason /
-      // expected_error is the implementation tests' job (§6.3 history
-      // verification, InvalidInput fail-closed, UnsupportedMetaLayout before
-      // signature verification) — guarantees the rejection is not a
-      // cryptographic verification failure
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1601,11 +1362,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`meta-sig negative: ${n.name}`, bytesMatch && verified === false);
   }
-  // Layout v3 (§4.2 — the schema layout): the declared-creation →
-  // activation prev linkage, a v1 → v3 reissue linking to its v1
-  // predecessor (the legitimate upgrade direction), a v3 deletion keeping
-  // the schema fields and max_age_days verbatim, and the structural /
-  // retired-layout negatives carrying exactly the shape the spec refuses
   {
     const declared = byName.get("var-v3-create-no-max-age");
     const activation = byName.get("var-v3-activation");
@@ -1651,8 +1407,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       negativeContext("v3-empty-required").layout_version === 3 &&
         negativeContext("v3-empty-required").required === "",
     );
-    // The retired layout v2 (§4.2's 0.15-draft): the unsupported-layout
-    // negative declares layout 2 and is signed under the retired domain
     const retired = doc.negative.find((n) => n.name === "v2-layout-unsupported");
     check(
       "meta-sig v2-layout-unsupported: declares the retired layout under its domain",
@@ -1663,8 +1417,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         !("max_age_days" in retired.context),
     );
   }
-  // nfc-variant: pins that the NFD variant of a name signed in NFC
-  // canonical form produces a different byte string
   {
     const nfc = doc.negative.find((n) => n.name === "nfc-variant");
     check(
@@ -1675,7 +1427,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- env-manifest.json ---------------------------------------------------------
 {
   const doc = read("env-manifest.json");
   const chain = read("chain-entries.json");
@@ -1683,8 +1434,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // Verification runs in the spec-hardcoded order; the JSON declaration is
-  // checked for agreement with it
   const MANIFEST_SIGNED_FIELDS_ORDER = [
     "domain",
     "project_id",
@@ -1730,8 +1479,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   };
   const digestHex = async (entries, sort = true) => sha256hex(digestInput(entries, sort));
 
-  // The digest LP canonical forms (empty set, single, tombstone, byte
-  // order)
   for (const c of doc.digests) {
     check(
       `env-manifest digest ${c.name}: input reconstruction`,
@@ -1764,8 +1511,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.domain === `${ctx.suite}/env-manifest-sig`,
     );
     check(`env-manifest ${label}: project id is genesis hash`, ctx.project_id === projectId);
-    // Digest recomputation (§4.3 (3)): entries is the canonical form of
-    // the set the manifest signed
     check(
       `env-manifest ${label}: variables digest recomputation`,
       (await digestHex(v.entries)) === ctx.variables_digest_hex,
@@ -1790,8 +1535,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       `env-manifest ${v.name}: head hash matches chain`,
       v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
-    // prev linkage: a vector with prev_base chains to the signed_bytes
-    // hash of the immediately preceding manifestVersion
     if (v.prev_base !== undefined) {
       check(
         `env-manifest ${v.name}: prev links to ${v.prev_base}`,
@@ -1804,8 +1547,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // Digest including tombstones (§4.3): manifest-var-delete includes the
-  // deleted entry in the enumeration
   {
     const del = byName.get("manifest-var-delete");
     check(
@@ -1814,8 +1555,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // fork: both branches have valid signatures, identical coordinates,
-  // identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.manifest_fork.branches;
     for (const branch of [a, b]) {
@@ -1833,9 +1572,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const n of doc.negative) {
     if (n.kind === "authorization") {
-      // For the verification-rule kind, confirm it is "cryptographically
-      // valid (the signature is correct)". Rejection via expected_reason
-      // is the implementation tests' job (§6.3 history verification)
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1847,9 +1583,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         `env-manifest rule negative: ${n.name} (signature must be VALID)`,
         ok && toHex(bytes) === n.signed_bytes_hex,
       );
-      // The digest kind: recomputation over verify_entries (the
-      // verifier-side set) does not match the signed digest (pins
-      // omissions, tombstone hiding, and order violations)
       if (n.verify_entries !== undefined) {
         check(
           `env-manifest rule negative: ${n.name} (verify-side digest differs)`,
@@ -1868,8 +1601,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`env-manifest negative: ${n.name}`, bytesMatch && verified === false);
   }
-  // digest-order-swap: the signed digest is the value computed over the
-  // same set in **non-canonical order**
   {
     const swap = doc.negative.find((n) => n.name === "digest-order-swap");
     check(
@@ -1880,12 +1611,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- audit-head.json (AUDIT_SPEC §5.1 audit head cumulative hash) ------
 {
   const doc = read("audit-head.json");
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
-  // The column order is authoritative as hardcoded from the spec
-  // (AUDIT_SPEC §5.1); the JSON declaration is checked for agreement
   const NULLABLE = new Set([
     "row_id",
     "client_ts",
@@ -1956,7 +1684,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   check("audit-head: null and empty string differ", nullDigest !== emptyDigest);
 }
 
-// --- recovery-wrap.json ------------------------------------------------------
 {
   const doc = read("recovery-wrap.json");
   const base = doc.vectors[0];
@@ -2000,7 +1727,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- dek-wrap.json (Open with panva hpke) ---------------------------------
 {
   const doc = read("dek-wrap.json");
   const suite = new HPKE.CipherSuite(
@@ -2008,9 +1734,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     HPKE.KDF_HKDF_SHA256,
     HPKE.AEAD_AES_256_GCM,
   );
-  // Open by passing a KeyPair is the standard route (CRYPTO_SPEC §2 —
-  // compatible with non-extractable keys). The key pair is resolved per
-  // recipient class (basic = member key, server-basic = server key)
   const keyPairs = {
     basic: {
       privateKey: await suite.DeserializePrivateKey(fromHex(doc.recipient_keypair.skRm_hex), false),
@@ -2031,8 +1754,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     const dek = await open(v.name, v.info_hex, v.enc_hex, v.ciphertext_hex);
     check(`dek-wrap: ${v.name} panva open == DEK`, toHex(new Uint8Array(dek)) === v.dek_hex);
   }
-  // Server key FP: SHA-256(pkSm)[:16] (§9) matching info's recipient
-  // position
   {
     const digest = new Uint8Array(
       await crypto.subtle.digest("SHA-256", fromHex(doc.server_keypair.pkSm_hex)),
@@ -2070,13 +1791,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- lease-wrap.json (Open with panva hpke) --------------------------------
-// The §9.1 lease wrap. Beyond dek-wrap's same "generate = hpke-js /
-// verify = panva" cross-check, verifies that (1) the claims_digest LP +
-// SHA-256 is recomputed independently with WebCrypto, (2) info is
-// assembled in the spec's field order, and (3) the coordinates and DEK
-// are inherited from dek-wrap.json's server-basic (the shape of the
-// server Opening its own wrap and re-wrapping)
 {
   const doc = read("lease-wrap.json");
   const dekWrap = read("dek-wrap.json");
@@ -2085,15 +1799,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     HPKE.KDF_HKDF_SHA256,
     HPKE.AEAD_AES_256_GCM,
   );
-  // Open by passing a KeyPair (CRYPTO_SPEC §2 — compatible with
-  // non-extractable keys)
   const workloadKeyPair = {
     privateKey: await suite.DeserializePrivateKey(fromHex(doc.workload_keypair.skWm_hex), false),
     publicKey: await suite.DeserializePublicKey(fromHex(doc.workload_keypair.pkWm_hex)),
   };
   const vectorByName = (name) => doc.vectors.find((v) => v.name === name);
 
-  // claims_digest = lower_hex(SHA-256(LP(domain, issuer_url, subject, audience)))
   const digestOf = async (sub) => {
     const lp = lpEncode([doc.claims.domain, doc.claims.issuer_url, sub, doc.claims.audience]);
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", lp));
@@ -2115,8 +1826,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // The coordinates / DEK inheritance (a concrete-data expression of
-  // §9.1's "the server is the DEK's intermediary")
   {
     const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
     const basic = vectorByName("basic");
@@ -2130,9 +1839,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 
   for (const v of doc.vectors) {
-    // info is reassembled from the spec's field order, not the vector
-    // declaration, and compared (verifying in a JSON-derived order could
-    // not pin the order independently — session-15 review (3))
     check(
       `lease-wrap: ${v.name} info reconstruction`,
       toHex(lpEncode([v.domain, v.project_id, v.environment_id, v.epoch, v.claims_digest_hex])) ===
@@ -2163,13 +1869,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- sealed-value.json (Open with panva hpke) ------------------------------
-// The §5.3 sealed value proposal. The same "generate = hpke-js / verify =
-// panva" cross-check as dek-wrap, plus (1) info assembled in the spec's
-// field order, (2) the recipient key and coordinates inherited from
-// dek-wrap.json's basic (a sealed value goes to the device key that also
-// receives DEK wraps), and (3) the proposal id shared across the two
-// positives while the variable id separates them
 {
   const doc = read("sealed-value.json");
   const dekWrap = read("dek-wrap.json");
@@ -2244,16 +1943,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- checkpoint-digest.json ------------------------------------------------------
-// §6.2 values_digest selection (0.8-draft — declared is excluded). The
-// encoder's canonical form is already pinned by chain-entries.json's
-// values_digests (envValuesDigestInput is shared)
 {
   const doc = read("checkpoint-digest.json");
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   for (const digestCase of doc.cases) {
-    // Selection-declaration consistency: values_digest_entries = only
-    // the active variables (with value coordinates)
     const actives = digestCase.variables.filter((v) => v.status === "active");
     const nonActives = digestCase.variables.filter((v) => v.status !== "active");
     check(
@@ -2268,8 +1961,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
           );
         }),
     );
-    // declared / deleted carry no value coordinates (version /
-    // value_sig_hash_hex) (§6.3)
     check(
       `checkpoint-digest ${digestCase.name}: non-active variables carry no value coordinates`,
       nonActives.every(
@@ -2289,8 +1980,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       (await sha256(input)) === digestCase.values_digest_hex,
     );
   }
-  // "declared only = the empty-set digest" equals chain-entries.json's
-  // empty-set
   {
     const chain = read("chain-entries.json");
     const emptySet = (chain.values_digests ?? []).find((c) => c.name === "empty-set");
@@ -2302,18 +1991,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- recipient-sets.json ---------------------------------------------------------
-// §6.2's R(E) and §5.3's W(E), recomputed from each fixture's verification
-// state by the set-builder definitions (E ∈ scope(m) ∩ scope(d) read as
-// E ∈ scope(m) ∧ E ∈ scope(d) — no effective-permission code), with the
-// key fingerprints re-derived (§3 / §9), every fixture checked to be a
-// state a valid chain reaches (§6.2's key uniqueness) and the
-// fingerprint-named-member fixture's premise checked. Every list is compared
-// as a set
 const scopeIncludes = (scope, environmentId) =>
   scope.kind === "all" || scope.environments.includes(environmentId);
-// A recipient list as a set of (class, id, device fingerprint — members
-// only — and enc key) entries
 const recipientSet = (entries) =>
   JSON.stringify(
     entries
@@ -2357,8 +2036,6 @@ const holdsEncKeyOf = (person, grant) =>
         toHex(fingerprint) === grant.server_key_fingerprint_hex,
       );
     }
-    // §6.2's key uniqueness: no two devices share an enc or a sig key, and
-    // no device holds a grant's enc key
     const devices = fixture.members.flatMap((person) => person.devices);
     check(
       `recipient-sets ${name}: no two devices share a key (§6.2 key uniqueness)`,
@@ -2414,9 +2091,6 @@ const holdsEncKeyOf = (person, grant) =>
       ),
     );
   }
-  // The premise of the fingerprint-named case: a member is named by
-  // server-z's fingerprint and has a device (whose key is its own — the key
-  // uniqueness check above)
   {
     const named = doc.fixtures["fingerprint-named-member"];
     const [serverZ] = named.server_grants;
@@ -2430,13 +2104,6 @@ const holdsEncKeyOf = (person, grant) =>
   }
 }
 
-// --- master-key-wrap.json (§8 ledger — KEK / AES-GCM via WebCrypto, Open via panva hpke) ---
-// Beyond the "generate = hpke-js + WebCrypto / verify = panva +
-// WebCrypto" cross-check, verifies that (1) B and user_id are inherited
-// from recovery-wrap.json, (2) AAD / info / request_id are assembled in
-// the spec's field order, (3) the XOR of an all-mode segment set returns
-// the KEK, and (4) the handoff code's encoding / decoding is recomputed
-// independently
 {
   const doc = read("master-key-wrap.json");
   const recovery = read("recovery-wrap.json");
@@ -2547,7 +2214,6 @@ const holdsEncKeyOf = (person, grant) =>
       );
     }
   }
-  // Handoff: request_id / code
   {
     const pk = fromHex(doc.handoff.ephemeral_pub_hex);
     const lp = lpEncode([doc.handoff.request_id_domain, doc.handoff.ephemeral_pub_hex]);
@@ -2586,8 +2252,6 @@ const holdsEncKeyOf = (person, grant) =>
       doc.handoff.other_ephemeral.request_id_hex !== doc.handoff.request_id_hex,
     );
   }
-  // 2026-09-20 DK: handoff approvers are guardians only (handoff-device
-  // was removed)
   for (const h of [vectorByName("handoff-guardian-share")]) {
     check(
       `master-wrap: ${h.name} info reconstruction`,
@@ -2604,9 +2268,6 @@ const holdsEncKeyOf = (person, grant) =>
       "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
       h.source === all3.group_id && h.value_hex === all3.shares[0].share_hex,
     );
-    // 2026-09-20 DK: the old-device approval (handoff-device — a
-    // co-delivery of the B wrap with kind = "device") was removed. The
-    // kind set is closed to {passkey-prf, guardian}
     check(
       "master-wrap: no device kind remains (DK)",
       doc.vectors.every(
@@ -2619,8 +2280,6 @@ const holdsEncKeyOf = (person, grant) =>
     let failed = false;
     try {
       if (n.code_symbols !== undefined) {
-        // Decode the code: check length, alphabet, zero padding, and
-        // checksum — all of them
         const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         if (n.code_symbols.length !== 58) throw new Error("length");
         const out = new Uint8Array(36);

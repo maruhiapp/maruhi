@@ -1,15 +1,3 @@
-// Shared entry point for non-secret JSON documents (repository anchor, sync
-// config, proxy config, sync receipt): does it parse as JSON, and is the top
-// level an object? The pure string/object checks (`parseJsonRecord`,
-// `isRecord`, `unknownKeys`) live in json-record-pure.ts and are re-exported
-// here, so a FileSystem-backed caller imports them alongside the ledger
-// helpers while a lean module can take them dependency-free.
-//
-// The ledger helpers at the bottom describe a stored file as one Schema:
-// `readJsonFile` reads + decodes (only a `PlatformError` whose reason is
-// `NotFound` is "file absent"), `writeJsonFileAtomic` encodes + writes
-// (temp + rename — never a torn write).
-
 import { dirname } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
@@ -22,12 +10,6 @@ import { isRecord, parseJsonRecord, unknownKeys } from "./json-record-pure.ts";
 
 export { isRecord, parseJsonRecord, unknownKeys };
 
-/**
- * The header every repository config shares (sync-config.ts /
- * proxy-config.ts): only the accepted top-level keys, `version: 1`, and an
- * optional `project` that is a project ID. Returns the project ID (or
- * undefined) or the reason.
- */
 export function parseConfigHeader(
   parsed: Record<string, unknown>,
   rootKeys: readonly string[],
@@ -46,21 +28,11 @@ export function parseConfigHeader(
   return { projectId: project === undefined ? undefined : decodeProjectId(project) };
 }
 
-/**
- * A config the CLI applies without being told (`maruhi push` → the sync
- * config, `maruhi run` → the proxy config): null when the file is absent,
- * `load(path)` when it exists, and `unreadable` as the error when it exists
- * but cannot be stat'ed — a broken config is reported, never skipped.
- */
 export const loadIfPresent = Effect.fn("json-record.loadIfPresent")(function* <A>(
   path: string,
   load: (path: string) => Effect.Effect<A, CliError>,
   unreadable: string,
 ): Effect.fn.Return<A | null, CliError> {
-  // `exists` = access(F_OK): a PlatformError whose reason is NotFound is
-  // false; every other read failure is `unreadable` (the same discipline as
-  // the stat() version). The layer is provided only around the existence
-  // check so `load` keeps the caller's environment.
   const exists = yield* Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path)).pipe(
     Effect.mapError(() => cliError(unreadable)),
     Effect.provide(BunFileSystem.layer),
@@ -68,32 +40,21 @@ export const loadIfPresent = Effect.fn("json-record.loadIfPresent")(function* <A
   return exists ? yield* load(path) : null;
 });
 
-/** A per-user ledger file as read (`corrupt` is distinguishable from `missing` — a person deals with it). */
 export type LedgerRead<T> =
   | { readonly state: "loaded"; readonly file: T }
   | { readonly state: "missing" }
   | { readonly state: "corrupt" };
 
-// ---- Schema-described ledger files (FileSystem-backed) ----
-
-/** A whole non-secret JSON object (the top level of a ledger or config file). */
 export const JsonRecord = Schema.Record(Schema.String, Schema.Unknown);
 
-/** A positive integer field (seqs / epochs / timestamps in the ledger files). */
 export const PositiveInt = Schema.Number.check(
   Schema.makeFilter((n) => (Number.isSafeInteger(n) && n > 0) || "expected a positive integer"),
 );
 
-/** A 16-byte fingerprint hex (32 chars — CRYPTO_SPEC §3). */
 export const Hex32 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/));
 
-/** A 32-byte hex (64 chars — SHA-256-sized hashes and public keys). */
 export const Hex64 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
-/**
- * A scope's environment-id list (CRYPTO_SPEC §6.2 — AUTH_SPEC §12-1 id
- * format, at most 256, no duplicates).
- */
 export const ScopeEnvironmentIds = Schema.Array(EnvironmentIdSchema).check(
   Schema.makeFilter(
     (ids) =>
@@ -102,13 +63,6 @@ export const ScopeEnvironmentIds = Schema.Array(EnvironmentIdSchema).check(
   ),
 );
 
-/**
- * A record-level filter enforcing a map-key format (invite ids, fingerprints,
- * book keys). A checked Record **key** schema only *selects* keys — a
- * non-matching key is silently dropped — so the format rule is a filter on
- * the decoded record instead: a bad key rejects the whole file (the
- * strict-decode discipline).
- */
 export function recordKeysMatch(match: RegExp | ((key: string) => boolean)) {
   const test = typeof match === "function" ? match : (key: string) => match.test(key);
   return Schema.makeFilter(
@@ -117,14 +71,6 @@ export function recordKeysMatch(match: RegExp | ((key: string) => boolean)) {
   );
 }
 
-/**
- * Reads `path` and decodes its JSON content by `schema`. Only a
- * `PlatformError` whose reason is `NotFound` (not created yet) is `missing`;
- * a parse or schema failure is `corrupt` (strict decoding — one malformed
- * entry rejects the whole file); every other read failure (EACCES / EISDIR /
- * EIO) stays an error so a writer never replaces a file it could not read
- * (the pins / fingerprint-ledger discipline — review finding §21 R-15).
- */
 export const readJsonFile = Effect.fn("json-record.readJsonFile")(
   function* <S extends Schema.ConstraintCodec<unknown>>(
     path: string,
@@ -142,13 +88,6 @@ export const readJsonFile = Effect.fn("json-record.readJsonFile")(
   ),
 );
 
-/**
- * Reading one user-named file's content: any read failure becomes the
- * caller's `unreadable` error ("cannot read" is the same whichever way it
- * failed). FileSystem stays inside this module — the caller's
- * FileSystem-providing environment (dying on purpose, cli-runner.ts) is
- * never touched, BunFileSystem is provided locally.
- */
 export const readNamedFile: (
   path: string,
   unreadable: CliError,
@@ -161,12 +100,6 @@ export const readNamedFile: (
   Effect.provide(BunFileSystem.layer),
 );
 
-/**
- * Writes `value` to `path` encoded by `schema`, atomically: the directory is
- * created (mode 0o700), the JSON goes to a temp sibling (mode 0o600), and a
- * rename moves it over `path` — a partial file is never observable. Encoding
- * is checked, so a value that would not decode again is refused.
- */
 export const writeJsonFileAtomic = Effect.fn("json-record.writeJsonFileAtomic")(function* <
   S extends Schema.ConstraintCodec<unknown>,
 >(

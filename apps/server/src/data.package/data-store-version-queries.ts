@@ -1,7 +1,3 @@
-// The version-side read queries of the data store (bulk pulls, version
-// history / range / anchor, the ciphertext-bytes meter) — assembled into
-// DataStoreShape by dataStoreLayer in data-store.ts.
-
 import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -19,11 +15,6 @@ import {
 } from "./data-store-rows.ts";
 import type { StoredVersionMeta } from "./data-store.ts";
 
-/**
- * A variable_versions row's distributed value columns (§12-7 — shared by the
- * bulk pull and the version value range). signed_bytes_hash_hex is never
- * selected = never distributed (AUTH_SPEC §12-2).
- */
 function pulledValueColumns(row: StoredRow, variableId: VariableId): PulledVariableValue {
   return {
     variableId,
@@ -42,11 +33,6 @@ function pulledValueColumns(row: StoredRow, variableId: VariableId): PulledVaria
 }
 
 export const makeVersionQueries = (sql: SqlStorage) => ({
-  // Distribution (§12-7) returns the stored signature block and the
-  // writer / author as-is (never re-derived from the current member
-  // set — verifiability of past data by a since-deleted writer /
-  // author). signed_bytes_hash_hex is not selected on either values or
-  // statements = never distributed (AUTH_SPEC §12-2)
   latestVersions: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
@@ -81,9 +67,6 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         .toArray()
         .map((row) => ({
           ...pulledValueColumns(row, decodeVariableId(stringColumn(row, "variable_id"))),
-          // The statement part reads the ms_* aliased columns as-is
-          // (statementColumns's prefix). The environment ID is the
-          // WHERE-clause argument; the variable ID is the row's value
           statement: {
             environmentId,
             variableId: decodeVariableId(stringColumn(row, "variable_id")),
@@ -157,9 +140,6 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         epoch: numberColumn(row, "epoch"),
       };
     }),
-  // The §12-8 meter: version ciphertexts plus the sealed values of
-  // pending proposals (hex columns — two characters per byte), so a
-  // project cannot park ciphertext outside the cap in proposals
   totalCiphertextBytes: Effect.sync(() => {
     const row = sql
       .exec(
@@ -170,9 +150,6 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
       .toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "total");
   }),
-  // The §12-8 per-environment meter: the latest versions of the active
-  // variables — the same join as latestVersions, so it counts exactly what
-  // a with-values pull or a lease carries
   environmentCiphertextBytes: (environmentId: EnvironmentId, variableId: VariableId) =>
     Effect.sync(() => {
       const row = sql

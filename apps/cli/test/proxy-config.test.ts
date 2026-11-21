@@ -1,8 +1,3 @@
-// Tests for `maruhi.proxy.json` (proxy-config.ts — PF4 ruling P5): the
-// strict parser — host grammar, shorthands, defaults, unknown keys,
-// connector inputs, and the "a consumed input is never injected" rule.
-// Error wording never echoes a typed value.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { parseHostPattern, parseProxyConfig } from "../src/proxy.package/proxy-config.ts";
@@ -53,8 +48,6 @@ describe("parseHostPattern", () => {
     expect(parseHostPattern("x.example:0")).toMatch(/port/);
     expect(parseHostPattern("x.example:70000")).toMatch(/port/);
     expect(parseHostPattern("*.com")).toMatch(/two labels/);
-    // `*.localhost` is the one single-label wildcard (RFC 6761), and every
-    // name under `.localhost` is the loopback, wildcard or not (§21 R-4)
     expect(parseHostPattern("http://*.localhost:3000")).toEqual({
       scheme: "http",
       host: "localhost",
@@ -68,7 +61,6 @@ describe("parseHostPattern", () => {
       port: 80,
     });
     expect(parseHostPattern("http://*.127.0.0.1")).toMatch(/loopback/);
-    // Plain HTTP would carry a value in cleartext: only the loopback is accepted
     expect(parseHostPattern("http://api.example.com")).toMatch(
       /plain http:\/\/ is accepted only for loopback hosts/,
     );
@@ -159,9 +151,6 @@ describe("parseProxyConfig", () => {
     });
   });
 
-  // A value of a type no member of an optional / nullable key accepts
-  // (number, boolean, array, object, null) reports the key's own wording —
-  // never the union's default "Expected X | undefined"
   it.each([
     [
       "unmatched",
@@ -196,7 +185,6 @@ describe("parseProxyConfig", () => {
       [1, true, {}, null, "x.example"],
       "variables.X.hosts must be a non-empty array of host entries",
     ],
-    // Entry by entry: the first bad entry decides the reason
     [
       "hosts",
       [[1, "bad/path"]],
@@ -255,7 +243,6 @@ describe("parseProxyConfig", () => {
       variables: { X: { mode: "broker", hosts: ["x.example"], placeholder: "password-ish" } },
     });
     expect(short).toMatch(/variables.X.placeholder must be 16 to 256/);
-    // One placeholder inside another is refused like a duplicate
     const nested = parse({
       version: 1,
       variables: {
@@ -315,7 +302,6 @@ describe("parseProxyConfig", () => {
     expect(consumedAndPassed).toMatch(
       /variables.K is consumed by a connector \(T.inputs.privateKey\) and cannot also have a passthrough rule/,
     );
-    // An explicit withhold on a consumed input is consistent and accepted
     const withheld = parse({
       version: 1,
       variables: {

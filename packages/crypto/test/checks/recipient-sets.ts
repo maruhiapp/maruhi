@@ -1,10 +1,3 @@
-// Checks of the recipient sets R(E) (CRYPTO_SPEC §6.2) and W(E) (§5.3)
-// against recipient-sets.json: wrapRecipientsOf and proposalRecipientsOf give
-// each case's expected sets, deviceReceivesEnvironment agrees with R(E) on
-// every member device, W(E) ⊆ R(E), and both lists come in the order
-// recipient-set.ts documents, whatever order the state's maps were built in.
-// The vectors pin the sets only; the order is pinned here.
-
 import type {
   ChainDevice,
   ChainMember,
@@ -90,12 +83,6 @@ function scopeOf(scope: VectorScope): MemberScope {
     : { kind: "listed", environmentIds: (scope.environments ?? []).map(testEnvironmentId) };
 }
 
-/**
- * The fixture as a verification state. `reversed` inserts members, devices and
- * grants in the opposite order, to check that the lists do not follow the maps'
- * insertion order. The sets read no seq and no lease policy, so those are fixed
- * placeholders.
- */
 function stateOf(fixture: VectorFixture, reversed: boolean): RecipientState {
   const ordered = <T>(items: readonly T[]): readonly T[] => (reversed ? items.toReversed() : items);
   const members = new Map<UserId, ChainMember>();
@@ -133,7 +120,6 @@ function stateOf(fixture: VectorFixture, reversed: boolean): RecipientState {
   return { members, serverGrants };
 }
 
-/** One recipient as a comparable key: class, id, device fingerprint (members only), enc key. */
 function entryKey(
   recipientClass: string,
   recipientId: string,
@@ -172,12 +158,10 @@ function vectorKey(entry: VectorEntry): string {
   );
 }
 
-/** Equal as sets (each list sorted; a duplicate on either side fails). */
 function sameSet(actual: readonly string[], expected: readonly string[]): boolean {
   return JSON.stringify(actual.toSorted()) === JSON.stringify(expected.toSorted());
 }
 
-/** The documented position: members before server keys, then by user id and device fingerprint, or by server fingerprint. */
 function positionOf(recipient: WrapRecipient): readonly [number, string, string] {
   return recipient.kind === "member"
     ? [0, recipient.member.userId, recipient.device.keyFingerprintHex]
@@ -197,7 +181,6 @@ function precedes(
   return a[2] < b[2];
 }
 
-/** Strictly ascending in the documented order (so also free of duplicates). */
 function inDocumentedOrder(recipients: readonly WrapRecipient[]): boolean {
   return recipients.every((recipient, index) => {
     const previous = recipients[index - 1];
@@ -243,7 +226,6 @@ export function recipientSetsChecks(): CheckResult[] {
       `recipient-sets ${recipientCase.name}: W(E) in the documented order`,
       inDocumentedOrder(proposalRecipients.map((recipient) => ({ kind: "member", ...recipient }))),
     );
-    // The order is the documented one, not the maps' insertion order
     const reversed = stateOf(fixture, true);
     c.push(
       `recipient-sets ${recipientCase.name}: R(E) is the same list from a reversed state`,
@@ -255,7 +237,6 @@ export function recipientSetsChecks(): CheckResult[] {
       JSON.stringify(proposalRecipientsOf(reversed, environmentId).map(proposalKey)) ===
         JSON.stringify(proposalRecipients.map(proposalKey)),
     );
-    // The member-side predicate is R(E)'s membership test for every device
     for (const vectorMember of fixture.members) {
       const member = state.members.get(testUserId(vectorMember.user_id));
       for (const vectorDevice of vectorMember.devices) {

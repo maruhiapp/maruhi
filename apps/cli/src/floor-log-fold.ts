@@ -1,8 +1,3 @@
-// The fold: the observation-log records -> the floor (the join of
-// verified observations). The storage form's overview lives in
-// floor-log.ts; the record format and strict decoding live in
-// floor-log-decode.ts.
-
 import type { EnvironmentId } from "@maruhi/core";
 
 import { decodeLogRecord, type FloorLogRecord, type SnapshotState } from "./floor-log-decode.ts";
@@ -17,8 +12,6 @@ import {
   type ProjectFloor,
 } from "./floor.ts";
 
-// ---- fold (observation log → floor) ----
-
 interface FoldState {
   chainHead: ChainHeadFloor | null;
   readonly environments: Map<string, EnvironmentFloor>;
@@ -27,10 +20,6 @@ interface FoldState {
 }
 
 function conflictKey(conflict: FloorConflict): string {
-  // Re-derivation of the same conflict (fold runs every time) and
-  // snapshot-derived duplicates are identified by coordinates + both
-  // evidence values. The evidence ordering is normalized independently of
-  // the join's representative selection
   const pair = [
     `${conflict.firstVersion}:${conflict.firstHashHex}`,
     `${conflict.secondVersion}:${conflict.secondHashHex}`,
@@ -88,9 +77,6 @@ function applyRecord(state: FoldState, record: FloorLogRecord): void {
       state.chainHead = joinChainHead(state.chainHead, record.head, sink);
       joinEnvironmentInto(state, record.environmentId, {
         ...emptyEnvironmentFloor(),
-        // A manifest is a verified observation, so its epoch also joins
-        // as an environment-level epoch observation (coordinate (ii))
-        // (the pull baseline (i) is not moved)
         observedEpoch: record.manifest.epoch,
         manifest: record.manifest,
       });
@@ -102,18 +88,14 @@ function applyRecord(state: FoldState, record: FloorLogRecord): void {
       state.intents.delete(record.intentId);
       return;
     case "snapshot":
-      // A no-op on the fold side (foldRecords chooses the base point — a double fold is harmless)
       return;
   }
 }
 
 export interface FoldOutcome {
   readonly floor: ProjectFloor;
-  /** The total decodable record count (the basis position for a snapshot's `folded`). */
   readonly decodedRecords: number;
-  /** The number of non-empty lines that failed to decode (torn-line self-healing — diagnostic). */
   readonly droppedLines: number;
-  /** The record count accumulated after the latest snapshot record (the compaction trigger). */
   readonly recordsSinceSnapshot: number;
 }
 
@@ -133,15 +115,6 @@ function baseStateOf(snapshot: { folded: number; state: SnapshotState } | null):
   return state;
 }
 
-/**
- * Lines → the decodable record list + the positions of dropped non-empty
- * lines (torn-line self-healing). A position = the number of records
- * decoded just before that line — a dropped line before the fold base
- * (the snapshot's folded) sits "inside the folded prefix" and is out of
- * the warning's scope (compaction naturally retires the warning — a
- * permanently ringing noise must not share the equivocation warning's
- * band).
- */
 function parseLogLines(lines: readonly string[]): {
   readonly records: FloorLogRecord[];
   readonly droppedAtRecordCount: readonly number[];
@@ -154,9 +127,6 @@ function parseLogLines(lines: readonly string[]): {
     }
     const record = decodeLogRecord(line);
     if (record === null) {
-      // Self-healing of a torn line (an interrupted write by a crashed
-      // concurrent process). A conflict's evidence line is valid JSON, so
-      // it is not lost here
       droppedAtRecordCount.push(records.length);
       continue;
     }
@@ -165,13 +135,6 @@ function parseLogLines(lines: readonly string[]): {
   return { records, droppedAtRecordCount };
 }
 
-/**
- * The fold base = the latest valid snapshot. When "the end position of
- * the folded prefix (folded)" exceeds the snapshot's own position
- * (corrupt), fall back to folding all records — the join's idempotence
- * and commutativity keep correctness invariant (only the cost changes —
- * §6.3).
- */
 function foldBase(records: readonly FloorLogRecord[]): {
   readonly foldFrom: number;
   readonly snapshotIndex: number;
@@ -205,9 +168,6 @@ export function foldRecords(lines: readonly string[]): FoldOutcome {
       intents: [...state.intents.values()],
     },
     decodedRecords: records.length,
-    // Count only dropped lines after the fold base (before it they are
-    // inside the prefix folded into the snapshot — do not ring an
-    // already-warned old torn line forever)
     droppedLines: droppedAtRecordCount.filter((position) => position >= foldFrom).length,
     recordsSinceSnapshot: snapshotIndex >= 0 ? records.length - 1 - snapshotIndex : records.length,
   };

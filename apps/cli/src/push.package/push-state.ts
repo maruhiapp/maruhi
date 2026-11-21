@@ -1,9 +1,3 @@
-// The push operation's input / state and the CAS-retry state machine
-// (AUTH_SPEC §12-5's retry procedure): the initial resolution + DEK
-// fetch, the winner adoption after a VersionConflict, the re-resolution
-// after a VariableConflict, and the epoch re-derivation after an
-// EpochConflict.
-
 import {
   ActivationRequiredError,
   EpochConflictError,
@@ -29,19 +23,12 @@ type PushConflict =
   | { readonly kind: "epoch-conflict" }
   | { readonly kind: "variable-conflict" };
 
-/**
- * One attempt's concrete failure channel: CliError (own failures and the
- * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
- * variables endpoints' declared error unions (the raw types —
- * classifyPushConflict discriminates them on the retryOnConflict side).
- */
 export type PushAttemptError =
   | CliError
   | Effect.Error<ReturnType<PushInput["client"]["variables"]["create"]>>
   | Effect.Error<ReturnType<PushInput["client"]["variables"]["activate"]>>
   | Effect.Error<ReturnType<PushInput["client"]["variables"]["push"]>>;
 
-/** The retryable classification of CAS conflicts (§12-5). Anything else is null (a terminal error). */
 export function classifyPushConflict(error: PushAttemptError): PushConflict | null {
   if (error instanceof VersionConflictError) {
     return { kind: "version-conflict", currentVersion: error.currentVersion };
@@ -55,15 +42,6 @@ export function classifyPushConflict(error: PushAttemptError): PushConflict | nu
     error instanceof ManifestVersionConflictError ||
     error instanceof ActivationRequiredError
   ) {
-    // A create's name conflict / metaVersion conflict (concurrent creation,
-    // concurrent rename) / manifestVersion conflict (a concurrent meta
-    // operation — §12-5 (6)) is re-resolved from the name (§12-5's retry =
-    // re-fetch → verify → re-sign both the statement and the manifest. An
-    // ID conflict effectively never happens with random IDs).
-    // ActivationRequired (a normal push hit a declared variable — §12-5) is
-    // not a resync but a switch-to-activation signal: the re-resolution sees
-    // the declared variable and switches to the activation composite
-    // (design doc §3 row S3)
     return { kind: "variable-conflict" };
   }
   return null;
@@ -76,25 +54,10 @@ export interface PushInput {
   readonly name: string;
   readonly value: Redacted.Redacted<Uint8Array>;
   readonly verified: VerifiedProject;
-  /** The resync (full chain re-verification). The caller runs it through resyncExtended's extension check. */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** The writer of the value signature (my internal user_id) and the master sig key (§4.1). */
   readonly writerUserId: UserId;
   readonly signingKey: CryptoKey;
-  /** The local floor (§6.3 — the check and commit of internal pulls, and the variable-floor advance after acceptance). */
   readonly floor: FloorHandle;
-  /**
-   * A rollback (`maruhi var rollback` — 2026-09-27 VH): the value is version
-   * `sameValueAs`'s plaintext, restored into this existing variable. The push
-   * declares the lineage (AUTH_SPEC §12-5), and every attempt — including a
-   * conflict retry that re-resolves the name — must land as a normal push to
-   * exactly this variable: a concurrent delete / rename / re-create never
-   * turns a rollback into a creation or a push elsewhere. It also lands only
-   * on top of the exact version the user confirmed rolling back from
-   * (`fromVersion` + its signed-bytes hash): a concurrent push by another
-   * member is never silently overwritten with the restored value — the
-   * rollback is refused and the user re-runs it against the new state.
-   */
   readonly restore?: {
     readonly variableId: VariableId;
     readonly sameValueAs: number;
@@ -108,7 +71,6 @@ export interface PushState {
   readonly epoch: number;
   readonly deks: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly target: PushTarget;
-  /** create / activate paths only: the issuing material of the bundled manifest (reresolveTarget re-fetches it). */
   readonly issueBase: ManifestIssueBase | null;
   readonly warnings: readonly string[];
 }
@@ -118,13 +80,6 @@ export const initialState = Effect.fn("push-state.initialState")(function* (
 ): Effect.fn.Return<PushState, CliError> {
   const resolved = yield* resolveTarget(input);
   const verified = resolved.verified;
-  // The current epoch (the chain-derived value — §6.2; a push against an
-  // uncreated environment stops here) and the DEK set are derived together
-  // from the same verified view (deks.ts's environmentKeysFor). The DEK is
-  // fetched exactly once per path (session-11 ruling 3's double-fetch
-  // elimination): for an existing variable the bundled share of the
-  // value-carrying pull (prefetched) is verified and unwrapped / for a
-  // creation, listMine
   const keys = yield* environmentKeysFor({
     client: input.client,
     verified,
@@ -142,7 +97,6 @@ export const initialState = Effect.fn("push-state.initialState")(function* (
   };
 });
 
-/** Re-fetches the DEK set only when the epoch changed (or is first seen) (the cached semantics). */
 function refreshEpochState(
   input: PushInput,
   state: PushState,
@@ -160,12 +114,6 @@ function refreshEpochState(
   );
 }
 
-/**
- * The winner re-fetch after a 409 VersionConflict (§12-5's retry
- * procedure): re-fetch the bulk pull, identify the winner by its stable
- * id, verify it, and re-point prev at its signed-bytes hash. The 409
- * response is never asked for the winner's hash.
- */
 const adoptConflictWinner = Effect.fn("push-state.adoptConflictWinner")(function* (
   input: PushInput,
   state: PushState,
@@ -201,7 +149,6 @@ const adoptConflictWinner = Effect.fn("push-state.adoptConflictWinner")(function
   return {
     ...refreshed,
     target: { kind: "push", variableId: state.target.variableId, latest: winner },
-    // Adopting the winner = a push to an existing variable (meta state unchanged — no manifest issued)
     issueBase: null,
     warnings: [...state.warnings, ...pulled.warnings],
   };
@@ -212,10 +159,6 @@ const reresolveTarget = Effect.fn("push-state.reresolveTarget")(function* (
   state: PushState,
 ): Effect.fn.Return<PushState, CliError> {
   const resolved = yield* resolveTarget({ ...input, verified: state.verified });
-  // The re-resolution's DEK prefers the on-hand set of a known epoch and
-  // is re-fetched only when the epoch advanced (refreshEpochState).
-  // resolved.deks is for the first resolution only — don't redo the
-  // unwrapping on the rare path of a conflict retry
   const refreshed = yield* refreshEpochState(input, state, resolved.verified);
   return {
     ...refreshed,
@@ -225,12 +168,6 @@ const reresolveTarget = Effect.fn("push-state.reresolveTarget")(function* (
   };
 });
 
-/**
- * Recovery from a conflict (the domain-specific part of §12-5's retry
- * procedure). Runs as retryOnConflict's recover — and also after the last
- * attempt (surfacing the terminal errors: equivocation evidence and
- * contradictions between the server response and the chain).
- */
 export function nextState(
   input: PushInput,
   state: PushState,
@@ -238,27 +175,13 @@ export function nextState(
 ): Effect.Effect<PushState, CliError> {
   switch (outcome.kind) {
     case "version-conflict":
-      // A VersionConflict on the create path means "a concurrent creation
-      // happened"; on the activate path it means "a value version 1 landed
-      // first via a concurrent activation" (my send was not stored). Both
-      // are re-resolved from the name (a variable the re-resolution sees as
-      // active enters the normal push path — the winner is verified via a
-      // value-carrying pull)
       if (state.target.kind !== "push") {
         return reresolveTarget(input, state);
       }
       return adoptConflictWinner(input, state, outcome.currentVersion);
     case "epoch-conflict":
-      // The epoch's source of truth is the chain (§6.3). Resync with the
-      // extension check and use the derived value, and get the
-      // commitment-verified DEK of the new epoch. prev stays the verified
-      // predecessor hash (the value has not changed — if it had, the next
-      // attempt becomes a VersionConflict and enters the procedure above)
       return Effect.gen(function* () {
         const verified = yield* resyncExtended(input.resync, state.verified);
-        // The current epoch and DEKs are derived together from the same
-        // resync view (no re-fetch when the on-hand verified set already
-        // has the current epoch — environmentKeysFor's cached)
         const keys = yield* environmentKeysFor({
           client: input.client,
           verified,
@@ -267,9 +190,6 @@ export function nextState(
           cached: state.deks,
         });
         if (keys.currentEpoch === state.epoch) {
-          // If the chain-derived epoch is unchanged after resyncing, the
-          // server's EpochConflict claim contradicts the chain (a retry
-          // cannot resolve it)
           return yield* Effect.fail(
             cliError(
               `The server reported an epoch conflict, but the chain-derived current epoch is still ${keys.currentEpoch} (the server response contradicts the chain)`,

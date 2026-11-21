@@ -1,8 +1,3 @@
-// Tests for login (the server-brokered web-flow handoff — AUTH_SPEC §4: start →
-// browser approval → poll → keychain) and logout (self-token revocation +
-// keychain removal). The maruhi server is a local HTTP mock. The CLI never
-// talks to the identity provider directly (the §4 principle), so there is no GitHub-side mock.
-
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -20,13 +15,10 @@ import { runCliWithClock } from "./support/test-clock.ts";
 
 let servers: MockServer[] = [];
 
-/** The exchange response's expiry fixture (AUTH_SPEC §6: 2099-01-01T00:00:00Z). */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
 
-/** The public correlator (128-bit hex — matches api-schema's CliFlowIdSchema). */
 const FLOW_ID = "0123456789abcdef0123456789abcdef";
 
-/** Fixture for the CLI-only bearer credential (§4-1 (1) — opaque to the CLI). */
 const FLOW_TOKEN = "v1.dGVzdC1mbG93.fixture-mac-value";
 
 const USER_CODE = "ABCD-1234";
@@ -43,7 +35,6 @@ async function start(handlers: readonly MockHandler[]): Promise<MockServer> {
   return server;
 }
 
-/** The approved poll response (§4-1 (5) — the raw token appears on the wire only this once). */
 function approvedResponse(input?: {
   readonly token?: string;
   readonly expiresAtMs?: number;
@@ -60,18 +51,10 @@ function approvedResponse(input?: {
   };
 }
 
-/**
- * The maruhi side of the handoff (start + n polls of pending → final response).
- * The start response's pollIntervalSeconds is 0 (clamped up to the wire
- * minimum — the run's waits are driven by the virtual clock, so no real-time
- * sleep happens either way).
- */
 function fakeHandoff(
   input: {
     readonly pendingPolls?: number;
-    /** The final poll response (default: approved). */
     readonly finalPoll?: MockResponse;
-    /** Overrides for the start response (for expiry / interval edge cases). */
     readonly startOverrides?: Readonly<Record<string, unknown>>;
     readonly token?: string;
     readonly expiresAtMs?: number;
@@ -122,27 +105,19 @@ function fakeHandoff(
 
 describe("maruhi login", () => {
   it("fails an overlong --token-name before any communication (never wastes the browser approval)", async () => {
-    // If the argument layer skipped the cap (api-schema's MAX_TOKEN_NAME_LENGTH),
-    // an overlong name would surface as a request-encode failure **after the
-    // browser approval completed**. Worse, a Schema error shares its type with
-    // the response side, so the diagnosis would look like "a server-side fault"
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
     const code = await runCliWithClock(["login", "--token-name", "n".repeat(129)], env.layer);
-    // A usage mistake is a usage error (2)
     expect(code).toBe(2);
     expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
-    // start is never even called (no browser approval requested)
     expect(maruhi.requests).toHaveLength(0);
     expect(env.errors.join("\n")).not.toContain("Waiting for approval");
   });
 
   it("fails an out-of-range --token-ttl-days before any communication (AUTH_SPEC §6)", async () => {
-    // The cap is shared with api-schema's MAX_TOKEN_TTL_DAYS (same rule as
-    // --token-name: never surface a usage mistake after the browser approval has completed)
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -165,9 +140,7 @@ describe("maruhi login", () => {
     expect(await runCliWithClock(["login", "--token-ttl-days", "365"], env.layer)).toBe(0);
     expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(handoff.startBodies[0]?.["expiresInDays"]).toBe(365);
-    // When omitted, the server default (90 days) applies — the key itself is not sent
     expect(Object.hasOwn(handoff.startBodies[1] ?? {}, "expiresInDays")).toBe(false);
-    // The validity period is fixed at issuance; when re-login will be needed is displayed
     expect(env.logs.join("\n")).toContain("The token expires on 2099-01-01 (UTC)");
   });
 
@@ -180,21 +153,15 @@ describe("maruhi login", () => {
     const code = await runCliWithClock(["login", "--token-name", "cli-test"], env.layer);
     expect(code).toBe(0);
     expect(handoff.polls()).toBe(3);
-    // The issuance parameters ride on start (§4-1 (1) — fixed at start, not at issuance)
     expect(handoff.startBodies[0]?.["tokenName"]).toBe("cli-test");
-    // poll carries only the two flow-credential identifiers (§4-1 (5))
     expect(handoff.pollBodies[0]).toEqual({ flowId: FLOW_ID, flowToken: FLOW_TOKEN });
     const logs = env.logs.join("\n");
-    // The verification URL and user code go to the interactive guidance (stderr —
-    // ruling D-2) as phishing-match material (§4-1 (2)). The validity period is derived from the server response
     const guidance = env.errors.join("\n");
     expect(guidance).toContain(VERIFICATION_URL);
     expect(guidance).toContain(`Confirmation code: ${USER_CODE}`);
     expect(guidance).toContain("This request expires in 15 minutes");
     expect(guidance).toContain("Waiting for approval");
-    // The result (stdout) is a single success line + the expiry
     expect(logs).toContain("Signed in as user-0001");
-    // flowToken is a credential — it appears on neither the browser channel nor the terminal output (§4-1 (1))
     expect(logs).not.toContain(FLOW_TOKEN);
     expect(env.errors.join("\n")).not.toContain(FLOW_TOKEN);
     const stored = env.keychain.get(tokenEntryName(maruhi.origin));
@@ -203,16 +170,13 @@ describe("maruhi login", () => {
       token: "maruhi_pat_issued",
       userId: "user-0001",
       tokenId: "tok_1",
-      // The record also carries the local decision material for the expiry-approaching warning (ruling CL)
       expiresAtMs: EXPIRES_AT_MS,
     });
     expect(stored).not.toContain(FLOW_TOKEN);
-    // The raw token never reaches the terminal output (no --show-token)
     expect(logs).not.toContain("maruhi_pat_issued");
   });
 
   describe("signupPolicy pre-fail-fast (AUTH_SPEC §3 / hosted-design §2-2 (i)(ii))", () => {
-    /** A handoff set where /auth/config declares a signupPolicy. */
     function handoffWithConfig(config: Record<string, unknown>): {
       handlers: MockHandler[];
       polls: () => number;
@@ -240,7 +204,6 @@ describe("maruhi login", () => {
       expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.prompts.join("\n")).toContain("Do you already have a maruhi account");
       expect(env.errors.join("\n")).toContain("invite-only");
-      // Past the confirmation, proceed to the usual start → poll
       expect(handoff.polls()).toBeGreaterThan(0);
     });
 
@@ -252,7 +215,6 @@ describe("maruhi login", () => {
       env.setPromptResponses([""]);
 
       expect(await runCliWithClock(["login"], env.layer)).toBe(1);
-      // A misoperation guard (not authorization): never begins a wasted browser round trip
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
       const output = [...env.logs, ...env.errors].join("\n");
       expect(output).toContain("sign up in your browser first");
@@ -302,7 +264,6 @@ describe("maruhi login", () => {
     });
 
     it("proceeds even when /auth/config cannot be fetched (never breaks login on a missing advisory)", async () => {
-      // Absent: no /auth/config handler (404) — fakeHandoff left plain
       const bare = fakeHandoff();
       const bareServer = await start(bare.handlers);
       const env2 = await makeTestEnv();
@@ -317,7 +278,6 @@ describe("maruhi login", () => {
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // The default TestEnv = interactive terminal × non-agent
 
     expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
@@ -325,8 +285,6 @@ describe("maruhi login", () => {
   });
 
   it("does not open a browser in an agent environment / non-interactive terminal, but completes via display + polling", async () => {
-    // The degraded path is a single one (display + polling) covering every
-    // environment — it is not a new security gate, so login still succeeds in non-target environments
     for (const shape of ["agent", "piped"] as const) {
       const handoff = fakeHandoff();
       const maruhi = await start(handoff.handlers);
@@ -342,7 +300,6 @@ describe("maruhi login", () => {
       const guidance = env.errors.join("\n");
       expect(guidance).toContain(VERIFICATION_URL);
       expect(guidance).toContain(USER_CODE);
-      // Since no auto-launch was attempted, it also never claims "could not open"
       expect(guidance).not.toContain("Could not open a browser");
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
     }
@@ -357,21 +314,16 @@ describe("maruhi login", () => {
 
     expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
-    // A failed launch is never claimed as "opened" (the manual-open guidance for the URL is always shown)
     expect(env.errors.join("\n")).not.toContain("Opened your browser");
     expect(env.errors.join("\n")).toContain("Could not open a browser automatically");
   });
 
   it("never passes a non-http(s) or unparsable verificationUrl to the OS opener (fail-closed)", async () => {
-    // The OS URL handler dispatches arbitrary schemes. verificationUrl is
-    // untrusted input from a server response, so it is validated before reaching
-    // the opener; on failure, browser auto-launch is skipped and the flow completes via manual-open guidance (display) + polling
     for (const url of ["file:///etc/passwd", "javascript:alert(1)", "not a url"]) {
       const handoff = fakeHandoff({ startOverrides: { verificationUrl: url } });
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
-      // The default TestEnv = interactive terminal × non-agent (the auto-launch target environment)
       expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.browserOpens).toHaveLength(0);
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
@@ -379,7 +331,6 @@ describe("maruhi login", () => {
   });
 
   it("displays server-sourced verificationUrl / userCode with control characters neutralized", async () => {
-    // ANSI injection from a hostile / compromised server never reaches the terminal raw (displayText)
     const handoff = fakeHandoff({
       startOverrides: {
         verificationUrl: "https://evil.example/\u001b[2Jverify",
@@ -422,8 +373,6 @@ describe("maruhi login", () => {
   });
 
   it("uniform refusal (400 CliFlowRejected) does not discriminate reasons and guides toward re-login (§4-2)", async () => {
-    // Credential mismatch, re-polling a consumed flow, etc. all get the same
-    // response (the server builds no oracle for flow state) — the CLI side never fabricates a reason either
     const handoff = fakeHandoff({
       finalPoll: { status: 400, json: { _tag: "CliFlowRejected" } },
     });
@@ -467,8 +416,6 @@ describe("maruhi login", () => {
   });
 
   it("expires locally when the next poll would pass the declared deadline (deadline precedes sleep)", async () => {
-    // Server-declared remaining deadline 1ms × interval 10s — the flow would
-    // expire while waiting, so it ends with no wasted sleep or request
     const handoff = fakeHandoff({
       startOverrides: { expiresInSeconds: 0.001, pollIntervalSeconds: 10 },
     });
@@ -485,11 +432,6 @@ describe("maruhi login", () => {
   });
 
   it("pins the deadline to the Clock — a still-pending flow expires after exactly its declared window", async () => {
-    // expiresInSeconds 12 with the wire minimum interval (5 s): the check
-    // `now + interval > deadline` admits waits at 0 and 5 (0+5≤12, 5+5≤12)
-    // and ends the flow at 10 (10+5>12) — two polls, then expired. Under
-    // the virtual clock this is instant; on a Date.now() regression the
-    // same run costs 12 real seconds and exceeds the test timeout
     const handoff = fakeHandoff({
       startOverrides: { expiresInSeconds: 12 },
       finalPoll: { status: 200, json: { status: "pending" } },
@@ -506,9 +448,6 @@ describe("maruhi login", () => {
   });
 
   it("the server-driven backoff also rides the Clock — a 429's retryAfterSeconds pushes the next wait past the deadline", async () => {
-    // retryAfterSeconds 8 raises the interval 5→8 after the first poll;
-    // the next check (5+8>12) ends the flow — one poll, then expired.
-    // On a Date.now() regression the run costs 5 real seconds
     let polls = 0;
     const maruhi = await start([
       onRequest("POST", "/auth/cli/start", () => ({
@@ -538,8 +477,6 @@ describe("maruhi login", () => {
   });
 
   it("the validity guidance and the expiry wording derive from the server response's expiresInSeconds (ruling D-1)", async () => {
-    // Truncated to minutes; only sub-minute is said in seconds. The CLI holds no
-    // constant (the guidance cannot disagree if the server changes its TTL). The expiry wording carries the same duration
     for (const [seconds, window] of [
       [600, "10 minutes"],
       [61, "1 minute"],
@@ -557,7 +494,6 @@ describe("maruhi login", () => {
       expect(guidance).toContain(`This request expires in ${window}`);
       expect(guidance).toContain(`The sign-in request expired (it was valid for ${window})`);
     }
-    // Non-numeric / non-positive values are rounded to the default (15 minutes, same as the server's drafted value) for the guidance
     const handoff = fakeHandoff({ startOverrides: { expiresInSeconds: -1 } });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -572,7 +508,6 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     expect(await runCliWithClock(["login", "--token-name", "cli-test"], env.layer)).toBe(0);
-    // stdout carries only the result (no URL / code / waiting display mixed in)
     expect(env.logs).toEqual([
       "Signed in as user-0001. The token is stored in the OS keychain",
       "The token expires on 2099-01-01 (UTC). Signing in again with the same token name (cli-test) rotates it and revokes the old one",
@@ -613,8 +548,6 @@ describe("maruhi login", () => {
   });
 
   it("degrades explicitly without crashing on an out-of-range expiresAtMs (display.ts's total display)", async () => {
-    // expiresAtMs on the wire is an unbounded number — passing a value outside
-    // the Date range (±8.64e15) to toISOString would be a RangeError defect (the display.ts rule)
     const handoff = fakeHandoff({ expiresAtMs: 9.9e15 });
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -635,21 +568,14 @@ describe("maruhi login", () => {
     expect(logs).toContain("maruhi_pat_issued");
     expect(logs).toContain("MARUHI_TOKEN");
     expect(logs).toContain("MARUHI_TOKEN_ORIGIN");
-    // The provisioned-login identity-swap note (ruling CM) — in this case, issued
-    // **under the default name**, "a plain re-login" must not be recommended
-    // (the same-name rotation would revoke the very token just displayed). The
-    // correct recovery = re-issue under a different name
     const notes = env.errors.join("\n");
     expect(notes).toContain("default token name");
     expect(notes).toContain("issue it under a distinct name instead");
     expect(notes).not.toContain("run a plain `maruhi login` afterwards");
-    // Keychain saving is independent of whether the token is shown (display is one additional place, not a substitute)
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toContain("maruhi_pat_issued");
   });
 
   it("--show-token + explicit --token-name guides recovery via a plain re-login (ruling CM)", async () => {
-    // When provisioned under a different name, a plain re-login (rotating the
-    // default name) never touches the provisioned token — this guidance is shown only in this case
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
@@ -664,9 +590,6 @@ describe("maruhi login", () => {
   });
 
   it("--show-token folds a hostile server's ANSI injection into visible escapes (escapeText — copy fidelity is kept)", async () => {
-    // token is an unconstrained Schema.String on the wire. The display is a value
-    // meant to be copied, so it goes through escapeText (honest Base62 passes
-    // through; injection becomes a visible \u{hex} sequence) rather than displayText (U+FFFD substitution = destroying the value)
     const handoff = fakeHandoff({
       token: "maruhi_pat_evil\u001b[2Jinjected\nSet MARUHI_TOKEN to attacker-value",
     });
@@ -676,16 +599,12 @@ describe("maruhi login", () => {
 
     expect(await runCliWithClock(["login", "--show-token"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    // Raw ESC / fake appended lines never reach the terminal (visualized as escape sequences)
     expect(logs).not.toContain("\u001b");
     expect(logs).toContain("maruhi_pat_evil");
     expect(logs).not.toContain("\nSet MARUHI_TOKEN to attacker-value");
   });
 
   it("--show-token refuses agent environments / non-interactive terminals before any communication (fail-closed, 2 layers)", async () => {
-    // Running the browser approval to completion in a refused environment would
-    // only revoke the old token via same-name rotation without yielding the new
-    // raw value (it just breaks the CI token being replaced) — the check runs before start
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
 
@@ -719,7 +638,6 @@ describe("maruhi login", () => {
     expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     const hint = env.errors.join("\n");
     expect(hint).toContain("`maruhi key recover`");
-    // Path ordering (K7-4): if a device remains, add; otherwise, recover
     expect(hint.indexOf("`maruhi device add`")).toBeGreaterThan(-1);
     expect(hint.indexOf("`maruhi device add`")).toBeLessThan(hint.indexOf("`maruhi key recover`"));
   });
@@ -735,7 +653,6 @@ describe("maruhi login", () => {
     ]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // Pre-place a device key record for this (origin, user)
     env.keychain.set(
       masterKeyEntryName(maruhi.origin, testUserId("user-0001")),
       JSON.stringify({
@@ -752,14 +669,12 @@ describe("maruhi login", () => {
   });
 
   it("a failed status check on post-login guidance does not fail the login; the skip is made explicit", async () => {
-    // recovery/status handler absent = the situation where the status check fails
     const handoff = fakeHandoff();
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
     expect(await runCliWithClock(["login"], env.layer)).toBe(0);
-    // Never a silent skip (CLAUDE.md: do not swallow silently in a catch)
     expect(env.errors.join("\n")).toContain("skipped the next-step hint");
   });
 
@@ -798,12 +713,10 @@ describe("maruhi login", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("revoking the issued token also failed");
     expect(errors).not.toContain("has been revoked on the server");
-    // Guidance exists for rotation-revocation via a same-name re-login
     expect(errors).toContain("cli-test");
   });
 
   it("an invalid config server names the fix target and exits 1", async () => {
-    // Nothing was typed on the command line, so it is not "a usage mistake (2)"
     const env = await makeTestEnv();
     await seedConfig(env, { server: "ftp://bad.example" });
     expect(await runCli(["logout"], env.layer)).toBe(1);
@@ -852,9 +765,6 @@ describe("maruhi logout", () => {
         expiresAtMs: 4_102_444_800_000,
       }),
     );
-    // Deletion runs before revocation: if revocation succeeded and deletion then
-    // failed, an invalid token would remain in the keychain and every later
-    // command would 401. A failed revocation is exit 1, but the keychain entry is already removed (recoverable via re-login)
     expect(await runCli(["logout"], env.layer)).toBe(1);
     expect(env.keychain.size).toBe(0);
   });
@@ -902,11 +812,9 @@ describe("maruhi logout", () => {
   });
 
   it("a redacted MARUHI_TOKEN / unset MARUHI_TOKEN_ORIGIN gets per-cause guidance", async () => {
-    // Both are states where the next command fails, but the fixes differ (re-paste / add one)
     for (const [token, origin, expected] of [
       ["<redacted:maruhi-token>", "https://x.example", "redaction placeholder"],
       ["maruhi_pat_env", undefined, "MARUHI_TOKEN_ORIGIN is not set"],
-      // The reason the shape cannot be used is shown in the resolver's own wording (not paraphrased)
       ["maruhi_pat_env", "not-a-url", "Cannot parse"],
       ["maruhi_pat_env", "http://remote.example", "loopback"],
     ] as const) {
@@ -936,9 +844,6 @@ describe("maruhi logout", () => {
   });
 
   it("a mismatched MARUHI_TOKEN_ORIGIN guides that it 'is not used'", async () => {
-    // resolveSession requires the origin binding; a mismatch **fails without
-    // reaching the keychain**. Saying "keeps authenticating" here would
-    // contradict why the next command fails
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -960,8 +865,6 @@ describe("maruhi logout", () => {
   });
 
   it("does not warn on a whitespace-only MARUHI_TOKEN (same check as session resolution)", async () => {
-    // resolveSession treats an empty-after-trim value as unset. If only this
-    // looked at the raw value, it would say "keeps authenticating" right before failing with "Not logged in"
     const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });

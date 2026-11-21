@@ -1,16 +1,3 @@
-// The Bun runtimes embedded in the release binaries. build-binaries.ts hands
-// each one to `bun build --compile --compile-executable-path`; without it,
-// `--compile` copies the running bun for the host target and downloads the
-// other targets' runtimes from npm, with no digest pinned in this repository.
-//
-// Bumping Bun changes BUN_RUNTIME_VERSION and every sha256 here together with
-// `.bun-version` and scripts/install-bun.sh (whose linux-x64 pin is the same
-// zip; apps/cli/test/workflows-supply-chain.test.ts fails until all of them
-// agree). Each sha256 is the line for `zip` in the release's clearsigned
-// SHASUMS256.txt.asc, checked by the gpgv procedure in that script's header,
-// then picked with:
-//   grep -E ' bun-(linux-x64|linux-aarch64|darwin-x64|darwin-aarch64|windows-x64)\.zip$' shasums.txt
-
 import { createHash } from "node:crypto";
 
 import type { TARGETS } from "./shared.ts";
@@ -18,9 +5,7 @@ import type { TARGETS } from "./shared.ts";
 type BunTarget = (typeof TARGETS)[number]["bunTarget"];
 
 interface BunRuntime {
-  /** The release asset, as named in SHASUMS256.txt. */
   readonly zip: string;
-  /** The executable's path inside the zip. */
   readonly member: string;
   readonly sha256: string;
 }
@@ -58,7 +43,6 @@ export const BUN_RUNTIMES: Readonly<Record<BunTarget, BunRuntime>> = {
 export const runtimeUrl = (runtime: BunRuntime): string =>
   `https://github.com/oven-sh/bun/releases/download/bun-v${BUN_RUNTIME_VERSION}/${runtime.zip}`;
 
-/** Downloads `url` and returns its bytes only when they match `sha256`; nothing is written. */
 export async function downloadVerified(
   url: string,
   sha256: string,

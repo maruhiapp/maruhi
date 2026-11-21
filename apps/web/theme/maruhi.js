@@ -8,13 +8,6 @@
 
 import { neutralTheme } from "@astryxdesign/theme-neutral";
 const themeIcons = neutralTheme["icons"];
-/**
- * maruhi theme — built by `bunx astryx theme build`
- * Import the CSS file alongside this module:
- *
- *   import { maruhiTheme } from './maruhi';
- *   import './maruhi.css';
- */
 export const maruhiTheme = {
   name: "maruhi",
   __built: true,

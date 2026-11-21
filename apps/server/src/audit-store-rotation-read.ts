@@ -1,34 +1,13 @@
-// The audit log's read surface for rotation-needed detection (AUDIT_SPEC
-// §4.1 / §4.2's Q1-Q6), served by AuditStore's readRotationSync
-// (audit-store.ts). Read-only (§1-4: AuditStore creates no update/delete
-// entry point). Everything synchronous: detection runs inside the write
-// phase of a chain acceptance (a single task) and writes
-// rotation.recommended in the same transaction as the mirror append
-// (§4.1).
-
 import type { EnvironmentId, KeyFingerprintHex, UserId, VariableId } from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { auditReadVariablesOf, rotationRecommendedVariablesOf, VAR_READ_EVENT } from "@maruhi/core";
 
 import { brandOrNull, numberOrNull, parsePayload } from "./audit-store-rows.ts";
 
-/**
- * The scope read out of a mirror payload (AUDIT_SPEC §3.4's scopeKind /
- * scopeEnvironmentIds — the input of §4.1 step 2's per-environment
- * access windows).
- */
 export type ScopeSnapshot =
   | { readonly kind: "all" }
   | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
 
-/**
- * Q1: the membership-interval events of the target user_id
- * (chain.genesis / member_added / role_changed / member_removed —
- * role_changed was added at 2026-09-15 ES K3). scope / role come from
- * the mirror payload (genesis = owner / all; removed = null; a row
- * unreadable from the payload is null = the window derivation treats it
- * as `all`, fail-safe).
- */
 export interface MembershipEventRow {
   readonly seq: number;
   readonly event: string;
@@ -36,14 +15,6 @@ export interface MembershipEventRow {
   readonly scope: ScopeSnapshot | null;
 }
 
-/**
- * The device axis of Q1 (2026-09-19 DK — the `revoke_device` variant of
- * AUDIT_SPEC §4.1): the target user_id's chain.device_added (one
- * deviceKeyFingerprint in the payload + the device scope) /
- * chain.device_revoked (the payload's deviceKeyFingerprints). scope
- * comes from the device_added payload (an unreadable row is null = the
- * window derivation treats it as `all`, fail-safe).
- */
 export interface DeviceEventRow {
   readonly seq: number;
   readonly event: string;
@@ -51,20 +22,12 @@ export interface DeviceEventRow {
   readonly scope: ScopeSnapshot | null;
 }
 
-/** Q6: the grant-interval events of a server key FP (chain.server_granted / revoked). */
 export interface GrantEventRow {
   readonly seq: number;
   readonly event: string;
-  /**
-   * From a chain.server_granted payload. A revoked row is the empty
-   * array. null = a broken row unreadable from the payload (the window
-   * derivation treats it as every environment, fail-safe — design
-   * record §9 K3-F).
-   */
   readonly scopeEnvironmentIds: readonly string[] | null;
 }
 
-/** Q2: a variable's existence-interval events (var.created / var.deleted). */
 export interface VariableLifecycleRow {
   readonly seq: number;
   readonly event: string;
@@ -72,61 +35,43 @@ export interface VariableLifecycleRow {
   readonly variableId: string;
 }
 
-/** Q3: the target user_id's var.read (expansion of the aggregate form's payload — §3.3). */
 export interface VariableReadRow {
   readonly seq: number;
   readonly environmentId: string;
   readonly variableId: string;
 }
 
-/**
- * The seq range of Q3 (both ends are **open** — `afterSeq < seq <
- * beforeSeq`). The caller (detectForMember of rotation-detect.ts)
- * supplies the envelope of the detection window so rows that would be
- * discarded outside the window are never read. A non-finite value
- * means "unbounded on that side".
- */
 export interface SeqRange {
   readonly afterSeq: number;
   readonly beforeSeq: number;
 }
 
-/** Q6: a server key FP's disclosure exercises (server.lease_issued / value_decrypted [reserved]). */
 export interface ServerAccessRow {
   readonly seq: number;
   readonly event: string;
   readonly environmentId: string;
-  /** server.lease_issued is per-environment distribution, so null (§3.5). */
   readonly variableId: string | null;
 }
 
-/** One epoch transition of an environment, from the chain mirror (§4.1-5 — VH). */
 export interface EnvironmentEpochRow {
   readonly seq: number;
   readonly environmentId: string;
   readonly epoch: number;
 }
 
-/** Q5: the input rows of flag derivation (rotation.recommended / dismissed / var.version_pushed). */
 export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;
   readonly event: string;
   readonly environmentId: string;
   readonly variableId: string;
-  /** The version column (var.version_pushed only — the lineage fold's key; NULL otherwise). */
   readonly version: number | null;
-  /**
-   * The epoch column: a var.version_pushed's epoch, or a rotation.recommended's
-   * exposure bound (the environment's epoch at detection — VH). NULL otherwise.
-   */
   readonly epoch: number | null;
   readonly targetUserId: UserId | null;
   readonly targetKeyFingerprintHex: KeyFingerprintHex | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
-/** The synchronous read surface used by detection and flag derivation (indexes in §4.2 / do-schema.ts). */
 export interface AuditRotationRead {
   readonly membershipEventsFor: (targetUserId: UserId) => readonly MembershipEventRow[];
   readonly deviceEventsFor: (targetUserId: UserId) => readonly DeviceEventRow[];
@@ -134,21 +79,8 @@ export interface AuditRotationRead {
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
   readonly variableReadsBy: (actorUserId: UserId, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
-  /**
-   * Every environment's epoch transitions from the chain mirror
-   * (`chain.environment_created` = epoch 1, `chain.epoch_rotated` = the new
-   * epoch — ae_event), ascending by seq: the input of each flag's exposure
-   * bound (the epoch at the end of the subject's window — §4.1-5, VH).
-   */
   readonly environmentEpochEvents: () => readonly EnvironmentEpochRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
-  /**
-   * The same rows narrowed to the given (variable × environment) pairs (the
-   * history's flagsIfCurrent, a dismissal's live check — ae_var). The pairs
-   * are typed with the id brands so a caller cannot swap the two
-   * same-shaped ids; they are only bound as a query parameter, so nothing
-   * is minted here.
-   */
   readonly rotationFlagEventsFor: (
     pairs: readonly {
       readonly environmentId: EnvironmentId;
@@ -157,11 +89,6 @@ export interface AuditRotationRead {
   ) => readonly RotationFlagSourceRow[];
 }
 
-/**
- * Read the payload's scopeEnvironmentIds. A broken row — not an array,
- * or containing non-string elements — is null (a silently narrowed
- * enumeration would create a missed window — design record §9 K3-F).
- */
 function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
   return Array.isArray(scope) && scope.every((id) => typeof id === "string")
@@ -169,12 +96,6 @@ function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly st
     : null;
 }
 
-/**
- * Read the scope of a mirror payload. A broken row with kind listed but
- * a non-array id list falls to null (= the window derivation treats it
- * as all, fail-safe), never listed{} (zero windows = a miss) (design
- * record §9 K3-F).
- */
 function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): ScopeSnapshot | null {
   const kind = payload?.["scopeKind"];
   if (kind === "all") {
@@ -184,14 +105,6 @@ function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): Sco
   return ids === null ? null : { kind: "listed", environmentIds: ids };
 }
 
-/**
- * Read one Q1 row with (role, scope) attached (the payloads of
- * member_added / role_changed in AUDIT_SPEC §3.4). genesis is
- * structurally owner / all (CRYPTO_SPEC §6.2); removed is null on both.
- * A row whose scopeKind is unreadable gets scope = null (detection is
- * never made a defect on a broken row — the window derivation treats it
- * as all).
- */
 function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventRow {
   const seq = Number(row["seq"]);
   const event = String(row["event"]);
@@ -212,9 +125,6 @@ function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventR
 }
 
 export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
-  // Q1: the (target_user_id, seq) index (ae_target). The scope in a
-  // role_changed payload is the open/close point of the per-environment
-  // access window (§4.1 step 2 — 2026-09-15 ES K3)
   membershipEventsFor: (targetUserId) =>
     sql
       .exec(
@@ -226,10 +136,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(membershipRowOf),
-  // The device axis of Q1 (the same ae_target index — device_added /
-  // device_revoked of AUDIT_SPEC §3.4 carry target_user_id = the
-  // subject). FPs are read from the payload (the §4.1 revoke_device
-  // variant)
   deviceEventsFor: (targetUserId) =>
     sql
       .exec(
@@ -263,7 +169,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
           scope: scopeSnapshotOf(payload),
         };
       }),
-  // Q6: the (target_key_fingerprint, seq) index (ae_target_fp)
   serverGrantEventsFor: (fpHex) =>
     sql
       .exec(
@@ -282,7 +187,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
             ? []
             : scopeOf(parsePayload(row["payload"])),
       })),
-  // Q2: the (event, seq) index (ae_event)
   variableLifecycles: () =>
     sql
       .exec(
@@ -296,19 +200,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: String(row["variable_id"]),
       })),
-  // Q3: the (actor_user_id, seq) index (ae_actor). Expands the
-  // aggregate-form var.read (the payload's variables enumeration — §3.3)
-  // (the expansion is a defensive parse — a broken row never makes
-  // detection a defect). The variables of one pull share the same seq
-  // (§4.1 step 3's interval judgment is per seq). range becomes a range
-  // scan over ae_actor's seq component (omitted = every seq).
-  // `+event` is the unary + that disqualifies the event column from
-  // index candidacy (a standard SQLite idiom): the DO SQLite planner has
-  // no statistics and would pick ae_event (event, seq) for the `event =
-  // ?` equality, scanning the whole project's var.read (the dominant
-  // row kind). The predicate's meaning is unchanged and ae_actor,
-  // narrowed by actor, is chosen instead (test/audit-index.test.ts pins
-  // it via EXPLAIN)
   variableReadsBy: (actorUserId, range) =>
     sql
       .exec(
@@ -333,7 +224,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
           variableId: variable.variableId,
         }));
       }),
-  // The (a) input of Q6: the (actor_key_fingerprint, seq) index (ae_actor_fp)
   serverAccessEventsBy: (actorFpHex) =>
     sql
       .exec(
@@ -350,7 +240,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
       })),
-  // Q5: the (event, seq) index (ae_event)
   environmentEpochEvents: () =>
     sql
       .exec(
@@ -365,15 +254,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         epoch: Number(row["epoch"]),
       })),
-  // Q5: the aggregate rotation.recommended rows (ae_event — one row per
-  // environment, §3.3's aggregate form), each expanded to its per-pair flag
-  // rows so the lineage fold (rotation-detect.ts) stays per pair. The flagged
-  // pairs then drive the per-pair resolution read (ae_var — rotation.dismissed
-  // / var.version_pushed), so a pair never flagged is never touched. Reading
-  // all recommended rows is bounded by removals × environments (2026-10-11
-  // Sc-5 — it replaces #392's pair-unit narrowing, which the aggregate form
-  // cannot use since a recommended row carries no variable_id column).
-  // test/audit-index.test.ts pins the two plans via EXPLAIN.
   rotationFlagEvents: () => {
     const expanded = sql
       .exec(
@@ -387,16 +267,6 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
     }
     return mergeFlagRowsBySeq(expanded, resolutionRowsFor(sql, pairs));
   },
-  // The given pairs only: the aggregate recommended rows that cover a
-  // requested pair, expanded to just those pairs, plus their resolution rows
-  // (ae_var). The dismissal live check and the reader-callable history GET
-  // pass specific pairs, so the recommended rows are narrowed in SQL
-  // (environment_id IN … and the payload enumeration containing a requested
-  // variableId) before the JS expansion — it does not read and parse every
-  // recommended row in the project (the #392-style narrowing, restored for the
-  // aggregate form). `wanted` is the precise pair set that drops a row's
-  // non-requested variables (the `IN` predicates over-match within a mixed
-  // row).
   rotationFlagEventsFor: (pairs) => {
     if (pairs.length === 0) {
       return [];
@@ -428,29 +298,17 @@ export const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   },
 });
 
-/** The columns read from an aggregate rotation.recommended row (variable_id is NULL — the enumeration is in the payload). */
 const RECOMMENDED_COLUMNS = `seq, server_ts, environment_id, epoch, target_user_id, target_key_fingerprint, payload`;
 
 const pairKeyOf = (environmentId: string, variableId: string): string =>
   `${environmentId}\u0000${variableId}`;
 
-/**
- * Expand one aggregate `rotation.recommended` row (§3.3 — 2026-10-11 Sc-5)
- * into the per-pair flag rows the lineage fold consumes: one row per enumerated
- * variable, carrying that variable's basis and the row's (shared) trigger,
- * triggerChainSeq and exposure bound. The reconstructed per-pair payload
- * `{ basis, trigger, triggerChainSeq }` is byte-for-byte the shape the fold
- * read before aggregation, so `flagOf` / `originEpochOf` / `foldPairs` are
- * untouched. `restrict` (when given) keeps only the requested pairs. A broken
- * payload (no enumeration) yields nothing — a read is never made a defect.
- */
 function expandRecommendedRow(
   row: Record<string, SqlStorageValue>,
   restrict?: ReadonlySet<string>,
 ): RotationFlagSourceRow[] {
   const environmentId = String(row["environment_id"]);
   const payload = parsePayload(row["payload"]);
-  // The columns shared by every expanded pair of this aggregate row
   const shared = {
     seq: Number(row["seq"]),
     serverTs: Number(row["server_ts"]),
@@ -474,7 +332,6 @@ function expandRecommendedRow(
     }));
 }
 
-/** The distinct (environment, variable) pairs an expanded flag-row list covers. */
 function distinctPairs(
   rows: readonly RotationFlagSourceRow[],
 ): { environmentId: string; variableId: string }[] {
@@ -490,14 +347,6 @@ function distinctPairs(
   return pairs;
 }
 
-/**
- * Each pair's resolution rows (rotation.dismissed / var.version_pushed —
- * ae_var), in one statement however many pairs: json_each expands the bound
- * list, DISTINCT keeps a repeated pair from repeating its rows, and CROSS JOIN
- * fixes the join order (SQLite never reorders it — without statistics the
- * planner could otherwise drive from ae_event's whole var.version_pushed
- * range).
- */
 function resolutionRowsFor(
   sql: SqlStorage,
   pairs: readonly { readonly environmentId: string; readonly variableId: string }[],
@@ -524,7 +373,6 @@ function resolutionRowsFor(
     .map(rotationFlagSourceRow);
 }
 
-/** Merge the expanded recommended rows with the resolution rows into one seq-ascending list (the fold's input order). */
 function mergeFlagRowsBySeq(
   recommended: readonly RotationFlagSourceRow[],
   resolution: readonly RotationFlagSourceRow[],

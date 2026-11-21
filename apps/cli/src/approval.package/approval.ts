@@ -1,20 +1,3 @@
-// Appends for four-eyes propose / withdraw / policy (CRYPTO_SPEC §6.2 —
-// PF1; design record es-design.md §12 K6-A / H / L).
-//
-// - `proposeOperation`: the shared core the existing commands (member
-//   remove / change-role / add, server grant / revoke, project policy
-//   approvals) call instead of a direct append when the verified chain's
-//   current policy targets the inner op. **Idempotent**: when a pending
-//   proposal for the same inner op already exists, it does not propose anew
-//   and returns that proposal's state (a re-run does not add proposals).
-//   The same check runs after the resync of a CAS conflict
-// - No sweep / backfill runs at proposal time (before apply — ruling P7 /
-//   approval item 21). Fulfilment belongs to the approver who completes the
-//   apply (approval-approve.ts)
-// - The approver-side fulfilment (approve) lives in approval-approve.ts (it
-//   calls the post-stages of member / server-grant / server-revoke, so it
-//   is split off here to avoid circular imports)
-
 import { cryptoPromise, type UserId } from "@maruhi/core";
 import type { ApprovalTargetOp, ProposableOperation, Role, SigningKeyPair } from "@maruhi/crypto";
 import { computeChainEntryHash, effectivePermissionOf, isApprovalTarget } from "@maruhi/crypto";
@@ -34,20 +17,17 @@ import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
 import { ownDeviceBySigningKey } from "../device-key.ts";
 import { cliError, type CliError } from "../errors.ts";
 
-/** The outcome of proposing: a new proposal, or the one already pending for the same operation. */
 export interface ProposedSummary {
   readonly kind: "proposed" | "already-pending";
   readonly view: ProposalView;
   readonly headSeq: number;
 }
 
-/** The inputs proposing requires (expiry and clock — design record K6-K). */
 export interface ProposalInput {
   readonly expiresAtMs: number;
   readonly nowMs: number;
 }
 
-/** The context held by the side appending a proposal (a subtype of each op's input — callers can pass theirs as-is). */
 export interface ProposeContext {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -57,7 +37,6 @@ export interface ProposeContext {
   readonly proposal: ProposalInput;
 }
 
-/** A pending proposal for the same inner op (idempotency — K6-A). If several, the first (smallest seq). */
 function findPendingSame(
   verified: VerifiedProject,
   inner: ProposableOperation,
@@ -68,7 +47,6 @@ function findPendingSame(
   return same[0] ?? null;
 }
 
-/** fail-closed when a policy was enabled / disabled and the append shape (direct / proposal) changed (K6-A). */
 export function ensureStillTarget(
   verified: VerifiedProject,
   inner: ProposableOperation,
@@ -88,13 +66,6 @@ interface ProposeState {
   readonly existing: ProposalView["proposal"] | null;
 }
 
-/**
- * Appends a `propose` entry (parent-head CAS retry). `recheck` is the
- * caller's pre-append check (the same check runs after a resync — the
- * existing interrupted-recovery discipline). After acceptance it resyncs
- * and confirms the proposal is on pending (does not make the server's
- * claim the source of truth).
- */
 export const proposeOperation = Effect.fn("approval.proposeOperation")(function* (
   input: ProposeContext,
   inner: ProposableOperation,
@@ -161,11 +132,6 @@ export const proposeOperation = Effect.fn("approval.proposeOperation")(function*
   };
 });
 
-/**
- * Re-checks the proposing path (after the resync of a CAS conflict): runs
- * the caller's pre-append check and, when a concurrent run already applied
- * the same change (`already`), stops without proposing (K6-A).
- */
 export function proposeRecheck<A>(
   check: (verified: VerifiedProject) => Effect.Effect<A, CliError>,
   already: (checked: A) => boolean,
@@ -179,19 +145,13 @@ export function proposeRecheck<A>(
     );
 }
 
-// ---------------------------------------------------------------------------
-// withdraw
-// ---------------------------------------------------------------------------
-
 interface WithdrawSummary {
   readonly proposalHashHex: string;
   readonly proposalSeq: number;
   readonly proposerUserId: UserId;
-  /** Closed by an owner who is not the proposer (the K6-L Note). */
   readonly closedByOtherOwner: boolean;
 }
 
-/** The pre-check for withdraw (§6.2 — the proposer or an owner). Run again after a resync. */
 function ensureWithdrawable(
   verified: VerifiedProject,
   ref: string,
@@ -206,7 +166,6 @@ function ensureWithdrawable(
   if (actor === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  // Consensus is judged by effective permission (person ∩ device cap — §6.2 effectivePermissionOf)
   return Effect.flatMap(ownDeviceBySigningKey(verified, actor, signingKeyPair), (device) =>
     effectivePermissionOf(actor, device).role !== "owner" &&
     resolution.proposal.proposerUserId !== signerUserId
@@ -236,7 +195,6 @@ export const withdrawProposalOp = Effect.fn("approval.withdrawProposalOp")(funct
   const outcome = yield* appendOperationWithRetry(input, {
     operation: { op: "withdraw", payload: { proposalHashHex: first.proposalHashHex } },
     initial: { verified: input.verified },
-    // If it was concurrently completed / withdrawn, stop here with a typed outcome (do not send an unknown-proposal)
     recheck: (resynced) =>
       Effect.as(
         ensureWithdrawable(
@@ -264,11 +222,6 @@ export const withdrawProposalOp = Effect.fn("approval.withdrawProposalOp")(funct
   };
 });
 
-// ---------------------------------------------------------------------------
-// set_approval_policy(`maruhi project policy approvals` — K6-H)
-// ---------------------------------------------------------------------------
-
-/** The requested policy: `off`, or `on` with the required count and the targeted ops (sorted, deduplicated). */
 export type PolicyRequest =
   | { readonly kind: "off" }
   | {
@@ -297,7 +250,6 @@ function ownersOf(verified: VerifiedProject): readonly string[] {
     .map((member) => member.userId);
 }
 
-/** The pre-append check for policy (owner, reachability foretell, no-op detection). Run again after a resync. */
 function sameOps(a: readonly ApprovalTargetOp[], b: readonly ApprovalTargetOp[]): boolean {
   return a.length === b.length && a.every((op) => b.includes(op));
 }
@@ -319,7 +271,6 @@ function ensurePolicySettable(
   );
 }
 
-/** The inside of the policy check at effective permission (the rules other than owner do not change). */
 function ensurePolicySettableWith(
   verified: VerifiedProject,
   request: PolicyRequest,
@@ -368,9 +319,7 @@ export const setApprovalPolicyOp = Effect.fn("approval.setApprovalPolicyOp")(fun
     return { kind: "unchanged" };
   }
   const operation = policyOperation(input.request);
-  // While a policy is enabled, set_approval_policy itself is an always-target (§6.2 "policy")
   if (isApprovalTarget(operation, input.verified.state.approvalPolicy)) {
-    // Do not propose when the same policy was already applied after the resync (Cursor Bugbot finding — a redundant proposal)
     const proposal = yield* proposeOperation(
       input,
       operation,
@@ -422,7 +371,6 @@ export const setApprovalPolicyOp = Effect.fn("approval.setApprovalPolicyOp")(fun
   return { kind: "applied", headSeq: verified.state.headSeq };
 });
 
-/** Distinguishes completed / withdrawn / pending (used by approve's conflict handling — K6-B). */
 export function proposalStatusOf(
   verified: VerifiedProject,
   proposalHashHex: string,

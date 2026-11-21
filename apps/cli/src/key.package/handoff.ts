@@ -1,26 +1,3 @@
-// Reserve-key handoff — the requesting side (CRYPTO_SPEC §8.4 /
-// AUTH_SPEC §13-7 — KL3, 2026-09-19 DK).
-//
-// `maruhi key recover --handoff` (a device holding no keys): generates
-// an ephemeral X25519 key E in memory, displays its handoff code (=
-// the encoding of E.pub; public information), and waits for the
-// **guardians'** approvals. Once approvals arrive, it opens the
-// segments, assembles the KEK, decrypts reserve key B from the
-// ledger's group wrap, and returns the record (it does not persist —
-// the downstream key-recover.ts issues a new device key, signs
-// `add_device` with B, then discards B). E is never persisted.
-//
-// The approving side is `maruhi guardian approve <code>`
-// (guardian.ts). The old-device approval path (`source = "device"` —
-// device migration) was removed in DK K4: everyday devices do not
-// hold B so it cannot work, and adding a device is handled by
-// `maruhi device add` / `approve` (which carry no secret).
-//
-// Ceremonies (request, recovery) run only on a human's interactive
-// terminal and are refused in AI agent environments (ADR-0016
-// decision 7's existing gate). Plaintext segments, KEK, and B exist
-// only in local variables.
-
 import { cryptoEffect, cryptoPromise, fromCryptoResult, type UserId } from "@maruhi/core";
 import {
   computeHandoffRequestId,
@@ -47,7 +24,6 @@ import { parseStoredMasterKey, type StoredMasterKey } from "../keychain.ts";
 import { decodeWrapped } from "../master-ops.ts";
 import type { CliSession } from "../session.ts";
 
-/** Polling interval while waiting for approvals. */
 const POLL_INTERVAL = Duration.seconds(3);
 
 function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
@@ -61,7 +37,6 @@ function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliErr
   });
 }
 
-/** One approval as returned by the server (wire shape). */
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
@@ -77,13 +52,11 @@ interface GroupSummary {
   readonly guardianCount: number;
 }
 
-/** An assembled set of approvals (any: one piece, all: every piece). */
 interface Assembled {
   readonly group: GroupSummary;
   readonly approvals: readonly ApprovalWire[];
 }
 
-/** Selects a set sufficient for recovery from the arrived approvals. */
 function assemble(
   approvals: readonly ApprovalWire[],
   groups: readonly GroupSummary[],
@@ -117,7 +90,6 @@ function decodeBlobWrap(blob: {
     : Effect.succeed({ nonce, ciphertext });
 }
 
-/** Opens an approval's value (segment) with the ephemeral key. A context mismatch = decryption failure = abort. */
 const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
   readonly ephemeral: EncryptionKeyPair;
   readonly userId: UserId;
@@ -146,7 +118,6 @@ const openApproval = Effect.fn("handoff.openApproval")(function* (input: {
   );
 });
 
-/** Assembles the KEK from the assembled set and decrypts the ledger's group wrap. */
 const recoverBlob = Effect.fn("handoff.recoverBlob")(function* (input: {
   readonly client: MaruhiClient;
   readonly ephemeral: EncryptionKeyPair;
@@ -189,7 +160,6 @@ const recoverBlob = Effect.fn("handoff.recoverBlob")(function* (input: {
   );
 });
 
-/** The ephemeral key E and its code / request_id (E exists only in this process's memory — §8.4). */
 interface HandoffRequest {
   readonly ephemeral: EncryptionKeyPair;
   readonly code: string;
@@ -215,7 +185,6 @@ const newHandoffRequest = Effect.fn("handoff.newHandoffRequest")(function* (): E
   return { ephemeral, code, requestId };
 });
 
-/** Displays the code and the guidance (the code is a public key = not secret, but it goes to the same stderr as the guidance). */
 const announceCode = Effect.fn("handoff.announceCode")(function* (
   io: CliIoShape,
   code: string,
@@ -237,7 +206,6 @@ const announceCode = Effect.fn("handoff.announceCode")(function* (
   );
 });
 
-/** Polls until the approvals arrive (expiry is a failure). */
 const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
@@ -247,8 +215,6 @@ const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
   let received = 0;
   const outcome = yield* Effect.repeat(
     Effect.gen(function* () {
-      // The deadline bounds the next fetch: it is judged at the loop's
-      // top (before the request), not during the wait between polls
       if ((yield* Clock.currentTimeMillis) >= input.expiresAtMs) {
         return { kind: "expired" as const };
       }
@@ -275,11 +241,6 @@ const awaitApprovals = Effect.fn("handoff.awaitApprovals")(function* (input: {
       );
 });
 
-/**
- * `maruhi key recover --handoff`'s pre-stage: request approvals from
- * your guardians and open the reserve key (memory only —
- * key-recover.ts owns the downstream).
- */
 export const requestHandoffReserve = Effect.fn("handoff.requestHandoffReserve")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -339,7 +300,6 @@ export const requestHandoffReserve = Effect.fn("handoff.requestHandoffReserve")(
       `approved by ${displayText(approval.approverUserId)} (guardian, group ${displayText(approval.source)}; device key fingerprint ${approval.approverKeyFingerprintHex})`,
     );
   }
-  // The request has served its purpose (the approvals become worthless together with E, but still delete the row)
   yield* input.client.keyWraps
     .handoffCancel({ params: { requestId: request.requestId } })
     .pipe(Effect.ignore);

@@ -31,8 +31,6 @@ describe("MirrorPageSchema sourceMutationSeq", () => {
   });
 });
 
-// A minimal valid wrap (dummy values — 32-byte public keys and a
-// 17-byte ciphertext, the sealed-value minimum).
 const wrap = {
   recipientUserId: "user-member-0002",
   recipientEncPubHex: "cd".repeat(32),

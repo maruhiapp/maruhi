@@ -1,28 +1,3 @@
-// `maruhi server revoke` (CRYPTO_SPEC §7 / §9).
-//
-// Appends revoke_server to the chain and forcibly rotates **every
-// environment of the project** (§7 — the revocation's effectiveness
-// is carried by rotation. A revoke without rotation is the
-// pretense of "having stopped the disclosure"). The rotation
-// reuses envRotateOp per environment (reason is a fixed string).
-//
-// Interruption recovery (no progress file — derived from the
-// distributed state): even if it crashes after the revoke lands on
-// the chain, a re-run converges around "the last revoke_server's
-// seq":
-// - An environment whose current epoch's start seq precedes the
-//   revoke = not yet rotated → forced rotation (forceNewEpoch)
-// - An environment whose start seq is after the revoke = the epoch
-//   advanced, but **a mid-flight re-encryption crash may remain**
-//   (§12-7's transient state) → the verification pass (envRotateOp
-//   without forceNewEpoch = resumes the incomplete, check-only
-//   otherwise) closes the "looks complete because the epoch merely
-//   advanced" pretense
-// A deleted environment is skipped only when its **delete_environment
-// entry is on the verified chain** (never skipped silently on the server's
-// 404 declaration alone — §7. If it cannot be verified it stays a
-// target and surfaces as a rotate failure).
-
 import { type EnvironmentId, type KeyFingerprintHex, type UserId } from "@maruhi/core";
 import { isApprovalTarget, type ProposableOperation, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -47,19 +22,15 @@ import {
 } from "../rotation-sweep.ts";
 import { compareCodePoints } from "../scope.ts";
 
-/** The reason recorded on the chain by the post-revoke whole-environment rotation (§6.2 payload). */
 export const REVOKE_ROTATION_REASON = "server-revoked";
 
-/** The revoke's result: a proposal (four-eyes — K6) or an application. */
 type ServerRevokeOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: RevokeSummary };
 
 export interface RevokeSummary extends SweepOutcome {
-  /** Whether it was appended to the chain (false = no valid grant / already revoked by a concurrent revoke — resume from the post-revoke rest). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string | null;
-  /** Environments skipped because the verified chain shows them deleted (delete_environment). */
   readonly skippedDeleted: readonly EnvironmentId[];
 }
 
@@ -74,7 +45,6 @@ function requireOwner(
   return Effect.void;
 }
 
-/** Selects the grant to revoke (when several exist, disambiguate with --fingerprint). */
 function selectGrant(
   verified: VerifiedProject,
   fingerprintHex: string | null,
@@ -107,7 +77,6 @@ function selectGrant(
     : Effect.succeed({ serverKeyFingerprintHex: only.serverKeyFingerprintHex });
 }
 
-/** The applied seq of the last revoke_server on the chain (null when absent. Includes applications via a proposal — K6-C). */
 function lastRevokeSeq(verified: VerifiedProject): number | null {
   for (let index = verified.applied.length - 1; index >= 0; index -= 1) {
     const applied = verified.applied[index];
@@ -118,13 +87,6 @@ function lastRevokeSeq(verified: VerifiedProject): number | null {
   return null;
 }
 
-/**
- * The whole-environment sweep after revoke application (§7).
- * Shared by the direct-append revoke and the fulfiller of an
- * approval that completed the application under four-eyes
- * (approval-approve.ts). `revokeSeq` = the obligation's reference
- * (the applied seq).
- */
 export const sweepAfterRevoke = Effect.fn("server-revoke.sweepAfterRevoke")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -135,20 +97,11 @@ export const sweepAfterRevoke = Effect.fn("server-revoke.sweepAfterRevoke")(func
   CliError,
   R
 > {
-  // Excludes chain-deleted environments from the rotation targets
-  // (a deleted environment returns 404 for both rotate and pull, and
-  // no wrap remains to rotate). The only basis for exclusion is the
-  // **delete_environment entry on the verified chain** — never
-  // skipped silently on the server's 404 declaration alone (§7)
   const deletedVerified = chainDeletedEnvironments(input.verified);
   const skippedDeleted = chainEnvironmentIds(input.verified)
     .filter((environmentId) => deletedVerified.has(environmentId))
     .toSorted(compareCodePoints);
 
-  // The obligation's environment set = every environment at the
-  // revoke's point (§7 — revoke_server is immutable; the server
-  // key cannot hold the DEK of a later-created environment). The
-  // derivation is shared with rotationMandates
   const sweep = yield* sweepRotations({
     rotate: input.rotate,
     verified: input.verified,
@@ -169,13 +122,6 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
   readonly signerUserId: UserId;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /**
-   * One environment's rotation (envRotateOp wrapped with the
-   * per-environment floor — cli.ts injects it). force = reason
-   * fixed + forceNewEpoch (§7's force), verify = no reason + no
-   * forceNewEpoch (resumes an incomplete re-encryption if any,
-   * check-only otherwise — creates no new epoch).
-   */
   readonly rotate: SweepRotate<R>;
   readonly proposal: ProposalInput;
 }): Effect.fn.Return<ServerRevokeOutcome, CliError, R> {
@@ -186,16 +132,11 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
   let appended = false;
   let revokedFingerprint: string | null = null;
 
-  // A resume (no valid grant) appends nothing and is not proposed
   if (target !== null) {
     const inner: ProposableOperation = {
       op: "revoke_server",
       payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
     };
-    // Four-eyes (K6-A): when the policy covers revoke_server,
-    // propose and finish (the whole-environment rotate is done by
-    // the approver who completed the application — approval item
-    // 22)
     if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
       const proposal = yield* proposeOperation(input, inner, (view) =>
         Effect.gen(function* () {
@@ -213,17 +154,14 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
     }
 
     revokedFingerprint = target.serverKeyFingerprintHex;
-    // The entry's operation is `inner` itself (the one a proposal would carry)
     const outcome = yield* appendOperationWithRetry(input, {
       operation: inner,
       initial: { verified, alreadyRevoked: false },
-      // Already revoked by a concurrent revoke — skip the append and proceed to rotation.
       settled: (state) => state.alreadyRevoked,
       recheck: (resynced) =>
         Effect.gen(function* () {
           yield* requireOwner(resynced, input.signerUserId);
           yield* ensureStillTarget(resynced, inner, false);
-          // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
           return {
             verified: resynced,
             alreadyRevoked: !resynced.state.serverGrants.has(target.serverKeyFingerprintHex),
@@ -232,7 +170,6 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
     });
     verified = outcome.state.verified;
     appended = outcome.entry !== null;
-    // After acceptance, a re-sync confirms the revocation's posting (the server declaration is not the source of truth)
     verified = yield* resyncExtended(input.resync, verified);
     if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
       return yield* Effect.fail(
@@ -243,10 +180,6 @@ export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function
     }
   }
 
-  // Deriving the rotation targets: on a run that appended, "the
-  // last revoke's seq" is this run's append itself; on a run
-  // that did not append (interruption recovery) it is taken
-  // from the chain history
   const revokeSeq = lastRevokeSeq(verified);
   if (revokeSeq === null) {
     return yield* Effect.fail(

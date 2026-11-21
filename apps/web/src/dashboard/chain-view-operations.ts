@@ -1,5 +1,3 @@
-// See chain-view.ts for the display-only contract.
-
 import {
   hasStrings,
   isStringArray,
@@ -14,7 +12,6 @@ import {
 } from "./chain-view-state.ts";
 import { isRecord } from "./json-record.ts";
 
-/** Whether a member already holds this role and scope (listed ids compare as a set). */
 function holdsRoleAndScope(
   member: MutableMember,
   role: string,
@@ -40,10 +37,6 @@ function applyChangeRole(
   }
   const existing = state.members.get(payload.targetUserId);
   if (existing === undefined) return;
-  // Full replacement by the new (role, scope) (§6.2 — scope is also
-  // copied per 2026-09-15 ES K4). The device set is unchanged. A
-  // change_role restating the current role and scope is valid, and
-  // leaves sinceSeq at the last change
   const scope = reportedScope(payload);
   if (!holdsRoleAndScope(existing, payload.newRole, scope)) existing.sinceSeq = seq;
   existing.role = payload.newRole;
@@ -69,7 +62,6 @@ function applyGrantServer(
   });
 }
 
-/** add_member: starts a membership interval (the first device = the payload's key. Same key as the previous interval inherits the FP). */
 function applyAddMember(
   state: FoldState,
   seq: number,
@@ -84,15 +76,6 @@ function applyAddMember(
 
 export type OperationOf<Op extends ProposableEntry["op"]> = Extract<ProposableEntry, { op: Op }>;
 
-// The fold of applied ops (shared between a direct append and an
-// approve's inner op that reached quorum).
-// `seq` = the application seq (the approve's seq when it came via a
-// proposal — the inclusive convention). create_environment /
-// rotate_epoch / checkpoint / genesis are not here (they do not affect
-// the member/server sets; genesis is folded by deriveReportedView with
-// key-FP tracking). delete_environment and the 2 device ops are not
-// here either: they are never four-eyes targets, so they fold only as
-// direct entries (chain-view.ts ENTRY_FOLDERS — K5-4)
 const OPERATION_FOLDERS: {
   readonly [Op in ProposableEntry["op"]]?: (
     state: FoldState,
@@ -129,9 +112,6 @@ const OPERATION_FOLDERS: {
 
 export function applyOperation(state: FoldState, seq: number, operation: ProposableEntry): void {
   const fold = ownProp(OPERATION_FOLDERS, operation.op) as OperationFolder | undefined;
-  // An unmodeled inner op is ignored (K5-4). Because the folders read
-  // the payload's fields, a non-record payload is counted here as an
-  // unreadable row (same discipline as K5-17)
   if (fold === undefined) return;
   if (!isRecord(operation.payload)) {
     state.unreadableEntries += 1;

@@ -1,16 +1,3 @@
-// Integration tests for head-attestation acceptance, storage, and
-// distribution (CRYPTO_SPEC §6.4 / §6.6, AUTH_SPEC §16-1)
-// (@cloudflare/vitest-plugin — real workerd environment). Items
-// verified: monotonic acceptance (regression 409, idempotent 204),
-// row deletion on remove, distribution to current members only, no
-// acceptance-time distribution, a reader submitting under a read
-// scope, and rate limiting.
-//
-// The chain is built with the minimal shape attestation needs
-// (genesis → add_member member → add_member reader — no environments
-// or composites required) using test-time signatures with vector
-// keys.
-
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
@@ -29,7 +16,7 @@ import { resetProjectDo } from "./support/project-do.ts";
 const ORG = "org-attest-0001";
 const OWNER = testUserId("user-owner-0001");
 const MEMBER = testUserId("user-member-0002");
-const READER = testUserId("user-admin-0003"); // stays a reader since no change_role is appended
+const READER = testUserId("user-admin-0003");
 const GITHUB_IDS: Record<string, number> = { [OWNER]: 9001, [MEMBER]: 9002, [READER]: 9003 };
 
 let tokens: Record<string, string> = {};
@@ -47,11 +34,10 @@ interface Head {
   readonly hashHex: string;
 }
 
-/** Set up the minimal chain: genesis → add_member (member) → add_member (reader). */
 async function setupChain(): Promise<Head> {
   const genesis = vectorEntries[0];
   const addMember = vectorEntries[1];
-  const addReader = vectorEntries[5]; // add_member user-admin-0003 role reader
+  const addReader = vectorEntries[5];
   if (genesis === undefined || addMember === undefined || addReader === undefined) {
     throw new Error("missing vector entries");
   }
@@ -80,7 +66,6 @@ const appendEntry = (
     body: JSON.stringify({ parentHeadHashHex, entry }),
   });
 
-/** Sign a §6.6 attestation with the attester's key (project_id = genesis hash). */
 async function signAttestation(attesterUserId: string, head: Head): Promise<string> {
   const keys = vectorKeys[attesterUserId];
   if (keys === undefined) {
@@ -152,8 +137,6 @@ async function fetchAttestations(asUserId: string = OWNER): Promise<readonly Wir
 }
 
 beforeEach(async () => {
-  // The DO reset is independent of the D1-side reset + reseed, so the two
-  // run concurrently (same shape as registerMembershipScenario)
   const [issued] = await Promise.all([
     reseedAuthDb(GITHUB_IDS, { orgId: ORG, userId: OWNER }),
     resetProjectDo(vectorProjectId),
@@ -181,9 +164,6 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
       chainHeadHashHex: head.hashHex,
       chainHeadSeq: head.seq,
     });
-    // The acceptance time is not distributed (§16-1 — limiting
-    // behavioral information). Pin via the key set that no time-ish
-    // key appears on the wire
     expect(Object.keys(attestations[0] ?? {}).toSorted()).toEqual([
       "attesterKeyFingerprintHex",
       "attesterUserId",
@@ -198,21 +178,14 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
     const head = await setupChain();
     const head2 = { seq: 2, hashHex: vectorEntries[1]?.entry_hash_hex ?? "" };
     expect((await submitAttestation(OWNER, head2)).status).toBe(204);
-    // Advancing (head 3) is an upsert — the latest single row per member
     expect((await submitAttestation(OWNER, head)).status).toBe(204);
-    // Re-submitting the same seq is an idempotent 204 (retry-safe —
-    // not a silently swallowed 200 but a success as a re-send of the
-    // same content)
     expect((await submitAttestation(OWNER, head)).status).toBe(204);
-    // A regression is 409 + the stored seq (does not quietly swallow
-    // a floor corruption or a concurrent-CLI symptom)
     const regressed = await submitAttestation(OWNER, head2);
     expect(regressed.status).toBe(409);
     expect(await regressed.json()).toMatchObject({
       _tag: "AttestationRegression",
       storedSeq: 3,
     });
-    // Only the latest single row per member is stored
     const attestations = await fetchAttestations();
     expect(attestations).toHaveLength(1);
     expect(attestations[0]?.chainHeadSeq).toBe(3);
@@ -234,14 +207,11 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
     expect(badSignature.status).toBe(422);
     expect(await badSignature.json()).toMatchObject({ reason: "signature-invalid" });
 
-    // seq inside the chain's own range but a hash mismatch (valid signature) = chain-head-unknown
     const bogusHead = { seq: head.seq, hashHex: "ab".repeat(32) };
     const mismatch = await submitAttestation(OWNER, bogusHead);
     expect(mismatch.status).toBe(422);
     expect(await mismatch.json()).toMatchObject({ reason: "chain-head-unknown" });
 
-    // A seq ahead of the current head (valid signature) is also
-    // chain-head-unknown (§6.4 — the server has no re-sync branch)
     const future = await submitAttestation(OWNER, { seq: 9, hashHex: "cd".repeat(32) });
     expect(future.status).toBe(422);
     expect(await future.json()).toMatchObject({ reason: "chain-head-unknown" });
@@ -249,12 +219,7 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
 
   it("acceptance verification: a head at which the attester was not yet a member = 422 chain-head-state-mismatch", async () => {
     const head = await setupChain();
-    // Guards the premise: MEMBER was added at seq 2, so the head is seq 3
     expect(head.seq).toBe(3);
-    // MEMBER's signature is valid, but the declared head is the genesis
-    // (seq 1) — a real chain head at which MEMBER (added at seq 2) was
-    // not yet a member: attester-not-member-at-head on the crypto side
-    // folds into the wire's chain-head-state-mismatch
     const genesisHead = { seq: 1, hashHex: vectorEntries[0]?.entry_hash_hex ?? "" };
     const response = await submitAttestation(MEMBER, genesisHead);
     expect(response.status).toBe(422);
@@ -262,15 +227,11 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
       _tag: "AttestationRejected",
       reason: "chain-head-state-mismatch",
     });
-    // The same head attested by the owner (a member since seq 1) is accepted
     expect((await submitAttestation(OWNER, genesisHead)).status).toBe(204);
   });
 
   it("verification cannot pass with another's user_id (structural enforcement of caller = attester)", async () => {
     const head = await setupChain();
-    // Submitting an attestation signed with MEMBER's key under
-    // OWNER's token — the server uses the calling principal (OWNER)
-    // as the signed attester_user_id, so the signature mismatches
     const signatureHex = await signAttestation(MEMBER, head);
     const response = await putAttestation(
       { suite: "maruhi/v1", chainHeadHashHex: head.hashHex, chainHeadSeq: head.seq, signatureHex },
@@ -298,9 +259,6 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
 
   it("exceeding the per-member fixed window (60/hour) is a 429 (other members' windows are independent)", async () => {
     const head = await setupChain();
-    // The window is a DO SQLite row — instead of 60 real PUTs, seed a
-    // full window directly (the window's own semantics — judgment and
-    // rollback — go through data-store's implementation)
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
     await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
@@ -314,7 +272,6 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
     expect(limited.status).toBe(429);
     const body = (await limited.json()) as { retryAfterSeconds: number };
     expect(body.retryAfterSeconds).toBeGreaterThan(0);
-    // The window is per member — other members are unaffected
     expect((await submitAttestation(MEMBER, head)).status).toBe(204);
   });
 });
@@ -337,11 +294,7 @@ describe("distribution and cleanup on remove (§6.4 / §16-1)", () => {
     });
     expect((await appendEntry(head.hashHex, removal.entry)).status).toBe(200);
 
-    // The row was deleted as an acceptance side effect (distributed
-    // to current members only — convergence to the chain-derived
-    // truth)
     expect((await fetchAttestations()).map((a) => a.attesterUserId)).toEqual([OWNER]);
-    // A re-submission by the removed member is §11-2's uniform 404
     const resubmit = await submitAttestation(MEMBER, { seq: 4, hashHex: removal.hash });
     expect(resubmit.status).toBe(404);
   });

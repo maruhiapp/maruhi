@@ -1,22 +1,3 @@
-// The DO → R2 evacuation sweep (worker side) —
-// docs/notes/hosted-ops.md §2-D / §4-2 / §4-3.
-//
-// Called from the hourly cron (index.ts); enumerates D1 `projects` in
-// id order and calls each project DO's `opsBackup` RPC. Reads and
-// writes are performed by the DO itself under the permit (do-ops.ts,
-// do-snapshot-write.ts); only aggregates come back here (identifiers
-// stay inside D1's ops records).
-//
-// Bounding (§4-3): a wall-clock budget, a visit-count cap, and cursor
-// continuation. The skip rule (§2-D): a project whose watermarks
-// (audit seq, chain seq) match its last success and whose last success
-// is within OPS_BACKUP_REFRESH_MS is not evacuated (the census size is
-// still read every time).
-//
-// On a deployment without the binding (`OPS_BACKUP_BUCKET`) — the
-// self-hosted default — it does nothing, but not silently: it leaves
-// one static line per isolate.
-
 import type { ProjectId } from "@maruhi/core";
 import { ProjectIdSchema } from "@maruhi/core";
 import { Clock, Effect, Ref, Schema } from "effect";
@@ -44,7 +25,6 @@ interface BackupSweepResult {
   readonly skipped: number;
   readonly oversize: number;
   readonly failed: number;
-  /** Cut short by the budget or the cap (the cursor points mid-way). */
   readonly truncated: boolean;
 }
 
@@ -52,11 +32,9 @@ interface BackupSweepOptions {
   readonly budgetMs?: number;
   readonly maxProjects?: number;
   readonly maxBytes?: number;
-  /** For tests: the multipart part length (default is policy). */
   readonly partBytes?: number;
 }
 
-/** The once-per-isolate flag of warnMissingBucketOnce (module state like identities.ts's Refs). */
 const warnedMissingBucket = Ref.makeUnsafe(false);
 
 function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
@@ -78,14 +56,10 @@ function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
     case "upload-failed":
       return { kind: "failure", code: "upload-failed", storageLevel: outcome.storageLevel };
     case "no-bucket":
-      // No binding on the DO side (the worker side has one) = a
-      // configuration inconsistency; treated the same as an RPC
-      // failure
       return { kind: "failure", code: "rpc-failed", storageLevel: null };
   }
 }
 
-/** Evacuation of one project (an RPC failure is recorded as failure — retried next sweep). */
 const backupOne = Effect.fn("ops-backup.backupOne")(function* (
   env: Env,
   projectId: ProjectId,
@@ -119,8 +93,6 @@ const backupOne = Effect.fn("ops-backup.backupOne")(function* (
   ).pipe(
     Effect.map(toAttempt),
     Effect.catchTag("RpcCallError", () =>
-      // Static message only (no project ID — the record lives on
-      // the D1 side)
       Effect.logWarning("project backup RPC failed; the project is retried on the next sweep").pipe(
         Effect.as<OpsBackupAttempt>({ kind: "failure", code: "rpc-failed", storageLevel: null }),
       ),
@@ -152,7 +124,6 @@ function tally(result: MutableSweepResult, attempt: OpsBackupAttempt): void {
   }
 }
 
-/** Visits one page's worth. Return value = the last project visited (mid-page when the budget ran out). */
 const sweepPage = Effect.fn("ops-backup.sweepPage")(function* (
   env: Env,
   page: readonly ProjectId[],
@@ -185,16 +156,12 @@ interface SweepLimits {
   readonly maxProjects: number;
 }
 
-/** The stored sweep cursor, decoded (not cast — a malformed value restarts from the beginning). */
 function parseSweepCursor(stored: string | null): Effect.Effect<ProjectId | null> {
   if (stored === null || stored === "") {
     return Effect.succeed(null);
   }
   return Schema.decodeUnknownEffect(ProjectIdSchema)(stored).pipe(
     Effect.catchTag("SchemaError", () =>
-      // A corrupted cursor restarts from the beginning (operational
-      // state only — not audit); the save at the end of the sweep
-      // overwrites the bad row
       Effect.logWarning(
         "backup sweep cursor is not a valid project id; restarting the sweep from the beginning",
       ).pipe(Effect.as<ProjectId | null>(null)),
@@ -202,7 +169,6 @@ function parseSweepCursor(stored: string | null): Effect.Effect<ProjectId | null
   );
 }
 
-/** Advances from the cursor to the end (or until the budget runs out), then saves the next cursor. */
 const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
   env: Env,
   result: MutableSweepResult,
@@ -220,7 +186,6 @@ const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
       break;
     }
     if (page.length < OPS_SWEEP_PAGE_SIZE) {
-      // The end: next time starts from the beginning
       cursor = null;
       break;
     }
@@ -238,10 +203,6 @@ const warnMissingBucketOnce: Effect.Effect<void> = Effect.flatMap(
         ),
 );
 
-/**
- * The sweep body. Advances from the cursor within the budget; on
- * reaching the end, resets the cursor to the beginning.
- */
 export const runBackupSweep = Effect.fn("ops-backup.runBackupSweep")(function* (
   env: Env,
   options: BackupSweepOptions = {},

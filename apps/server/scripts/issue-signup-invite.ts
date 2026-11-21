@@ -1,20 +1,3 @@
-// Issues a sign-up invite code (operations — AUTH_SPEC §3).
-//
-// The server has no issuance API or UI (hosted-design.md §2-2 — the cf /
-// script path). This script only generates the code and computes its hash;
-// the operator registers it in D1 by running the cf command it prints
-// (this script does not ask for CF credentials).
-//
-// - The raw value (maruhi_sgn_…) is shown on this terminal exactly once. Only
-//   the SHA-256 hash goes into the DB (same discipline as AUTH_SPEC §15
-//   invite tokens)
-// - The code is single-use and expires (default 7 days — adjust with --days);
-//   it carries only permission to create an account (not tied to any project,
-//   org, or role)
-//
-// Usage (from apps/server):
-//   bun run scripts/issue-signup-invite.ts [--days 7] [--origin https://your.deployment]
-
 import { cryptoServicesLayer } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -38,8 +21,6 @@ const origin = readFlag("origin") ?? "<your-deployment-origin>";
 
 const nowMs = Date.now();
 const expiresAtMs = nowMs + days * 24 * 60 * 60 * 1000;
-// The id generators are Effects over the crypto services since the 4.1
-// migration; this script is a runtime root, so it provides the layer
 const { id, code, tokenHash } = await Effect.runPromise(
   Effect.gen(function* () {
     const drawnId = yield* ulid(nowMs);

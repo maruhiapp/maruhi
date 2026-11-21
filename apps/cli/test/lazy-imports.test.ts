@@ -1,17 +1,3 @@
-// The lazy-import shape (P-6 — commands/shared.ts's note). fallow credits
-// an export consumed through `import()` only when it is read off the module
-// inside the `.then`: a bare `Effect.promise(() => import("./m.ts"))` hides
-// the edge, and `.then((m) => m)` credits every export of the module. So
-// every `import()` under src/ is written
-//
-//   const { a, b } = yield* Effect.promise(() =>
-//     import("./m.ts").then((m) => ({ a: m.a, b: m.b })),
-//   );
-//
-// (or `Effect.flatMap(<that load>, ({ a }) => ...)`), and the names the
-// consumer binds are exactly the names the load picks — a stale extra name
-// in the `.then` would keep a dead export looking used.
-
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -26,7 +12,6 @@ async function srcFiles(): Promise<readonly string[]> {
     .toSorted();
 }
 
-/** Formatting-independent source: trailing commas dropped, whitespace collapsed, no padding inside parentheses. */
 function normalized(source: string): string {
   return source
     .replaceAll(/,(\s*[}\])])/g, "$1")
@@ -55,7 +40,6 @@ interface LazyImport {
   readonly picks: string;
 }
 
-/** The picks whose key differs from the member it reads (`a: m.b`). */
 function renamedPicks(picks: string): readonly string[] {
   return picks.split(", ").filter((pick) => {
     const [key, member] = pick.split(": m.");
@@ -93,10 +77,6 @@ async function lazyImports(): Promise<{
 
 describe("lazy imports (apps/cli/src, P-6)", () => {
   it("finds the lazy imports (the check isn't idling)", async () => {
-    // 192 at introduction, 115 once commands/lazy.ts took over the commands'
-    // loads of context.ts and session.ts: a walk or pattern that stops
-    // matching fails here before the shape checks below can pass on an empty
-    // collection
     expect((await lazyImports()).calls).toBeGreaterThanOrEqual(100);
   });
 

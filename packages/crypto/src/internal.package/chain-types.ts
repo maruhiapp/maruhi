@@ -1,20 +1,8 @@
-// CRYPTO_SPEC §6: types of the membership log (a signed hash chain).
-//
-// Identity rule (absolute): actors are identified by internal user_id and key
-// fingerprint only. Provider information such as GitHub IDs and email
-// addresses must never enter this structure.
-
 import type { ChainDevice } from "./chain-device.ts";
 import type { MemberScope, ScopePayloadFields } from "./member-scope.ts";
 
-/** Project role on the membership chain (CRYPTO_SPEC §6.2). */
 export type Role = "owner" | "admin" | "member" | "reader";
 
-/**
- * Chain operation kind (CRYPTO_SPEC §6.2 — the 4 four-eyes ops added at
- * 2026-09-14 PF1, the 2 device-key ops `add_device` / `revoke_device` at
- * 2026-09-19 DK, `delete_environment` at 2026-10-07).
- */
 export type ChainOp =
   | "genesis"
   | "add_member"
@@ -33,11 +21,6 @@ export type ChainOp =
   | "add_device"
   | "revoke_device";
 
-/**
- * Operations a four-eyes policy may name in `ops` (CRYPTO_SPEC §6.2). Data /
- * safety-side operations (`create_environment` / `rotate_epoch` / `checkpoint`),
- * `genesis` and the approval operations themselves can never be targets.
- */
 export type ApprovalTargetOp =
   | "grant_server"
   | "revoke_server"
@@ -46,7 +29,6 @@ export type ApprovalTargetOp =
   | "add_member"
   | "set_approval_policy";
 
-/** The closed set of `ApprovalTargetOp` (shared by the payload structure check and the CLI's input validation). */
 export const APPROVAL_TARGET_OPS: readonly ApprovalTargetOp[] = [
   "grant_server",
   "revoke_server",
@@ -58,99 +40,24 @@ export const APPROVAL_TARGET_OPS: readonly ApprovalTargetOp[] = [
 
 declare const userIdBrand: unique symbol;
 
-/**
- * The internal user id (AUTH_SPEC §2 `users.id`) — the only person identifier
- * the membership log may carry. A plain TypeScript nominal brand (this
- * package is Effect-free): it has no runtime form and adds no format rule
- * (AUTH_SPEC §11-1 — chain validity stays independent of the user id's
- * format). What it records is provenance, which no runtime check can see: the
- * string came out of a user-id slot, so a provider identity (a GitHub id or
- * login, an email) is a compile error wherever a `UserId` is required.
- *
- * Nothing in this package's source mints one. A `UserId` is minted only at a trust
- * boundary of an upper layer — Schema decoding at the wire (`UserIdSchema` in
- * `@maruhi/core`), DB row mapping inside the server's repository service, and
- * user-id generation.
- */
 export type UserId = string & { readonly [userIdBrand]: "UserId" };
 
 declare const keyFingerprintBrand: unique symbol;
 
-/**
- * A key fingerprint (CRYPTO_SPEC §3): the first 16 bytes of
- * `SHA-256(enc_pub ‖ sig_pub)` for a device key, or of `SHA-256(server_enc_pub)`
- * for a server key (§9), as 32 lowercase hex characters — the other half of
- * the identity rule's "internal user_id and key fingerprint only". A plain
- * TypeScript nominal brand (this package is Effect-free): it has no runtime
- * form, and no canonical byte, vector or verification rule depends on it.
- *
- * It records what a plain string cannot: the format (32 lowercase hex, so
- * string equality is fingerprint equality) and the provenance (the value was
- * computed from public keys, or decoded from a fingerprint field with that
- * format check). A provider identity, a row id, a public key or any other
- * string is a compile error wherever a fingerprint is required — the actor and
- * key positions of a chain entry and of an audit row.
- *
- * Minted only where that holds: this package's own fingerprint computation in
- * the chain verifier (the derived state of a verified chain), and the
- * format-checked mints of `@maruhi/core` (`KeyFingerprintHexSchema` at the
- * wire, `userKeyFingerprintHex` / `serverKeyFingerprintHex` over the keys).
- */
 export type KeyFingerprintHex = string & { readonly [keyFingerprintBrand]: "KeyFingerprintHex" };
 
 declare const projectIdBrand: unique symbol;
 
-/**
- * A project id: the lowercase-hex SHA-256 of the project's genesis entry
- * (CRYPTO_SPEC §6.4 — the id is bound to the chain cryptographically). A plain
- * TypeScript nominal brand, like {@link UserId}: it has no runtime form and
- * adds no check beyond the field's own (the wire schemas bound the hex
- * shape). What it records is provenance: the string came out of a
- * project-id slot, so a chain head hash, an org id, a user id or any other
- * string is a compile error wherever a `ProjectId` is required — including
- * every signing context that AAD-binds it (value / meta / manifest /
- * DEK-wrap / lease / attestation / invite contexts).
- *
- * Nothing in this package's source mints one. A `ProjectId` is minted only at
- * a trust boundary of an upper layer — Schema decoding at the wire
- * (`ProjectIdSchema` in `@maruhi/core`), a branded DB column, and the genesis
- * hash at project creation.
- */
 export type ProjectId = string & { readonly [projectIdBrand]: "ProjectId" };
 
 declare const environmentIdBrand: unique symbol;
 
-/**
- * An environment id (AUTH_SPEC §12-1): a stable client-issued identifier of
- * one environment inside a project, bound into AADs / HPKE info and the
- * chain's scope lists. A plain TypeScript nominal brand (this package is
- * Effect-free): it has no runtime form and adds no check beyond the field's
- * own (the form is an API acceptance policy, not a chain-validity rule —
- * CRYPTO_SPEC §6.1). What it records is provenance: the string came out of an
- * environment-id slot, so a variable id, a project id or any other same-shape
- * string is a compile error wherever an `EnvironmentId` is required.
- *
- * Nothing in this package's source mints one. An `EnvironmentId` is minted
- * only at a trust boundary of an upper layer — Schema decoding at the wire
- * (`EnvironmentIdSchema` in `@maruhi/core`), a branded DB column, or an
- * environment-id argument validated at a command boundary.
- */
 export type EnvironmentId = string & { readonly [environmentIdBrand]: "EnvironmentId" };
 
 declare const variableIdBrand: unique symbol;
 
-/**
- * A variable id (AUTH_SPEC §12-1): a stable client-issued identifier of one
- * variable inside an environment, bound into AADs and every signature over a
- * value. A plain TypeScript nominal brand — same provenance rule as
- * {@link EnvironmentId}: a string is a compile error wherever a `VariableId`
- * is required unless it was minted at a trust boundary (wire decode, a
- * branded column, or a validated argument), which keeps an environment id or
- * any other same-shape string out of variable-id positions.
- */
 export type VariableId = string & { readonly [variableIdBrand]: "VariableId" };
 
-/** Entry actor: internal user id + key fingerprint only (never provider ids). */
 export interface ChainActor {
   readonly userId: UserId;
   readonly keyFingerprintHex: KeyFingerprintHex;
@@ -161,12 +68,6 @@ export interface GenesisPayload {
   readonly sigPubHex: string;
 }
 
-/**
- * `add_member` payload (CRYPTO_SPEC §6.2): the target's identity, key set, role
- * and — since the 2026-09-14 ES revision — its environment scope as the two
- * trailing canonical fields (`scope_kind`, `scope_environments_lp_hex`). An
- * `owner` must carry `scopeKind = "all"` (`scope-role-mismatch`).
- */
 export interface AddMemberPayload extends ScopePayloadFields {
   readonly targetUserId: UserId;
   readonly encPubHex: string;
@@ -178,11 +79,6 @@ export interface RemoveMemberPayload {
   readonly targetUserId: UserId;
 }
 
-/**
- * `change_role` payload (CRYPTO_SPEC §6.2): the new (role, scope) pair replaces
- * the target's current pair in full (the shrunk part carries the §7 rotate
- * duty; the grown part is a backfill).
- */
 export interface ChangeRolePayload extends ScopePayloadFields {
   readonly targetUserId: UserId;
   readonly newRole: Role;
@@ -190,55 +86,25 @@ export interface ChangeRolePayload extends ScopePayloadFields {
 
 export interface CreateEnvironmentPayload {
   readonly environmentId: EnvironmentId;
-  /**
-   * Epoch-1 DEK commitment (CRYPTO_SPEC §5.2): lowercase hex, 64 chars.
-   * Chain verification checks the format only — matching the commitment
-   * against an unwrapped DEK is the recipient's §5.2 duty.
-   */
   readonly dekCommitmentHex: string;
 }
 
-/**
- * `delete_environment` payload (CRYPTO_SPEC §6.2 — 2026-10-07): the deleted
- * environment only. Admin or above with the environment in the actor's
- * effective scope, only after its `create_environment` and at most once; no
- * later entry may name it (`environment-deleted`). The chain is the authority
- * for whether an environment is deleted — no off-chain statement records it.
- */
 export interface DeleteEnvironmentPayload {
   readonly environmentId: EnvironmentId;
 }
 
 export interface RotateEpochPayload {
   readonly environmentId: EnvironmentId;
-  /**
-   * Strictly a number in this typed API. Wire formats (chain JSON, test
-   * vectors) may carry the epoch as a decimal string — the §2.1 encoding
-   * makes both forms byte-identical — but decoders MUST coerce to a number
-   * before calling verifyChain; a string here is rejected as invalid-payload.
-   */
   readonly newEpoch: number;
   readonly reason: string;
-  /** New-epoch DEK commitment (CRYPTO_SPEC §5.2): lowercase hex, 64 chars. */
   readonly dekCommitmentHex: string;
 }
 
-/**
- * One exact-match claim constraint of a lease policy element (CRYPTO_SPEC
- * §6.2). v1 evaluation semantics (exact match only) live in AUTH_SPEC §14;
- * the chain consensus rules fix the structure only.
- */
 export interface LeaseClaimConstraint {
   readonly claimName: string;
   readonly claimValue: string;
 }
 
-/**
- * One issuer element of a grant_server lease policy (CRYPTO_SPEC §6.2 /
- * §9.1): an issuer-generic workload identity federation constraint. All
- * claim constraints of an element must match (AND); any one element matching
- * authorizes the lease (existential — AUTH_SPEC §14-1).
- */
 export interface LeasePolicyIssuer {
   readonly issuerUrl: string;
   readonly audience: string;
@@ -248,26 +114,7 @@ export interface LeasePolicyIssuer {
 export interface GrantServerPayload {
   readonly serverEncPubHex: string;
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
-  /**
-   * Environments the server key is granted access to. Canonicalized as a
-   * nested length-prefixed encoding whose lowercase-hex form is one payload
-   * field — list order is part of the signed bytes.
-   *
-   * Re-granting the same server key may only widen the scope (old ⊆ new);
-   * narrowing must go through revoke_server, which carries the §7 rotation
-   * obligation.
-   */
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
-  /**
-   * Workload lease policy (CRYPTO_SPEC §6.2): the on-chain
-   * authorization source for the §9.1 lease path. Canonicalized as a
-   * three-level nested length-prefixed encoding whose lowercase-hex form is
-   * the fourth payload field — element and constraint order are part of the
-   * signed bytes. An empty list means "no lease path" (the grant only allows
-   * server-directed wrap registration). Unlike the scope, a re-grant may
-   * revise the lease policy freely (§6.3 — it is an ACL over the lease path
-   * and does not change the set of DEKs the server already knows).
-   */
   readonly leasePolicy: readonly LeasePolicyIssuer[];
 }
 
@@ -275,127 +122,53 @@ export interface RevokeServerPayload {
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
 }
 
-/**
- * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2): the
- * issuer's verified view of that environment — its current epoch (strict
- * equality with the entry-time chain-derived epoch is a consensus rule), the
- * latest manifest coordinates and the canonical values digest. The manifest
- * hash / values digest contents are not verifiable by chain verification
- * (they live in the data layer); acceptance-time content matching is the
- * server's §6.4 duty and distribution-time matching the client's §6.3 duty.
- */
 export interface CheckpointEnvironmentEntry {
   readonly environmentId: EnvironmentId;
   readonly epoch: number;
   readonly manifestVersion: number;
-  /** SHA-256 (lowercase hex) of the manifest's signed bytes (§4.3). */
   readonly manifestSigHashHex: string;
-  /** Canonical env values digest (lowercase hex — §6.2's values_digest). */
   readonly valuesDigestHex: string;
 }
 
 export interface CheckpointPayload {
-  /**
-   * Environment tuples — a subset of the active environments is valid
-   * (§6.2: full coverage is an issuance SHOULD, not a consensus rule).
-   * Duplicate environment ids make the payload invalid (structure check).
-   * List order is part of the signed bytes; generation SHOULD sort by
-   * environment id byte-ascending, verification does not normalize.
-   */
   readonly environments: readonly CheckpointEnvironmentEntry[];
-  /**
-   * Server-attested audit-log rolling hash (AUDIT_SPEC §5.1), or the empty
-   * string for "no audit-head attestation". A non-empty value requires the
-   * actor to hold the admin role at this entry (consensus rule — §6.2).
-   */
   readonly auditHeadHashHex: string;
 }
 
-/**
- * `set_approval_policy` payload (CRYPTO_SPEC §6.2 — PF1 four-eyes): the target op set
- * (canonicalized as a nested length-prefixed list whose lowercase-hex form is
- * the first field — list order is part of the signed bytes) and the required
- * number of distinct owner signatures. `requiredApprovals` is 0 (policy off)
- * or at least 2; enabling requires the current owner count to reach it
- * (`approval-quorum-unreachable`). While a policy is active, this op itself
- * and every owner-establishing `add_member` / `change_role` are targets
- * regardless of `ops` (policy monotonicity).
- */
 export interface SetApprovalPolicyPayload {
   readonly ops: readonly ApprovalTargetOp[];
   readonly requiredApprovals: number;
 }
 
-/**
- * An operation that can be carried inside a `propose` entry: every operation
- * except the approval operations themselves (nesting is rejected at the
- * structure stage — proposals can never be policy targets).
- */
 export type ProposableOperation = Exclude<
   ChainOperation,
   { readonly op: "propose" | "approve" | "withdraw" }
 >;
 
-/**
- * `propose` payload (CRYPTO_SPEC §6.2): the inner operation (canonicalized as
- * `inner_op` + the inner operation's own `payload_bytes` as one nested
- * lowercase-hex field) and the proposal's expiry. A proposal is pending until
- * an `approve` entry reaches the policy's quorum (applied at that entry's seq)
- * or a `withdraw` closes it. `expiresAtMs` is the only place the chain's
- * consensus rules read a timestamp (§6.2 `proposal-expired` — a safeguard for
- * honest approvers, not a guarantee against a lying one).
- */
 export interface ProposePayload {
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
 }
 
-/** `approve` payload: the entry hash (lowercase hex) of the pending `propose` entry. */
 export interface ApprovePayload {
   readonly proposalHashHex: string;
 }
 
-/** `withdraw` payload: the entry hash of the pending `propose` entry to close. */
 export interface WithdrawPayload {
   readonly proposalHashHex: string;
 }
 
-/**
- * `add_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): a new device key of the
- * **actor** (there is no target field — only the person can add their own device)
- * with its cap. Canonical field order `[enc_pub_hex, sig_pub_hex, role_cap,
- * scope_kind, scope_environments_lp_hex]`; the scope pair uses the same encoding
- * and structure rules as the member scope. Consensus: the actor's current device
- * signs (any role — readers included), the keys must not collide with any current
- * device's keys, nor the enc key with a server key a grant has named
- * (`duplicate-member-key` — key uniqueness), listed environments must exist
- * (`unknown-environment`), and the cap must not exceed the signing device's own
- * cap (`device-cap-exceeded` — principle D2).
- */
 export interface AddDevicePayload extends ScopePayloadFields {
   readonly encPubHex: string;
   readonly sigPubHex: string;
-  /** Upper bound on the role the device acts with (`owner` = no bound). */
   readonly roleCap: Role;
 }
 
-/**
- * `revoke_device` payload (CRYPTO_SPEC §6.2 — 2026-09-19 DK): the target member and
- * the fingerprints (lowercase hex, 32 chars) of that member's devices to revoke,
- * canonicalized as a nested length-prefixed list whose lowercase-hex form is the
- * second field (order is signed; generation SHOULD sort, verification treats it
- * as a set; 1..256 entries, no duplicates). Revoking one's own devices needs no
- * role; another member's devices follow the `remove_member` role rule plus
- * principle 1 on the **person's** scope (`scope-not-contained`). Every listed
- * fingerprint must be an active device of the target (`unknown-device`) and at
- * least one device must remain (`last-device-protected`).
- */
 export interface RevokeDevicePayload {
   readonly targetUserId: UserId;
   readonly deviceFingerprintsHex: readonly KeyFingerprintHex[];
 }
 
-/** Operation + payload, discriminated by `op`. */
 export type ChainOperation =
   | { readonly op: "genesis"; readonly payload: GenesisPayload }
   | { readonly op: "add_member"; readonly payload: AddMemberPayload }
@@ -414,7 +187,6 @@ export type ChainOperation =
   | { readonly op: "add_device"; readonly payload: AddDevicePayload }
   | { readonly op: "revoke_device"; readonly payload: RevokeDevicePayload };
 
-/** A chain entry before signing (CRYPTO_SPEC §6.1). */
 export type UnsignedChainEntry = ChainOperation & {
   readonly suite: string;
   readonly seq: number;
@@ -423,120 +195,52 @@ export type UnsignedChainEntry = ChainOperation & {
   readonly timestampMs: number;
 };
 
-/** A complete signed chain entry (CRYPTO_SPEC §6.1). */
 export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
 
-/**
- * A current member derived from a verified chain (§6.2): the **person** — role and
- * environment scope — and the set of device keys it currently holds (2026-09-19
- * DK: keys belong to devices; permission belongs to the person). There is no "the member's key": every
- * signature is attributed to one device (`devices` keyed by fingerprint), and the
- * permission a signature carries is the device's effective permission
- * (`effectivePermissionOf` — chain-device.ts), never the person's raw (role, scope).
- * Callers still written for a single device use `soleDeviceOf` (fail-closed).
- */
 export interface ChainMember {
   readonly userId: UserId;
   readonly role: Role;
-  /** Environment scope (CRYPTO_SPEC §6.2 — the input of R(E) / environment-targeting ops / §6.3's 3′). */
   readonly scope: MemberScope;
-  /** Active device keys, keyed by key fingerprint (the §6.2 verification state — the device set). */
   readonly devices: ReadonlyMap<string, ChainDevice>;
 }
 
-/** The active four-eyes policy derived from a verified chain (`null` = off — §6.2). */
 export interface ApprovalPolicy {
   readonly ops: readonly ApprovalTargetOp[];
-  /** At least 2 while a policy is active. */
   readonly requiredApprovals: number;
 }
 
-/**
- * One element of a proposal's signer set S (CRYPTO_SPEC §6.2 principle 2): an
- * accepted `approve` signature identified by the approver's user id and the
- * key fingerprint the entry was signed with. A vote is bound to that key —
- * an approver removed and re-added with a new key no longer carries it
- * (2026-09-15 — a key change lapses the compromised key's votes).
- */
 export interface ApprovalVote {
   readonly userId: UserId;
   readonly keyFingerprintHex: KeyFingerprintHex;
 }
 
-/**
- * One pending proposal derived from a verified chain (the CRYPTO_SPEC §6.2
- * verification state — proposal hash → proposer, inner op, expiry, voters).
- * `approvals` records the
- * accepted `approve` signatures in order; the vote count is never read from
- * this record alone but recomputed at every `approve` against the members
- * current at that entry (principle 2 — votes of departed or re-keyed voters
- * are not counted).
- */
 export interface PendingProposal {
   readonly proposalSeq: number;
   readonly proposalHashHex: string;
   readonly proposerUserId: UserId;
-  /** The proposer's key fingerprint at proposal time (`proposal-void` on change). */
   readonly proposerKeyFingerprintHex: KeyFingerprintHex;
-  /**
-   * The proposer's role at proposal time. `owner` puts the proposal signature
-   * into the signer set S (an owner's proposal is 1 vote — CRYPTO_SPEC §6.2); any other
-   * role does not, and a later promotion to owner does not change that (the
-   * promoted proposer may append an `approve` instead — 2026-09-15 ruling ②).
-   */
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
   readonly expiresAtMs: number;
   readonly approvals: readonly ApprovalVote[];
 }
 
-/** An active server grant derived from a verified chain (CRYPTO_SPEC §9). */
 export interface ServerGrant {
   readonly serverKeyFingerprintHex: KeyFingerprintHex;
   readonly serverEncPubHex: string;
-  /**
-   * Seq of the `grant_server` entry that established this active grant — it
-   * moves forward on a re-grant (CRYPTO_SPEC §6.3's two-layer re-grant rule). This
-   * is the sole source of `server.lease_issued`'s `grant_chain_seq` (AUDIT_SPEC
-   * §3.5): deriving it here keeps the re-grant rules in the chain verifier
-   * rather than duplicating them in the server.
-   */
   readonly grantSeq: number;
   readonly scopeEnvironmentIds: readonly EnvironmentId[];
-  /** Lease policy of the latest accepted grant for this key (CRYPTO_SPEC §6.2). */
   readonly leasePolicy: readonly LeasePolicyIssuer[];
 }
 
-/**
- * One environment derived from a verified chain (CRYPTO_SPEC §6.2 / §6.3):
- * its existence (`create_environment`), its deletion (`delete_environment`),
- * the current epoch, the seq at which each epoch became current (§6.3's
- * "valid interval of each epoch (start seq)" — the input of §4.1 value
- * verification), and the §5.2 DEK commitment per epoch. A deleted
- * environment stays in the set (its id is never reusable).
- */
 export interface EnvironmentChainState {
   readonly currentEpoch: number;
-  /** Seq of the `create_environment` entry (= epoch 1's start seq). */
   readonly createdAtSeq: number;
-  /**
-   * Seq of the `delete_environment` entry, or null while the environment is
-   * live. The verified chain is the only authority for deletion (§6.2 /
-   * §6.3 "Chain-deleted environments").
-   */
   readonly deletedAtSeq: number | null;
-  /** epoch → seq of the entry that made it current (create / rotate). */
   readonly epochStartSeqs: ReadonlyMap<number, number>;
-  /** epoch → dek_commitment_hex (CRYPTO_SPEC §5.2). */
   readonly dekCommitments: ReadonlyMap<number, string>;
 }
 
-/**
- * The latest `checkpoint` tuple covering one environment, derived from a
- * verified chain (the CRYPTO_SPEC §6.2 verification state / the per-environment
- * baseline of §6.3 checkpoint integrity). `seq` is the checkpoint entry that
- * carried the tuple.
- */
 export interface EnvironmentCheckpointState {
   readonly seq: number;
   readonly epoch: number;
@@ -545,35 +249,13 @@ export interface EnvironmentCheckpointState {
   readonly valuesDigestHex: string;
 }
 
-/**
- * State derived from a verified chain (CRYPTO_SPEC §6.3): the current member
- * set (with roles), active server grants, and the environment set with per
- * epoch state. Environments exist only via `create_environment` (§6.2) —
- * there is no implicit "epoch defaults to 1" for unknown ids.
- * This is the input for DEK-wrap recipient checks, the §5.2 commitment
- * matching, and head gossip (implemented with the sync logic later).
- */
 export interface ChainState {
   readonly members: ReadonlyMap<UserId, ChainMember>;
   readonly serverGrants: ReadonlyMap<KeyFingerprintHex, ServerGrant>;
   readonly environments: ReadonlyMap<EnvironmentId, EnvironmentChainState>;
-  /**
-   * Per environment, the latest `checkpoint` tuple covering it (§6.2 —
-   * the `checkpoint-regression` baseline and the §6.3 checkpoint-integrity
-   * baseline). Environments never covered by a checkpoint are absent.
-   */
   readonly checkpoints: ReadonlyMap<EnvironmentId, EnvironmentCheckpointState>;
-  /** Active four-eyes policy (CRYPTO_SPEC §6.2), or `null` when off. */
   readonly approvalPolicy: ApprovalPolicy | null;
-  /** Pending proposals keyed by the `propose` entry hash (the §6.2 verification state). */
   readonly pendingProposals: ReadonlyMap<string, PendingProposal>;
-  /**
-   * Every server enc public key a grant has named, keyed by the key's hex
-   * with its server key fingerprint (CRYPTO_SPEC §6.2 key uniqueness — no
-   * current device may hold one): the key of each `grant_server` applied so
-   * far, directly or by the `approve` that brought its proposal to quorum,
-   * valid or since revoked. A pending or withdrawn proposal names none.
-   */
   readonly namedServerKeys: ReadonlyMap<string, KeyFingerprintHex>;
   readonly headSeq: number;
   readonly headHashHex: string;

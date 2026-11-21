@@ -1,7 +1,3 @@
-// Conformance checks against the test vectors (CRYPTO_SPEC §11).
-// Run identically across the 3 projects node / workerd / browser (see vitest.*.config.ts).
-// For the Bun runtime, test/run-in-bun.ts runs the same checks directly.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runAllChecks } from "./all-checks.ts";

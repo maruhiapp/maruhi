@@ -1,8 +1,3 @@
-// Tests for `maruhi sync init` (SY2 phase 2 — ruling F): assembles the
-// config JSON from the flags onto stdout, and the product passes the
-// strict parser (sync-config.ts) as-is (round-trip). Touches neither the
-// network nor files.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -47,11 +42,8 @@ describe("maruhi sync init", () => {
     });
     const parsed = parseSyncConfig(result.stdout, "/repo");
     expect(typeof parsed).not.toBe("string");
-    // It's an explicit list, so no "all" guidance; the project guidance
-    // does appear
     expect(result.stderr).not.toContain("copies every variable");
     expect(result.stderr).toContain('Note: add "project": "<project ID>"');
-    // The output is 2-space-formatted JSON (a committable shape)
     expect(result.stdout.startsWith('{\n  "version": 1,')).toBe(true);
   });
 
@@ -170,9 +162,6 @@ describe("maruhi sync init", () => {
     expect(http.stderr).toContain("targets.worker.token is required for the http driver");
   });
   it("checks --env, --receipts and --token-env as environment IDs at their declarations (the value is never shown)", async () => {
-    // Left to the config's parser, a typo would read as a problem in the
-    // config ("The config would be invalid: targets.web.environment ..."),
-    // not in the flag
     for (const [flag, args] of [
       ["--env", ["--env", "!bad", "--receipts", "r"]],
       ["--receipts", ["--env", "p", "--receipts", "!bad"]],
@@ -385,7 +374,6 @@ describe("maruhi sync init", () => {
     );
     expect(noProject.stdout).toBe("");
 
-    // apply can't be assembled for production (the parser rejects it)
     const production = await init(
       "web",
       "--preset",

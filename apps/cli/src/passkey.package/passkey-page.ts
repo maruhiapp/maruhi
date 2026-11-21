@@ -1,64 +1,21 @@
-// Assets of the passkey-PRF acquisition page (CRYPTO_SPEC §8.2 /
-// integration-options.md supplement 20 ruling C).
-//
-// The HTML / JS / CSS of the localhost page the CLI serves on
-// 127.0.0.1 are bundled into the binary as **string constants**
-// (`import … with { type: "text" }` needs extra infra in vitest and
-// tsc, so it is not used — supplement 20 ruling C). The page makes
-// only the 2 WebAuthn calls (create / get) and one fetch to the
-// CLI, and never puts values or key material onto the DOM.
-//
-// Invariants (passkey-listener.test.ts checks them mechanically):
-//   - No inline script (only the one `<script src="./app.js">`), no
-//     `on*=` attributes, no `javascript:`, no inline style (CSS is a
-//     separate response)
-//   - No third-party scripts / CDN / analytics (no absolute-URL src
-//     / href)
-//   - CSP is attached as a header by the serving side
-//     (passkey-listener.ts): `script-src 'self'` baseline
-//
-// The page → CLI POST body is only the {@link PrfPagePost} +
-// confirmation-code shape. Errors come back as the enumerated
-// reason codes (no free-form text flows to the terminal); the CLI
-// maps them to English guidance.
-//
-// Confirmation code (supplement 20 ruling A revision 1): the URL's
-// token rides on the browser launch's argv, so a user of a
-// different UID on the same machine can read it
-// (`/proc/<pid>/cmdline`). Accepting a POST on the token alone
-// would let someone seal the master key with a fake PRF (the
-// registration path). So the CLI displays a 6-digit confirmation
-// code on the terminal, and the code the user types into the page
-// rides inside the POST. The code only travels between the user's
-// terminal and browser — it is on neither argv nor an HTTP
-// response. A POST with a mismatched code does not consume the
-// ceremony (the correct page's POST still passes later).
-
-/** The public parameters the page receives for registration / recovery (`GET /<token>/config.json`). */
 export type PrfPageConfig =
   | {
       readonly mode: "register";
       readonly rpId: "localhost";
-      /** The name shown in the passkey manager (`maruhi · <server host>` — supplement 19-2 ruling I). */
       readonly userName: string;
-      /** A per-registration 16-byte random (a deterministic value makes a syncing manager replace the existing one — ruling G). */
       readonly userIdHex: string;
-      /** This registration's prf_salt (32 bytes. A public parameter). */
       readonly prfSaltHex: string;
-      /** The ledger's existing credentials (prevents making a second one on the same authenticator — excludeCredentials). */
       readonly excludeCredentialIdsHex: readonly string[];
     }
   | {
       readonly mode: "recover";
       readonly rpId: "localhost";
-      /** The ledger's passkey rows (allowCredentials + a per-credential prf_salt). */
       readonly credentials: readonly {
         readonly credentialIdHex: string;
         readonly prfSaltHex: string;
       }[];
     };
 
-/** The reason codes for when the page reports a failure (no free-form text is carried). */
 export const PRF_PAGE_ERROR_CODES = [
   "not-allowed",
   "already-registered",
@@ -67,15 +24,12 @@ export const PRF_PAGE_ERROR_CODES = [
 ] as const;
 export type PrfPageErrorCode = (typeof PRF_PAGE_ERROR_CODES)[number];
 
-/** The body of the page → CLI's one POST (`POST /<token>/prf`) (the listener strips the confirmation code). */
 export type PrfPagePost =
   | { readonly credentialIdHex: string; readonly prfHex: string }
   | { readonly error: PrfPageErrorCode };
 
-/** The confirmation code's shape (6 digits. The terminal displays `123 456`; the page ignores spaces). */
 export const CONFIRM_CODE_PATTERN = /^[0-9]{6}$/;
 
-/** The page body. The script is only the separately-served `./app.js` (no inline). */
 export const PRF_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -101,7 +55,6 @@ export const PRF_PAGE_HTML = `<!doctype html>
 </html>
 `;
 
-/** Minimal styling (a separate response so there is no inline style). */
 export const PRF_PAGE_CSS = `body { margin: 0; font-family: system-ui, sans-serif; background: #fafafa; color: #222; }
 main { max-width: 32rem; margin: 4rem auto; padding: 0 1rem; }
 h1 { font-size: 1.25rem; font-weight: 600; }
@@ -112,23 +65,6 @@ h1 { font-size: 1.25rem; font-weight: 600; }
 .note { color: #666; font-size: 0.9rem; }
 `;
 
-/**
- * The page's script. The flow:
- *   1. Fetches `./config.json` (public parameters)
- *   2. register: create (checks support via prf.eval) → get
- *      (obtains the PRF with the same salt — taking the value
- *      through the same path as restore structurally rules out
- *      "registered but restore produced a different value". Ruling
- *      G)
- *      recover: get (allowCredentials = the ledger's every
- *      credential; per-credential salt via prf.evalByCredential)
- *   3. POSTs to `./prf` (the terminal's confirmation code +
- *      success = credential id + PRF hex / failure = a reason
- *      code). On a code mismatch (404), retype and resend the same
- *      result (no biometric redo)
- * `userVerification: "required"`: on an authenticator without UV
- * the PRF silently goes missing.
- */
 export const PRF_PAGE_JS = `"use strict";
 (function () {
   var statusNode = document.getElementById("status");

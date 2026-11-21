@@ -1,15 +1,3 @@
-// The meta acceptance check order (AUTH_SPEC §12-5): every check that
-// depends on the predecessor state runs after the metaVersion CAS. A
-// statement signed over a stale view — here, before a concurrent rename —
-// is answered with 409 (the client re-verifies and re-signs), never with a
-// predecessor-match 422; a 422 always means a malformed or forged statement.
-//
-// Each test captures the client's view, lets a concurrent rename land,
-// rewinds the fixture's records to the captured view (a stale client), and
-// sends the operation. The fixture's records are what the request helpers
-// sign from (prev hash, metaVersion, name, manifest), so the rewind
-// reproduces exactly what a stale client would sign.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -39,7 +27,6 @@ import {
 
 registerDataScenario();
 
-/** The client-visible records of one environment and one variable (what the helpers sign from). */
 interface View {
   readonly envStatement: NonNullable<ReturnType<DataFixture["envStatements"]["get"]>>;
   readonly manifest: NonNullable<ReturnType<DataFixture["manifests"]["get"]>>;
@@ -68,14 +55,11 @@ describe("predecessor-dependent meta checks run after the metaVersion CAS (§12-
     await createEnvironmentOk(fixture, ENV, "App");
     const staleHead = fixture.head;
     expect((await deleteEnvironmentRequest(fixture, ENV, OWNER)).status).toBe(204);
-    // Signed over the head before the concurrent deletion: the CAS answers
-    // first (stale), never the environment's deleted state
     const conflict = await deleteEnvironmentRequest(fixture, ENV, OWNER, {
       parentHeadHashHex: staleHead.hashHex,
     });
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({ _tag: "ChainHeadConflict" });
-    // Over the fresh head the deletion is wrong, not stale
     const wrong = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(wrong.status).toBe(422);
     await expect(wrong.json()).resolves.toMatchObject({
@@ -105,7 +89,6 @@ describe("predecessor-dependent meta checks run after the metaVersion CAS (§12-
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const stale = captureView();
-    // A concurrent rename keeps the variable declared (declared → declared)
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "API_TOKEN",
@@ -127,8 +110,6 @@ describe("predecessor-dependent meta checks run after the metaVersion CAS (§12-
     varStatements.set(VAR, { statement: rename, authorUserId: MEMBER });
     bundle.record();
     const fresh = captureView();
-    // The stale activation keeps the name "API_KEY" (value version 1 still
-    // passes the value CAS — the variable has no value yet)
     restoreView(stale);
     const conflict = await activateVariableRequest({
       variableId: VAR,

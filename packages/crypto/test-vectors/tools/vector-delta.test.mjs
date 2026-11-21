@@ -1,15 +1,7 @@
-// Unit tests for the vector-delta review aid (vector-delta.mjs). Picked up
-// by the packages/crypto node vitest project (root `bun run test`); the
-// workerd / browser configs only include test/**.
-//
-// The snapshots are synthetic: one src file and one vector file shaped like
-// the real ones. A real-history run (e.g. the #329 range) is the CLI's job.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { analyze, canonicalSource, lpShape, sourceFacts } from "./vector-delta.mjs";
 
-/** §2.1 length-prefixed encoding of UTF-8 (or raw Buffer) fields, as lowercase hex. */
 function lp(fields) {
   return fields
     .map((f) => {
@@ -80,7 +72,6 @@ function snapshot(src, vectors, extra = {}) {
   ]);
 }
 
-/** An encoding.json-style file with one case (extra snapshot entry). */
 function encoding(hex) {
   return {
     "test-vectors/encoding.json": JSON.stringify({
@@ -89,8 +80,6 @@ function encoding(hex) {
   };
 }
 
-// Stands in for Bun.Transpiler: comments and formatting do not reach the
-// runtime form, anything else does
 const runtimeForm = (_path, text) => canonicalSource(text);
 
 const run = (src, vectors, extra) =>
@@ -103,8 +92,6 @@ describe("canonicalSource", () => {
     const b = 'const u="http://x";\nconst r=/a\\/\\/b/g;\nf( `${a}//` ,x);';
     expect(canonicalSource(a)).toBe(canonicalSource(b));
     expect(canonicalSource(a)).toContain('"http://x"');
-    // A regex holding a quote: read as a division, the quote would open a
-    // string and swallow the comment
     expect(canonicalSource('return /"/.test(y); // "')).toBe('return/"/.test(y);');
     expect(canonicalSource("a = b / c; // d")).toBe("a=b/c;");
   });
@@ -271,9 +258,6 @@ describe("analyze", () => {
   });
 
   it("R2: a negative removed with the check behind it while its surface remains (pullfrog)", () => {
-    // base: a positive plus a too-long rejection, and src that throws on
-    // length; head: the rejection and the throw both gone. The v1 shape
-    // the negative exercised is still accepted, so acceptance may widen
     const guarded = BASE_SRC.replace(
       "const kem",
       'if (a.length > 64) throw new Error("too long");\n  const kem',
@@ -295,8 +279,6 @@ describe("analyze", () => {
   });
 
   it("R2: a removed SUPPORTED member never vouches for a negative (Cursor Bugbot)", () => {
-    // A lone `version` leaf equal to the dropped layout used to count as
-    // naming it; the v1 surface the negative exercised is still accepted
     const base = baseVectors();
     base.negative.push({
       name: "stale-version",
@@ -353,7 +335,7 @@ describe("analyze", () => {
 
   it("R3: material shared only with a removed negative does not rebase a byte change", () => {
     const base = baseVectors();
-    base.vectors[0].signature_hex = OLD_SIG; // shared with legacy-transplant only after legacy goes
+    base.vectors[0].signature_hex = OLD_SIG;
     base.vectors.splice(1, 1);
     const head = structuredClone(base);
     head.negative.splice(1, 1);
@@ -364,8 +346,6 @@ describe("analyze", () => {
   });
 
   it("R1: negatives removed together with the layout they exercised", () => {
-    // `legacy-v2-tampered` carries the retired v2 shape; `legacy-transplant`
-    // has v1 bytes but replays the removed v2 positive's signature
     const base = baseVectors();
     base.negative.push({
       name: "legacy-v2-tampered",
@@ -443,11 +423,6 @@ describe("analyze", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Chain entries (CRYPTO_SPEC §6.1): signed bytes led by the bare suite with
-// the op as their fourth field, and the payload order per op in a `*_order`
-// map. Shaped like chain-canonical.ts and chain-entries.json
-
 const CHAIN_SRC = `// Canonical payload bytes (§6.1)
 import { encodeLengthPrefixed } from "./encoding.ts";
 
@@ -465,7 +440,6 @@ export function payloadBytes(operation: Operation): Uint8Array {
 }
 `;
 
-/** CHAIN_SRC with a `delete_environment` case. */
 const DELETE_SRC = CHAIN_SRC.replace(
   '    case "approve":',
   `    case "delete_environment": {
@@ -474,7 +448,6 @@ const DELETE_SRC = CHAIN_SRC.replace(
     case "approve":`,
 );
 
-/** A chain entry: its op, payload bytes and suite-led signed bytes. */
 function chainEntry(seq, op, payloadFields) {
   const payloadHex = lp(payloadFields);
   const signed = [
@@ -534,7 +507,6 @@ function chainSnapshot(src, vectors) {
 const runChain = (src, vectors) =>
   analyze(chainSnapshot(CHAIN_SRC, chainVectors()), chainSnapshot(src, vectors), runtimeForm);
 
-/** An `Operation` union declaring the CHAIN_SRC ops, then `rest`. */
 const declared = (rest) =>
   `type Operation =\n  | { readonly op: "genesis" }\n  | { readonly op: "approve" }\n  | { readonly op: "withdraw" }${rest}`;
 
@@ -605,18 +577,14 @@ const x = { stop: "not-an-op", op: "rotate_epoch" };
     expect(result.reasons.R3).toContain(DELETE_ORDER_REASON);
     expect(result.reasons.R3).toContain(DELETE_OP_REASON);
     expect(result.ops.srcAdded).toEqual(["delete_environment"]);
-    // A base negative already carried the op; it never vouches for it
     expect(result.ops.vectorAdded).toEqual([]);
   });
 
   it("R3: each source alone shows a new op, with no fixture changing bytes", () => {
-    // src only: the vectors untouched
     expect(runChain(DELETE_SRC, chainVectors()).reasons.R3).toEqual([DELETE_OP_REASON]);
-    // an added positive entry only
     const entryOnly = chainVectors();
     entryOnly.entries.push(chainEntry(3, "delete_environment", ["env-dev-0002"]));
     expect(runChain(CHAIN_SRC, entryOnly).reasons.R3).toEqual([DELETE_OP_REASON]);
-    // the order declared under a new key only (an added fixture, not a changed one)
     const orderOnly = chainVectors();
     orderOnly.deletion_field_order = { delete_environment: ["environment_id"] };
     const result = runChain(CHAIN_SRC, orderOnly);
@@ -666,11 +634,6 @@ const x = { stop: "not-an-op", op: "rotate_epoch" };
   });
 });
 
-// ---------------------------------------------------------------------------
-// Keyed maps of named fixture records (chain-entries.json's extended_chains):
-// each member is its own fixture entry `file › map › key`
-
-/** A derived chain doc shaped like chain-entries.json's extended_chains members. */
 function derivedChain(op, payloadFields, description) {
   return {
     description,
@@ -681,7 +644,6 @@ function derivedChain(op, payloadFields, description) {
   };
 }
 
-/** chainVectors() plus two derived chains in an `extended_chains` map. */
 function keyedVectors() {
   return {
     ...chainVectors(),
@@ -701,7 +663,6 @@ const runPair = (base, head) =>
 const OLD_PUB = "aa".repeat(32);
 const NEW_PUB = "bb".repeat(32);
 
-/** chainVectors() plus a signer key in `extra_keys` and a vector carrying it. */
 function signedWithKey(signer, pub) {
   return {
     ...chainVectors(),
@@ -781,8 +742,6 @@ describe("keyed fixture maps", () => {
   });
 
   it("R3: an in-place re-key plus a scalar sibling is not explained as rebased", () => {
-    // A scalar member added beside the records must not flip the split
-    // (every base member "removed", handing their hex to markRebased)
     const base = signedWithKey("ghost", OLD_PUB);
     const head = signedWithKey("ghost", NEW_PUB);
     head.extra_keys.format = "hex";

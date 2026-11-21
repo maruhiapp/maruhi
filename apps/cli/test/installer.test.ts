@@ -1,12 +1,3 @@
-// Pins the install script (packaging/install.sh) and the Homebrew formula
-// to the target table and the naming conventions.
-//
-// Real-install verification is done by packaging/install-test.sh (4 real
-// OSes × .github/workflows/installer.yml). What this file holds down is the
-// three "copies of the table" that can drift silently before ever reaching
-// there — shared.ts's TARGETS, build-binaries.ts's archive naming, and the
-// formula's platform mapping.
-
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vite-plus/test";
@@ -37,9 +28,6 @@ describe("install script (packaging/install.sh)", () => {
   });
 
   it("the archive naming convention matches build-binaries.ts", () => {
-    // If the producer (build-binaries.ts) and the fetcher (install.sh)
-    // disagree on the naming, it first surfaces as a 404 in the real-OS
-    // tests. Pin both assembly lines
     expect(buildScript).toContain("`maruhi-${target.name}.tar.gz`");
     expect(installScript).toContain('ARCHIVE="maruhi-${TARGET}.tar.gz"');
   });

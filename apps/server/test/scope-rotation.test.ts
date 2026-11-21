@@ -1,26 +1,3 @@
-// ES K3 — the rotation-needed detection's per-environment access
-// windows and the change_role variants (AUDIT_SPEC §3.3 / §3.4 /
-// §4.1 / §4.2 Q1 = CRYPTO_SPEC §7. Design record
-// docs/notes/es-design.md §9 K3-E).
-//
-// Rules pinned:
-//   - candidate set = per-environment access windows (§4.1 step 2):
-//     remove_member's candidates are only the variables of the
-//     environments the target held in scope (environments outside
-//     scope are not candidates)
-//   - change_role variants: narrowing = the removed environments,
-//     demotion = every environment of the target's scope, promotion /
-//     widening = no detection. trigger = change_role, origin = that
-//     change_role's seq
-//   - a removal's candidates are every window within the membership
-//     interval (including past windows a narrowing closed — multiple
-//     rows for the same pair)
-//   - window reconstruction works from the chain mirror's payload
-//     alone (scopeKind / scopeEnvironmentIds / newRole — §3.4)
-//     (§4.2 Q1 — including role_changed)
-//   - every variant's rotation.recommended carries trigger; pre-K3
-//     rows are backfilled from target
-
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -92,7 +69,6 @@ async function pullAs(userId: string, environmentId: string): Promise<void> {
   expect(response.status).toBe(200);
 }
 
-/** OWNER creates a variable in any environment (value v1 + statement + manifest). */
 async function createVariableAsOwner(input: {
   readonly environmentId: string;
   readonly dek: Uint8Array;
@@ -140,11 +116,6 @@ async function createVariableAsOwner(input: {
   return value;
 }
 
-/**
- * Create 2 environments + 1 variable each, and add DEV as member,
- * listed{scope}.
- * The return value is the add_member's seq on the chain.
- */
 async function setupTwoEnvironments(scope: readonly string[]): Promise<number> {
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
   const otherDek = await createEnvironmentOk(fixture, OTHER, "Other");
@@ -228,7 +199,6 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
     });
     await seedMemberToken(fixture, DEV, 9010);
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [ENV, OTHER]));
-    // Narrowing out OTHER at its epoch 1, then OTHER's mandated rotation to 2
     await changeRole("member", [ENV]);
     const otherDek2 = makeDek();
     const rotated = await rotateEnvironmentComposite(fixture, {
@@ -246,7 +216,6 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
       actorUserId: OWNER,
     });
     expect(rotated.status).toBe(200);
-    // A fresh value at OTHER's epoch 2 resolves the narrowing's flag
     const fresh = await encryptValue(
       otherDek2,
       {
@@ -272,17 +241,10 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
     expect(pushed.status).toBe(200);
     expect((await readFlags()).filter((flag) => flag.variableId === VAR_OTHER)).toHaveLength(0);
 
-    // The later removal also flags OTHER (the old window), but bounded at
-    // epoch 1 — the member never held OTHER's epoch 2 key — so it is
-    // resolved by the value already pushed; ENV's flag is bounded at ENV's
-    // current epoch and stays effective
     await removeDev();
     const flags = await readFlags();
     expect(flags.filter((flag) => flag.variableId === VAR_OTHER)).toHaveLength(0);
     expect(flags.filter((flag) => flag.variableId === VAR_ENV)).toHaveLength(1);
-    // The aggregate rows for OTHER (§3.3 Sc-5 — variable_id is NULL; VAR_OTHER
-    // is OTHER's only variable): the narrowing's row and the removal's row,
-    // both bounded at epoch 1
     const bounds = (await readAuditEvents(projectId))
       .filter(
         (event) =>
@@ -310,10 +272,8 @@ describe("rotation-needed detection: the change_role variants (§4.1 — demotio
       triggerChainSeq: narrowSeq,
       trigger: "change_role",
     });
-    // Recording details (§3.3): actor = system, trigger in the payload, seq right after the mirror row
     const events = await readAuditEvents(projectId);
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
-    // One aggregate row for OTHER (§3.3 Sc-5), variable_id NULL, basis in the payload enumeration
     expect(recommended).toHaveLength(1);
     expect(recommended[0]?.["variable_id"]).toBeNull();
     expect(recommended[0]?.["environment_id"]).toBe(OTHER);
@@ -341,7 +301,6 @@ describe("rotation-needed detection: the change_role variants (§4.1 — demotio
         trigger: "change_role",
       });
     }
-    // The demoted member stays enrolled: a later removal makes the same environments candidates again (the window did not close)
     await removeDev();
     expect((await readFlags()).filter((flag) => flag.trigger === "remove_member")).toHaveLength(2);
   });
@@ -397,10 +356,6 @@ describe("the window-reconstruction material (AUDIT_SPEC §3.4's mirror payload 
   });
 });
 
-// ---------------------------------------------------------------------------
-// Pure-function unit tests (no DO): the window derivation's fail-safes and trigger backfill
-// ---------------------------------------------------------------------------
-
 const membershipScopeOf = (
   scope: { readonly kind: string; readonly environmentIds?: readonly string[] } | null,
 ): ScopeSnapshot | null =>
@@ -433,7 +388,6 @@ function fakeRead(input: {
   };
 }
 
-/** For the revoke_server variant's pure-function tests: a read surface holding only grant intervals and lease-issuance rows. */
 const grantRead = (
   events: readonly {
     seq: number;
@@ -476,12 +430,10 @@ const grantRead = (
   rotationFlagEventsFor: () => [],
 });
 
-/** The variableId list across aggregate rotation.recommended events (§3.3 Sc-5 — one row per environment). */
 function variableIdsOf(events: readonly RecommendedEvent[]): string[] {
   return events.flatMap((event) => event.payload.variables.map((variable) => variable.variableId));
 }
 
-/** The (environment, variable, basis) tuples across aggregate rotation.recommended events. */
 function flagTuples(
   events: readonly RecommendedEvent[],
 ): { environmentId: string; variableId: string; basis: string }[] {
@@ -567,7 +519,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
             variableId: testVariableId("v"),
           },
         ],
-        // the seq 5 read is outside env-b's window (8-12) = assumed a pre-K3 / malformed row
         reads: [
           { seq: 5, environmentId: testEnvironmentId("env-b"), variableId: testVariableId("w") },
           { seq: 9, environmentId: testEnvironmentId("env-b"), variableId: testVariableId("w") },
@@ -605,7 +556,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
             environmentId: testEnvironmentId("env-a"),
             variableId: testVariableId("v"),
           },
-          // a variable that existed only during the absence (overlaps no window)
           {
             seq: 5,
             event: "var.created",
@@ -681,11 +631,8 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
       });
     const bounded = run(true);
     const unbounded = run(false);
-    // windows = (2, 4) and (6, 10) — the envelope is (2, 10)
     expect(ranges[0]).toEqual({ afterSeq: 2, beforeSeq: 10 });
     expect(bounded).toEqual(unbounded);
-    // One aggregate row for env-a, the enumeration ascending by variableId.
-    // v was read at seq 3 inside window (2, 4); late only outside windows (5 = during the absence, 12 = after removal)
     expect(bounded).toHaveLength(1);
     expect(bounded[0]?.environmentId).toBe("env-a");
     expect(bounded[0]?.payload.variables).toEqual([
@@ -747,7 +694,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
   });
 
   it("the revoke_server variant: revoke → re-grant → revoke are separate windows; a narrowing re-grant does not close a window (union)", () => {
-    // leases during the revocation (seq 5) do not count → readable
     const regranted = detectServerRevocation({
       read: grantRead(
         [
@@ -765,7 +711,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
     expect(flagTuples(regranted).map((flag) => [flag.variableId, flag.basis])).toEqual([
       ["v", "readable"],
     ]);
-    // a narrowing re-grant (the consensus rules would reject it, but detection is fail-safe): env-b's window stays open until revocation
     const narrowed = detectServerRevocation({
       read: grantRead(
         [
@@ -838,7 +783,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
     const events = detectMemberRemoval({
       read: fakeRead({
         membership: [
-          // scope null = the window derivation treats it as `all` (fail-safe)
           { seq: 2, event: "chain.member_added", role: "member", scope: null },
           { seq: 10, event: "chain.member_removed", role: null, scope: null },
         ],
@@ -848,22 +792,17 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
           environmentId: testEnvironmentId("env-a"),
           variableId: testVariableId(`v${index.toString(16).padStart(6, "0")}`),
         })),
-        // The environment's epoch at detection = the exposure bound on every chunk
         epochs: [{ seq: 4, environmentId: testEnvironmentId("env-a"), epoch: 1 }],
       }),
       targetUserId: testUserId("u"),
       triggerChainSeq: 9,
       nowMs: 1,
     });
-    // Two rows (1,000 + 500), all env-a, no row over the cap
     expect(events).toHaveLength(2);
     expect(events.map((event) => event.payload.variables.length)).toEqual([
       MAX_ROTATION_RECOMMENDED_VARIABLES_PER_ROW,
       500,
     ]);
-    // Every chunk carries the same exposure bound (epoch), subject and trigger —
-    // a later chunk missing the epoch would leave its flags clearable only by
-    // dismissal (§4.1-5)
     for (const event of events) {
       expect(event.environmentId).toBe("env-a");
       expect(event.epoch).toBe(1);
@@ -871,7 +810,6 @@ describe("the window derivation's fail-safes and trigger checks (pure functions)
       expect(event.payload.trigger).toBe("remove_member");
       expect(event.payload.triggerChainSeq).toBe(9);
     }
-    // Every candidate appears exactly once across the chunks, globally ascending
     const allVars = events.flatMap((event) =>
       event.payload.variables.map((variable) => variable.variableId),
     );

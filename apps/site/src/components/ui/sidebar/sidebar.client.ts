@@ -1,11 +1,3 @@
-/** Sidebar runtime: filter, persistence, "/" shortcut.
- *
- * Groups are native `<details>`: open state is the element's own `open`
- * property, and changes arrive as `toggle` events (captured on the root —
- * `toggle` doesn't bubble). No click simulation. Rows carry no class or data
- * attribute, so a link row is any `li > a` and a group any `details`.
- */
-
 import { mount, onShortcut, syncShortcutHints } from "@cloudflare/nimbus-docs/client";
 
 import { shortcuts } from "@/lib/shortcuts";
@@ -37,20 +29,13 @@ function initSidebar(root: HTMLElement): () => void {
   return () => teardowns.forEach((t) => t());
 }
 
-// ---------------------------------------------------------------------------
-// Filter
-// ---------------------------------------------------------------------------
-
 function initFilter(root: HTMLElement): (() => void) | null {
   const input = root.querySelector<HTMLInputElement>("[data-nb-sidebar-filter-input]");
-  // SidebarFilter is rendered *next to* Sidebar (sibling), so also look in
-  // the parent — preserves the existing layout where filter sits above.
   const inputElement =
     input ??
     root.parentElement?.querySelector<HTMLInputElement>("[data-nb-sidebar-filter-input]") ??
     null;
   if (!inputElement) return null;
-  // Its key's hint and `aria-keyshortcuts` follow the platform and the reader.
   syncShortcutHints(inputElement.parentElement ?? inputElement);
 
   function handleInput() {
@@ -84,7 +69,6 @@ function resetFilter(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>("[data-nb-sidebar-hidden]").forEach((el) => {
     el.removeAttribute("data-nb-sidebar-hidden");
   });
-  // Close groups the filter opened, restoring the reader's previous state.
   root
     .querySelectorAll<HTMLDetailsElement>("details[data-nb-opened-by-filter]")
     .forEach((group) => {
@@ -101,7 +85,6 @@ function applyFilter(root: HTMLElement, query: string): void {
   groups.forEach((group) => group.setAttribute("data-nb-sidebar-hidden", ""));
 
   links.forEach((link) => {
-    // A method chip's `data-m` adds the full verb its label may abbreviate.
     const method = link.querySelector<HTMLElement>("i[data-m]")?.dataset.m ?? "";
     const text = `${link.textContent ?? ""} ${method}`.toLowerCase();
     if (!text.includes(query)) return;
@@ -115,7 +98,6 @@ function applyFilter(root: HTMLElement, query: string): void {
     if (!text.includes(query)) return;
     group.removeAttribute("data-nb-sidebar-hidden");
     openGroup(group);
-    // A matching group inside one that doesn't match shows its parents too.
     revealAncestors(group, root);
     group
       .querySelectorAll<HTMLElement>("li > a, details")
@@ -140,13 +122,7 @@ function openGroup(group: HTMLElement): void {
   group.open = true;
 }
 
-// ---------------------------------------------------------------------------
-// Persistence (open state + scroll)
-// ---------------------------------------------------------------------------
-
 function initPersistence(root: HTMLElement): (() => void) | null {
-  // The scrollable container: the movable tree wrapper (shared between the
-  // desktop rail and the drawer), the enclosing <aside>, or the root itself.
   const scrollHost: HTMLElement =
     root.closest<HTMLElement>("[data-nb-sidebar-tree]") ?? root.closest("aside") ?? root;
   const hash = root.dataset.nbSidebarHash ?? "";
@@ -160,8 +136,6 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     }
   }
 
-  // A hidden tree (the rail on a phone) reads scrollTop 0: keep the last
-  // scroll it had while visible.
   function readState(): SidebarState {
     return {
       hash,
@@ -170,8 +144,6 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     };
   }
 
-  // Shown after being hidden (the mobile drawer opening): apply the saved
-  // scroll, then bring the current page into view if it is outside it.
   function restoreScroll() {
     const scroll = savedScroll();
     if (scroll !== null) scrollHost.scrollTop = scroll;
@@ -201,8 +173,6 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     } catch {}
   }
 
-  // `toggle` doesn't bubble; capture on the root observes every group. A
-  // group the filter opened is transient state and not saved.
   const handleToggle = (event: Event) => {
     const group = event.target as HTMLElement | null;
     if (!(group instanceof HTMLDetailsElement)) return;
@@ -234,17 +204,11 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   };
 }
 
-// ---------------------------------------------------------------------------
-// The filter's shortcut (`/` by default, from src/lib/shortcuts.ts) — bound once
-// ---------------------------------------------------------------------------
-
 (function bindFilterShortcut() {
   if (document.documentElement.hasAttribute("data-nb-sidebar-shortcut-bound")) return;
   document.documentElement.setAttribute("data-nb-sidebar-shortcut-bound", "");
 
   onShortcut(shortcuts.filterSidebar, (e) => {
-    // One tree per page now: the filter input travels with it between the
-    // rail and the drawer, so take the first visible input.
     const input = Array.from(
       document.querySelectorAll<HTMLInputElement>("[data-nb-sidebar-filter-input]"),
     ).find((candidate) => candidate.offsetParent !== null);

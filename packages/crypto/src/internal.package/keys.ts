@@ -1,24 +1,13 @@
-// CRYPTO_SPEC §3: key hierarchy — user master keypair (enc: X25519 / sig: Ed25519),
-// key fingerprints, Environment Epoch DEK (256-bit random).
-//
-// enc keys are generated/converted via panva hpke's API (to guarantee consistency with
-// the HPKE Open KeyPair-passing path). sig keys are WebCrypto Ed25519.
-// Private keys are non-extractable by default (extractable=false); the caller
-// explicitly passes extractable=true only when generating a key that must be exported.
-
 import type { Key, KeyPair } from "hpke";
 
 import type { CryptoError, CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { hpkeSuite } from "./hpke.ts";
 
-/** An X25519 key usable with the HPKE suite (CryptoKey-compatible, opaque). */
 export type EncryptionKey = Key;
 
-/** An X25519 key pair. HPKE Open requires the full pair (CRYPTO_SPEC §2). */
 export type EncryptionKeyPair = KeyPair;
 
-/** An Ed25519 WebCrypto key pair used for membership log signatures. */
 export type SigningKeyPair = CryptoKeyPair;
 
 const X25519_KEY_BYTES = 32;
@@ -30,26 +19,12 @@ function invalidInput(field: string): { readonly ok: false; readonly error: Cryp
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
-/**
- * Generates a user encryption key pair (X25519, for receiving HPKE-wrapped
- * DEKs). The private key is non-extractable unless `extractable` is set —
- * pass true only when the key must be serialized (e.g. into the recovery
- * blob at signup).
- */
 export async function generateEncryptionKeyPair(options?: {
   readonly extractable?: boolean;
 }): Promise<EncryptionKeyPair> {
   return hpkeSuite().GenerateKeyPair(options?.extractable ?? false);
 }
 
-/**
- * Derives an encryption key pair deterministically from 32 bytes of input
- * keying material (RFC 9180 `DeriveKeyPair` — a standard HPKE API, verified
- * against the RFC 9180 official vectors in this package's tests). Used for
- * the deployment server key (CRYPTO_SPEC §9): the Workers Secret stores the
- * ikm and the keypair is re-derived at startup, so a single 32-byte secret
- * yields both keys. The private key stays non-extractable unless requested.
- */
 export async function deriveEncryptionKeyPair(input: {
   readonly ikm: Uint8Array;
   readonly extractable?: boolean;
@@ -65,7 +40,6 @@ export async function deriveEncryptionKeyPair(input: {
   }
 }
 
-/** Generates a user signing key pair (Ed25519, for membership log entries). */
 export async function generateSigningKeyPair(options?: {
   readonly extractable?: boolean;
 }): Promise<SigningKeyPair> {
@@ -73,16 +47,13 @@ export async function generateSigningKeyPair(options?: {
     "sign",
     "verify",
   ]);
-  // Ed25519's generateKey returns a CryptoKeyPair (narrows the union in the type definition)
   return pair as CryptoKeyPair;
 }
 
-/** Serializes an encryption public key to its 32-byte raw form. */
 export async function exportEncryptionPublicKey(key: EncryptionKey): Promise<Uint8Array> {
   return hpkeSuite().SerializePublicKey(key);
 }
 
-/** Deserializes a 32-byte raw X25519 public key. */
 export async function importEncryptionPublicKey(
   publicKey: Uint8Array,
 ): Promise<CryptoResult<EncryptionKey>> {
@@ -96,11 +67,6 @@ export async function importEncryptionPublicKey(
   }
 }
 
-/**
- * Imports an encryption key pair from raw 32-byte keys. The private key is
- * imported non-extractable unless `extractable` is set. HPKE Open takes the
- * full pair, so the non-extractable path stays usable (CRYPTO_SPEC §2).
- */
 export async function importEncryptionKeyPair(input: {
   readonly publicKey: Uint8Array;
   readonly privateKey: Uint8Array;
@@ -125,12 +91,6 @@ export async function importEncryptionKeyPair(input: {
   }
 }
 
-/**
- * Serializes an extractable X25519 private key to its 32-byte raw form
- * (the inverse of `importEncryptionKeyPair`). Only for persisting a freshly
- * generated master key into the OS keychain (CRYPTO_SPEC §3) — keys imported
- * for use stay non-extractable and fail here with `KeyExportFailed`.
- */
 export async function exportEncryptionPrivateKey(
   key: EncryptionKey,
 ): Promise<CryptoResult<Uint8Array>> {
@@ -145,12 +105,10 @@ export async function exportEncryptionPrivateKey(
   }
 }
 
-/** Serializes a signing public key to its 32-byte raw form. */
 export async function exportSigningPublicKey(key: CryptoKey): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.exportKey("raw", key));
 }
 
-/** Imports a 32-byte raw Ed25519 public key (verify-only). */
 export async function importSigningPublicKey(
   publicKey: Uint8Array,
 ): Promise<CryptoResult<CryptoKey>> {
@@ -188,13 +146,6 @@ function base64UrlDecode(value: string): Uint8Array | null {
   }
 }
 
-/**
- * Serializes an extractable Ed25519 private key to its 32-byte RFC 8032 seed
- * (the inverse of `importSigningKeyPair`). WebCrypto has no raw export for
- * Ed25519 private keys, so the seed is read from the standard JWK (OKP) `d`
- * field. Only for persisting a freshly generated master key into the OS
- * keychain (CRYPTO_SPEC §3) — non-extractable keys fail with `KeyExportFailed`.
- */
 export async function exportSigningPrivateSeed(key: CryptoKey): Promise<CryptoResult<Uint8Array>> {
   try {
     const jwk = await crypto.subtle.exportKey("jwk", key);
@@ -208,11 +159,6 @@ export async function exportSigningPrivateSeed(key: CryptoKey): Promise<CryptoRe
   }
 }
 
-/**
- * Imports a signing key pair from the raw 32-byte public key and the 32-byte
- * private seed (RFC 8032 form). WebCrypto has no raw import for Ed25519
- * private keys, so the seed goes through the standard JWK (OKP) form.
- */
 export async function importSigningKeyPair(input: {
   readonly publicKey: Uint8Array;
   readonly privateSeed: Uint8Array;
@@ -248,12 +194,6 @@ export async function importSigningKeyPair(input: {
   }
 }
 
-/**
- * Computes a user key fingerprint: first 16 bytes of
- * `SHA-256(enc_pub(32B) || sig_pub(32B))` (CRYPTO_SPEC §3). Both keys are
- * fixed-length, so this is plain concatenation (the §2.1 length-prefixed
- * encoding applies to AADs / info strings / canonical byte strings).
- */
 export async function computeUserKeyFingerprint(
   encPublicKey: Uint8Array,
   sigPublicKey: Uint8Array,
@@ -271,12 +211,6 @@ export async function computeUserKeyFingerprint(
   return { ok: true, value: digest.slice(0, FINGERPRINT_BYTES) };
 }
 
-/**
- * Computes a server (deployment) key fingerprint: first 16 bytes of
- * `SHA-256(server_enc_pub(32B))`. The server holds only an X25519 encryption
- * key (CRYPTO_SPEC §9), so the user fingerprint definition (enc || sig) does
- * not apply. Fixed by test-vectors/chain-entries.json.
- */
 export async function computeServerKeyFingerprint(
   serverEncPublicKey: Uint8Array,
 ): Promise<CryptoResult<Uint8Array>> {
@@ -287,7 +221,6 @@ export async function computeServerKeyFingerprint(
   return { ok: true, value: digest.slice(0, FINGERPRINT_BYTES) };
 }
 
-/** Generates a fresh 256-bit Environment Epoch DEK (CRYPTO_SPEC §3). */
 export function generateDek(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(DEK_BYTES));
 }

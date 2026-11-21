@@ -1,23 +1,3 @@
-// Integration tests for the workload-lease API (AUTH_SPEC §14 =
-// CRYPTO_SPEC §9.1) — issuance (§14-2) and the OIDC verification stage
-// (§14-1's 401s).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-//
-// How the lease suites are split (shared helpers in
-// support/lease-scenario.ts; for the split's motivation see the top of
-// support/membership-scenario.ts):
-// - lease.test.ts (this file): issuance and OIDC verification. That the
-//   lease wrap binds claims_digest into info and cannot be opened under
-//   a different workload context (CRYPTO_SPEC §9.1). That no plaintext
-//   value or DEK appears in the response
-// - lease-authz.test.ts: authorization and existence hiding (§14-1 /
-//   §11-2 — a uniform 404)
-// - lease-policy.test.ts: 503 and auditing (§14-3 / AUDIT_SPEC §3.5),
-//   unset server key, acceptance policy
-// - lease-binding.test.ts: first-come binding (§14-1) and source-IP
-//   rate limits
-
 import { LeaseResponseSchema } from "@maruhi/api-schema";
 import { computeChainEntryHash, decryptVariable, encodeHex } from "@maruhi/crypto";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -70,29 +50,18 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       ephemeralPubHex: workload.publicKeyHex,
     });
     expect(response.status).toBe(200);
-    // Written in chunks (handlers/json-stream.ts — no single buffer of the
-    // whole body), and still a valid §14-2 response
     expect(response.headers.get("content-type")).toBe("application/json");
     expect(response.headers.get("content-length")).toBeNull();
     const body = (await response.json()) as LeaseBody;
     expect(() => Schema.decodeUnknownSync(LeaseResponseSchema)(body)).not.toThrow();
 
-    // The response bundles the chain (non-members get a 404 from the
-    // chain API — §11-2). The length is exactly determined by the
-    // fixture, so pin it by value
     const stored = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries");
     expect(body.chain.length).toBe(stored[0]?.["n"]);
     expect(body.headSeq).toBe(body.chain.length);
     expect(body.currentEpoch).toBe(1);
 
-    // Bundles the latest environment manifest + issuer info (§14-2 —
-    // material for the workload's verification obligation §9.1 (5).
-    // A required response field since 0.28-draft)
     expect(body.manifest).toMatchObject({ manifestVersion: 2, epoch: 1 });
 
-    // The lease wrap carries no registered signature or signer info
-    // (server-generated and response-scoped — no signer can exist on
-    // the chain — §9.1)
     expect(body.leases.length).toBe(1);
     const lease = requireFirst(body.leases, "lease");
     expect(Object.keys(lease).toSorted()).toEqual(["ciphertextHex", "encHex", "epoch", "suite"]);
@@ -103,36 +72,25 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       claimsDigestHex: await claimsDigestOf(),
     });
     expect(opened.ok).toBe(true);
-    // The leased DEK is the original epoch DEK itself (the server only intermediated)
     expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
   });
 
   it("answers with a server fault when the stored manifest row is missing (0.28-draft)", async () => {
     await readyProject();
     const workload = await workloadKeyPair();
-    // A live environment without a stored manifest can only come from a
-    // corrupted DO or a crafted snapshot — an invariant violation,
-    // refused as a defect (500): never a lease body that omits the
-    // field (§14-2 makes it required)
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
-    // The rejected DO RPC makes workerd log an "uncaught exception" line
-    // even though the worker catches it — expected
     const response = await requestLease({
       oidcToken: await makeOidcToken(),
       ephemeralPubHex: workload.publicKeyHex,
     });
     expect(response.status).toBe(500);
-    // The defect body carries no environment data
     const body = await response.text();
     expect(body).not.toContain(ENV);
     expect(body).not.toContain("manifestVersion");
-    // Any defect would answer the same 500; the direct call on the
-    // instance pins which one fires (the facts the worker hands over
-    // for the default token, under a binding key of its own)
     await expect(
       callProjectDo(projectId, async (instance) =>
         instance.issueLease(testEnvironmentId(ENV), workload.publicKeyHex, {
@@ -151,9 +109,6 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
   it("answers a server fault, not a partial stream, when the response fails its schema (§14-2)", async () => {
     await readyProject();
     const workload = await workloadKeyPair();
-    // A stored value no response schema accepts (a corrupted row): the body
-    // is encoded whole before the stream starts, so the lease is a 500 with
-    // no lease material rather than a 200 cut off mid-body
     await queryProjectDo(projectId, "UPDATE variable_versions SET nonce_hex = 'not-hex'");
     const response = await requestLease({
       oidcToken: await makeOidcToken(),
@@ -180,10 +135,6 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
         readonly values: readonly unknown[];
       };
     };
-    // The supply source is the stored row from checkpoint acceptance
-    // itself (§16-2 — the environment creation's boundary checkpoint is
-    // the baseline from birth. A variable created after it is not in
-    // that enumeration)
     const stored = await queryProjectDo(
       projectId,
       "SELECT chain_seq, entry_hash_hex FROM environment_checkpoints WHERE environment_id = ?",
@@ -239,14 +190,12 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     const opened = await openLease({
       lease: requireFirst(body.leases, "lease"),
       workloadKeyPair: workload.pair,
-      // A different subject under the same issuer / audience (a different branch) = a different workload context
       claimsDigestHex: await claimsDigestOf("repo:maruhi-test/demo:ref:refs/heads/feature-x"),
     });
     expect(opened.ok).toBe(false);
   });
 
   it("leases every epoch the response's latest values use, plus the current epoch (§14-2)", async () => {
-    // Create a value at epoch 1, then rotate to epoch 2. The value remains at epoch 1, not re-encrypted
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
@@ -276,8 +225,6 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     const body = (await response.json()) as LeaseBody & {
       readonly declaredVariables?: readonly { readonly variableId: string }[];
     };
-    // The manifest digest covers the declared statement, so a workload
-    // refuses a lease that leaves it out (CRYPTO_SPEC §6.3)
     expect(body.declaredVariables?.map((statement) => statement.variableId)).toEqual([
       "var-declared-0001",
     ]);
@@ -301,7 +248,6 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       if (outcome.kind !== "ok") {
         throw new Error("lease not issued");
       }
-      // The values result carries no chain — each half has its own frame
       expect("chain" in outcome.value).toBe(false);
       return {
         token: outcome.chainToken,
@@ -314,20 +260,15 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
       op: "checkpoint" as const,
       payload: { environments: [], auditHeadHashHex: "" },
     };
-    // Lease A, an append, lease B: both grants are open at once
     const a = await issue("b2".repeat(32));
     expect(a.head).toEqual(fixture.head);
     await appendOperation(fixture, OWNER, tupleLess);
     const b = await issue("b3".repeat(32));
     expect(b.head.seq).toBe(a.head.seq + 1);
-    // An entry landing after B is in neither lease's chain
     await appendOperation(fixture, OWNER, tupleLess);
-    // A made-up token opens nothing, even with grants open (500 — no chain
-    // leaves the DO)
     await expect(readChain("00".repeat(32))).rejects.toThrow(
       "unknown, spent or expired lease chain token",
     );
-    // Each token opens exactly its own issuance's head, once
     for (const lease of [a, b]) {
       const chain = await readChain(lease.token);
       expect(chain.length).toBe(lease.head.seq);
@@ -417,9 +358,6 @@ describe("workload leases: OIDC verification (§14-1's authentication stage — 
   }
 
   it("rejects a multi-audience token with ambiguous-audience, not missing-claim", async () => {
-    // `aud` does exist (there are merely several). Kept as a separate
-    // vocabulary so an operator guided by the reason code does not go
-    // looking for a claim that exists
     const workload = await workloadKeyPair();
     const response = await requestLease({
       oidcToken: await makeOidcToken({ audience: [LEASE_AUDIENCE, "https://other.example"] }),
@@ -443,9 +381,6 @@ describe("workload leases: OIDC verification (§14-1's authentication stage — 
   });
 
   it("rejects a token whose alg is outside the allowlist even with a valid signature", async () => {
-    // `none` satisfies Schema's compact-JWS shape (3 segments) and
-    // then falls at the alg allowlist — an implementation that trusts
-    // the header's alg breaks here
     const workload = await workloadKeyPair();
     const response = await requestLease({
       oidcToken: await makeOidcToken({ alg: "none" }),

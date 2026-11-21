@@ -1,7 +1,3 @@
-// The sealed-proposal reads of the data store (AUTH_SPEC §14-5 —
-// head / variables / wraps reads and the pending scans) — assembled
-// into DataStoreShape by dataStoreLayer in data-store.ts.
-
 import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { decodeEnvironmentId, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -9,7 +5,6 @@ import { Effect } from "effect";
 import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
 import type { StoredProposal, StoredProposalVariable } from "./data-store.ts";
 
-/** The stored facts (a JSON array of strings written by insertProposal — anything else is storage corruption). */
 function storedFacts(value: string): readonly string[] {
   const parsed: unknown = JSON.parse(value);
   if (!Array.isArray(parsed) || !parsed.every((fact) => typeof fact === "string")) {
@@ -18,12 +13,6 @@ function storedFacts(value: string): readonly string[] {
   return parsed;
 }
 
-/**
- * Sealed value proposals (AUTH_SPEC §14-5). A proposal is read as three
- * queries (head / variables / wraps); the wraps are attached in variable
- * order. Only pending rows (expires_at > now) are returned by the
- * pending readers — expired rows wait for the sweep but never surface.
- */
 export const makeProposalQueries = (sql: SqlStorage) => {
   const proposalOf = (row: StoredRow): StoredProposal => {
     const proposalId = stringColumn(row, "proposal_id");
